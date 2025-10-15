@@ -1,19 +1,15 @@
 package client
 
 import (
-	"context"
-	"encoding/json"
-	"errors"
+	"crypto/tls"
 	"fmt"
 	"net/http"
+	"net/url"
+	"os"
 	"strings"
-	"time"
 
 	"github.com/nupi-ai/nupi/internal/bootstrap"
-	configstore "github.com/nupi-ai/nupi/internal/config/store"
 )
-
-const defaultHTTPTimeout = 10 * time.Second
 
 // Client wraps HTTP calls to the daemon.
 type Client struct {
@@ -189,12 +185,4 @@ func (c *Client) addAuth(req *http.Request) {
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
-}
-
-func readAPIError(resp *http.Response) error {
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
-	if len(body) == 0 {
-		return errors.New(resp.Status)
-	}
-	return errors.New(strings.TrimSpace(string(body)))
 }

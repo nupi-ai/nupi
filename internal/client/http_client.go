@@ -14,6 +14,9 @@ const (
 	maxErrorBody       = 8 << 10
 )
 
+// ErrShutdownUnavailable indicates the daemon does not expose the shutdown endpoint.
+var ErrShutdownUnavailable = errors.New("daemon shutdown endpoint unavailable")
+
 // HTTPClient wraps HTTP interactions with the daemon.
 type HTTPClient struct {
 	client  *http.Client
