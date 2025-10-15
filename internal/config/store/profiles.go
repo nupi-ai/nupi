@@ -52,12 +52,34 @@ func (s *Store) ActivateProfile(ctx context.Context, profileName string) error {
 	}
 
 	return s.withTx(ctx, func(tx *sql.Tx) error {
+		var exists bool
+		if err := tx.QueryRowContext(ctx, `
+			SELECT EXISTS(
+				SELECT 1 FROM profiles
+				WHERE instance_name = ? AND name = ?
+			)
+		`, s.instanceName, profileName).Scan(&exists); err != nil {
+			return fmt.Errorf("config: check profile %q: %w", profileName, err)
+		}
+		if !exists {
+			return NotFoundError{Entity: "profile", Key: profileName}
+		}
+
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE profiles
+			SET is_default = 0,
+			    updated_at = CURRENT_TIMESTAMP
+			WHERE instance_name = ?
+		`, s.instanceName); err != nil {
+			return fmt.Errorf("config: clear default profile: %w", err)
+		}
+
 		res, err := tx.ExecContext(ctx, `
-            UPDATE profiles
-            SET is_default = CASE WHEN name = ? THEN 1 ELSE 0 END,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE instance_name = ?
-        `, profileName, s.instanceName)
+			UPDATE profiles
+			SET is_default = 1,
+			    updated_at = CURRENT_TIMESTAMP
+			WHERE instance_name = ? AND name = ?
+		`, s.instanceName, profileName)
 		if err != nil {
 			return fmt.Errorf("config: update default profile: %w", err)
 		}
