@@ -459,6 +459,31 @@ func (c *Client) StreamOutputContext(ctx context.Context, dst io.Writer) error {
 	}
 }
 
+// GetDaemonStatus fetches daemon metadata via REST.
+func (c *Client) GetDaemonStatus() (map[string]any, error) {
+	req, err := http.NewRequest(http.MethodGet, c.baseURL+"/daemon/status", nil)
+	if err != nil {
+		return nil, err
+	}
+	c.addAuth(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("daemon status: %w", readAPIError(resp))
+	}
+
+	var status map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		return nil, fmt.Errorf("decode status: %w", err)
+	}
+	return status, nil
+}
+
 // ListSessions returns all sessions via REST.
 func (c *Client) ListSessions() ([]protocol.SessionInfo, error) {
 	req, err := http.NewRequest(http.MethodGet, c.baseURL+"/sessions", nil)
