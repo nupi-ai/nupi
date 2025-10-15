@@ -14,52 +14,52 @@ const (
 	maxErrorBody       = 8 << 10
 )
 
-// Client wraps HTTP calls to the daemon.
-type Client struct {
-	httpClient *http.Client
-	baseURL    string
-	token      string
+// HTTPClient wraps HTTP interactions with the daemon.
+type HTTPClient struct {
+	client  *http.Client
+	baseURL string
+	token   string
 }
 
-// NewInitialisedClient constructs a client from explicit parameters.
-func NewInitialisedClient(baseURL, token string, transport http.RoundTripper) *Client {
+// NewHTTPClient builds an HTTP client with optional custom transport.
+func NewHTTPClient(baseURL, token string, transport http.RoundTripper) *HTTPClient {
 	trimmed := strings.TrimRight(baseURL, "/")
 	client := &http.Client{Timeout: defaultHTTPTimeout}
 	if transport != nil {
 		client.Transport = transport
 	}
 
-	return &Client{
-		baseURL:    trimmed,
-		token:      strings.TrimSpace(token),
-		httpClient: client,
+	return &HTTPClient{
+		client:  client,
+		baseURL: trimmed,
+		token:   strings.TrimSpace(token),
 	}
 }
 
-// BaseURL returns the base HTTP URL the client is configured to use.
-func (c *Client) BaseURL() string {
+// BaseURL returns the base HTTP URL.
+func (c *HTTPClient) BaseURL() string {
 	return c.baseURL
 }
 
-// HTTPClient exposes the configured HTTP client (including TLS settings).
-func (c *Client) HTTPClient() *http.Client {
-	return c.httpClient
+// Client exposes the underlying http.Client.
+func (c *HTTPClient) Client() *http.Client {
+	return c.client
 }
 
-// Token returns the bearer token configured for the client, if any.
-func (c *Client) Token() string {
+// Token returns the configured bearer token.
+func (c *HTTPClient) Token() string {
 	return c.token
 }
 
 // ShutdownDaemon requests a graceful daemon shutdown via the HTTP API.
-func (c *Client) ShutdownDaemon() error {
+func (c *HTTPClient) ShutdownDaemon() error {
 	req, err := http.NewRequest(http.MethodPost, c.baseURL+"/daemon/shutdown", http.NoBody)
 	if err != nil {
 		return err
 	}
-	c.addAuth(req)
+	c.attachToken(req)
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -79,7 +79,7 @@ func (c *Client) ShutdownDaemon() error {
 	return fmt.Errorf("shutdown daemon: %w", errResp)
 }
 
-func (c *Client) addAuth(req *http.Request) {
+func (c *HTTPClient) attachToken(req *http.Request) {
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
