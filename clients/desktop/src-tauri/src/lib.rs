@@ -146,8 +146,8 @@ async fn set_base_url(base_url: Option<String>) -> Result<ClientSettings, String
     settings.base_url = trimmed.clone();
     settings::save(&settings).map_err(|e| e.to_string())?;
     match trimmed {
-        Some(ref value) => env::set_var("NUPI_BASE_URL", value),
-        None => env::remove_var("NUPI_BASE_URL"),
+        Some(ref value) => unsafe { env::set_var("NUPI_BASE_URL", value) },
+        None => unsafe { env::remove_var("NUPI_BASE_URL") },
     }
     Ok(settings)
 }
@@ -166,8 +166,8 @@ async fn set_api_token(token: Option<String>) -> Result<ClientSettings, String> 
     settings.api_token = cleaned.clone();
     settings::save(&settings).map_err(|e| e.to_string())?;
     match cleaned {
-        Some(ref value) => env::set_var("NUPI_API_TOKEN", value),
-        None => env::remove_var("NUPI_API_TOKEN"),
+        Some(ref value) => unsafe { env::set_var("NUPI_API_TOKEN", value) },
+        None => unsafe { env::remove_var("NUPI_API_TOKEN") },
     }
     Ok(settings)
 }
@@ -191,7 +191,7 @@ async fn create_api_token(
     let mut settings = settings::load();
     settings.api_token = Some(created.token.clone());
     settings::save(&settings).map_err(|e| e.to_string())?;
-    env::set_var("NUPI_API_TOKEN", created.token.as_str());
+    unsafe { env::set_var("NUPI_API_TOKEN", created.token.as_str()) };
     Ok(created)
 }
 
@@ -209,7 +209,7 @@ async fn delete_api_token(id: Option<String>, token: Option<String>) -> Result<(
             if current == candidate {
                 settings.api_token = None;
                 settings::save(&settings).map_err(|e| e.to_string())?;
-                env::remove_var("NUPI_API_TOKEN");
+                unsafe { env::remove_var("NUPI_API_TOKEN") };
             }
         }
     }
@@ -256,8 +256,10 @@ async fn claim_pairing(
     settings.base_url = Some(trimmed_base.clone());
     settings.api_token = Some(claimed.token.clone());
     settings::save(&settings).map_err(|e| e.to_string())?;
-    env::set_var("NUPI_BASE_URL", trimmed_base);
-    env::set_var("NUPI_API_TOKEN", claimed.token.as_str());
+    unsafe {
+        env::set_var("NUPI_BASE_URL", trimmed_base);
+        env::set_var("NUPI_API_TOKEN", claimed.token.as_str());
+    }
 
     Ok(claimed)
 }
