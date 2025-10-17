@@ -98,7 +98,7 @@ func New(opts Options) (*Daemon, error) {
 		return nil, err
 	}
 
-	pipelineService := contentpipeline.NewService(bus, pluginService.PipelineDir())
+    pipelineService := contentpipeline.NewService(bus, pluginService)
 
 	if err := host.Register("content_pipeline", func(ctx context.Context) (daemonruntime.Service, error) {
 		return pipelineService, nil

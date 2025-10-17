@@ -1,20 +1,24 @@
 package plugins
 
 import (
-	"context"
-	"fmt"
-	"log"
-	"os"
-	"path/filepath"
+    "context"
+    "fmt"
+    "log"
+    "os"
+    "path/filepath"
+    "strings"
+    "sync"
 
-	"github.com/nupi-ai/nupi/internal/detector"
+    "github.com/nupi-ai/nupi/internal/detector"
 )
 
 // Service manages plugin assets and metadata for the daemon.
 type Service struct {
-	pluginDir   string
-	pipelineDir string
-	extract     func(string) error
+    pluginDir   string
+    pipelineDir string
+    pipelineIdx map[string]*PipelinePlugin
+    pipelineMu  sync.RWMutex
+    extract     func(string) error
 }
 
 // Option configures optional behaviour on the Service.
@@ -29,12 +33,13 @@ func WithExtractor(extractor func(string) error) Option {
 
 // NewService constructs a plugin service rooted in the given instance directory.
 func NewService(instanceDir string, opts ...Option) *Service {
-	pluginDir := filepath.Join(instanceDir, "plugins")
-	pipelineDir := filepath.Join(instanceDir, "pipeline")
-	svc := &Service{
-		pluginDir:   pluginDir,
-		pipelineDir: pipelineDir,
-		extract:     ExtractEmbedded,
+    pluginDir := filepath.Join(instanceDir, "plugins")
+    pipelineDir := filepath.Join(instanceDir, "pipeline")
+    svc := &Service{
+        pluginDir:   pluginDir,
+        pipelineDir: pipelineDir,
+        pipelineIdx: make(map[string]*PipelinePlugin),
+        extract:     ExtractEmbedded,
 	}
 
 	for _, opt := range opts {
@@ -51,7 +56,70 @@ func (s *Service) PluginDir() string {
 
 // PipelineDir returns the directory containing JS cleaners.
 func (s *Service) PipelineDir() string {
-	return s.pipelineDir
+    return s.pipelineDir
+}
+
+// LoadPipelinePlugins rebuilds the in-memory cleaner registry.
+func (s *Service) LoadPipelinePlugins() error {
+    entries, err := os.ReadDir(s.pipelineDir)
+    if err != nil {
+        if os.IsNotExist(err) {
+            return nil
+        }
+        return err
+    }
+
+    index := make(map[string]*PipelinePlugin)
+    for _, entry := range entries {
+        if entry.IsDir() || filepath.Ext(entry.Name()) != ".js" {
+            continue
+        }
+        path := filepath.Join(s.pipelineDir, entry.Name())
+        plugin, err := LoadPipelinePlugin(path)
+        if err != nil {
+            log.Printf("[Plugins] skip pipeline plugin %s: %v", path, err)
+            continue
+        }
+
+        keys := []string{plugin.Name}
+        keys = append(keys, plugin.Commands...)
+        if len(keys) == 0 {
+            keys = append(keys, strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name())))
+        }
+
+        for _, key := range keys {
+            key = strings.TrimSpace(strings.ToLower(key))
+            if key == "" {
+                continue
+            }
+            index[key] = plugin
+        }
+    }
+
+    s.pipelineMu.Lock()
+    s.pipelineIdx = index
+    s.pipelineMu.Unlock()
+    return nil
+}
+
+// PipelinePluginFor returns a cleaner matching the supplied name.
+func (s *Service) PipelinePluginFor(name string) (*PipelinePlugin, bool) {
+    s.pipelineMu.RLock()
+    defer s.pipelineMu.RUnlock()
+
+    if len(s.pipelineIdx) == 0 {
+        return nil, false
+    }
+
+    key := strings.TrimSpace(strings.ToLower(name))
+    if key != "" {
+        if plugin, ok := s.pipelineIdx[key]; ok {
+            return plugin, true
+        }
+    }
+
+    plugin, ok := s.pipelineIdx["default"]
+    return plugin, ok
 }
 
 // SyncEmbedded updates the embedded plugin set on disk.
@@ -77,14 +145,18 @@ func (s *Service) GenerateIndex() error {
 
 // Start implements runtime.Service to integrate with the daemon lifecycle.
 func (s *Service) Start(ctx context.Context) error {
-	if err := os.MkdirAll(s.pipelineDir, 0o755); err != nil {
-		return fmt.Errorf("plugin service: ensure pipeline dir: %w", err)
-	}
-	if err := s.SyncEmbedded(); err != nil {
-		return err
-	}
+    if err := os.MkdirAll(s.pipelineDir, 0o755); err != nil {
+        return fmt.Errorf("plugin service: ensure pipeline dir: %w", err)
+    }
+    if err := s.SyncEmbedded(); err != nil {
+        return err
+    }
 
-	return s.GenerateIndex()
+    if err := s.LoadPipelinePlugins(); err != nil {
+        log.Printf("[Plugins] pipeline load error: %v", err)
+    }
+
+    return s.GenerateIndex()
 }
 
 // Shutdown is a no-op for plugin management.
