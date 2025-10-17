@@ -44,6 +44,7 @@ type RuntimeInfoProvider interface {
 // ConversationStore exposes a readonly view of conversation history.
 type ConversationStore interface {
 	Context(sessionID string) []eventbus.ConversationTurn
+	Slice(sessionID string, offset, limit int) (int, []eventbus.ConversationTurn)
 }
 
 type tokenRole string
@@ -57,6 +58,8 @@ var allowedRoles = map[string]struct{}{
 	string(roleAdmin):    {},
 	string(roleReadOnly): {},
 }
+
+const conversationMaxPageLimit = 500
 
 type storedToken struct {
 	ID        string    `json:"id"`
@@ -1347,7 +1350,40 @@ func (s *APIServer) handleSessionConversation(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	state := api.ToConversationState(sessionID, s.conversation.Context(sessionID))
+	query := r.URL.Query()
+
+	parseParam := func(name string) (int, bool, error) {
+		raw := strings.TrimSpace(query.Get(name))
+		if raw == "" {
+			return 0, false, nil
+		}
+		value, err := strconv.Atoi(raw)
+		if err != nil {
+			return 0, true, err
+		}
+		if value < 0 {
+			return 0, true, fmt.Errorf("value must be non-negative")
+		}
+		return value, true, nil
+	}
+
+	offset, _, err := parseParam("offset")
+	if err != nil {
+		http.Error(w, fmt.Sprintf("invalid offset: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	limit, providedLimit, err := parseParam("limit")
+	if err != nil {
+		http.Error(w, fmt.Sprintf("invalid limit: %v", err), http.StatusBadRequest)
+		return
+	}
+	if providedLimit && limit > conversationMaxPageLimit {
+		limit = conversationMaxPageLimit
+	}
+
+	total, turns := s.conversation.Slice(sessionID, offset, limit)
+	state := api.ToConversationState(sessionID, total, offset, limit, turns)
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(state); err != nil {

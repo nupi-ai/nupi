@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/nupi-ai/nupi/internal/eventbus"
@@ -51,6 +53,11 @@ type Service struct {
 const (
 	defaultHistory   = 50
 	defaultDetachTTL = 5 * time.Minute
+
+	maxMetadataEntries    = 32
+	maxMetadataKeyRunes   = 64
+	maxMetadataValueRunes = 512
+	maxMetadataTotalBytes = 8192
 )
 
 // NewService creates a conversation service bound to the provided bus.
@@ -201,11 +208,14 @@ func (s *Service) handlePipelineMessage(ts time.Time, msg eventbus.PipelineMessa
 		ts = time.Now().UTC()
 	}
 
+	meta := newMetadataAccumulator(nil)
+	meta.merge(msg.Annotations)
+
 	turn := eventbus.ConversationTurn{
 		Origin: msg.Origin,
 		Text:   msg.Text,
 		At:     ts,
-		Meta:   copyAnnotations(msg.Annotations),
+		Meta:   meta.result(),
 	}
 
 	var contextSnapshot []eventbus.ConversationTurn
@@ -297,24 +307,34 @@ func (s *Service) cancelDetachCleanup(sessionID string) {
 
 // Context returns a snapshot of the stored conversation turns for the session.
 func (s *Service) Context(sessionID string) []eventbus.ConversationTurn {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	history := s.sessions[sessionID]
-	out := make([]eventbus.ConversationTurn, len(history))
-	copy(out, history)
-	return out
+	_, turns := s.Slice(sessionID, 0, 0)
+	return turns
 }
 
-func copyAnnotations(src map[string]string) map[string]string {
-	if len(src) == 0 {
-		return nil
+// Slice returns a paginated view over the stored conversation turns.
+func (s *Service) Slice(sessionID string, offset, limit int) (int, []eventbus.ConversationTurn) {
+	s.mu.RLock()
+	history := s.sessions[sessionID]
+	total := len(history)
+
+	if offset < 0 {
+		offset = 0
 	}
-	dst := make(map[string]string, len(src))
-	for k, v := range src {
-		dst[k] = v
+	if offset > total {
+		offset = total
 	}
-	return dst
+
+	end := total
+	if limit > 0 && offset+limit < end {
+		end = offset + limit
+	}
+
+	window := history[offset:end]
+	s.mu.RUnlock()
+
+	out := make([]eventbus.ConversationTurn, len(window))
+	copy(out, window)
+	return total, out
 }
 
 func (s *Service) handleReplyMessage(ts time.Time, msg eventbus.ConversationReplyEvent) {
@@ -328,34 +348,31 @@ func (s *Service) handleReplyMessage(ts time.Time, msg eventbus.ConversationRepl
 		ts = time.Now().UTC()
 	}
 
+	meta := newMetadataAccumulator(msg.Metadata)
+
 	turn := eventbus.ConversationTurn{
 		Origin: eventbus.OriginAI,
 		Text:   msg.Text,
 		At:     ts,
-		Meta:   copyAnnotations(msg.Metadata),
+		Meta:   nil,
 	}
 	for idx, action := range msg.Actions {
-		if turn.Meta == nil {
-			turn.Meta = make(map[string]string)
-		}
 		base := fmt.Sprintf("action_%d", idx)
-		turn.Meta[base+".type"] = action.Type
+		meta.add(base+".type", action.Type)
 		if action.Target != "" {
-			turn.Meta[base+".target"] = action.Target
+			meta.add(base+".target", action.Target)
 		}
 		if len(action.Args) > 0 {
 			data, err := json.Marshal(action.Args)
 			if err == nil {
-				turn.Meta[base+".args"] = string(data)
+				meta.add(base+".args", string(data))
 			}
 		}
 	}
 	if msg.PromptID != "" {
-		if turn.Meta == nil {
-			turn.Meta = make(map[string]string)
-		}
-		turn.Meta["prompt_id"] = msg.PromptID
+		meta.add("prompt_id", msg.PromptID)
 	}
+	turn.Meta = meta.result()
 
 	s.mu.Lock()
 	history := s.sessions[msg.SessionID]
@@ -366,4 +383,111 @@ func (s *Service) handleReplyMessage(ts time.Time, msg eventbus.ConversationRepl
 	}
 	s.sessions[msg.SessionID] = history
 	s.mu.Unlock()
+}
+
+type metadataAccumulator struct {
+	entries map[string]string
+	total   int
+}
+
+func newMetadataAccumulator(base map[string]string) *metadataAccumulator {
+	acc := &metadataAccumulator{
+		entries: nil,
+		total:   0,
+	}
+	acc.merge(base)
+	return acc
+}
+
+func (m *metadataAccumulator) merge(src map[string]string) {
+	if len(src) == 0 {
+		return
+	}
+	keys := make([]string, 0, len(src))
+	for k := range src {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		m.add(key, src[key])
+	}
+}
+
+func (m *metadataAccumulator) add(key, value string) {
+	key = sanitizeKey(key)
+	if key == "" {
+		return
+	}
+	value = sanitizeValue(value)
+
+	if m.entries == nil {
+		m.entries = make(map[string]string)
+	}
+
+	if len(m.entries) >= maxMetadataEntries {
+		if _, exists := m.entries[key]; !exists {
+			return
+		}
+	}
+
+	addition := len(key) + len(value)
+	if existing, ok := m.entries[key]; ok {
+		m.total -= len(key) + len(existing)
+	}
+
+	if maxMetadataTotalBytes > 0 && m.total+addition > maxMetadataTotalBytes {
+		if existing, ok := m.entries[key]; ok {
+			m.total += len(key) + len(existing)
+		}
+		return
+	}
+
+	m.entries[key] = value
+	m.total += addition
+
+	if len(m.entries) > maxMetadataEntries {
+		delete(m.entries, key)
+		m.total -= addition
+	}
+}
+
+func (m *metadataAccumulator) result() map[string]string {
+	if len(m.entries) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(m.entries))
+	for k, v := range m.entries {
+		out[k] = v
+	}
+	return out
+}
+
+func sanitizeKey(key string) string {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return ""
+	}
+	if utf8.RuneCountInString(key) <= maxMetadataKeyRunes {
+		return key
+	}
+	runes := []rune(key)
+	if len(runes) > maxMetadataKeyRunes {
+		runes = runes[:maxMetadataKeyRunes]
+	}
+	return string(runes)
+}
+
+func sanitizeValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if utf8.RuneCountInString(value) <= maxMetadataValueRunes {
+		return value
+	}
+	runes := []rune(value)
+	if len(runes) > maxMetadataValueRunes {
+		runes = runes[:maxMetadataValueRunes]
+	}
+	return string(runes)
 }

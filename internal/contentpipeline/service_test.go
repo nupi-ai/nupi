@@ -70,6 +70,8 @@ func TestContentPipelineTransformsOutput(t *testing.T) {
 		},
 	})
 
+	time.Sleep(50 * time.Millisecond)
+
 	bus.Publish(context.Background(), eventbus.Envelope{
 		Topic:  eventbus.TopicSessionsOutput,
 		Source: eventbus.SourceSessionManager,
@@ -139,6 +141,8 @@ func TestContentPipelineEmitsErrors(t *testing.T) {
 			ToolName:  "Tool Err",
 		},
 	})
+
+	time.Sleep(50 * time.Millisecond)
 
 	bus.Publish(context.Background(), eventbus.Envelope{
 		Topic:  eventbus.TopicSessionsOutput,

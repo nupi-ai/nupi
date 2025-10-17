@@ -91,6 +91,28 @@ func (m *mockConversationStore) Context(sessionID string) []eventbus.Conversatio
 	return out
 }
 
+func (m *mockConversationStore) Slice(sessionID string, offset, limit int) (int, []eventbus.ConversationTurn) {
+	if m == nil {
+		return 0, nil
+	}
+	raw := m.turns[sessionID]
+	total := len(raw)
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > total {
+		offset = total
+	}
+	end := total
+	if limit > 0 && offset+limit < end {
+		end = offset + limit
+	}
+	window := raw[offset:end]
+	out := make([]eventbus.ConversationTurn, len(window))
+	copy(out, window)
+	return total, out
+}
+
 func writeSelfSignedCert(t *testing.T, dir string) (string, string) {
 	t.Helper()
 
@@ -453,8 +475,13 @@ func TestHandleSessionConversation(t *testing.T) {
 	}
 
 	var payload struct {
-		SessionID string `json:"session_id"`
-		Turns     []struct {
+		SessionID  string `json:"session_id"`
+		Offset     int    `json:"offset"`
+		Limit      int    `json:"limit"`
+		Total      int    `json:"total"`
+		HasMore    bool   `json:"has_more"`
+		NextOffset *int   `json:"next_offset"`
+		Turns      []struct {
 			Origin string            `json:"origin"`
 			Text   string            `json:"text"`
 			Meta   map[string]string `json:"meta"`
@@ -467,6 +494,18 @@ func TestHandleSessionConversation(t *testing.T) {
 	if payload.SessionID != sess.ID {
 		t.Fatalf("unexpected session id: %s", payload.SessionID)
 	}
+	if payload.Offset != 0 || payload.Total != 2 {
+		t.Fatalf("unexpected pagination metadata: offset=%d total=%d", payload.Offset, payload.Total)
+	}
+	if payload.Limit != 2 {
+		t.Fatalf("expected limit=2, got %d", payload.Limit)
+	}
+	if payload.HasMore {
+		t.Fatalf("expected has_more=false")
+	}
+	if payload.NextOffset != nil {
+		t.Fatalf("expected next_offset to be nil, got %v", *payload.NextOffset)
+	}
 	if len(payload.Turns) != 2 {
 		t.Fatalf("expected 2 turns, got %d", len(payload.Turns))
 	}
@@ -478,6 +517,76 @@ func TestHandleSessionConversation(t *testing.T) {
 	}
 	if payload.Turns[1].Meta["source"] != "test" {
 		t.Fatalf("expected metadata to be preserved, got %+v", payload.Turns[1].Meta)
+	}
+}
+
+func TestHandleSessionConversationPagination(t *testing.T) {
+	apiServer, sessionManager := newTestAPIServer(t)
+
+	opts := pty.StartOptions{
+		Command: "/bin/sh",
+		Args:    []string{"-c", "sleep 1"},
+		Rows:    24,
+		Cols:    80,
+	}
+
+	sess, err := sessionManager.CreateSession(opts, false)
+	if err != nil {
+		t.Fatalf("failed to create session: %v", err)
+	}
+	defer sessionManager.KillSession(sess.ID)
+
+	now := time.Now().UTC()
+	store := &mockConversationStore{
+		turns: map[string][]eventbus.ConversationTurn{
+			sess.ID: {
+				{Origin: eventbus.OriginUser, Text: "0", At: now},
+				{Origin: eventbus.OriginAI, Text: "1", At: now.Add(10 * time.Millisecond)},
+				{Origin: eventbus.OriginUser, Text: "2", At: now.Add(20 * time.Millisecond)},
+				{Origin: eventbus.OriginAI, Text: "3", At: now.Add(30 * time.Millisecond)},
+			},
+		},
+	}
+	apiServer.SetConversationStore(store)
+
+	req := withReadOnly(apiServer, httptest.NewRequest(http.MethodGet, "/sessions/"+sess.ID+"/conversation?offset=1&limit=2", nil))
+	rec := httptest.NewRecorder()
+
+	apiServer.handleSessionConversation(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d (body=%s)", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		SessionID  string `json:"session_id"`
+		Offset     int    `json:"offset"`
+		Limit      int    `json:"limit"`
+		Total      int    `json:"total"`
+		HasMore    bool   `json:"has_more"`
+		NextOffset *int   `json:"next_offset"`
+		Turns      []struct {
+			Text string `json:"text"`
+		} `json:"turns"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+
+	if payload.Offset != 1 || payload.Limit != 2 || payload.Total != 4 {
+		t.Fatalf("unexpected pagination metadata: %+v", payload)
+	}
+	if !payload.HasMore {
+		t.Fatalf("expected has_more=true")
+	}
+	if payload.NextOffset == nil || *payload.NextOffset != 3 {
+		t.Fatalf("expected next_offset=3, got %v", payload.NextOffset)
+	}
+	if len(payload.Turns) != 2 {
+		t.Fatalf("expected 2 turns, got %d", len(payload.Turns))
+	}
+	if payload.Turns[0].Text != "1" || payload.Turns[1].Text != "2" {
+		t.Fatalf("unexpected turns: %+v", payload.Turns)
 	}
 }
 

@@ -179,10 +179,32 @@ func (s *sessionsService) GetConversation(ctx context.Context, req *apiv1.GetCon
 		return nil, status.Errorf(codes.NotFound, "session %s not found", sessionID)
 	}
 
-	turns := s.api.conversation.Context(sessionID)
+	offset := int(req.GetOffset())
+	limit := int(req.GetLimit())
+	if limit < 0 {
+		return nil, status.Error(codes.InvalidArgument, "limit must be non-negative")
+	}
+	if offset < 0 {
+		return nil, status.Error(codes.InvalidArgument, "offset must be non-negative")
+	}
+	if limit > conversationMaxPageLimit {
+		limit = conversationMaxPageLimit
+	}
+
+	total, turns := s.api.conversation.Slice(sessionID, offset, limit)
+	pageLimit := limit
+	if pageLimit <= 0 || pageLimit > len(turns) {
+		pageLimit = len(turns)
+	}
+
 	resp := &apiv1.GetConversationResponse{
-		SessionId: sessionID,
-		Turns:     make([]*apiv1.ConversationTurn, 0, len(turns)),
+		SessionId:  sessionID,
+		Turns:      make([]*apiv1.ConversationTurn, 0, len(turns)),
+		Offset:     uint32(offset),
+		Limit:      uint32(pageLimit),
+		Total:      uint32(total),
+		HasMore:    offset+len(turns) < total,
+		NextOffset: 0,
 	}
 
 	for _, turn := range turns {
@@ -213,6 +235,12 @@ func (s *sessionsService) GetConversation(ctx context.Context, req *apiv1.GetCon
 			At:       ts,
 			Metadata: metadata,
 		})
+	}
+
+	if !resp.HasMore {
+		resp.NextOffset = 0
+	} else {
+		resp.NextOffset = uint32(offset + len(turns))
 	}
 
 	return resp, nil

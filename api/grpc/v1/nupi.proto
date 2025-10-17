@@ -80,12 +80,21 @@ message ConversationTurn {
 message GetConversationRequest {
   // Target session identifier.
   string session_id = 1;
+  // Optional zero-based offset for pagination.
+  uint32 offset = 2;
+  // Optional limit for the number of turns returned.
+  uint32 limit = 3;
 }
 
 // GetConversationResponse returns the ordered list of turns for the session.
 message GetConversationResponse {
   string session_id = 1;
   repeated ConversationTurn turns = 2;
+  uint32 offset = 3;
+  uint32 limit = 4;
+  uint32 total = 5;
+  bool has_more = 6;
+  uint32 next_offset = 7;
 }
 
 service DaemonService {
