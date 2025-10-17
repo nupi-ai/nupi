@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // Adapter management --------------------------------------------------------
@@ -203,6 +204,36 @@ func (s *Store) ClearAdapterBinding(ctx context.Context, slot string) error {
         `, s.instanceName, s.profileName, slot)
 		if err != nil {
 			return fmt.Errorf("config: clear adapter binding %q: %w", slot, err)
+		}
+		if rows, _ := res.RowsAffected(); rows == 0 {
+			return NotFoundError{Entity: "adapter_binding", Key: slot}
+		}
+		return nil
+	})
+}
+
+// UpdateAdapterBindingStatus updates the status flag for the binding without altering adapter assignment.
+func (s *Store) UpdateAdapterBindingStatus(ctx context.Context, slot string, status string) error {
+	if s.readOnly {
+		return fmt.Errorf("config: update binding status: store opened read-only")
+	}
+
+	status = strings.TrimSpace(strings.ToLower(status))
+	switch status {
+	case BindingStatusActive, BindingStatusInactive, BindingStatusRequired:
+	default:
+		return fmt.Errorf("config: invalid adapter binding status %q", status)
+	}
+
+	return s.withTx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `
+            UPDATE adapter_bindings
+            SET status = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE instance_name = ? AND profile_name = ? AND slot = ?
+        `, status, s.instanceName, s.profileName, slot)
+		if err != nil {
+			return fmt.Errorf("config: update binding status %q: %w", slot, err)
 		}
 		if rows, _ := res.RowsAffected(); rows == 0 {
 			return NotFoundError{Entity: "adapter_binding", Key: slot}

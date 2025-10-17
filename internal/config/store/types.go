@@ -35,6 +35,12 @@ type AdapterBinding struct {
 	UpdatedAt string
 }
 
+const (
+	BindingStatusActive   = "active"
+	BindingStatusInactive = "inactive"
+	BindingStatusRequired = "required"
+)
+
 // ModuleEndpoint describes how to reach or launch a module adapter.
 type ModuleEndpoint struct {
 	AdapterID string

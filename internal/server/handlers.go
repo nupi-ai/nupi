@@ -23,6 +23,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/api"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
+	"github.com/nupi-ai/nupi/internal/modules"
 	"github.com/nupi-ai/nupi/internal/protocol"
 	"github.com/nupi-ai/nupi/internal/pty"
 	"github.com/nupi-ai/nupi/internal/session"
@@ -81,6 +82,7 @@ type APIServer struct {
 	runtime        RuntimeInfoProvider
 	wsServer       *Server
 	conversation   ConversationStore
+	modules        *modules.Service
 	resizeManager  *termresize.Manager
 	port           int
 	httpServer     *http.Server
@@ -200,6 +202,11 @@ func (s *APIServer) SetShutdownFunc(fn func(context.Context) error) {
 // SetConversationStore wires the conversation state provider used by HTTP handlers.
 func (s *APIServer) SetConversationStore(store ConversationStore) {
 	s.conversation = store
+}
+
+// SetModulesService wires the modules controller used by HTTP handlers.
+func (s *APIServer) SetModulesService(service *modules.Service) {
+	s.modules = service
 }
 
 // CurrentTransportSnapshot returns the currently applied transport configuration.
@@ -897,6 +904,10 @@ func (s *APIServer) Prepare(ctx context.Context) (*PreparedHTTPServer, error) {
 	mux.HandleFunc("/config/transport", s.handleTransportConfig)
 	mux.HandleFunc("/config/adapters", s.handleAdapters)
 	mux.HandleFunc("/config/adapter-bindings", s.handleAdapterBindings)
+	mux.HandleFunc("/modules", s.handleModules)
+	mux.HandleFunc("/modules/bind", s.handleModulesBind)
+	mux.HandleFunc("/modules/start", s.handleModulesStart)
+	mux.HandleFunc("/modules/stop", s.handleModulesStop)
 	mux.HandleFunc("/daemon/status", s.handleDaemonStatus)
 	mux.HandleFunc("/daemon/shutdown", s.handleDaemonShutdown)
 	mux.HandleFunc("/config/quickstart", s.handleQuickstart)
@@ -1724,6 +1735,241 @@ func (s *APIServer) handleAdapterBindingsGet(w http.ResponseWriter, r *http.Requ
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"bindings": out})
+}
+
+func (s *APIServer) handleModules(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodOptions:
+		w.WriteHeader(http.StatusNoContent)
+	case http.MethodGet:
+		s.handleModulesGet(w, r)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+type moduleActionRequest struct {
+	Slot      string          `json:"slot"`
+	AdapterID string          `json:"adapter_id,omitempty"`
+	Config    json.RawMessage `json:"config,omitempty"`
+}
+
+type moduleRuntimeResponse struct {
+	ModuleID  string            `json:"module_id,omitempty"`
+	Health    string            `json:"health"`
+	Message   string            `json:"message,omitempty"`
+	StartedAt *string           `json:"started_at,omitempty"`
+	UpdatedAt string            `json:"updated_at"`
+	Extra     map[string]string `json:"extra,omitempty"`
+}
+
+type moduleResponse struct {
+	Slot      string                 `json:"slot"`
+	AdapterID *string                `json:"adapter_id,omitempty"`
+	Status    string                 `json:"status"`
+	Config    string                 `json:"config,omitempty"`
+	UpdatedAt string                 `json:"updated_at"`
+	Runtime   *moduleRuntimeResponse `json:"runtime,omitempty"`
+}
+
+func (s *APIServer) handleModulesGet(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireRole(w, r, roleAdmin, roleReadOnly); !ok {
+		return
+	}
+	if s.modules == nil {
+		http.Error(w, "modules service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	overview, err := s.modules.Overview(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	modulesOut := make([]moduleResponse, 0, len(overview))
+	for _, status := range overview {
+		modulesOut = append(modulesOut, bindingStatusToResponse(status))
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"modules": modulesOut})
+}
+
+func (s *APIServer) handleModulesBind(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := s.requireRole(w, r, roleAdmin); !ok {
+		return
+	}
+	if s.configStore == nil {
+		http.Error(w, "configuration store not available", http.StatusServiceUnavailable)
+		return
+	}
+	if s.modules == nil {
+		http.Error(w, "modules service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	var payload moduleActionRequest
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, fmt.Sprintf("invalid JSON payload: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	slot := strings.TrimSpace(payload.Slot)
+	adapterID := strings.TrimSpace(payload.AdapterID)
+	if slot == "" || adapterID == "" {
+		http.Error(w, "slot and adapter_id are required", http.StatusBadRequest)
+		return
+	}
+
+	var cfg map[string]any
+	if len(payload.Config) > 0 {
+		if err := json.Unmarshal(payload.Config, &cfg); err != nil {
+			http.Error(w, fmt.Sprintf("invalid config payload: %v", err), http.StatusBadRequest)
+			return
+		}
+	}
+
+	if err := s.configStore.SetActiveAdapter(r.Context(), slot, adapterID, cfg); err != nil {
+		code := http.StatusInternalServerError
+		if configstore.IsNotFound(err) {
+			code = http.StatusNotFound
+		} else if strings.Contains(strings.ToLower(err.Error()), "invalid") {
+			code = http.StatusBadRequest
+		}
+		http.Error(w, fmt.Sprintf("set adapter binding failed: %v", err), code)
+		return
+	}
+
+	status, err := s.modules.StartSlot(r.Context(), modules.Slot(slot))
+	if err != nil {
+		http.Error(w, fmt.Sprintf("start module failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]moduleResponse{
+		"module": bindingStatusToResponse(*status),
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func (s *APIServer) handleModulesStart(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := s.requireRole(w, r, roleAdmin); !ok {
+		return
+	}
+	if s.modules == nil {
+		http.Error(w, "modules service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	var payload moduleActionRequest
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, fmt.Sprintf("invalid JSON payload: %v", err), http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(payload.Slot) == "" {
+		http.Error(w, "slot is required", http.StatusBadRequest)
+		return
+	}
+
+	status, err := s.modules.StartSlot(r.Context(), modules.Slot(payload.Slot))
+	if err != nil {
+		http.Error(w, fmt.Sprintf("start module failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]moduleResponse{
+		"module": bindingStatusToResponse(*status),
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func (s *APIServer) handleModulesStop(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := s.requireRole(w, r, roleAdmin); !ok {
+		return
+	}
+	if s.modules == nil {
+		http.Error(w, "modules service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	var payload moduleActionRequest
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, fmt.Sprintf("invalid JSON payload: %v", err), http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(payload.Slot) == "" {
+		http.Error(w, "slot is required", http.StatusBadRequest)
+		return
+	}
+
+	status, err := s.modules.StopSlot(r.Context(), modules.Slot(payload.Slot))
+	if err != nil {
+		http.Error(w, fmt.Sprintf("stop module failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]moduleResponse{
+		"module": bindingStatusToResponse(*status),
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func bindingStatusToResponse(status modules.BindingStatus) moduleResponse {
+	resp := moduleResponse{
+		Slot:      string(status.Slot),
+		Status:    status.Status,
+		Config:    status.Config,
+		UpdatedAt: status.UpdatedAt,
+	}
+	if status.AdapterID != nil {
+		id := strings.TrimSpace(*status.AdapterID)
+		if id != "" {
+			resp.AdapterID = &id
+		}
+	}
+	if status.Runtime != nil {
+		runtime := moduleRuntimeResponse{
+			ModuleID:  status.Runtime.ModuleID,
+			Health:    string(status.Runtime.Health),
+			Message:   status.Runtime.Message,
+			UpdatedAt: status.Runtime.UpdatedAt.UTC().Format(time.RFC3339),
+			Extra:     status.Runtime.Extra,
+		}
+		if status.Runtime.StartedAt != nil {
+			started := status.Runtime.StartedAt.UTC().Format(time.RFC3339)
+			runtime.StartedAt = &started
+		}
+		resp.Runtime = &runtime
+	}
+	return resp
 }
 
 func (s *APIServer) daemonStatusSnapshot(ctx context.Context) (daemonStatusSnapshot, error) {

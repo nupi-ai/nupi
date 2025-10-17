@@ -164,15 +164,33 @@ func (m *Manager) StopAll(ctx context.Context) error {
 	defer m.mu.Unlock()
 
 	var errs []error
-	for slot, inst := range m.modules {
-		if err := inst.handle.Stop(ctx); err != nil {
+	for slot := range m.modules {
+		if err := m.stopSlotLocked(ctx, slot); err != nil {
 			errs = append(errs, fmt.Errorf("modules: stop %s: %w", slot, err))
 		}
-		delete(m.modules, slot)
 	}
 	if len(errs) > 0 {
 		return errors.Join(errs...)
 	}
+	return nil
+}
+
+// StopSlot terminates a running module for the specified slot without altering bindings.
+func (m *Manager) StopSlot(ctx context.Context, slot Slot) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.stopSlotLocked(ctx, slot)
+}
+
+func (m *Manager) stopSlotLocked(ctx context.Context, slot Slot) error {
+	inst, ok := m.modules[slot]
+	if !ok {
+		return nil
+	}
+	if err := inst.handle.Stop(ctx); err != nil {
+		return err
+	}
+	delete(m.modules, slot)
 	return nil
 }
 
