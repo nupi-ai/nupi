@@ -35,6 +35,18 @@ type AdapterBinding struct {
 	UpdatedAt string
 }
 
+// ModuleEndpoint describes how to reach or launch a module adapter.
+type ModuleEndpoint struct {
+	AdapterID string
+	Transport string
+	Address   string
+	Command   string
+	Args      []string
+	Env       map[string]string
+	CreatedAt string
+	UpdatedAt string
+}
+
 // Profile contains metadata about available profiles.
 type Profile struct {
 	Name      string

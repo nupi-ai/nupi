@@ -11,6 +11,7 @@ type ChangeSnapshot struct {
 	Settings        string
 	Adapters        string
 	AdapterBindings string
+	ModuleEndpoints string
 }
 
 // ChangeEvent describes modified configuration groups since the last snapshot.
@@ -18,12 +19,13 @@ type ChangeEvent struct {
 	SettingsChanged        bool
 	AdaptersChanged        bool
 	AdapterBindingsChanged bool
+	ModuleEndpointsChanged bool
 	Snapshot               ChangeSnapshot
 }
 
 // Changed returns true when at least one tracked group changed.
 func (e ChangeEvent) Changed() bool {
-	return e.SettingsChanged || e.AdaptersChanged || e.AdapterBindingsChanged
+	return e.SettingsChanged || e.AdaptersChanged || e.AdapterBindingsChanged || e.ModuleEndpointsChanged
 }
 
 // Watch polls the configuration store for changes and emits events on the returned channel.
@@ -102,6 +104,13 @@ func (s *Store) snapshot(ctx context.Context) (ChangeSnapshot, error) {
 		return ChangeSnapshot{}, err
 	}
 
+	if err := s.db.QueryRowContext(ctx, `
+        SELECT IFNULL(MAX(updated_at), '')
+        FROM module_endpoints
+    `).Scan(&snap.ModuleEndpoints); err != nil {
+		return ChangeSnapshot{}, err
+	}
+
 	return snap, nil
 }
 
@@ -110,6 +119,7 @@ func diffSnapshots(prev, curr ChangeSnapshot) ChangeEvent {
 		SettingsChanged:        curr.Settings != prev.Settings,
 		AdaptersChanged:        curr.Adapters != prev.Adapters,
 		AdapterBindingsChanged: curr.AdapterBindings != prev.AdapterBindings,
+		ModuleEndpointsChanged: curr.ModuleEndpoints != prev.ModuleEndpoints,
 		Snapshot:               curr,
 	}
 }

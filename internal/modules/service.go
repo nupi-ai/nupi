@@ -127,7 +127,7 @@ func (s *Service) startWatcher(ctx context.Context) error {
 				if !ok {
 					return
 				}
-				if ev.AdaptersChanged || ev.AdapterBindingsChanged {
+				if ev.AdaptersChanged || ev.AdapterBindingsChanged || ev.ModuleEndpointsChanged {
 					s.reconcile(ctx)
 				}
 			}
