@@ -18,6 +18,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/adapterrunner"
 	"github.com/nupi-ai/nupi/internal/config"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
+	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/plugins"
 	daemonruntime "github.com/nupi-ai/nupi/internal/runtime"
 	"github.com/nupi-ai/nupi/internal/server"
@@ -40,6 +41,7 @@ type Daemon struct {
 	lifecycle            *daemonruntime.Lifecycle
 	instancePaths        config.InstancePaths
 	runnerManager        *adapterrunner.Manager
+	eventBus             *eventbus.Bus
 	ctx                  context.Context
 	cancel               context.CancelFunc
 	errMu                sync.Mutex
@@ -59,7 +61,10 @@ func New(opts Options) (*Daemon, error) {
 	instanceName := opts.Store.InstanceName()
 	paths := config.GetInstancePaths(instanceName)
 
+	bus := eventbus.New()
+
 	sessionManager := session.NewManager()
+	sessionManager.UseEventBus(bus)
 	runtimeInfo := &RuntimeInfo{}
 
 	runnerManager := opts.RunnerManager
@@ -129,6 +134,7 @@ func New(opts Options) (*Daemon, error) {
 		lifecycle:      daemonruntime.NewLifecycle(),
 		instancePaths:  paths,
 		runnerManager:  runnerManager,
+		eventBus:       bus,
 	}
 
 	apiServer.SetShutdownFunc(func(ctx context.Context) error {
@@ -211,6 +217,9 @@ func (d *Daemon) Shutdown() error {
 	}
 	if d.cancel != nil {
 		d.cancel()
+	}
+	if d.eventBus != nil {
+		d.eventBus.Shutdown()
 	}
 	return nil
 }

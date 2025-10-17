@@ -3,6 +3,7 @@
 .idea/
 
 /bin/
+.gocache/
 
 # macOS
 .DS_Store

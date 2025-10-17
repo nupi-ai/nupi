@@ -1,15 +1,18 @@
 package session
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/nupi-ai/nupi/internal/detector"
+	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/pty"
 	"github.com/nupi-ai/nupi/internal/recording"
 )
@@ -46,6 +49,7 @@ type Session struct {
 	clientSinks       int                    // Number of attached client sinks (excludes system sinks)
 	mu                sync.RWMutex
 	notifiers         []EventNotifier
+	outputSeq         uint64
 }
 
 // SetStatus updates the session status in a threadsafe way
@@ -94,6 +98,10 @@ func (s *Session) GetDetectedIcon() string {
 	return s.Detector.GetDetectedIcon()
 }
 
+func (s *Session) nextOutputSequence() uint64 {
+	return atomic.AddUint64(&s.outputSeq, 1)
+}
+
 // SessionEventListener is called when session events occur
 type SessionEventListener func(event string, session *Session)
 
@@ -105,6 +113,7 @@ type Manager struct {
 	listeners      []SessionEventListener
 	pluginDir      string           // Directory for tool detection plugins
 	recordingStore *recording.Store // Recording metadata store
+	eventBus       *eventbus.Bus
 }
 
 // NewManager creates a new session manager
@@ -134,6 +143,13 @@ func (m *Manager) SetPluginDir(dir string) {
 	m.pluginDir = dir
 }
 
+// UseEventBus wires the manager with the shared event bus.
+func (m *Manager) UseEventBus(bus *eventbus.Bus) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.eventBus = bus
+}
+
 // AddEventListener adds a listener for session events
 func (m *Manager) AddEventListener(listener SessionEventListener) {
 	m.mu.Lock()
@@ -152,6 +168,30 @@ func (m *Manager) notifyListeners(event string, session *Session) {
 	for _, listener := range listeners {
 		listener(event, session)
 	}
+}
+
+func (m *Manager) publish(topic eventbus.Topic, source eventbus.Source, payload any) {
+	m.mu.RLock()
+	bus := m.eventBus
+	m.mu.RUnlock()
+	if bus == nil {
+		return
+	}
+
+	bus.Publish(context.Background(), eventbus.Envelope{
+		Topic:   topic,
+		Source:  source,
+		Payload: payload,
+	})
+}
+
+func (m *Manager) publishLifecycle(session *Session, state eventbus.SessionState, exitCode *int, reason string) {
+	m.publish(eventbus.TopicSessionsLifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{
+		SessionID: session.ID,
+		State:     state,
+		ExitCode:  exitCode,
+		Reason:    reason,
+	})
 }
 
 // CreateSession creates a new PTY session
@@ -220,6 +260,16 @@ func (m *Manager) CreateSession(opts pty.StartOptions, inspect bool) (*Session, 
 		}
 	}
 
+	m.mu.RLock()
+	bus := m.eventBus
+	m.mu.RUnlock()
+	if bus != nil {
+		session.PTY.AddSink(&eventBusSink{
+			bus:     bus,
+			session: session,
+		})
+	}
+
 	// Monitor session status
 	go m.monitorSession(session)
 
@@ -230,6 +280,9 @@ func (m *Manager) CreateSession(opts pty.StartOptions, inspect bool) (*Session, 
 
 	// Notify listeners about new session
 	m.notifyListeners("session_created", session)
+
+	m.publishLifecycle(session, eventbus.SessionStateCreated, nil, "session_created")
+	m.publishLifecycle(session, eventbus.SessionStateRunning, nil, "session_started")
 
 	return session, nil
 }
@@ -251,6 +304,12 @@ func (m *Manager) monitorSession(session *Session) {
 			}
 			// Notify all attached notifiers about the event
 			session.NotifyAll(event.Type, event.ExitCode)
+			exitCode := event.ExitCode
+			var exitPtr *int
+			if exitCode >= 0 {
+				exitPtr = &exitCode
+			}
+			m.publishLifecycle(session, eventbus.SessionStateStopped, exitPtr, "process_exit")
 			// Notify listeners about status change
 			m.notifyListeners("session_status_changed", session)
 		}
@@ -313,6 +372,12 @@ func (m *Manager) KillSession(id string) error {
 	// Notify about status change so UI updates
 	m.notifyListeners("session_status_changed", session)
 
+	var exitPtr *int
+	if exitCode >= 0 {
+		exitPtr = &exitCode
+	}
+	m.publishLifecycle(session, eventbus.SessionStateStopped, exitPtr, "session_killed")
+
 	return nil
 }
 
@@ -354,6 +419,7 @@ func (m *Manager) AttachToSession(id string, sink pty.OutputSink, includeHistory
 			session.SetStatus(StatusRunning)
 			m.notifyListeners("session_status_changed", session)
 			log.Printf("[Manager] Session %s status changed: %s → %s", id, oldStatus, StatusRunning)
+			m.publishLifecycle(session, eventbus.SessionStateRunning, nil, "client_attached")
 		}
 	}
 
@@ -386,6 +452,7 @@ func (m *Manager) DetachFromSession(id string, sink pty.OutputSink) error {
 			session.SetStatus(StatusDetached)
 			m.notifyListeners("session_status_changed", session)
 			log.Printf("[Manager] Session %s status changed: %s → %s", id, oldStatus, StatusDetached)
+			m.publishLifecycle(session, eventbus.SessionStateDetached, nil, "client_detached")
 		}
 	}
 
@@ -472,6 +539,37 @@ func (d *detectorSink) NotifyEvent(eventType string, exitCode int) {
 	}
 }
 
+type eventBusSink struct {
+	bus     *eventbus.Bus
+	session *Session
+}
+
+func (s *eventBusSink) Write(data []byte) error {
+	if s.bus == nil || len(data) == 0 || s.session == nil {
+		return nil
+	}
+
+	payload := eventbus.SessionOutputEvent{
+		SessionID: s.session.ID,
+		Sequence:  s.session.nextOutputSequence(),
+		Data:      append([]byte(nil), data...),
+		Origin:    eventbus.OriginTool,
+		Mode:      string(s.session.CurrentStatus()),
+	}
+
+	s.bus.Publish(context.Background(), eventbus.Envelope{
+		Topic:   eventbus.TopicSessionsOutput,
+		Source:  eventbus.SourceSessionManager,
+		Payload: payload,
+	})
+
+	return nil
+}
+
+func (s *eventBusSink) NotifyEvent(eventType string, exitCode int) {
+	// No-op for lifecycle - handled separately.
+}
+
 // monitorDetection monitors tool detection events
 func (m *Manager) monitorDetection(session *Session, toolDetector *detector.ToolDetector) {
 	eventChan := toolDetector.EventChannel()
@@ -486,6 +584,13 @@ func (m *Manager) monitorDetection(session *Session, toolDetector *detector.Tool
 	}
 
 	log.Printf("[Manager] Tool detected for session %s: %s", session.ID, event.Tool)
+
+	m.publish(eventbus.TopicSessionsTool, eventbus.SourcePluginService, eventbus.SessionToolEvent{
+		SessionID: session.ID,
+		ToolName:  event.Tool,
+		ToolID:    event.Tool,
+		IconPath:  session.GetDetectedIcon(),
+	})
 
 	// Notify listeners about tool detection
 	m.notifyListeners("tool_detected", session)
