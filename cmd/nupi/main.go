@@ -31,6 +31,8 @@ import (
 	"golang.org/x/crypto/ssh/terminal"
 )
 
+const errorMessageLimit = 2048
+
 // Global variables for use across commands
 var (
 	rootCmd     *cobra.Command
@@ -248,7 +250,15 @@ func main() {
 	configTransportCmd.Flags().Int("grpc-port", 0, "Set gRPC port (0 for auto-select)")
 	configTransportCmd.Flags().String("grpc-binding", "", "Set gRPC binding (loopback|lan|public)")
 
-	configCmd.AddCommand(configTransportCmd)
+	configMigrateCmd := &cobra.Command{
+		Use:           "migrate",
+		Short:         "Repair configuration defaults (required module slots)",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE:          configMigrate,
+	}
+
+	configCmd.AddCommand(configTransportCmd, configMigrateCmd)
 
 	modulesCmd := &cobra.Command{
 		Use:           "modules",
@@ -951,11 +961,8 @@ func configTransport(cmd *cobra.Command, args []string) error {
 		defer resp.Body.Close()
 
 		if resp.StatusCode >= 300 {
-			msg, _ := io.ReadAll(resp.Body)
-			if len(msg) == 0 {
-				msg = []byte(resp.Status)
-			}
-			return out.Error("Transport configuration update failed", fmt.Errorf("%s", strings.TrimSpace(string(msg))))
+			msg := readErrorMessage(resp)
+			return out.Error("Transport configuration update failed", fmt.Errorf("%s", msg))
 		}
 
 		if resp.StatusCode == http.StatusOK {
@@ -969,11 +976,8 @@ func configTransport(cmd *cobra.Command, args []string) error {
 			}
 			newToken = strings.TrimSpace(updateResp.AuthToken)
 		} else if resp.StatusCode != http.StatusNoContent {
-			msg, _ := io.ReadAll(resp.Body)
-			if len(msg) == 0 {
-				msg = []byte(resp.Status)
-			}
-			return out.Error("Unexpected response while updating transport configuration", fmt.Errorf("%s", strings.TrimSpace(string(msg))))
+			msg := readErrorMessage(resp)
+			return out.Error("Unexpected response while updating transport configuration", fmt.Errorf("%s", msg))
 		}
 	}
 
@@ -988,11 +992,8 @@ func configTransport(cmd *cobra.Command, args []string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		msg, _ := io.ReadAll(resp.Body)
-		if len(msg) == 0 {
-			msg = []byte(resp.Status)
-		}
-		return out.Error("Failed to fetch transport configuration", fmt.Errorf("%s", strings.TrimSpace(string(msg))))
+		msg := readErrorMessage(resp)
+		return out.Error("Failed to fetch transport configuration", fmt.Errorf("%s", msg))
 	}
 
 	var cfg transportConfigResponse
@@ -1033,6 +1034,46 @@ func configTransport(cmd *cobra.Command, args []string) error {
 		fmt.Println("A new API token was generated:")
 		fmt.Printf("  %s\n", newToken)
 		fmt.Println("Store it securely; it will be required for LAN/public connections.")
+	}
+
+	return nil
+}
+
+func configMigrate(cmd *cobra.Command, args []string) error {
+	out := newOutputFormatter(cmd)
+
+	c, err := client.New()
+	if err != nil {
+		return out.Error("Failed to connect to daemon", err)
+	}
+	defer c.Close()
+
+	summary, err := runConfigMigration(c)
+	if err != nil {
+		return out.Error("Failed to run configuration migration", err)
+	}
+
+	if out.jsonMode {
+		return out.Print(summary)
+	}
+
+	fmt.Println("Configuration migration summary:")
+	if len(summary.UpdatedSlots) > 0 {
+		fmt.Println("  Updated slots:")
+		for _, slot := range summary.UpdatedSlots {
+			fmt.Printf("    - %s\n", slot)
+		}
+	} else {
+		fmt.Println("  Updated slots: (none)")
+	}
+
+	if len(summary.PendingSlots) > 0 {
+		fmt.Println("  Pending quickstart slots:")
+		for _, slot := range summary.PendingSlots {
+			fmt.Printf("    - %s\n", slot)
+		}
+	} else {
+		fmt.Println("  Pending quickstart slots: (none)")
 	}
 
 	return nil
@@ -1090,6 +1131,15 @@ func doRequest(c *client.Client, req *http.Request) (*http.Response, error) {
 	return c.HTTPClient().Do(req)
 }
 
+func readErrorMessage(resp *http.Response) string {
+	limited := io.LimitReader(resp.Body, errorMessageLimit)
+	data, err := io.ReadAll(limited)
+	if err != nil || len(data) == 0 {
+		return strings.TrimSpace(resp.Status)
+	}
+	return strings.TrimSpace(string(data))
+}
+
 func fetchQuickstartStatus(c *client.Client) (quickstartStatusPayload, error) {
 	req, err := http.NewRequest(http.MethodGet, c.BaseURL()+"/config/quickstart", nil)
 	if err != nil {
@@ -1102,16 +1152,35 @@ func fetchQuickstartStatus(c *client.Client) (quickstartStatusPayload, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		msg, _ := io.ReadAll(resp.Body)
-		if len(msg) == 0 {
-			msg = []byte(resp.Status)
-		}
-		return quickstartStatusPayload{}, errors.New(strings.TrimSpace(string(msg)))
+		return quickstartStatusPayload{}, errors.New(readErrorMessage(resp))
 	}
 
 	var payload quickstartStatusPayload
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return quickstartStatusPayload{}, err
+	}
+
+	return payload, nil
+}
+
+func runConfigMigration(c *client.Client) (apihttp.ConfigMigrationResult, error) {
+	req, err := http.NewRequest(http.MethodPost, c.BaseURL()+"/config/migrate", nil)
+	if err != nil {
+		return apihttp.ConfigMigrationResult{}, err
+	}
+	resp, err := doRequest(c, req)
+	if err != nil {
+		return apihttp.ConfigMigrationResult{}, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return apihttp.ConfigMigrationResult{}, errors.New(readErrorMessage(resp))
+	}
+
+	var payload apihttp.ConfigMigrationResult
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return apihttp.ConfigMigrationResult{}, err
 	}
 
 	return payload, nil
@@ -1129,11 +1198,7 @@ func fetchModulesOverview(c *client.Client) (apihttp.ModulesOverview, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		msg, _ := io.ReadAll(resp.Body)
-		if len(msg) == 0 {
-			msg = []byte(resp.Status)
-		}
-		return apihttp.ModulesOverview{}, errors.New(strings.TrimSpace(string(msg)))
+		return apihttp.ModulesOverview{}, errors.New(readErrorMessage(resp))
 	}
 
 	var payload apihttp.ModulesOverview
@@ -1162,11 +1227,7 @@ func postModuleAction(c *client.Client, endpoint string, payload moduleActionReq
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		msg, _ := io.ReadAll(resp.Body)
-		if len(msg) == 0 {
-			msg = []byte(resp.Status)
-		}
-		return apihttp.ModuleEntry{}, errors.New(strings.TrimSpace(string(msg)))
+		return apihttp.ModuleEntry{}, errors.New(readErrorMessage(resp))
 	}
 
 	var actionResp apihttp.ModuleActionResult
@@ -1188,11 +1249,7 @@ func fetchAdapters(c *client.Client) ([]adapterInfo, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		msg, _ := io.ReadAll(resp.Body)
-		if len(msg) == 0 {
-			msg = []byte(resp.Status)
-		}
-		return nil, errors.New(strings.TrimSpace(string(msg)))
+		return nil, errors.New(readErrorMessage(resp))
 	}
 
 	var payload struct {
@@ -1522,11 +1579,7 @@ func quickstartInit(cmd *cobra.Command, args []string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		msg, _ := io.ReadAll(resp.Body)
-		if len(msg) == 0 {
-			msg = []byte(resp.Status)
-		}
-		return out.Error("Quickstart update failed", errors.New(strings.TrimSpace(string(msg))))
+		return out.Error("Quickstart update failed", errors.New(readErrorMessage(resp)))
 	}
 
 	var result quickstartStatusPayload
@@ -1640,11 +1693,7 @@ func quickstartComplete(cmd *cobra.Command, args []string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 300 {
-		msg, _ := io.ReadAll(resp.Body)
-		if len(msg) == 0 {
-			msg = []byte(resp.Status)
-		}
-		return out.Error("Quickstart update failed", errors.New(strings.TrimSpace(string(msg))))
+		return out.Error("Quickstart update failed", errors.New(readErrorMessage(resp)))
 	}
 
 	var status quickstartStatusPayload
@@ -1903,11 +1952,7 @@ func tokensList(cmd *cobra.Command, args []string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		msg, _ := io.ReadAll(resp.Body)
-		if len(msg) == 0 {
-			msg = []byte(resp.Status)
-		}
-		return out.Error("Failed to list tokens", fmt.Errorf("%s", strings.TrimSpace(string(msg))))
+		return out.Error("Failed to list tokens", fmt.Errorf("%s", readErrorMessage(resp)))
 	}
 
 	var payload struct {
@@ -1984,11 +2029,7 @@ func tokensCreate(cmd *cobra.Command, args []string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		msg, _ := io.ReadAll(resp.Body)
-		if len(msg) == 0 {
-			msg = []byte(resp.Status)
-		}
-		return out.Error("Failed to create token", fmt.Errorf("%s", strings.TrimSpace(string(msg))))
+		return out.Error("Failed to create token", fmt.Errorf("%s", readErrorMessage(resp)))
 	}
 
 	var payload struct {
@@ -2056,11 +2097,7 @@ func tokensDelete(cmd *cobra.Command, args []string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusNoContent {
-		msg, _ := io.ReadAll(resp.Body)
-		if len(msg) == 0 {
-			msg = []byte(resp.Status)
-		}
-		return out.Error("Failed to delete token", fmt.Errorf("%s", strings.TrimSpace(string(msg))))
+		return out.Error("Failed to delete token", fmt.Errorf("%s", readErrorMessage(resp)))
 	}
 
 	if out.jsonMode {
@@ -2113,11 +2150,7 @@ func daemonPairCreate(cmd *cobra.Command, args []string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		msg, _ := io.ReadAll(resp.Body)
-		if len(msg) == 0 {
-			msg = []byte(resp.Status)
-		}
-		return out.Error("Failed to create pairing", fmt.Errorf("%s", strings.TrimSpace(string(msg))))
+		return out.Error("Failed to create pairing", fmt.Errorf("%s", readErrorMessage(resp)))
 	}
 
 	var payload struct {
@@ -2168,11 +2201,7 @@ func daemonPairList(cmd *cobra.Command, args []string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		msg, _ := io.ReadAll(resp.Body)
-		if len(msg) == 0 {
-			msg = []byte(resp.Status)
-		}
-		return out.Error("Failed to list pairings", fmt.Errorf("%s", strings.TrimSpace(string(msg))))
+		return out.Error("Failed to list pairings", fmt.Errorf("%s", readErrorMessage(resp)))
 	}
 
 	var payload struct {
@@ -2257,11 +2286,7 @@ func pairClaim(cmd *cobra.Command, args []string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		msg, _ := io.ReadAll(resp.Body)
-		if len(msg) == 0 {
-			msg = []byte(resp.Status)
-		}
-		return out.Error("Failed to claim pairing code", fmt.Errorf("%s", strings.TrimSpace(string(msg))))
+		return out.Error("Failed to claim pairing code", fmt.Errorf("%s", readErrorMessage(resp)))
 	}
 
 	var payload struct {

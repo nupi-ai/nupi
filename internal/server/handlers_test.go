@@ -368,6 +368,64 @@ func TestHandleTransportConfigUpdateGRPCBindingRequiresTLS(t *testing.T) {
 	}
 }
 
+func TestHandleConfigMigrate(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	store := apiServer.configStore
+
+	if _, err := store.DB().ExecContext(context.Background(), `
+		DELETE FROM adapter_bindings WHERE instance_name = ? AND profile_name = ? AND slot = 'tts.primary'
+	`, store.InstanceName(), store.ProfileName()); err != nil {
+		t.Fatalf("delete slot: %v", err)
+	}
+
+	req := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/config/migrate", nil))
+	rec := httptest.NewRecorder()
+
+	apiServer.handleConfigMigrate(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d (body=%s)", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var payload configMigrationResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+
+	found := false
+	for _, slot := range payload.UpdatedSlots {
+		if slot == "tts.primary" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected tts.primary in updated slots, got %v", payload.UpdatedSlots)
+	}
+
+	bindings, err := store.ListAdapterBindings(context.Background())
+	if err != nil {
+		t.Fatalf("list bindings: %v", err)
+	}
+
+	var restored bool
+	for _, binding := range bindings {
+		if binding.Slot != "tts.primary" {
+			continue
+		}
+		restored = true
+		if binding.Status != configstore.BindingStatusRequired {
+			t.Fatalf("expected restored slot to be required, got %s", binding.Status)
+		}
+		if binding.AdapterID != nil {
+			t.Fatalf("expected adapter to remain unset, got %v", binding.AdapterID)
+		}
+	}
+	if !restored {
+		t.Fatalf("expected tts.primary slot to exist after migration")
+	}
+}
+
 func TestHandleSessionAttachAndInput(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
 

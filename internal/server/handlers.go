@@ -906,6 +906,7 @@ func (s *APIServer) Prepare(ctx context.Context) (*PreparedHTTPServer, error) {
 	mux.HandleFunc("/recordings", s.handleRecordingsList)
 	mux.HandleFunc("/recordings/", s.handleRecordingFile)
 	mux.HandleFunc("/config/transport", s.handleTransportConfig)
+	mux.HandleFunc("/config/migrate", s.handleConfigMigrate)
 	mux.HandleFunc("/config/adapters", s.handleAdapters)
 	mux.HandleFunc("/config/adapter-bindings", s.handleAdapterBindings)
 	mux.HandleFunc("/modules", s.handleModules)
@@ -1774,6 +1775,41 @@ func (s *APIServer) handleAdapterBindingsGet(w http.ResponseWriter, r *http.Requ
 	json.NewEncoder(w).Encode(map[string]interface{}{"bindings": out})
 }
 
+func (s *APIServer) handleConfigMigrate(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodOptions:
+		w.WriteHeader(http.StatusNoContent)
+		return
+	case http.MethodPost:
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if _, ok := s.requireRole(w, r, roleAdmin); !ok {
+		return
+	}
+	if s.configStore == nil {
+		http.Error(w, "configuration store not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	result, err := s.configStore.EnsureRequiredAdapterSlots(r.Context())
+	if err != nil {
+		http.Error(w, fmt.Sprintf("migration failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	response := configMigrationResponse{
+		UpdatedSlots: append([]string{}, result.UpdatedSlots...),
+		PendingSlots: append([]string{}, result.PendingSlots...),
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		http.Error(w, fmt.Sprintf("encode response: %v", err), http.StatusInternalServerError)
+	}
+}
+
 func (s *APIServer) handleModules(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodOptions:
@@ -1789,6 +1825,11 @@ type moduleActionRequest struct {
 	Slot      string          `json:"slot"`
 	AdapterID string          `json:"adapter_id,omitempty"`
 	Config    json.RawMessage `json:"config,omitempty"`
+}
+
+type configMigrationResponse struct {
+	UpdatedSlots []string `json:"updated_slots"`
+	PendingSlots []string `json:"pending_slots"`
 }
 
 func (s *APIServer) handleModulesGet(w http.ResponseWriter, r *http.Request) {
