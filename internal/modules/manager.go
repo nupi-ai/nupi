@@ -116,7 +116,11 @@ func (m *Manager) Ensure(ctx context.Context) error {
 
 	for slot, inst := range m.modules {
 		desired, ok := active[slot]
-		if !ok || desired.AdapterID == "" || desired.AdapterID != inst.binding.AdapterID || !configEquivalent(desired, inst.binding) {
+		shouldStop := !ok
+		if !shouldStop {
+			shouldStop = desired.AdapterID == "" || desired.AdapterID != inst.binding.AdapterID || !configEquivalent(desired, inst.binding)
+		}
+		if shouldStop {
 			if err := inst.handle.Stop(ctx); err != nil {
 				errs = append(errs, fmt.Errorf("modules: stop %s: %w", slot, err))
 			}
