@@ -11,6 +11,7 @@ import (
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
+	emptypb "google.golang.org/protobuf/types/known/emptypb"
 )
 
 // This is a compile-time assertion to ensure that this generated file
@@ -303,6 +304,207 @@ var SessionsService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetConversation",
 			Handler:    _SessionsService_GetConversation_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "api/grpc/v1/nupi.proto",
+}
+
+const (
+	ModulesService_Overview_FullMethodName    = "/nupi.api.v1.ModulesService/Overview"
+	ModulesService_BindModule_FullMethodName  = "/nupi.api.v1.ModulesService/BindModule"
+	ModulesService_StartModule_FullMethodName = "/nupi.api.v1.ModulesService/StartModule"
+	ModulesService_StopModule_FullMethodName  = "/nupi.api.v1.ModulesService/StopModule"
+)
+
+// ModulesServiceClient is the client API for ModulesService service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+type ModulesServiceClient interface {
+	Overview(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*ModulesOverviewResponse, error)
+	BindModule(ctx context.Context, in *BindModuleRequest, opts ...grpc.CallOption) (*ModuleActionResponse, error)
+	StartModule(ctx context.Context, in *ModuleSlotRequest, opts ...grpc.CallOption) (*ModuleActionResponse, error)
+	StopModule(ctx context.Context, in *ModuleSlotRequest, opts ...grpc.CallOption) (*ModuleActionResponse, error)
+}
+
+type modulesServiceClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewModulesServiceClient(cc grpc.ClientConnInterface) ModulesServiceClient {
+	return &modulesServiceClient{cc}
+}
+
+func (c *modulesServiceClient) Overview(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*ModulesOverviewResponse, error) {
+	out := new(ModulesOverviewResponse)
+	err := c.cc.Invoke(ctx, ModulesService_Overview_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *modulesServiceClient) BindModule(ctx context.Context, in *BindModuleRequest, opts ...grpc.CallOption) (*ModuleActionResponse, error) {
+	out := new(ModuleActionResponse)
+	err := c.cc.Invoke(ctx, ModulesService_BindModule_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *modulesServiceClient) StartModule(ctx context.Context, in *ModuleSlotRequest, opts ...grpc.CallOption) (*ModuleActionResponse, error) {
+	out := new(ModuleActionResponse)
+	err := c.cc.Invoke(ctx, ModulesService_StartModule_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *modulesServiceClient) StopModule(ctx context.Context, in *ModuleSlotRequest, opts ...grpc.CallOption) (*ModuleActionResponse, error) {
+	out := new(ModuleActionResponse)
+	err := c.cc.Invoke(ctx, ModulesService_StopModule_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// ModulesServiceServer is the server API for ModulesService service.
+// All implementations must embed UnimplementedModulesServiceServer
+// for forward compatibility
+type ModulesServiceServer interface {
+	Overview(context.Context, *emptypb.Empty) (*ModulesOverviewResponse, error)
+	BindModule(context.Context, *BindModuleRequest) (*ModuleActionResponse, error)
+	StartModule(context.Context, *ModuleSlotRequest) (*ModuleActionResponse, error)
+	StopModule(context.Context, *ModuleSlotRequest) (*ModuleActionResponse, error)
+	mustEmbedUnimplementedModulesServiceServer()
+}
+
+// UnimplementedModulesServiceServer must be embedded to have forward compatible implementations.
+type UnimplementedModulesServiceServer struct {
+}
+
+func (UnimplementedModulesServiceServer) Overview(context.Context, *emptypb.Empty) (*ModulesOverviewResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Overview not implemented")
+}
+func (UnimplementedModulesServiceServer) BindModule(context.Context, *BindModuleRequest) (*ModuleActionResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method BindModule not implemented")
+}
+func (UnimplementedModulesServiceServer) StartModule(context.Context, *ModuleSlotRequest) (*ModuleActionResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method StartModule not implemented")
+}
+func (UnimplementedModulesServiceServer) StopModule(context.Context, *ModuleSlotRequest) (*ModuleActionResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method StopModule not implemented")
+}
+func (UnimplementedModulesServiceServer) mustEmbedUnimplementedModulesServiceServer() {}
+
+// UnsafeModulesServiceServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to ModulesServiceServer will
+// result in compilation errors.
+type UnsafeModulesServiceServer interface {
+	mustEmbedUnimplementedModulesServiceServer()
+}
+
+func RegisterModulesServiceServer(s grpc.ServiceRegistrar, srv ModulesServiceServer) {
+	s.RegisterService(&ModulesService_ServiceDesc, srv)
+}
+
+func _ModulesService_Overview_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(emptypb.Empty)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ModulesServiceServer).Overview(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ModulesService_Overview_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ModulesServiceServer).Overview(ctx, req.(*emptypb.Empty))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ModulesService_BindModule_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BindModuleRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ModulesServiceServer).BindModule(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ModulesService_BindModule_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ModulesServiceServer).BindModule(ctx, req.(*BindModuleRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ModulesService_StartModule_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ModuleSlotRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ModulesServiceServer).StartModule(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ModulesService_StartModule_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ModulesServiceServer).StartModule(ctx, req.(*ModuleSlotRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _ModulesService_StopModule_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ModuleSlotRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(ModulesServiceServer).StopModule(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: ModulesService_StopModule_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(ModulesServiceServer).StopModule(ctx, req.(*ModuleSlotRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// ModulesService_ServiceDesc is the grpc.ServiceDesc for ModulesService service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var ModulesService_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "nupi.api.v1.ModulesService",
+	HandlerType: (*ModulesServiceServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "Overview",
+			Handler:    _ModulesService_Overview_Handler,
+		},
+		{
+			MethodName: "BindModule",
+			Handler:    _ModulesService_BindModule_Handler,
+		},
+		{
+			MethodName: "StartModule",
+			Handler:    _ModulesService_StartModule_Handler,
+		},
+		{
+			MethodName: "StopModule",
+			Handler:    _ModulesService_StopModule_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

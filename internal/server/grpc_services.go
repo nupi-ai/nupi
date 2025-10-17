@@ -10,10 +10,12 @@ import (
 	"github.com/nupi-ai/nupi/internal/api"
 	apiv1 "github.com/nupi-ai/nupi/internal/api/grpc/v1"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
+	"github.com/nupi-ai/nupi/internal/modules"
 	"github.com/nupi-ai/nupi/internal/protocol"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 	emptypb "google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -78,6 +80,15 @@ type quickstartService struct {
 
 func newQuickstartService(api *APIServer) *quickstartService {
 	return &quickstartService{api: api}
+}
+
+type modulesService struct {
+	apiv1.UnimplementedModulesServiceServer
+	api *APIServer
+}
+
+func newModulesService(api *APIServer) *modulesService {
+	return &modulesService{api: api}
 }
 
 func (s *sessionsService) ListSessions(ctx context.Context, _ *apiv1.ListSessionsRequest) (*apiv1.ListSessionsResponse, error) {
@@ -252,6 +263,7 @@ func RegisterGRPCServices(api *APIServer, registrar grpc.ServiceRegistrar) {
 	apiv1.RegisterConfigServiceServer(registrar, newConfigService(api))
 	apiv1.RegisterAdaptersServiceServer(registrar, newAdaptersService(api))
 	apiv1.RegisterQuickstartServiceServer(registrar, newQuickstartService(api))
+	apiv1.RegisterModulesServiceServer(registrar, newModulesService(api))
 }
 
 func (c *configService) GetTransportConfig(ctx context.Context, _ *emptypb.Empty) (*apiv1.TransportConfig, error) {
@@ -488,6 +500,162 @@ func (q *quickstartService) fetchStatus(ctx context.Context) (*apiv1.QuickstartS
 		resp.CompletedAt = completedAt.UTC().Format(time.RFC3339)
 	}
 	return resp, nil
+}
+
+func (m *modulesService) Overview(ctx context.Context, _ *emptypb.Empty) (*apiv1.ModulesOverviewResponse, error) {
+	if _, err := m.api.requireRoleGRPC(ctx, roleAdmin, roleReadOnly); err != nil {
+		return nil, err
+	}
+	if m.api.modules == nil {
+		return nil, status.Error(codes.Unavailable, "modules service unavailable")
+	}
+
+	overview, err := m.api.modules.Overview(ctx)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "modules overview: %v", err)
+	}
+
+	resp := &apiv1.ModulesOverviewResponse{
+		Modules: make([]*apiv1.ModuleEntry, 0, len(overview)),
+	}
+	for _, entry := range overview {
+		resp.Modules = append(resp.Modules, bindingStatusToProto(entry))
+	}
+	return resp, nil
+}
+
+func (m *modulesService) BindModule(ctx context.Context, req *apiv1.BindModuleRequest) (*apiv1.ModuleActionResponse, error) {
+	if _, err := m.api.requireRoleGRPC(ctx, roleAdmin); err != nil {
+		return nil, err
+	}
+	if m.api.configStore == nil {
+		return nil, status.Error(codes.Unavailable, "configuration store unavailable")
+	}
+	if m.api.modules == nil {
+		return nil, status.Error(codes.Unavailable, "modules service unavailable")
+	}
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+
+	slot := strings.TrimSpace(req.GetSlot())
+	adapterID := strings.TrimSpace(req.GetAdapterId())
+	if slot == "" || adapterID == "" {
+		return nil, status.Error(codes.InvalidArgument, "slot and adapter_id are required")
+	}
+
+	var cfg map[string]any
+	if raw := strings.TrimSpace(req.GetConfigJson()); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+			return nil, status.Errorf(codes.InvalidArgument, "invalid config_json: %v", err)
+		}
+	}
+
+	if err := m.api.configStore.SetActiveAdapter(ctx, slot, adapterID, cfg); err != nil {
+		switch {
+		case configstore.IsNotFound(err):
+			return nil, status.Errorf(codes.NotFound, "set adapter binding: %v", err)
+		case strings.Contains(strings.ToLower(err.Error()), "invalid"):
+			return nil, status.Errorf(codes.InvalidArgument, "set adapter binding: %v", err)
+		default:
+			return nil, status.Errorf(codes.Internal, "set adapter binding: %v", err)
+		}
+	}
+
+	statusEntry, err := m.api.modules.StartSlot(ctx, modules.Slot(slot))
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "start module: %v", err)
+	}
+
+	return &apiv1.ModuleActionResponse{Module: bindingStatusToProto(*statusEntry)}, nil
+}
+
+func (m *modulesService) StartModule(ctx context.Context, req *apiv1.ModuleSlotRequest) (*apiv1.ModuleActionResponse, error) {
+	if _, err := m.api.requireRoleGRPC(ctx, roleAdmin); err != nil {
+		return nil, err
+	}
+	if m.api.modules == nil {
+		return nil, status.Error(codes.Unavailable, "modules service unavailable")
+	}
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+	slot := strings.TrimSpace(req.GetSlot())
+	if slot == "" {
+		return nil, status.Error(codes.InvalidArgument, "slot is required")
+	}
+
+	statusEntry, err := m.api.modules.StartSlot(ctx, modules.Slot(slot))
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "start module: %v", err)
+	}
+
+	return &apiv1.ModuleActionResponse{Module: bindingStatusToProto(*statusEntry)}, nil
+}
+
+func (m *modulesService) StopModule(ctx context.Context, req *apiv1.ModuleSlotRequest) (*apiv1.ModuleActionResponse, error) {
+	if _, err := m.api.requireRoleGRPC(ctx, roleAdmin); err != nil {
+		return nil, err
+	}
+	if m.api.modules == nil {
+		return nil, status.Error(codes.Unavailable, "modules service unavailable")
+	}
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+	slot := strings.TrimSpace(req.GetSlot())
+	if slot == "" {
+		return nil, status.Error(codes.InvalidArgument, "slot is required")
+	}
+
+	statusEntry, err := m.api.modules.StopSlot(ctx, modules.Slot(slot))
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "stop module: %v", err)
+	}
+
+	return &apiv1.ModuleActionResponse{Module: bindingStatusToProto(*statusEntry)}, nil
+}
+
+func bindingStatusToProto(status modules.BindingStatus) *apiv1.ModuleEntry {
+	entry := &apiv1.ModuleEntry{
+		Slot:       string(status.Slot),
+		Status:     status.Status,
+		ConfigJson: status.Config,
+		UpdatedAt:  status.UpdatedAt,
+	}
+	if status.AdapterID != nil {
+		if id := strings.TrimSpace(*status.AdapterID); id != "" {
+			entry.AdapterId = proto.String(id)
+		}
+	}
+	if status.Runtime != nil {
+		entry.Runtime = runtimeStatusToProto(status.Runtime)
+	}
+	return entry
+}
+
+func runtimeStatusToProto(rt *modules.RuntimeStatus) *apiv1.ModuleRuntime {
+	if rt == nil {
+		return nil
+	}
+	result := &apiv1.ModuleRuntime{
+		ModuleId: rt.ModuleID,
+		Health:   string(rt.Health),
+		Message:  rt.Message,
+		Extra:    map[string]string{},
+	}
+	if rt.Extra != nil {
+		for k, v := range rt.Extra {
+			result.Extra[k] = v
+		}
+	}
+	if rt.StartedAt != nil && !rt.StartedAt.IsZero() {
+		result.StartedAt = timestamppb.New(rt.StartedAt.UTC())
+	}
+	if !rt.UpdatedAt.IsZero() {
+		result.UpdatedAt = timestamppb.New(rt.UpdatedAt.UTC())
+	}
+	return result
 }
 
 func transportConfigToProto(cfg configstore.TransportConfig, authRequired bool) *apiv1.TransportConfig {

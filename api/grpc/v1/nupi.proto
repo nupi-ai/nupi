@@ -4,6 +4,7 @@ package nupi.api.v1;
 
 option go_package = "github.com/nupi-ai/nupi/internal/api/grpc/v1;v1";
 
+import "google/protobuf/empty.proto";
 import "google/protobuf/timestamp.proto";
 
 message DaemonStatusRequest {}
@@ -97,6 +98,48 @@ message GetConversationResponse {
   uint32 next_offset = 7;
 }
 
+// ModuleRuntime exposes runtime metadata for an adapter process.
+message ModuleRuntime {
+  string module_id = 1;
+  string health = 2;
+  string message = 3;
+  google.protobuf.Timestamp started_at = 4;
+  google.protobuf.Timestamp updated_at = 5;
+  map<string, string> extra = 6;
+}
+
+// ModuleEntry mirrors module binding status together with runtime info.
+message ModuleEntry {
+  string slot = 1;
+  optional string adapter_id = 2;
+  string status = 3;
+  string config_json = 4;
+  string updated_at = 5;
+  ModuleRuntime runtime = 6;
+}
+
+// ModulesOverviewResponse summarizes module slots.
+message ModulesOverviewResponse {
+  repeated ModuleEntry modules = 1;
+}
+
+// BindModuleRequest activates an adapter for a slot.
+message BindModuleRequest {
+  string slot = 1;
+  string adapter_id = 2;
+  string config_json = 3;
+}
+
+// ModuleSlotRequest targets a single slot for start/stop actions.
+message ModuleSlotRequest {
+  string slot = 1;
+}
+
+// ModuleActionResponse returns the updated binding entry.
+message ModuleActionResponse {
+  ModuleEntry module = 1;
+}
+
 service DaemonService {
   rpc Status(DaemonStatusRequest) returns (DaemonStatusResponse);
 }
@@ -106,4 +149,11 @@ service SessionsService {
   rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse);
   rpc KillSession(KillSessionRequest) returns (KillSessionResponse);
   rpc GetConversation(GetConversationRequest) returns (GetConversationResponse);
+}
+
+service ModulesService {
+  rpc Overview(google.protobuf.Empty) returns (ModulesOverviewResponse);
+  rpc BindModule(BindModuleRequest) returns (ModuleActionResponse);
+  rpc StartModule(ModuleSlotRequest) returns (ModuleActionResponse);
+  rpc StopModule(ModuleSlotRequest) returns (ModuleActionResponse);
 }

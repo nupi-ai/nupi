@@ -2,12 +2,15 @@ package server
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
 	apiv1 "github.com/nupi-ai/nupi/internal/api/grpc/v1"
+	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/pty"
+	emptypb "google.golang.org/protobuf/types/known/emptypb"
 )
 
 func TestSessionsServiceGetConversation(t *testing.T) {
@@ -122,5 +125,99 @@ func TestSessionsServiceGetConversationPagination(t *testing.T) {
 	}
 	if resp.GetTurns()[0].GetText() != "B" || resp.GetTurns()[1].GetText() != "C" {
 		t.Fatalf("unexpected turns: %+v", resp.GetTurns())
+	}
+}
+
+func TestModulesServiceOverview(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	store := openTestStore(t)
+	modulesSvc := newTestModulesService(t, store)
+	apiServer.SetModulesService(modulesSvc)
+
+	ctx := context.Background()
+	adapter := configstore.Adapter{ID: "adapter.ai.primary", Source: "builtin", Type: "ai", Name: "Primary AI"}
+	if err := store.UpsertAdapter(ctx, adapter); err != nil {
+		t.Fatalf("upsert adapter: %v", err)
+	}
+	if err := store.SetActiveAdapter(ctx, "ai.primary", adapter.ID, nil); err != nil {
+		t.Fatalf("set active adapter: %v", err)
+	}
+
+	service := newModulesService(apiServer)
+
+	resp, err := service.Overview(ctx, &emptypb.Empty{})
+	if err != nil {
+		t.Fatalf("modules overview: %v", err)
+	}
+	if len(resp.GetModules()) == 0 {
+		t.Fatalf("expected modules in overview")
+	}
+
+	var entry *apiv1.ModuleEntry
+	for _, module := range resp.GetModules() {
+		if module.GetSlot() == "ai.primary" {
+			entry = module
+			break
+		}
+	}
+	if entry == nil {
+		t.Fatalf("ai.primary slot not found in overview")
+	}
+	if entry.AdapterId == nil || entry.GetAdapterId() != adapter.ID {
+		t.Fatalf("expected adapter %s, got %v", adapter.ID, entry.AdapterId)
+	}
+	if entry.GetStatus() == "" {
+		t.Fatalf("expected status to be populated")
+	}
+}
+
+func TestModulesServiceBindStartStop(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	store := openTestStore(t)
+	modulesSvc := newTestModulesService(t, store)
+	apiServer.SetModulesService(modulesSvc)
+
+	ctx := context.Background()
+	adapter := configstore.Adapter{ID: "adapter.ai.bind", Source: "builtin", Type: "ai", Name: "Bind AI"}
+	if err := store.UpsertAdapter(ctx, adapter); err != nil {
+		t.Fatalf("upsert adapter: %v", err)
+	}
+
+	service := newModulesService(apiServer)
+
+	bindResp, err := service.BindModule(ctx, &apiv1.BindModuleRequest{
+		Slot:      "ai.primary",
+		AdapterId: adapter.ID,
+	})
+	if err != nil {
+		t.Fatalf("BindModule error: %v", err)
+	}
+	if bindResp.GetModule().AdapterId == nil || bindResp.GetModule().GetAdapterId() != adapter.ID {
+		t.Fatalf("expected bound adapter %s, got %v", adapter.ID, bindResp.GetModule().AdapterId)
+	}
+	if bindResp.GetModule().GetStatus() != configstore.BindingStatusActive {
+		t.Fatalf("expected status %s, got %s", configstore.BindingStatusActive, bindResp.GetModule().GetStatus())
+	}
+
+	startResp, err := service.StartModule(ctx, &apiv1.ModuleSlotRequest{Slot: "ai.primary"})
+	if err != nil {
+		t.Fatalf("StartModule error: %v", err)
+	}
+	if startResp.GetModule().GetStatus() != configstore.BindingStatusActive {
+		t.Fatalf("expected active status after start, got %s", startResp.GetModule().GetStatus())
+	}
+	if startResp.GetModule().GetRuntime() == nil || startResp.GetModule().GetRuntime().GetHealth() == "" {
+		t.Fatalf("expected runtime health after start")
+	}
+
+	stopResp, err := service.StopModule(ctx, &apiv1.ModuleSlotRequest{Slot: "ai.primary"})
+	if err != nil {
+		t.Fatalf("StopModule error: %v", err)
+	}
+	if stopResp.GetModule().GetStatus() != configstore.BindingStatusInactive {
+		t.Fatalf("expected inactive status after stop, got %s", stopResp.GetModule().GetStatus())
+	}
+	if stopResp.GetModule().GetRuntime() == nil || !strings.EqualFold(stopResp.GetModule().GetRuntime().GetHealth(), string(eventbus.ModuleHealthStopped)) {
+		t.Fatalf("expected runtime health 'stopped', got %+v", stopResp.GetModule().GetRuntime())
 	}
 }

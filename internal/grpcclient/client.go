@@ -27,6 +27,7 @@ type Client struct {
 	config     apiv1.ConfigServiceClient
 	adapters   apiv1.AdaptersServiceClient
 	quickstart apiv1.QuickstartServiceClient
+	modules    apiv1.ModulesServiceClient
 	token      string
 }
 
@@ -138,6 +139,7 @@ func dial(address string, tlsConfig *tls.Config, token string) (*Client, error) 
 		config:     apiv1.NewConfigServiceClient(conn),
 		adapters:   apiv1.NewAdaptersServiceClient(conn),
 		quickstart: apiv1.NewQuickstartServiceClient(conn),
+		modules:    apiv1.NewModulesServiceClient(conn),
 		token:      strings.TrimSpace(token),
 	}, nil
 }
@@ -193,6 +195,26 @@ func (c *Client) QuickstartStatus(ctx context.Context) (*apiv1.QuickstartStatusR
 func (c *Client) UpdateQuickstart(ctx context.Context, req *apiv1.UpdateQuickstartRequest) (*apiv1.QuickstartStatusResponse, error) {
 	ctx = c.attachToken(ctx)
 	return c.quickstart.Update(ctx, req)
+}
+
+func (c *Client) ModulesOverview(ctx context.Context) (*apiv1.ModulesOverviewResponse, error) {
+	ctx = c.attachToken(ctx)
+	return c.modules.Overview(ctx, &emptypb.Empty{})
+}
+
+func (c *Client) BindModule(ctx context.Context, req *apiv1.BindModuleRequest) (*apiv1.ModuleActionResponse, error) {
+	ctx = c.attachToken(ctx)
+	return c.modules.BindModule(ctx, req)
+}
+
+func (c *Client) StartModule(ctx context.Context, slot string) (*apiv1.ModuleActionResponse, error) {
+	ctx = c.attachToken(ctx)
+	return c.modules.StartModule(ctx, &apiv1.ModuleSlotRequest{Slot: slot})
+}
+
+func (c *Client) StopModule(ctx context.Context, slot string) (*apiv1.ModuleActionResponse, error) {
+	ctx = c.attachToken(ctx)
+	return c.modules.StopModule(ctx, &apiv1.ModuleSlotRequest{Slot: slot})
 }
 
 func (c *Client) attachToken(ctx context.Context) context.Context {
