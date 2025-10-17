@@ -21,6 +21,7 @@ import (
 
 	"github.com/nupi-ai/nupi/internal/config"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
+	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/pty"
 	"github.com/nupi-ai/nupi/internal/session"
 )
@@ -70,6 +71,20 @@ func withAdmin(s *APIServer, req *http.Request) *http.Request {
 
 func withReadOnly(s *APIServer, req *http.Request) *http.Request {
 	return withRole(s, req, roleReadOnly)
+}
+
+type mockConversationStore struct {
+	turns map[string][]eventbus.ConversationTurn
+}
+
+func (m *mockConversationStore) Context(sessionID string) []eventbus.ConversationTurn {
+	if m == nil {
+		return nil
+	}
+	turns := m.turns[sessionID]
+	out := make([]eventbus.ConversationTurn, len(turns))
+	copy(out, turns)
+	return out
 }
 
 func writeSelfSignedCert(t *testing.T, dir string) (string, string) {
@@ -380,6 +395,85 @@ func TestHandleSessionAttachAndInput(t *testing.T) {
 	apiServer.handleSessionDetach(detachRec, detachReq)
 	if detachRec.Code != http.StatusNoContent {
 		t.Fatalf("expected status %d, got %d", http.StatusNoContent, detachRec.Code)
+	}
+}
+
+func TestHandleSessionConversationOptions(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+
+	req := httptest.NewRequest(http.MethodOptions, "/sessions/abc/conversation", nil)
+	rec := httptest.NewRecorder()
+
+	apiServer.handleSessionConversation(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected status %d, got %d", http.StatusNoContent, rec.Code)
+	}
+}
+
+func TestHandleSessionConversation(t *testing.T) {
+	apiServer, sessionManager := newTestAPIServer(t)
+
+	opts := pty.StartOptions{
+		Command: "/bin/sh",
+		Args:    []string{"-c", "sleep 1"},
+		Rows:    24,
+		Cols:    80,
+	}
+
+	sess, err := sessionManager.CreateSession(opts, false)
+	if err != nil {
+		t.Fatalf("failed to create session: %v", err)
+	}
+	defer sessionManager.KillSession(sess.ID)
+	time.Sleep(100 * time.Millisecond)
+
+	now := time.Now().UTC()
+	store := &mockConversationStore{
+		turns: map[string][]eventbus.ConversationTurn{
+			sess.ID: {
+				{Origin: eventbus.OriginUser, Text: "hello", At: now},
+				{Origin: eventbus.OriginAI, Text: "hi there", At: now.Add(10 * time.Millisecond), Meta: map[string]string{"source": "test"}},
+			},
+		},
+	}
+	apiServer.SetConversationStore(store)
+
+	req := withReadOnly(apiServer, httptest.NewRequest(http.MethodGet, "/sessions/"+sess.ID+"/conversation", nil))
+	rec := httptest.NewRecorder()
+
+	apiServer.handleSessionConversation(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d (body=%s)", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		SessionID string `json:"session_id"`
+		Turns     []struct {
+			Origin string            `json:"origin"`
+			Text   string            `json:"text"`
+			Meta   map[string]string `json:"meta"`
+		} `json:"turns"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+
+	if payload.SessionID != sess.ID {
+		t.Fatalf("unexpected session id: %s", payload.SessionID)
+	}
+	if len(payload.Turns) != 2 {
+		t.Fatalf("expected 2 turns, got %d", len(payload.Turns))
+	}
+	if payload.Turns[0].Origin != string(eventbus.OriginUser) || payload.Turns[0].Text != "hello" {
+		t.Fatalf("unexpected first turn: %+v", payload.Turns[0])
+	}
+	if payload.Turns[1].Origin != string(eventbus.OriginAI) || payload.Turns[1].Text != "hi there" {
+		t.Fatalf("unexpected second turn: %+v", payload.Turns[1])
+	}
+	if payload.Turns[1].Meta["source"] != "test" {
+		t.Fatalf("expected metadata to be preserved, got %+v", payload.Turns[1].Meta)
 	}
 }
 

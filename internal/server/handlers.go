@@ -22,6 +22,7 @@ import (
 
 	"github.com/nupi-ai/nupi/internal/api"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
+	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/protocol"
 	"github.com/nupi-ai/nupi/internal/pty"
 	"github.com/nupi-ai/nupi/internal/session"
@@ -36,6 +37,11 @@ type RuntimeInfoProvider interface {
 	Port() int
 	GRPCPort() int
 	StartTime() time.Time
+}
+
+// ConversationStore exposes a readonly view of conversation history.
+type ConversationStore interface {
+	Context(sessionID string) []eventbus.ConversationTurn
 }
 
 type tokenRole string
@@ -74,6 +80,7 @@ type APIServer struct {
 	configStore    *configstore.Store
 	runtime        RuntimeInfoProvider
 	wsServer       *Server
+	conversation   ConversationStore
 	resizeManager  *termresize.Manager
 	port           int
 	httpServer     *http.Server
@@ -188,6 +195,11 @@ func (s *APIServer) SetShutdownFunc(fn func(context.Context) error) {
 	s.shutdownMu.Lock()
 	s.shutdownFn = fn
 	s.shutdownMu.Unlock()
+}
+
+// SetConversationStore wires the conversation state provider used by HTTP handlers.
+func (s *APIServer) SetConversationStore(store ConversationStore) {
+	s.conversation = store
 }
 
 // CurrentTransportSnapshot returns the currently applied transport configuration.
@@ -1098,6 +1110,10 @@ func (s *APIServer) handleSessionSubroutes(w http.ResponseWriter, r *http.Reques
 		s.handleSessionDetach(w, r)
 		return
 	}
+	if strings.HasSuffix(trimmed, "/conversation") {
+		s.handleSessionConversation(w, r)
+		return
+	}
 
 	parts := strings.Split(trimmed, "/")
 	sessionID := strings.TrimSpace(parts[0])
@@ -1280,6 +1296,51 @@ func (s *APIServer) handleSessionDetach(w http.ResponseWriter, r *http.Request) 
 
 	sess.SetStatus(session.StatusDetached)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *APIServer) handleSessionConversation(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/sessions/"), "/")
+	if len(parts) != 2 || strings.TrimSpace(parts[1]) != "conversation" {
+		http.NotFound(w, r)
+		return
+	}
+
+	sessionID := strings.TrimSpace(parts[0])
+	if sessionID == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodOptions:
+		w.WriteHeader(http.StatusNoContent)
+		return
+	case http.MethodGet:
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if _, ok := s.requireRole(w, r, roleAdmin, roleReadOnly); !ok {
+		return
+	}
+
+	if s.conversation == nil {
+		http.Error(w, "conversation service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	if _, err := s.sessionManager.GetSession(sessionID); err != nil {
+		http.Error(w, fmt.Sprintf("session %s not found", sessionID), http.StatusNotFound)
+		return
+	}
+
+	state := api.ToConversationState(sessionID, s.conversation.Context(sessionID))
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(state); err != nil {
+		http.Error(w, fmt.Sprintf("failed to encode conversation: %v", err), http.StatusInternalServerError)
+	}
 }
 
 func (s *APIServer) onSessionEvent(event string, sess *session.Session) {

@@ -101,6 +101,7 @@ func New(opts Options) (*Daemon, error) {
 
 	pipelineService := contentpipeline.NewService(bus, pluginService)
 	conversationService := conversation.NewService(bus)
+	apiServer.SetConversationStore(conversationService)
 
 	if err := host.Register("content_pipeline", func(ctx context.Context) (daemonruntime.Service, error) {
 		return pipelineService, nil
