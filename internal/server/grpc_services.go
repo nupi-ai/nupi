@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"strings"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	emptypb "google.golang.org/protobuf/types/known/emptypb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type daemonService struct {
@@ -154,6 +156,66 @@ func (s *sessionsService) KillSession(ctx context.Context, req *apiv1.KillSessio
 	}
 
 	return &apiv1.KillSessionResponse{}, nil
+}
+
+func (s *sessionsService) GetConversation(ctx context.Context, req *apiv1.GetConversationRequest) (*apiv1.GetConversationResponse, error) {
+	if _, err := s.api.requireRoleGRPC(ctx, roleAdmin, roleReadOnly); err != nil {
+		return nil, err
+	}
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+
+	sessionID := strings.TrimSpace(req.GetSessionId())
+	if sessionID == "" {
+		return nil, status.Error(codes.InvalidArgument, "session_id is required")
+	}
+
+	if s.api.conversation == nil {
+		return nil, status.Error(codes.Unavailable, "conversation service unavailable")
+	}
+
+	if _, err := s.api.sessionManager.GetSession(sessionID); err != nil {
+		return nil, status.Errorf(codes.NotFound, "session %s not found", sessionID)
+	}
+
+	turns := s.api.conversation.Context(sessionID)
+	resp := &apiv1.GetConversationResponse{
+		SessionId: sessionID,
+		Turns:     make([]*apiv1.ConversationTurn, 0, len(turns)),
+	}
+
+	for _, turn := range turns {
+		var ts *timestamppb.Timestamp
+		if !turn.At.IsZero() {
+			ts = timestamppb.New(turn.At)
+		}
+
+		metadata := make([]*apiv1.ConversationMetadata, 0, len(turn.Meta))
+		if len(turn.Meta) > 0 {
+			keys := make([]string, 0, len(turn.Meta))
+			for k := range turn.Meta {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			metadata = make([]*apiv1.ConversationMetadata, 0, len(keys))
+			for _, key := range keys {
+				metadata = append(metadata, &apiv1.ConversationMetadata{
+					Key:   key,
+					Value: turn.Meta[key],
+				})
+			}
+		}
+
+		resp.Turns = append(resp.Turns, &apiv1.ConversationTurn{
+			Origin:   string(turn.Origin),
+			Text:     turn.Text,
+			At:       ts,
+			Metadata: metadata,
+		})
+	}
+
+	return resp, nil
 }
 
 func RegisterGRPCServices(api *APIServer, registrar grpc.ServiceRegistrar) {

@@ -1,0 +1,100 @@
+syntax = "proto3";
+
+package nupi.api.v1;
+
+option go_package = "github.com/nupi-ai/nupi/internal/api/grpc/v1;v1";
+
+import "google/protobuf/timestamp.proto";
+
+message DaemonStatusRequest {}
+
+message DaemonStatusResponse {
+  string version = 1;
+  int32 sessions = 2;
+  int32 port = 3;
+  int32 grpc_port = 4;
+  string binding = 5;
+  string grpc_binding = 6;
+  bool auth_required = 7;
+  double uptime_sec = 8;
+}
+
+message Session {
+  string id = 1;
+  string command = 2;
+  repeated string args = 3;
+  string status = 4;
+  int32 pid = 5;
+  int64 start_unix = 6;
+}
+
+message ListSessionsRequest {}
+
+message ListSessionsResponse {
+  repeated Session sessions = 1;
+}
+
+message CreateSessionRequest {
+  string command = 1;
+  repeated string args = 2;
+  string working_dir = 3;
+  repeated string env = 4;
+  uint32 rows = 5;
+  uint32 cols = 6;
+  bool detached = 7;
+  bool inspect = 8;
+}
+
+message CreateSessionResponse {
+  Session session = 1;
+}
+
+message KillSessionRequest {
+  string session_id = 1;
+}
+
+message KillSessionResponse {}
+
+// ConversationMetadata stores auxiliary information about a conversation turn,
+// mirroring key/value annotations produced by the conversation service.
+message ConversationMetadata {
+  // Metadata key (for example "tool_id" or "prompt_id").
+  string key = 1;
+  // Metadata value stored as plain text.
+  string value = 2;
+}
+
+// ConversationTurn represents a single entry in the conversational history.
+message ConversationTurn {
+  // Origin identifies the logical author (user/ai/tool/system).
+  string origin = 1;
+  // Normalised textual content produced by the pipeline.
+  string text = 2;
+  // Timestamp in UTC when the turn was recorded.
+  google.protobuf.Timestamp at = 3;
+  // Optional metadata annotations attached to the turn.
+  repeated ConversationMetadata metadata = 4;
+}
+
+// GetConversationRequest asks for the conversation history of a session.
+message GetConversationRequest {
+  // Target session identifier.
+  string session_id = 1;
+}
+
+// GetConversationResponse returns the ordered list of turns for the session.
+message GetConversationResponse {
+  string session_id = 1;
+  repeated ConversationTurn turns = 2;
+}
+
+service DaemonService {
+  rpc Status(DaemonStatusRequest) returns (DaemonStatusResponse);
+}
+
+service SessionsService {
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+  rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse);
+  rpc KillSession(KillSessionRequest) returns (KillSessionResponse);
+  rpc GetConversation(GetConversationRequest) returns (GetConversationResponse);
+}

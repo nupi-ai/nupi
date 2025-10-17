@@ -4,6 +4,7 @@
 
 /bin/
 .gocache/
+.gomodcache/
 
 # macOS
 .DS_Store
