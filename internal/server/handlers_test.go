@@ -16,12 +16,16 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/nupi-ai/nupi/internal/adapterrunner"
+	apihttp "github.com/nupi-ai/nupi/internal/api/http"
 	"github.com/nupi-ai/nupi/internal/config"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
+	"github.com/nupi-ai/nupi/internal/modules"
 	"github.com/nupi-ai/nupi/internal/pty"
 	"github.com/nupi-ai/nupi/internal/session"
 )
@@ -683,6 +687,121 @@ func TestHandleQuickstartCompleteValidation(t *testing.T) {
 	}
 }
 
+func TestHandleModulesGet(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	store := openTestStore(t)
+	modulesService := newTestModulesService(t, store)
+	apiServer.SetModulesService(modulesService)
+
+	ctx := context.Background()
+	adapter := configstore.Adapter{ID: "adapter.ai.primary", Source: "builtin", Type: "ai", Name: "Primary AI"}
+	if err := store.UpsertAdapter(ctx, adapter); err != nil {
+		t.Fatalf("upsert adapter: %v", err)
+	}
+	if err := store.SetActiveAdapter(ctx, "ai.primary", adapter.ID, nil); err != nil {
+		t.Fatalf("set active adapter: %v", err)
+	}
+
+	req := withAdmin(apiServer, httptest.NewRequest(http.MethodGet, "/modules", nil))
+	rec := httptest.NewRecorder()
+
+	apiServer.handleModules(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
+	}
+
+	var payload apihttp.ModulesOverview
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+
+	var found bool
+	for _, module := range payload.Modules {
+		if module.Slot == "ai.primary" {
+			found = true
+			if module.AdapterID == nil || *module.AdapterID != adapter.ID {
+				t.Fatalf("expected adapter %s, got %v", adapter.ID, module.AdapterID)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected ai.primary slot in response")
+	}
+}
+
+func TestHandleModulesBindStartStop(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	store := openTestStore(t)
+	modulesService := newTestModulesService(t, store)
+	apiServer.SetModulesService(modulesService)
+
+	ctx := context.Background()
+	adapter := configstore.Adapter{ID: "adapter.ai.bind", Source: "builtin", Type: "ai", Name: "Bind AI"}
+	if err := store.UpsertAdapter(ctx, adapter); err != nil {
+		t.Fatalf("upsert adapter: %v", err)
+	}
+
+	bindReq := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/modules/bind", bytes.NewBufferString(`{"slot":"ai.primary","adapter_id":"adapter.ai.bind"}`)))
+	bindReq.Header.Set("Content-Type", "application/json")
+	bindRec := httptest.NewRecorder()
+
+	apiServer.handleModulesBind(bindRec, bindReq)
+	if bindRec.Code != http.StatusOK {
+		t.Fatalf("bind expected status %d, got %d", http.StatusOK, bindRec.Code)
+	}
+
+	var bindPayload apihttp.ModuleActionResult
+	if err := json.Unmarshal(bindRec.Body.Bytes(), &bindPayload); err != nil {
+		t.Fatalf("invalid bind response: %v", err)
+	}
+	if bindPayload.Module.AdapterID == nil || *bindPayload.Module.AdapterID != adapter.ID {
+		t.Fatalf("bind response adapter mismatch: %v", bindPayload.Module.AdapterID)
+	}
+	if bindPayload.Module.Status != configstore.BindingStatusActive {
+		t.Fatalf("expected status %s, got %s", configstore.BindingStatusActive, bindPayload.Module.Status)
+	}
+
+	startReq := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/modules/start", bytes.NewBufferString(`{"slot":"ai.primary"}`)))
+	startReq.Header.Set("Content-Type", "application/json")
+	startRec := httptest.NewRecorder()
+	apiServer.handleModulesStart(startRec, startReq)
+	if startRec.Code != http.StatusOK {
+		t.Fatalf("start expected status %d, got %d", http.StatusOK, startRec.Code)
+	}
+
+	var startPayload apihttp.ModuleActionResult
+	if err := json.Unmarshal(startRec.Body.Bytes(), &startPayload); err != nil {
+		t.Fatalf("invalid start response: %v", err)
+	}
+	if startPayload.Module.Status != configstore.BindingStatusActive {
+		t.Fatalf("expected active status after start, got %s", startPayload.Module.Status)
+	}
+	if startPayload.Module.Runtime == nil || startPayload.Module.Runtime.Health == "" {
+		t.Fatalf("expected runtime health after start")
+	}
+
+	stopReq := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/modules/stop", bytes.NewBufferString(`{"slot":"ai.primary"}`)))
+	stopReq.Header.Set("Content-Type", "application/json")
+	stopRec := httptest.NewRecorder()
+	apiServer.handleModulesStop(stopRec, stopReq)
+	if stopRec.Code != http.StatusOK {
+		t.Fatalf("stop expected status %d, got %d", http.StatusOK, stopRec.Code)
+	}
+
+	var stopPayload apihttp.ModuleActionResult
+	if err := json.Unmarshal(stopRec.Body.Bytes(), &stopPayload); err != nil {
+		t.Fatalf("invalid stop response: %v", err)
+	}
+	if stopPayload.Module.Status != configstore.BindingStatusInactive {
+		t.Fatalf("expected inactive status after stop, got %s", stopPayload.Module.Status)
+	}
+	if stopPayload.Module.Runtime == nil || !strings.EqualFold(stopPayload.Module.Runtime.Health, string(eventbus.ModuleHealthStopped)) {
+		t.Fatalf("expected runtime health 'stopped', got %+v", stopPayload.Module.Runtime)
+	}
+}
+
 type runtimeStub struct {
 	port int
 }
@@ -738,3 +857,38 @@ func newTestAPIServer(t *testing.T) (*APIServer, *session.Manager) {
 
 	return apiServer, sessionManager
 }
+
+func openTestStore(t *testing.T) *configstore.Store {
+	t.Helper()
+	store, err := configstore.Open(configstore.Options{InstanceName: config.DefaultInstance, ProfileName: config.DefaultProfile})
+	if err != nil {
+		t.Fatalf("open test store: %v", err)
+	}
+	t.Cleanup(func() {
+		store.Close()
+	})
+	return store
+}
+
+func newTestModulesService(t *testing.T, store *configstore.Store) *modules.Service {
+	t.Helper()
+	manager := modules.NewManager(modules.ManagerOptions{
+		Store:    store,
+		Runner:   adapterrunner.NewManager(t.TempDir()),
+		Launcher: testModuleLauncher{},
+	})
+	bus := eventbus.New()
+	return modules.NewService(manager, store, bus, modules.WithEnsureInterval(0))
+}
+
+type testModuleLauncher struct{}
+
+func (testModuleLauncher) Launch(context.Context, string, []string, []string) (modules.ProcessHandle, error) {
+	return testModuleHandle{}, nil
+}
+
+type testModuleHandle struct{}
+
+func (testModuleHandle) Stop(context.Context) error { return nil }
+
+func (testModuleHandle) PID() int { return 12345 }

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/nupi-ai/nupi/internal/api"
+	apihttp "github.com/nupi-ai/nupi/internal/api/http"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/modules"
@@ -1754,24 +1755,6 @@ type moduleActionRequest struct {
 	Config    json.RawMessage `json:"config,omitempty"`
 }
 
-type moduleRuntimeResponse struct {
-	ModuleID  string            `json:"module_id,omitempty"`
-	Health    string            `json:"health"`
-	Message   string            `json:"message,omitempty"`
-	StartedAt *string           `json:"started_at,omitempty"`
-	UpdatedAt string            `json:"updated_at"`
-	Extra     map[string]string `json:"extra,omitempty"`
-}
-
-type moduleResponse struct {
-	Slot      string                 `json:"slot"`
-	AdapterID *string                `json:"adapter_id,omitempty"`
-	Status    string                 `json:"status"`
-	Config    string                 `json:"config,omitempty"`
-	UpdatedAt string                 `json:"updated_at"`
-	Runtime   *moduleRuntimeResponse `json:"runtime,omitempty"`
-}
-
 func (s *APIServer) handleModulesGet(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireRole(w, r, roleAdmin, roleReadOnly); !ok {
 		return
@@ -1787,13 +1770,13 @@ func (s *APIServer) handleModulesGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	modulesOut := make([]moduleResponse, 0, len(overview))
+	modulesOut := make([]apihttp.ModuleEntry, 0, len(overview))
 	for _, status := range overview {
 		modulesOut = append(modulesOut, bindingStatusToResponse(status))
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{"modules": modulesOut})
+	json.NewEncoder(w).Encode(apihttp.ModulesOverview{Modules: modulesOut})
 }
 
 func (s *APIServer) handleModulesBind(w http.ResponseWriter, r *http.Request) {
@@ -1855,9 +1838,7 @@ func (s *APIServer) handleModulesBind(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response := map[string]moduleResponse{
-		"module": bindingStatusToResponse(*status),
-	}
+	response := apihttp.ModuleActionResult{Module: bindingStatusToResponse(*status)}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 }
@@ -1895,9 +1876,7 @@ func (s *APIServer) handleModulesStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response := map[string]moduleResponse{
-		"module": bindingStatusToResponse(*status),
-	}
+	response := apihttp.ModuleActionResult{Module: bindingStatusToResponse(*status)}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 }
@@ -1935,15 +1914,13 @@ func (s *APIServer) handleModulesStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response := map[string]moduleResponse{
-		"module": bindingStatusToResponse(*status),
-	}
+	response := apihttp.ModuleActionResult{Module: bindingStatusToResponse(*status)}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 }
 
-func bindingStatusToResponse(status modules.BindingStatus) moduleResponse {
-	resp := moduleResponse{
+func bindingStatusToResponse(status modules.BindingStatus) apihttp.ModuleEntry {
+	resp := apihttp.ModuleEntry{
 		Slot:      string(status.Slot),
 		Status:    status.Status,
 		Config:    status.Config,
@@ -1956,7 +1933,7 @@ func bindingStatusToResponse(status modules.BindingStatus) moduleResponse {
 		}
 	}
 	if status.Runtime != nil {
-		runtime := moduleRuntimeResponse{
+		runtime := apihttp.ModuleRuntime{
 			ModuleID:  status.Runtime.ModuleID,
 			Health:    string(status.Runtime.Health),
 			Message:   status.Runtime.Message,

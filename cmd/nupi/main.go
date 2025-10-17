@@ -14,11 +14,14 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
+	"text/tabwriter"
 	"time"
 
+	apihttp "github.com/nupi-ai/nupi/internal/api/http"
 	"github.com/nupi-ai/nupi/internal/bootstrap"
 	"github.com/nupi-ai/nupi/internal/client"
 	"github.com/nupi-ai/nupi/internal/config"
@@ -247,6 +250,51 @@ func main() {
 
 	configCmd.AddCommand(configTransportCmd)
 
+	modulesCmd := &cobra.Command{
+		Use:           "modules",
+		Short:         "Inspect and control module bindings",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+	}
+
+	modulesListCmd := &cobra.Command{
+		Use:           "list",
+		Short:         "Show module slots, bindings and runtime status",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE:          modulesList,
+	}
+
+	modulesBindCmd := &cobra.Command{
+		Use:           "bind <slot> <adapter>",
+		Short:         "Bind an adapter to a slot (optionally with config) and start it",
+		Args:          cobra.ExactArgs(2),
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE:          modulesBind,
+	}
+	modulesBindCmd.Flags().String("config", "", "JSON configuration payload sent to the adapter binding")
+
+	modulesStartCmd := &cobra.Command{
+		Use:           "start <slot>",
+		Short:         "Start the module process for the given slot",
+		Args:          cobra.ExactArgs(1),
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE:          modulesStart,
+	}
+
+	modulesStopCmd := &cobra.Command{
+		Use:           "stop <slot>",
+		Short:         "Stop the module process for the given slot (binding is kept)",
+		Args:          cobra.ExactArgs(1),
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE:          modulesStop,
+	}
+
+	modulesCmd.AddCommand(modulesListCmd, modulesBindCmd, modulesStartCmd, modulesStopCmd)
+
 	quickstartCmd := &cobra.Command{
 		Use:           "quickstart",
 		Short:         "Quickstart helper commands",
@@ -372,7 +420,7 @@ func main() {
 
 	pairRootCmd.AddCommand(pairClaimCmd)
 
-	rootCmd.AddCommand(runCmd, listCmd, attachCmd, killCmd, loginCmd, inspectCmd, daemonCmd, configCmd, quickstartCmd, pairRootCmd)
+	rootCmd.AddCommand(runCmd, listCmd, attachCmd, killCmd, loginCmd, inspectCmd, daemonCmd, configCmd, modulesCmd, quickstartCmd, pairRootCmd)
 
 	// Execute
 	if err := rootCmd.Execute(); err != nil {
@@ -1012,6 +1060,12 @@ type quickstartBindingRequest struct {
 	AdapterID string `json:"adapter_id"`
 }
 
+type moduleActionRequestPayload struct {
+	Slot      string          `json:"slot"`
+	AdapterID string          `json:"adapter_id,omitempty"`
+	Config    json.RawMessage `json:"config,omitempty"`
+}
+
 type adapterInfo struct {
 	ID      string `json:"id"`
 	Name    string `json:"name"`
@@ -1061,6 +1115,65 @@ func fetchQuickstartStatus(c *client.Client) (quickstartStatusPayload, error) {
 	}
 
 	return payload, nil
+}
+
+func fetchModulesOverview(c *client.Client) (apihttp.ModulesOverview, error) {
+	req, err := http.NewRequest(http.MethodGet, c.BaseURL()+"/modules", nil)
+	if err != nil {
+		return apihttp.ModulesOverview{}, err
+	}
+	resp, err := doRequest(c, req)
+	if err != nil {
+		return apihttp.ModulesOverview{}, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(resp.Body)
+		if len(msg) == 0 {
+			msg = []byte(resp.Status)
+		}
+		return apihttp.ModulesOverview{}, errors.New(strings.TrimSpace(string(msg)))
+	}
+
+	var payload apihttp.ModulesOverview
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return apihttp.ModulesOverview{}, err
+	}
+	return payload, nil
+}
+
+func postModuleAction(c *client.Client, endpoint string, payload moduleActionRequestPayload) (apihttp.ModuleEntry, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return apihttp.ModuleEntry{}, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, c.BaseURL()+endpoint, bytes.NewReader(body))
+	if err != nil {
+		return apihttp.ModuleEntry{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := doRequest(c, req)
+	if err != nil {
+		return apihttp.ModuleEntry{}, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(resp.Body)
+		if len(msg) == 0 {
+			msg = []byte(resp.Status)
+		}
+		return apihttp.ModuleEntry{}, errors.New(strings.TrimSpace(string(msg)))
+	}
+
+	var actionResp apihttp.ModuleActionResult
+	if err := json.NewDecoder(resp.Body).Decode(&actionResp); err != nil {
+		return apihttp.ModuleEntry{}, err
+	}
+	return actionResp.Module, nil
 }
 
 func fetchAdapters(c *client.Client) ([]adapterInfo, error) {
@@ -1123,6 +1236,185 @@ func resolveAdapterChoice(input string, adapters []adapterInfo) (string, bool) {
 	}
 
 	return "", false
+}
+
+func modulesList(cmd *cobra.Command, _ []string) error {
+	out := newOutputFormatter(cmd)
+
+	c, err := client.New()
+	if err != nil {
+		return out.Error("Failed to initialise client", err)
+	}
+	defer c.Close()
+
+	overview, err := fetchModulesOverview(c)
+	if err != nil {
+		return out.Error("Failed to fetch modules overview", err)
+	}
+
+	if out.jsonMode {
+		return out.Print(overview)
+	}
+
+	if len(overview.Modules) == 0 {
+		fmt.Println("No module slots found.")
+		return nil
+	}
+
+	sort.Slice(overview.Modules, func(i, j int) bool {
+		return strings.Compare(overview.Modules[i].Slot, overview.Modules[j].Slot) < 0
+	})
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "SLOT\tADAPTER\tSTATUS\tHEALTH\tUPDATED")
+	for _, entry := range overview.Modules {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+			entry.Slot,
+			moduleAdapterLabel(entry),
+			entry.Status,
+			moduleHealthLabel(entry),
+			entry.UpdatedAt,
+		)
+	}
+	w.Flush()
+
+	for _, entry := range overview.Modules {
+		if entry.Runtime != nil && strings.TrimSpace(entry.Runtime.Message) != "" {
+			fmt.Printf("%s: %s\n", entry.Slot, entry.Runtime.Message)
+		}
+	}
+	return nil
+}
+
+func modulesBind(cmd *cobra.Command, args []string) error {
+	out := newOutputFormatter(cmd)
+
+	slot := strings.TrimSpace(args[0])
+	adapter := strings.TrimSpace(args[1])
+	if slot == "" || adapter == "" {
+		return out.Error("Slot and adapter must be provided", errors.New("invalid arguments"))
+	}
+
+	cfg, err := cmd.Flags().GetString("config")
+	if err != nil {
+		return out.Error("Failed to read --config flag", err)
+	}
+
+	var raw json.RawMessage
+	if trimmed := strings.TrimSpace(cfg); trimmed != "" {
+		if !json.Valid([]byte(trimmed)) {
+			return out.Error("Config must be valid JSON", fmt.Errorf("invalid config payload"))
+		}
+		raw = json.RawMessage(trimmed)
+	}
+
+	c, err := client.New()
+	if err != nil {
+		return out.Error("Failed to initialise client", err)
+	}
+	defer c.Close()
+
+	entry, err := postModuleAction(c, "/modules/bind", moduleActionRequestPayload{
+		Slot:      slot,
+		AdapterID: adapter,
+		Config:    raw,
+	})
+	if err != nil {
+		return out.Error("Failed to bind module", err)
+	}
+
+	if out.jsonMode {
+		return out.Print(apihttp.ModuleActionResult{Module: entry})
+	}
+
+	printModuleSummary("Bound", entry)
+	return nil
+}
+
+func modulesStart(cmd *cobra.Command, args []string) error {
+	out := newOutputFormatter(cmd)
+
+	slot := strings.TrimSpace(args[0])
+	if slot == "" {
+		return out.Error("Slot must be provided", errors.New("invalid arguments"))
+	}
+
+	c, err := client.New()
+	if err != nil {
+		return out.Error("Failed to initialise client", err)
+	}
+	defer c.Close()
+
+	entry, err := postModuleAction(c, "/modules/start", moduleActionRequestPayload{Slot: slot})
+	if err != nil {
+		return out.Error("Failed to start module", err)
+	}
+
+	if out.jsonMode {
+		return out.Print(apihttp.ModuleActionResult{Module: entry})
+	}
+
+	printModuleSummary("Started", entry)
+	return nil
+}
+
+func modulesStop(cmd *cobra.Command, args []string) error {
+	out := newOutputFormatter(cmd)
+
+	slot := strings.TrimSpace(args[0])
+	if slot == "" {
+		return out.Error("Slot must be provided", errors.New("invalid arguments"))
+	}
+
+	c, err := client.New()
+	if err != nil {
+		return out.Error("Failed to initialise client", err)
+	}
+	defer c.Close()
+
+	entry, err := postModuleAction(c, "/modules/stop", moduleActionRequestPayload{Slot: slot})
+	if err != nil {
+		return out.Error("Failed to stop module", err)
+	}
+
+	if out.jsonMode {
+		return out.Print(apihttp.ModuleActionResult{Module: entry})
+	}
+
+	printModuleSummary("Stopped", entry)
+	return nil
+}
+
+func moduleAdapterLabel(entry apihttp.ModuleEntry) string {
+	if entry.AdapterID == nil || strings.TrimSpace(*entry.AdapterID) == "" {
+		return "-"
+	}
+	return *entry.AdapterID
+}
+
+func moduleHealthLabel(entry apihttp.ModuleEntry) string {
+	if entry.Runtime == nil || strings.TrimSpace(entry.Runtime.Health) == "" {
+		return "-"
+	}
+	health := entry.Runtime.Health
+	if strings.TrimSpace(entry.Runtime.ModuleID) != "" {
+		health = fmt.Sprintf("%s (%s)", health, entry.Runtime.ModuleID)
+	}
+	return health
+}
+
+func printModuleSummary(action string, entry apihttp.ModuleEntry) {
+	fmt.Printf("%s slot %s -> %s (status: %s)\n", action, entry.Slot, moduleAdapterLabel(entry), entry.Status)
+	if entry.Runtime != nil {
+		fmt.Printf("  Health: %s\n", moduleHealthLabel(entry))
+		if entry.Runtime.Message != "" {
+			fmt.Printf("  Message: %s\n", entry.Runtime.Message)
+		}
+		if entry.Runtime.StartedAt != nil && *entry.Runtime.StartedAt != "" {
+			fmt.Printf("  Started: %s\n", *entry.Runtime.StartedAt)
+		}
+		fmt.Printf("  Updated: %s\n", entry.Runtime.UpdatedAt)
+	}
 }
 
 func quickstartInit(cmd *cobra.Command, args []string) error {
