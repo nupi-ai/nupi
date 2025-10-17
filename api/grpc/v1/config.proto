@@ -1,0 +1,106 @@
+syntax = "proto3";
+
+package nupi.api.v1;
+
+option go_package = "github.com/nupi-ai/nupi/internal/api/grpc/v1;v1";
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/wrappers.proto";
+import "api/grpc/v1/nupi.proto";
+
+// TransportConfig represents daemon transport settings (HTTP + gRPC bindings, TLS, CORS).
+message TransportConfig {
+  string binding = 1;
+  int32 port = 2;
+  string tls_cert_path = 3;
+  string tls_key_path = 4;
+  repeated string allowed_origins = 5;
+  int32 grpc_port = 6;
+  string grpc_binding = 7;
+  bool auth_required = 8;
+}
+
+// UpdateTransportConfigRequest propagates new transport settings.
+message UpdateTransportConfigRequest {
+  TransportConfig config = 1;
+}
+
+// Adapter describes a stored adapter binary or integration.
+message Adapter {
+  string id = 1;
+  string source = 2;
+  string version = 3;
+  string type = 4;
+  string name = 5;
+  string manifest = 6;
+  string created_at = 7;
+  string updated_at = 8;
+}
+
+// ListAdaptersResponse returns the catalog of known adapters.
+message ListAdaptersResponse {
+  repeated Adapter adapters = 1;
+}
+
+// AdapterBinding represents a slot -> adapter assignment.
+message AdapterBinding {
+  string slot = 1;
+  string adapter_id = 2;
+  string status = 3;
+  string config = 4;
+  string updated_at = 5;
+}
+
+// ListAdapterBindingsResponse enumerates bindings for every slot.
+message ListAdapterBindingsResponse {
+  repeated AdapterBinding bindings = 1;
+}
+
+// SetAdapterBindingRequest assigns an adapter to a slot.
+message SetAdapterBindingRequest {
+  string slot = 1;
+  string adapter_id = 2;
+  string config_json = 3;
+}
+
+// ClearAdapterBindingRequest removes the adapter assignment for a slot.
+message ClearAdapterBindingRequest {
+  string slot = 1;
+}
+
+// QuickstartStatusResponse summarizes progress and module state for the quickstart wizard.
+message QuickstartStatusResponse {
+  bool completed = 1;
+  string completed_at = 2;
+  repeated string pending_slots = 3;
+  repeated ModuleEntry modules = 4;
+}
+
+// QuickstartBinding pairs a slot with the adapter chosen via quickstart.
+message QuickstartBinding {
+  string slot = 1;
+  string adapter_id = 2;
+}
+
+// UpdateQuickstartRequest applies quickstart selections.
+message UpdateQuickstartRequest {
+  repeated QuickstartBinding bindings = 1;
+  google.protobuf.BoolValue complete = 2;
+}
+
+service ConfigService {
+  rpc GetTransportConfig(google.protobuf.Empty) returns (TransportConfig);
+  rpc UpdateTransportConfig(UpdateTransportConfigRequest) returns (TransportConfig);
+}
+
+service AdaptersService {
+  rpc ListAdapters(google.protobuf.Empty) returns (ListAdaptersResponse);
+  rpc ListAdapterBindings(google.protobuf.Empty) returns (ListAdapterBindingsResponse);
+  rpc SetAdapterBinding(SetAdapterBindingRequest) returns (AdapterBinding);
+  rpc ClearAdapterBinding(ClearAdapterBindingRequest) returns (google.protobuf.Empty);
+}
+
+service QuickstartService {
+  rpc GetStatus(google.protobuf.Empty) returns (QuickstartStatusResponse);
+  rpc Update(UpdateQuickstartRequest) returns (QuickstartStatusResponse);
+}

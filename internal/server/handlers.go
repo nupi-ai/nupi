@@ -146,9 +146,10 @@ type transportRequest struct {
 }
 
 type quickstartStatusResponse struct {
-	Completed    bool     `json:"completed"`
-	CompletedAt  string   `json:"completed_at,omitempty"`
-	PendingSlots []string `json:"pending_slots"`
+	Completed    bool                  `json:"completed"`
+	CompletedAt  string                `json:"completed_at,omitempty"`
+	PendingSlots []string              `json:"pending_slots"`
+	Modules      []apihttp.ModuleEntry `json:"modules,omitempty"`
 }
 
 type quickstartBinding struct {
@@ -2658,9 +2659,25 @@ func (s *APIServer) handleQuickstartGet(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	moduleStatuses, err := s.quickstartModuleStatuses(r.Context())
+	if err != nil {
+		if errors.Is(err, errModulesServiceUnavailable) {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		} else {
+			http.Error(w, fmt.Sprintf("modules overview failed: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	moduleEntries := make([]apihttp.ModuleEntry, 0, len(moduleStatuses))
+	for _, status := range moduleStatuses {
+		moduleEntries = append(moduleEntries, bindingStatusToResponse(status))
+	}
+
 	resp := quickstartStatusResponse{
 		Completed:    completed,
 		PendingSlots: pending,
+		Modules:      moduleEntries,
 	}
 
 	if completedAt != nil {
@@ -2733,9 +2750,25 @@ func (s *APIServer) handleQuickstartPost(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	moduleStatuses, err := s.quickstartModuleStatuses(ctx)
+	if err != nil {
+		if errors.Is(err, errModulesServiceUnavailable) {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+		} else {
+			http.Error(w, fmt.Sprintf("modules overview failed: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+
+	moduleEntries := make([]apihttp.ModuleEntry, 0, len(moduleStatuses))
+	for _, status := range moduleStatuses {
+		moduleEntries = append(moduleEntries, bindingStatusToResponse(status))
+	}
+
 	resp := quickstartStatusResponse{
 		Completed:    completed,
 		PendingSlots: pending,
+		Modules:      moduleEntries,
 	}
 
 	if completedAt != nil {
@@ -2744,6 +2777,19 @@ func (s *APIServer) handleQuickstartPost(w http.ResponseWriter, r *http.Request)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+var errModulesServiceUnavailable = errors.New("modules service unavailable")
+
+func (s *APIServer) quickstartModuleStatuses(ctx context.Context) ([]modules.BindingStatus, error) {
+	if s.modules == nil {
+		return nil, errModulesServiceUnavailable
+	}
+	statuses, err := s.modules.Overview(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return statuses, nil
 }
 
 // handleRecordingsList returns list of all recordings

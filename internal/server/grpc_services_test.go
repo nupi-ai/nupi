@@ -10,6 +10,8 @@ import (
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/pty"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	emptypb "google.golang.org/protobuf/types/known/emptypb"
 )
 
@@ -219,5 +221,56 @@ func TestModulesServiceBindStartStop(t *testing.T) {
 	}
 	if stopResp.GetModule().GetRuntime() == nil || !strings.EqualFold(stopResp.GetModule().GetRuntime().GetHealth(), string(eventbus.ModuleHealthStopped)) {
 		t.Fatalf("expected runtime health 'stopped', got %+v", stopResp.GetModule().GetRuntime())
+	}
+}
+
+func TestQuickstartServiceIncludesModules(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	store := apiServer.configStore
+	modulesSvc := newTestModulesService(t, store)
+	apiServer.SetModulesService(modulesSvc)
+
+	ctx := context.Background()
+	adapter := configstore.Adapter{ID: "adapter.ai.quickstart", Source: "builtin", Type: "ai", Name: "Quickstart AI"}
+	if err := store.UpsertAdapter(ctx, adapter); err != nil {
+		t.Fatalf("upsert adapter: %v", err)
+	}
+	if err := store.SetActiveAdapter(ctx, "ai.primary", adapter.ID, nil); err != nil {
+		t.Fatalf("set active adapter: %v", err)
+	}
+
+	service := newQuickstartService(apiServer)
+	resp, err := service.GetStatus(ctx, &emptypb.Empty{})
+	if err != nil {
+		t.Fatalf("QuickstartService.GetStatus error: %v", err)
+	}
+	if len(resp.GetModules()) == 0 {
+		t.Fatalf("expected modules list in quickstart response")
+	}
+	var found bool
+	for _, entry := range resp.GetModules() {
+		if entry.GetSlot() == "ai.primary" {
+			found = true
+			if entry.GetAdapterId() != adapter.ID {
+				t.Fatalf("expected adapter %s, got %s", adapter.ID, entry.GetAdapterId())
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("ai.primary slot not present in quickstart modules")
+	}
+}
+
+func TestQuickstartServiceWithoutModulesService(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+
+	service := newQuickstartService(apiServer)
+	_, err := service.GetStatus(context.Background(), &emptypb.Empty{})
+	if err == nil {
+		t.Fatalf("expected error when modules service unavailable")
+	}
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("expected error codes.Unavailable, got %v", status.Code(err))
 	}
 }

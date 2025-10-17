@@ -1091,9 +1091,10 @@ type transportConfigResponse struct {
 }
 
 type quickstartStatusPayload struct {
-	Completed    bool     `json:"completed"`
-	CompletedAt  string   `json:"completed_at,omitempty"`
-	PendingSlots []string `json:"pending_slots"`
+	Completed    bool                  `json:"completed"`
+	CompletedAt  string                `json:"completed_at,omitempty"`
+	PendingSlots []string              `json:"pending_slots"`
+	Modules      []apihttp.ModuleEntry `json:"modules,omitempty"`
 }
 
 type quickstartBindingRequest struct {
@@ -1318,28 +1319,8 @@ func modulesList(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 
-	sort.Slice(overview.Modules, func(i, j int) bool {
-		return strings.Compare(overview.Modules[i].Slot, overview.Modules[j].Slot) < 0
-	})
-
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "SLOT\tADAPTER\tSTATUS\tHEALTH\tUPDATED")
-	for _, entry := range overview.Modules {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
-			entry.Slot,
-			moduleAdapterLabel(entry),
-			entry.Status,
-			moduleHealthLabel(entry),
-			entry.UpdatedAt,
-		)
-	}
-	w.Flush()
-
-	for _, entry := range overview.Modules {
-		if entry.Runtime != nil && strings.TrimSpace(entry.Runtime.Message) != "" {
-			fmt.Printf("%s: %s\n", entry.Slot, entry.Runtime.Message)
-		}
-	}
+	printModuleTable(overview.Modules)
+	printModuleRuntimeMessages(overview.Modules)
 	return nil
 }
 
@@ -1460,6 +1441,45 @@ func moduleHealthLabel(entry apihttp.ModuleEntry) string {
 	return health
 }
 
+func sortedModules(entries []apihttp.ModuleEntry) []apihttp.ModuleEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+	sorted := append([]apihttp.ModuleEntry(nil), entries...)
+	sort.Slice(sorted, func(i, j int) bool {
+		return strings.Compare(sorted[i].Slot, sorted[j].Slot) < 0
+	})
+	return sorted
+}
+
+func printModuleTable(entries []apihttp.ModuleEntry) {
+	sorted := sortedModules(entries)
+	if len(sorted) == 0 {
+		return
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "SLOT\tADAPTER\tSTATUS\tHEALTH\tUPDATED")
+	for _, entry := range sorted {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+			entry.Slot,
+			moduleAdapterLabel(entry),
+			entry.Status,
+			moduleHealthLabel(entry),
+			entry.UpdatedAt,
+		)
+	}
+	w.Flush()
+}
+
+func printModuleRuntimeMessages(entries []apihttp.ModuleEntry) {
+	for _, entry := range sortedModules(entries) {
+		if entry.Runtime != nil && strings.TrimSpace(entry.Runtime.Message) != "" {
+			fmt.Printf("%s: %s\n", entry.Slot, entry.Runtime.Message)
+		}
+	}
+}
+
 func printModuleSummary(action string, entry apihttp.ModuleEntry) {
 	fmt.Printf("%s slot %s -> %s (status: %s)\n", action, entry.Slot, moduleAdapterLabel(entry), entry.Status)
 	if entry.Runtime != nil {
@@ -1489,6 +1509,13 @@ func quickstartInit(cmd *cobra.Command, args []string) error {
 	status, err := fetchQuickstartStatus(c)
 	if err != nil {
 		return out.Error("Failed to fetch quickstart status", err)
+	}
+
+	if len(status.Modules) > 0 {
+		fmt.Println("Current module status:")
+		printModuleTable(status.Modules)
+		printModuleRuntimeMessages(status.Modules)
+		fmt.Println()
 	}
 
 	if status.Completed && len(status.PendingSlots) == 0 {
@@ -1603,6 +1630,12 @@ func quickstartInit(cmd *cobra.Command, args []string) error {
 		fmt.Println("No pending slots remaining.")
 	}
 
+	if len(result.Modules) > 0 {
+		fmt.Println("\nUpdated module status:")
+		printModuleTable(result.Modules)
+		printModuleRuntimeMessages(result.Modules)
+	}
+
 	return nil
 }
 
@@ -1635,6 +1668,14 @@ func quickstartStatus(cmd *cobra.Command, args []string) error {
 		for _, slot := range payload.PendingSlots {
 			fmt.Printf("  - %s\n", slot)
 		}
+	}
+
+	if len(payload.Modules) == 0 {
+		fmt.Println("Modules: none reported")
+	} else {
+		fmt.Println("\nModules:")
+		printModuleTable(payload.Modules)
+		printModuleRuntimeMessages(payload.Modules)
 	}
 
 	return nil
@@ -1716,6 +1757,14 @@ func quickstartComplete(cmd *cobra.Command, args []string) error {
 		for _, slot := range status.PendingSlots {
 			fmt.Printf("  - %s\n", slot)
 		}
+	}
+
+	if len(status.Modules) == 0 {
+		fmt.Println("Modules: none reported")
+	} else {
+		fmt.Println("\nModules:")
+		printModuleTable(status.Modules)
+		printModuleRuntimeMessages(status.Modules)
 	}
 
 	return nil

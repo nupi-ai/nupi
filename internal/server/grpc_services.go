@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sort"
 	"strings"
 	"time"
@@ -498,6 +499,20 @@ func (q *quickstartService) fetchStatus(ctx context.Context) (*apiv1.QuickstartS
 	}
 	if completedAt != nil {
 		resp.CompletedAt = completedAt.UTC().Format(time.RFC3339)
+	}
+
+	moduleStatuses, modulesErr := q.api.quickstartModuleStatuses(ctx)
+	if modulesErr != nil {
+		if errors.Is(modulesErr, errModulesServiceUnavailable) {
+			return nil, status.Error(codes.Unavailable, modulesErr.Error())
+		}
+		return nil, status.Errorf(codes.Internal, "modules overview: %v", modulesErr)
+	}
+	if len(moduleStatuses) > 0 {
+		resp.Modules = make([]*apiv1.ModuleEntry, 0, len(moduleStatuses))
+		for _, status := range moduleStatuses {
+			resp.Modules = append(resp.Modules, bindingStatusToProto(status))
+		}
 	}
 	return resp, nil
 }

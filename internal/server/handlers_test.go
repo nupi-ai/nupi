@@ -817,6 +817,7 @@ func TestHTTPAuthNotRequiredOnLoopback(t *testing.T) {
 
 func TestHandleQuickstartGet(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
+	apiServer.SetModulesService(newTestModulesService(t, apiServer.configStore))
 
 	req := withAdmin(apiServer, httptest.NewRequest(http.MethodGet, "/config/quickstart", nil))
 	rec := httptest.NewRecorder()
@@ -840,8 +841,74 @@ func TestHandleQuickstartGet(t *testing.T) {
 	}
 }
 
+func TestHandleQuickstartIncludesModules(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	store := apiServer.configStore
+
+	modulesSvc := newTestModulesService(t, store)
+	apiServer.SetModulesService(modulesSvc)
+
+	ctx := context.Background()
+	adapter := configstore.Adapter{ID: "adapter.ai.quickstart", Source: "builtin", Type: "ai", Name: "Quickstart AI"}
+	if err := store.UpsertAdapter(ctx, adapter); err != nil {
+		t.Fatalf("upsert adapter: %v", err)
+	}
+	if err := store.SetActiveAdapter(ctx, "ai.primary", adapter.ID, nil); err != nil {
+		t.Fatalf("set active adapter: %v", err)
+	}
+
+	req := withAdmin(apiServer, httptest.NewRequest(http.MethodGet, "/config/quickstart", nil))
+	rec := httptest.NewRecorder()
+
+	apiServer.handleQuickstart(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
+	}
+
+	var payload quickstartStatusResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+
+	if len(payload.Modules) == 0 {
+		t.Fatalf("expected modules list in quickstart response")
+	}
+
+	var found bool
+	for _, entry := range payload.Modules {
+		if entry.Slot == "ai.primary" {
+			found = true
+			if entry.AdapterID == nil || *entry.AdapterID != adapter.ID {
+				t.Fatalf("expected adapter %s, got %v", adapter.ID, entry.AdapterID)
+			}
+			if strings.TrimSpace(entry.Status) == "" {
+				t.Fatalf("expected status for module entry %+v", entry)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("ai.primary slot not present in modules overview")
+	}
+}
+
+func TestHandleQuickstartWithoutModulesService(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+
+	req := withAdmin(apiServer, httptest.NewRequest(http.MethodGet, "/config/quickstart", nil))
+	rec := httptest.NewRecorder()
+
+	apiServer.handleQuickstart(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected status %d when modules service unavailable, got %d", http.StatusServiceUnavailable, rec.Code)
+	}
+}
+
 func TestHandleQuickstartCompleteValidation(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
+	apiServer.SetModulesService(newTestModulesService(t, apiServer.configStore))
 
 	req := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/config/quickstart", bytes.NewBufferString(`{"complete":true}`)))
 	req.Header.Set("Content-Type", "application/json")
