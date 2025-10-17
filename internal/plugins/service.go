@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
 
 	"github.com/nupi-ai/nupi/internal/detector"
@@ -11,8 +12,9 @@ import (
 
 // Service manages plugin assets and metadata for the daemon.
 type Service struct {
-	pluginDir string
-	extract   func(string) error
+	pluginDir   string
+	pipelineDir string
+	extract     func(string) error
 }
 
 // Option configures optional behaviour on the Service.
@@ -28,9 +30,11 @@ func WithExtractor(extractor func(string) error) Option {
 // NewService constructs a plugin service rooted in the given instance directory.
 func NewService(instanceDir string, opts ...Option) *Service {
 	pluginDir := filepath.Join(instanceDir, "plugins")
+	pipelineDir := filepath.Join(instanceDir, "pipeline")
 	svc := &Service{
-		pluginDir: pluginDir,
-		extract:   ExtractEmbedded,
+		pluginDir:   pluginDir,
+		pipelineDir: pipelineDir,
+		extract:     ExtractEmbedded,
 	}
 
 	for _, opt := range opts {
@@ -43,6 +47,11 @@ func NewService(instanceDir string, opts ...Option) *Service {
 // PluginDir returns the directory where plugins are stored.
 func (s *Service) PluginDir() string {
 	return s.pluginDir
+}
+
+// PipelineDir returns the directory containing JS cleaners.
+func (s *Service) PipelineDir() string {
+	return s.pipelineDir
 }
 
 // SyncEmbedded updates the embedded plugin set on disk.
@@ -68,6 +77,9 @@ func (s *Service) GenerateIndex() error {
 
 // Start implements runtime.Service to integrate with the daemon lifecycle.
 func (s *Service) Start(ctx context.Context) error {
+	if err := os.MkdirAll(s.pipelineDir, 0o755); err != nil {
+		return fmt.Errorf("plugin service: ensure pipeline dir: %w", err)
+	}
 	if err := s.SyncEmbedded(); err != nil {
 		return err
 	}

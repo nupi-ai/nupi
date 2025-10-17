@@ -18,6 +18,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/adapterrunner"
 	"github.com/nupi-ai/nupi/internal/config"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
+	"github.com/nupi-ai/nupi/internal/contentpipeline"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/plugins"
 	daemonruntime "github.com/nupi-ai/nupi/internal/runtime"
@@ -87,11 +88,20 @@ func New(opts Options) (*Daemon, error) {
 
 	host := daemonruntime.NewServiceHost()
 
+	pluginService := plugins.NewService(paths.Home)
+	sessionManager.SetPluginDir(pluginService.PluginDir())
+
 	// plugins service
 	if err := host.Register("plugins", func(ctx context.Context) (daemonruntime.Service, error) {
-		svc := plugins.NewService(paths.Home)
-		sessionManager.SetPluginDir(svc.PluginDir())
-		return svc, nil
+		return pluginService, nil
+	}); err != nil {
+		return nil, err
+	}
+
+	pipelineService := contentpipeline.NewService(bus, pluginService.PipelineDir())
+
+	if err := host.Register("content_pipeline", func(ctx context.Context) (daemonruntime.Service, error) {
+		return pipelineService, nil
 	}); err != nil {
 		return nil, err
 	}
