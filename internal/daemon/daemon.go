@@ -19,6 +19,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/config"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/contentpipeline"
+	"github.com/nupi-ai/nupi/internal/conversation"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/plugins"
 	daemonruntime "github.com/nupi-ai/nupi/internal/runtime"
@@ -98,10 +99,17 @@ func New(opts Options) (*Daemon, error) {
 		return nil, err
 	}
 
-    pipelineService := contentpipeline.NewService(bus, pluginService)
+	pipelineService := contentpipeline.NewService(bus, pluginService)
+	conversationService := conversation.NewService(bus)
 
 	if err := host.Register("content_pipeline", func(ctx context.Context) (daemonruntime.Service, error) {
 		return pipelineService, nil
+	}); err != nil {
+		return nil, err
+	}
+
+	if err := host.Register("conversation", func(ctx context.Context) (daemonruntime.Service, error) {
+		return conversationService, nil
 	}); err != nil {
 		return nil, err
 	}
