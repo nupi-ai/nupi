@@ -158,6 +158,221 @@ func TestServiceFactoryError(t *testing.T) {
 	}
 }
 
+func TestServiceBuffersUntilAdapterAvailable(t *testing.T) {
+	bus := eventbus.New()
+
+	var (
+		mu    sync.Mutex
+		ready bool
+	)
+
+	factory := FactoryFunc(func(ctx context.Context, params SessionParams) (Transcriber, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if !ready {
+			return nil, ErrAdapterUnavailable
+		}
+		return &scriptedTranscriber{
+			outputs: map[uint64][]Transcription{
+				1: {
+					{
+						Text:       "hello buffered",
+						Confidence: 0.9,
+						Final:      true,
+						StartedAt:  time.Unix(1, 0).UTC(),
+						EndedAt:    time.Unix(1, int64(200*time.Millisecond)).UTC(),
+					},
+				},
+			},
+		}, nil
+	})
+
+	svc := New(
+		bus,
+		WithFactory(factory),
+		WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("start service: %v", err)
+	}
+	defer svc.Shutdown(context.Background())
+
+	sub := bus.Subscribe(eventbus.TopicSpeechTranscript)
+	defer sub.Close()
+
+	segment := eventbus.AudioIngressSegmentEvent{
+		SessionID: "sess-pending",
+		StreamID:  "mic",
+		Sequence:  1,
+		Format: eventbus.AudioFormat{
+			Encoding:   eventbus.AudioEncodingPCM16,
+			SampleRate: 16000,
+			Channels:   1,
+			BitDepth:   16,
+		},
+		Data:      make([]byte, 640),
+		Duration:  20 * time.Millisecond,
+		First:     true,
+		Last:      true,
+		StartedAt: time.Unix(1, 0).UTC(),
+		EndedAt:   time.Unix(1, int64(200*time.Millisecond)).UTC(),
+	}
+
+	bus.Publish(context.Background(), eventbus.Envelope{
+		Topic:   eventbus.TopicAudioIngressSegment,
+		Payload: segment,
+	})
+
+	select {
+	case evt := <-sub.C():
+		t.Fatalf("unexpected transcript before adapter ready: %+v", evt.Payload)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	mu.Lock()
+	ready = true
+	mu.Unlock()
+
+	transcript := receiveTranscript(t, sub, 500*time.Millisecond)
+	if transcript.Text != "hello buffered" {
+		t.Fatalf("unexpected transcript text: %q", transcript.Text)
+	}
+	if !transcript.Final {
+		t.Fatalf("expected final transcript flag")
+	}
+}
+
+func TestServiceDoesNotBufferWhenFactoryUnavailable(t *testing.T) {
+	bus := eventbus.New()
+
+	svc := New(bus)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("start service: %v", err)
+	}
+	defer svc.Shutdown(context.Background())
+
+	sub := bus.Subscribe(eventbus.TopicSpeechTranscript)
+	defer sub.Close()
+
+	for i := 0; i < 10; i++ {
+		bus.Publish(context.Background(), eventbus.Envelope{
+			Topic: eventbus.TopicAudioIngressSegment,
+			Payload: eventbus.AudioIngressSegmentEvent{
+				SessionID: "sess-none",
+				StreamID:  "mic",
+				Sequence:  uint64(i),
+				Format: eventbus.AudioFormat{
+					Encoding:   eventbus.AudioEncodingPCM16,
+					SampleRate: 16000,
+					Channels:   1,
+					BitDepth:   16,
+				},
+				Data:      make([]byte, 640),
+				Duration:  20 * time.Millisecond,
+				First:     i == 0,
+				Last:      i == 9,
+			},
+		})
+	}
+
+	select {
+	case <-sub.C():
+		t.Fatalf("unexpected transcript when factory unavailable")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	svc.pendingMu.Lock()
+	defer svc.pendingMu.Unlock()
+	if len(svc.pending) != 0 {
+		t.Fatalf("expected no pending entries when factory unavailable, got %d", len(svc.pending))
+	}
+}
+
+func TestPendingBufferDropsOldestWhenFull(t *testing.T) {
+	bus := eventbus.New()
+
+	var (
+		mu       sync.Mutex
+		attempts int
+	)
+
+	totalSegments := maxPendingSegments + 1
+	targetSequence := uint64(totalSegments - 1)
+
+	factory := FactoryFunc(func(ctx context.Context, params SessionParams) (Transcriber, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		attempts++
+		if attempts < 3 {
+			return nil, ErrAdapterUnavailable
+		}
+		return &scriptedTranscriber{
+			outputs: map[uint64][]Transcription{
+				targetSequence: {
+					{
+						Text:       "kept",
+						Confidence: 0.7,
+						Final:      true,
+						StartedAt:  time.Unix(1, 0).UTC(),
+						EndedAt:    time.Unix(1, int64(200*time.Millisecond)).UTC(),
+					},
+				},
+			},
+		}, nil
+	})
+
+	svc := New(
+		bus,
+		WithFactory(factory),
+		WithRetryDelays(5*time.Millisecond, 20*time.Millisecond),
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("start service: %v", err)
+	}
+	defer svc.Shutdown(context.Background())
+
+	sub := bus.Subscribe(eventbus.TopicSpeechTranscript)
+	defer sub.Close()
+
+	for i := 0; i < totalSegments; i++ {
+		seq := uint64(i)
+		bus.Publish(context.Background(), eventbus.Envelope{
+			Topic: eventbus.TopicAudioIngressSegment,
+			Payload: eventbus.AudioIngressSegmentEvent{
+				SessionID: "sess-drop",
+				StreamID:  "mic",
+				Sequence:  seq,
+				Format: eventbus.AudioFormat{
+					Encoding:   eventbus.AudioEncodingPCM16,
+					SampleRate: 16000,
+					Channels:   1,
+					BitDepth:   16,
+				},
+				Data:      make([]byte, 640),
+				Duration:  20 * time.Millisecond,
+				First:     seq == 0,
+				Last:      seq == targetSequence,
+				StartedAt: time.Unix(1, 0).UTC(),
+				EndedAt:   time.Unix(1, int64(200*time.Millisecond)).UTC(),
+			},
+		})
+	}
+
+	transcript := receiveTranscript(t, sub, time.Second)
+	if transcript.Text != "kept" {
+		t.Fatalf("expected only last buffered transcript; got %q", transcript.Text)
+	}
+}
+
 func receiveTranscript(t *testing.T, sub *eventbus.Subscription, timeout time.Duration) eventbus.SpeechTranscriptEvent {
 	t.Helper()
 	timer := time.NewTimer(timeout)

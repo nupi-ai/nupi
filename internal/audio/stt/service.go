@@ -23,6 +23,9 @@ var (
 const (
 	defaultSegmentBuffer = 16
 	defaultFlushTimeout  = 2 * time.Second
+	defaultRetryInitial  = 200 * time.Millisecond
+	defaultRetryMax      = 5 * time.Second
+	maxPendingSegments   = 100
 )
 
 // Transcription represents a recognised speech segment returned by a transcriber.
@@ -101,6 +104,21 @@ func WithFlushTimeout(timeout time.Duration) Option {
 	}
 }
 
+// WithRetryDelays overrides retry backoff used when adapters are temporarily unavailable.
+func WithRetryDelays(initial, max time.Duration) Option {
+	return func(s *Service) {
+		if initial > 0 {
+			s.retryInitial = initial
+		}
+		if max > 0 && max >= s.retryInitial {
+			s.retryMax = max
+		}
+		if s.retryMax < s.retryInitial {
+			s.retryMax = s.retryInitial
+		}
+	}
+}
+
 // Service bridges audio ingress segments to STT adapters and publishes transcripts.
 type Service struct {
 	bus           *eventbus.Bus
@@ -108,12 +126,17 @@ type Service struct {
 	logger        *log.Logger
 	segmentBuffer int
 	flushTimeout  time.Duration
+	retryInitial  time.Duration
+	retryMax      time.Duration
 
 	ctx    context.Context
 	cancel context.CancelFunc
 
 	mu      sync.Mutex
 	streams map[string]*stream
+
+	pendingMu sync.Mutex
+	pending   map[string]*pendingStream
 
 	sub *eventbus.Subscription
 	wg  sync.WaitGroup
@@ -126,7 +149,10 @@ func New(bus *eventbus.Bus, opts ...Option) *Service {
 		logger:        log.Default(),
 		segmentBuffer: defaultSegmentBuffer,
 		flushTimeout:  defaultFlushTimeout,
+		retryInitial:  defaultRetryInitial,
+		retryMax:      defaultRetryMax,
 		streams:       make(map[string]*stream),
+		pending:       make(map[string]*pendingStream),
 		factory: FactoryFunc(func(context.Context, SessionParams) (Transcriber, error) {
 			return nil, ErrFactoryUnavailable
 		}),
@@ -191,6 +217,15 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		st.wait(ctx)
 	}
 
+	s.pendingMu.Lock()
+	for key, ps := range s.pending {
+		if ps != nil {
+			ps.stopTimer()
+		}
+		delete(s.pending, key)
+	}
+	s.pendingMu.Unlock()
+
 	return nil
 }
 
@@ -222,29 +257,13 @@ func (s *Service) handleSegment(segment eventbus.AudioIngressSegmentEvent) {
 		return
 	}
 
-	stream, err := s.getOrCreateStream(segment)
-	if err != nil {
-		s.logger.Printf("[STT] stream %s/%s unavailable: %v", segment.SessionID, segment.StreamID, err)
-		return
-	}
-
-	if err := stream.enqueue(segment); err != nil && !errors.Is(err, ErrStreamClosed) {
-		s.logger.Printf("[STT] enqueue segment for %s/%s failed: %v", segment.SessionID, segment.StreamID, err)
-	}
-}
-
-func (s *Service) getOrCreateStream(segment eventbus.AudioIngressSegmentEvent) (*stream, error) {
 	key := streamKey(segment.SessionID, segment.StreamID)
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if st, ok := s.streams[key]; ok {
-		return st, nil
-	}
-
-	if s.factory == nil {
-		return nil, ErrFactoryUnavailable
+	if stream, ok := s.stream(key); ok {
+		if err := stream.enqueue(segment); err != nil && !errors.Is(err, ErrStreamClosed) {
+			s.logger.Printf("[STT] enqueue segment for %s/%s failed: %v", segment.SessionID, segment.StreamID, err)
+		}
+		return
 	}
 
 	params := SessionParams{
@@ -254,14 +273,125 @@ func (s *Service) getOrCreateStream(segment eventbus.AudioIngressSegmentEvent) (
 		Metadata:  copyMetadata(segment.Metadata),
 	}
 
-	transcriber, err := s.factory.Create(s.ctx, params)
+	stream, err := s.createStream(key, params)
+	switch {
+	case err == nil:
+		if err := stream.enqueue(segment); err != nil && !errors.Is(err, ErrStreamClosed) {
+			s.logger.Printf("[STT] enqueue segment for %s/%s failed: %v", segment.SessionID, segment.StreamID, err)
+		}
+	case errors.Is(err, ErrAdapterUnavailable):
+		s.bufferPending(key, params, segment)
+	case errors.Is(err, ErrFactoryUnavailable):
+		s.logger.Printf("[STT] factory unavailable for %s/%s, dropping segment", segment.SessionID, segment.StreamID)
+	default:
+		s.logger.Printf("[STT] create stream %s/%s failed: %v", segment.SessionID, segment.StreamID, err)
+	}
+}
+
+func (s *Service) stream(key string) (*stream, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st, ok := s.streams[key]
+	return st, ok
+}
+
+func (s *Service) createStream(key string, params SessionParams) (*stream, error) {
+	if s.factory == nil {
+		return nil, ErrFactoryUnavailable
+	}
+
+	if st, ok := s.stream(key); ok {
+		return st, nil
+	}
+
+	ctx := s.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	transcriber, err := s.factory.Create(ctx, params)
 	if err != nil {
 		return nil, err
 	}
 
 	stream := newStream(key, s, params, transcriber)
+
+	s.mu.Lock()
+	if existing, ok := s.streams[key]; ok {
+		s.mu.Unlock()
+		stream.stop()
+		return existing, nil
+	}
 	s.streams[key] = stream
+	s.mu.Unlock()
+
+	s.flushPendingForStream(key, stream)
 	return stream, nil
+}
+
+func (s *Service) bufferPending(key string, params SessionParams, segment eventbus.AudioIngressSegmentEvent) {
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+
+	ps, ok := s.pending[key]
+	if !ok {
+		ps = &pendingStream{
+			params: params,
+		}
+		s.pending[key] = ps
+	}
+	if len(ps.segments) >= maxPendingSegments {
+		ps.segments = ps.segments[1:]
+		s.logger.Printf("[STT] pending buffer full for %s, dropping oldest segment", key)
+	}
+	ps.segments = append(ps.segments, segment)
+	ps.scheduleRetry(s, key)
+}
+
+func (s *Service) flushPendingForStream(key string, st *stream) {
+	s.pendingMu.Lock()
+	ps, ok := s.pending[key]
+	if ok {
+		ps.stopTimer()
+		segments := append([]eventbus.AudioIngressSegmentEvent(nil), ps.segments...)
+		delete(s.pending, key)
+		s.pendingMu.Unlock()
+
+		for _, segment := range segments {
+			if err := st.enqueue(segment); err != nil && !errors.Is(err, ErrStreamClosed) {
+				s.logger.Printf("[STT] enqueue pending segment for %s/%s failed: %v", segment.SessionID, segment.StreamID, err)
+			}
+		}
+		return
+	}
+	s.pendingMu.Unlock()
+}
+
+func (s *Service) retryPending(key string) {
+	s.pendingMu.Lock()
+	ps, ok := s.pending[key]
+	if !ok {
+		s.pendingMu.Unlock()
+		return
+	}
+	ps.timer = nil
+	params := ps.params
+	s.pendingMu.Unlock()
+
+	stream, err := s.createStream(key, params)
+	if err != nil {
+		if !errors.Is(err, ErrAdapterUnavailable) && !errors.Is(err, ErrFactoryUnavailable) && !errors.Is(err, context.Canceled) {
+			s.logger.Printf("[STT] retry stream %s failed: %v", key, err)
+		}
+		s.pendingMu.Lock()
+		if ps, ok := s.pending[key]; ok {
+			ps.scheduleRetry(s, key)
+		}
+		s.pendingMu.Unlock()
+		return
+	}
+
+	s.flushPendingForStream(key, stream)
 }
 
 func (s *Service) onStreamEnded(key string, st *stream) {
@@ -316,6 +446,41 @@ type stream struct {
 	wg        sync.WaitGroup
 	closeOnce sync.Once
 	seq       uint64
+}
+
+type pendingStream struct {
+	params   SessionParams
+	segments []eventbus.AudioIngressSegmentEvent
+	timer    *time.Timer
+	delay    time.Duration
+}
+
+func (ps *pendingStream) scheduleRetry(s *Service, key string) {
+	if ps.timer != nil {
+		return
+	}
+
+	delay := ps.delay
+	if delay <= 0 {
+		delay = s.retryInitial
+	} else {
+		delay *= 2
+		if delay > s.retryMax {
+			delay = s.retryMax
+		}
+	}
+	ps.delay = delay
+	ps.timer = time.AfterFunc(delay, func() {
+		s.retryPending(key)
+	})
+}
+
+func (ps *pendingStream) stopTimer() {
+	if ps.timer != nil {
+		ps.timer.Stop()
+		ps.timer = nil
+	}
+	ps.delay = 0
 }
 
 func newStream(key string, svc *Service, params SessionParams, transcriber Transcriber) *stream {
