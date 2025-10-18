@@ -23,7 +23,7 @@ func TestServicePublishesStatusOnStart(t *testing.T) {
 			},
 		},
 	}
-	launcher := &fakeLauncher{}
+	launcher := NewMockLauncher()
 	manager := NewManager(ManagerOptions{
 		Store:    store,
 		Runner:   adapterrunner.NewManager(t.TempDir()),
@@ -71,7 +71,7 @@ func TestServicePublishesRestartOnConfigChange(t *testing.T) {
 			},
 		},
 	}
-	launcher := &fakeLauncher{}
+	launcher := NewMockLauncher()
 	manager := NewManager(ManagerOptions{
 		Store:    store,
 		Runner:   adapterrunner.NewManager(t.TempDir()),
@@ -144,7 +144,8 @@ func TestServicePublishesErrorOnEnsureFailure(t *testing.T) {
 			},
 		},
 	}
-	launcher := &fakeLauncher{err: errors.New("launch failure")}
+	launcher := NewMockLauncher()
+	launcher.SetError(errors.New("launch failure"))
 	manager := NewManager(ManagerOptions{
 		Store:    store,
 		Runner:   adapterrunner.NewManager(t.TempDir()),
@@ -187,7 +188,8 @@ func TestServiceErrorCacheClearedOnRecovery(t *testing.T) {
 			},
 		},
 	}
-	launcher := &fakeLauncher{err: errors.New("launch failure")}
+	launcher := NewMockLauncher()
+	launcher.SetError(errors.New("launch failure"))
 	manager := NewManager(ManagerOptions{
 		Store:    store,
 		Runner:   adapterrunner.NewManager(t.TempDir()),
@@ -216,9 +218,7 @@ func TestServiceErrorCacheClearedOnRecovery(t *testing.T) {
 		t.Fatal("timeout waiting for error event")
 	}
 
-	launcher.mu.Lock()
-	launcher.err = nil
-	launcher.mu.Unlock()
+	launcher.SetError(nil)
 
 	if err := svc.reconcile(ctx); err != nil {
 		t.Fatalf("reconcile after fix: %v", err)
@@ -233,9 +233,7 @@ func TestServiceErrorCacheClearedOnRecovery(t *testing.T) {
 		t.Fatal("timeout waiting for ready event")
 	}
 
-	launcher.mu.Lock()
-	launcher.err = errors.New("launch failure")
-	launcher.mu.Unlock()
+	launcher.SetError(errors.New("launch failure"))
 
 	store.mu.Lock()
 	store.bindings[0].Config = `{"version":2}`
@@ -275,7 +273,7 @@ func TestServiceOverviewStartStop(t *testing.T) {
 		t.Fatalf("set active adapter: %v", err)
 	}
 
-	launcher := &fakeLauncher{}
+	launcher := NewMockLauncher()
 	manager := NewManager(ManagerOptions{
 		Store:    store,
 		Runner:   adapterrunner.NewManager(t.TempDir()),

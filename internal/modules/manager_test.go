@@ -27,59 +27,6 @@ func (f *fakeBindingSource) ListAdapterBindings(context.Context) ([]configstore.
 	return out, nil
 }
 
-type launchCall struct {
-	Binary string
-	Args   []string
-	Env    []string
-}
-
-type fakeLauncher struct {
-	mu      sync.Mutex
-	calls   []launchCall
-	handles []*fakeHandle
-	err     error
-}
-
-func (f *fakeLauncher) Launch(ctx context.Context, binary string, args []string, env []string) (ProcessHandle, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.err != nil {
-		return nil, f.err
-	}
-	call := launchCall{
-		Binary: binary,
-		Args:   append([]string(nil), args...),
-		Env:    append([]string(nil), env...),
-	}
-	f.calls = append(f.calls, call)
-	handle := &fakeHandle{}
-	f.handles = append(f.handles, handle)
-	return handle, nil
-}
-
-type fakeHandle struct {
-	mu        sync.Mutex
-	stopCount int
-	pid       int
-	err       error
-}
-
-func (f *fakeHandle) Stop(context.Context) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.stopCount++
-	return f.err
-}
-
-func (f *fakeHandle) PID() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.pid == 0 {
-		f.pid = 1234
-	}
-	return f.pid
-}
-
 func TestManagerEnsureStartsModules(t *testing.T) {
 	store := &fakeBindingSource{
 		bindings: []configstore.AdapterBinding{
@@ -91,7 +38,7 @@ func TestManagerEnsureStartsModules(t *testing.T) {
 			},
 		},
 	}
-	launcher := &fakeLauncher{}
+	launcher := NewMockLauncher()
 	manager := NewManager(ManagerOptions{
 		Store:    store,
 		Runner:   adapterrunner.NewManager(t.TempDir()),
@@ -101,11 +48,12 @@ func TestManagerEnsureStartsModules(t *testing.T) {
 	if err := manager.Ensure(context.Background()); err != nil {
 		t.Fatalf("Ensure returned error: %v", err)
 	}
-	if len(launcher.calls) != 1 {
-		t.Fatalf("expected 1 launch call, got %d", len(launcher.calls))
+	records := launcher.Records()
+	if len(records) != 1 {
+		t.Fatalf("expected 1 launch call, got %d", len(records))
 	}
 
-	call := launcher.calls[0]
+	call := records[0]
 	if call.Binary != manager.runner.BinaryPath() {
 		t.Fatalf("unexpected binary path %q", call.Binary)
 	}
@@ -122,7 +70,7 @@ func TestManagerEnsureStartsModules(t *testing.T) {
 	if err := manager.Ensure(context.Background()); err != nil {
 		t.Fatalf("Ensure (second call) returned error: %v", err)
 	}
-	if len(launcher.calls) != 1 {
+	if len(launcher.Records()) != 1 {
 		t.Fatalf("expected no additional launches when configuration unchanged")
 	}
 
@@ -134,14 +82,9 @@ func TestManagerEnsureStartsModules(t *testing.T) {
 		t.Fatalf("Ensure after removing bindings returned error: %v", err)
 	}
 
-	launcher.mu.Lock()
-	if len(launcher.handles) != 1 {
-		t.Fatalf("expected one handle, got %d", len(launcher.handles))
+	if launcher.StopCount(string(SlotAI)) != 1 {
+		t.Fatalf("expected handle to be stopped once")
 	}
-	if launcher.handles[0].stopCount == 0 {
-		t.Fatalf("expected handle to be stopped")
-	}
-	launcher.mu.Unlock()
 }
 
 func TestManagerEnsureUpdatesOnAdapterChange(t *testing.T) {
@@ -154,7 +97,7 @@ func TestManagerEnsureUpdatesOnAdapterChange(t *testing.T) {
 			},
 		},
 	}
-	launcher := &fakeLauncher{}
+	launcher := NewMockLauncher()
 	manager := NewManager(ManagerOptions{
 		Store:    store,
 		Runner:   adapterrunner.NewManager(t.TempDir()),
@@ -173,14 +116,13 @@ func TestManagerEnsureUpdatesOnAdapterChange(t *testing.T) {
 		t.Fatalf("Ensure after adapter change returned error: %v", err)
 	}
 
-	launcher.mu.Lock()
-	if len(launcher.calls) != 2 {
-		t.Fatalf("expected 2 launches (initial + restart), got %d", len(launcher.calls))
+	records := launcher.Records()
+	if len(records) != 2 {
+		t.Fatalf("expected 2 launches (initial + restart), got %d", len(records))
 	}
-	if launcher.handles[0].stopCount == 0 {
+	if launcher.StopCount(string(SlotTTS)) != 1 {
 		t.Fatalf("expected previous handle to be stopped on adapter change")
 	}
-	launcher.mu.Unlock()
 }
 
 func TestManagerEnsureConfigChange(t *testing.T) {
@@ -194,7 +136,7 @@ func TestManagerEnsureConfigChange(t *testing.T) {
 			},
 		},
 	}
-	launcher := &fakeLauncher{}
+	launcher := NewMockLauncher()
 	manager := NewManager(ManagerOptions{
 		Store:    store,
 		Runner:   adapterrunner.NewManager(t.TempDir()),
@@ -213,14 +155,13 @@ func TestManagerEnsureConfigChange(t *testing.T) {
 		t.Fatalf("Ensure after config change returned error: %v", err)
 	}
 
-	launcher.mu.Lock()
-	if len(launcher.calls) != 2 {
-		t.Fatalf("expected module to restart on config change, got %d launches", len(launcher.calls))
+	records := launcher.Records()
+	if len(records) != 2 {
+		t.Fatalf("expected module to restart on config change, got %d launches", len(records))
 	}
-	if launcher.handles[0].stopCount == 0 {
+	if launcher.StopCount(string(SlotAI)) != 1 {
 		t.Fatalf("expected previous handle to be stopped on config change")
 	}
-	launcher.mu.Unlock()
 }
 
 func TestManagerEnsureMissingStore(t *testing.T) {
