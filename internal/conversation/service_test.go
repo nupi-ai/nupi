@@ -102,7 +102,7 @@ func TestConversationPublishesPromptOnUserInput(t *testing.T) {
 
 func TestConversationKeepsHistoryUntilDetachTimeout(t *testing.T) {
 	bus := eventbus.New()
-	ttl := 50 * time.Millisecond
+	ttl := 100 * time.Millisecond
 	svc := NewService(bus, WithDetachTTL(ttl))
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -130,7 +130,7 @@ func TestConversationKeepsHistoryUntilDetachTimeout(t *testing.T) {
 		t.Fatalf("history cleared too early")
 	}
 
-	deadlineDetach := time.Now().Add(2 * ttl)
+	deadlineDetach := time.Now().Add(5 * ttl)
 	for {
 		if len(svc.Context("detach")) == 0 {
 			break

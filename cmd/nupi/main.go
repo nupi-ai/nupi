@@ -21,6 +21,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	apiv1 "github.com/nupi-ai/nupi/internal/api/grpc/v1"
 	apihttp "github.com/nupi-ai/nupi/internal/api/http"
 	"github.com/nupi-ai/nupi/internal/bootstrap"
 	"github.com/nupi-ai/nupi/internal/client"
@@ -266,6 +267,7 @@ func main() {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
+	modulesCmd.PersistentFlags().Bool("grpc", false, "Use gRPC transport for module operations")
 
 	modulesListCmd := &cobra.Command{
 		Use:           "list",
@@ -1299,6 +1301,73 @@ func resolveAdapterChoice(input string, adapters []adapterInfo) (string, bool) {
 func modulesList(cmd *cobra.Command, _ []string) error {
 	out := newOutputFormatter(cmd)
 
+	useGRPC, _ := cmd.Flags().GetBool("grpc")
+	if useGRPC {
+		return modulesListGRPC(out)
+	}
+	return modulesListHTTP(out)
+}
+
+func modulesBind(cmd *cobra.Command, args []string) error {
+	out := newOutputFormatter(cmd)
+
+	slot := strings.TrimSpace(args[0])
+	adapter := strings.TrimSpace(args[1])
+	if slot == "" || adapter == "" {
+		return out.Error("Slot and adapter must be provided", errors.New("invalid arguments"))
+	}
+
+	cfg, err := cmd.Flags().GetString("config")
+	if err != nil {
+		return out.Error("Failed to read --config flag", err)
+	}
+
+	var raw json.RawMessage
+	if trimmed := strings.TrimSpace(cfg); trimmed != "" {
+		if !json.Valid([]byte(trimmed)) {
+			return out.Error("Config must be valid JSON", fmt.Errorf("invalid config payload"))
+		}
+		raw = json.RawMessage(trimmed)
+	}
+
+	useGRPC, _ := cmd.Flags().GetBool("grpc")
+	if useGRPC {
+		return modulesBindGRPC(out, slot, adapter, string(raw))
+	}
+	return modulesBindHTTP(out, slot, adapter, raw)
+}
+
+func modulesStart(cmd *cobra.Command, args []string) error {
+	out := newOutputFormatter(cmd)
+
+	slot := strings.TrimSpace(args[0])
+	if slot == "" {
+		return out.Error("Slot must be provided", errors.New("invalid arguments"))
+	}
+
+	useGRPC, _ := cmd.Flags().GetBool("grpc")
+	if useGRPC {
+		return modulesStartGRPC(out, slot)
+	}
+	return modulesStartHTTP(out, slot)
+}
+
+func modulesStop(cmd *cobra.Command, args []string) error {
+	out := newOutputFormatter(cmd)
+
+	slot := strings.TrimSpace(args[0])
+	if slot == "" {
+		return out.Error("Slot must be provided", errors.New("invalid arguments"))
+	}
+
+	useGRPC, _ := cmd.Flags().GetBool("grpc")
+	if useGRPC {
+		return modulesStopGRPC(out, slot)
+	}
+	return modulesStopHTTP(out, slot)
+}
+
+func modulesListHTTP(out *OutputFormatter) error {
 	c, err := client.New()
 	if err != nil {
 		return out.Error("Failed to initialise client", err)
@@ -1324,28 +1393,37 @@ func modulesList(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-func modulesBind(cmd *cobra.Command, args []string) error {
-	out := newOutputFormatter(cmd)
-
-	slot := strings.TrimSpace(args[0])
-	adapter := strings.TrimSpace(args[1])
-	if slot == "" || adapter == "" {
-		return out.Error("Slot and adapter must be provided", errors.New("invalid arguments"))
-	}
-
-	cfg, err := cmd.Flags().GetString("config")
+func modulesListGRPC(out *OutputFormatter) error {
+	gc, err := grpcclient.New()
 	if err != nil {
-		return out.Error("Failed to read --config flag", err)
+		return out.Error("Failed to connect to daemon via gRPC", err)
+	}
+	defer gc.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resp, err := gc.ModulesOverview(ctx)
+	if err != nil {
+		return out.Error("Failed to fetch modules overview via gRPC", err)
 	}
 
-	var raw json.RawMessage
-	if trimmed := strings.TrimSpace(cfg); trimmed != "" {
-		if !json.Valid([]byte(trimmed)) {
-			return out.Error("Config must be valid JSON", fmt.Errorf("invalid config payload"))
-		}
-		raw = json.RawMessage(trimmed)
+	overview := modulesOverviewFromProto(resp)
+	if out.jsonMode {
+		return out.Print(overview)
 	}
 
+	if len(overview.Modules) == 0 {
+		fmt.Println("No module slots found.")
+		return nil
+	}
+
+	printModuleTable(overview.Modules)
+	printModuleRuntimeMessages(overview.Modules)
+	return nil
+}
+
+func modulesBindHTTP(out *OutputFormatter, slot, adapter string, raw json.RawMessage) error {
 	c, err := client.New()
 	if err != nil {
 		return out.Error("Failed to initialise client", err)
@@ -1369,14 +1447,37 @@ func modulesBind(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func modulesStart(cmd *cobra.Command, args []string) error {
-	out := newOutputFormatter(cmd)
+func modulesBindGRPC(out *OutputFormatter, slot, adapter, cfg string) error {
+	gc, err := grpcclient.New()
+	if err != nil {
+		return out.Error("Failed to connect to daemon via gRPC", err)
+	}
+	defer gc.Close()
 
-	slot := strings.TrimSpace(args[0])
-	if slot == "" {
-		return out.Error("Slot must be provided", errors.New("invalid arguments"))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req := &apiv1.BindModuleRequest{
+		Slot:       slot,
+		AdapterId:  adapter,
+		ConfigJson: strings.TrimSpace(cfg),
 	}
 
+	resp, err := gc.BindModule(ctx, req)
+	if err != nil {
+		return out.Error("Failed to bind module via gRPC", err)
+	}
+
+	entry := moduleEntryFromProto(resp.GetModule())
+	if out.jsonMode {
+		return out.Print(apihttp.ModuleActionResult{Module: entry})
+	}
+
+	printModuleSummary("Bound", entry)
+	return nil
+}
+
+func modulesStartHTTP(out *OutputFormatter, slot string) error {
 	c, err := client.New()
 	if err != nil {
 		return out.Error("Failed to initialise client", err)
@@ -1396,14 +1497,31 @@ func modulesStart(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func modulesStop(cmd *cobra.Command, args []string) error {
-	out := newOutputFormatter(cmd)
+func modulesStartGRPC(out *OutputFormatter, slot string) error {
+	gc, err := grpcclient.New()
+	if err != nil {
+		return out.Error("Failed to connect to daemon via gRPC", err)
+	}
+	defer gc.Close()
 
-	slot := strings.TrimSpace(args[0])
-	if slot == "" {
-		return out.Error("Slot must be provided", errors.New("invalid arguments"))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resp, err := gc.StartModule(ctx, slot)
+	if err != nil {
+		return out.Error("Failed to start module via gRPC", err)
 	}
 
+	entry := moduleEntryFromProto(resp.GetModule())
+	if out.jsonMode {
+		return out.Print(apihttp.ModuleActionResult{Module: entry})
+	}
+
+	printModuleSummary("Started", entry)
+	return nil
+}
+
+func modulesStopHTTP(out *OutputFormatter, slot string) error {
 	c, err := client.New()
 	if err != nil {
 		return out.Error("Failed to initialise client", err)
@@ -1421,6 +1539,78 @@ func modulesStop(cmd *cobra.Command, args []string) error {
 
 	printModuleSummary("Stopped", entry)
 	return nil
+}
+
+func modulesStopGRPC(out *OutputFormatter, slot string) error {
+	gc, err := grpcclient.New()
+	if err != nil {
+		return out.Error("Failed to connect to daemon via gRPC", err)
+	}
+	defer gc.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resp, err := gc.StopModule(ctx, slot)
+	if err != nil {
+		return out.Error("Failed to stop module via gRPC", err)
+	}
+
+	entry := moduleEntryFromProto(resp.GetModule())
+	if out.jsonMode {
+		return out.Print(apihttp.ModuleActionResult{Module: entry})
+	}
+
+	printModuleSummary("Stopped", entry)
+	return nil
+}
+
+func modulesOverviewFromProto(resp *apiv1.ModulesOverviewResponse) apihttp.ModulesOverview {
+	if resp == nil {
+		return apihttp.ModulesOverview{}
+	}
+	out := apihttp.ModulesOverview{
+		Modules: make([]apihttp.ModuleEntry, 0, len(resp.GetModules())),
+	}
+	for _, entry := range resp.GetModules() {
+		out.Modules = append(out.Modules, moduleEntryFromProto(entry))
+	}
+	return out
+}
+
+func moduleEntryFromProto(entry *apiv1.ModuleEntry) apihttp.ModuleEntry {
+	if entry == nil {
+		return apihttp.ModuleEntry{}
+	}
+	out := apihttp.ModuleEntry{
+		Slot:      entry.GetSlot(),
+		Status:    entry.GetStatus(),
+		Config:    entry.GetConfigJson(),
+		UpdatedAt: entry.GetUpdatedAt(),
+	}
+	if entry.AdapterId != nil {
+		id := strings.TrimSpace(entry.GetAdapterId())
+		if id != "" {
+			out.AdapterID = &id
+		}
+	}
+	if rt := entry.GetRuntime(); rt != nil {
+		runtime := apihttp.ModuleRuntime{
+			ModuleID: rt.GetModuleId(),
+			Health:   rt.GetHealth(),
+			Message:  rt.GetMessage(),
+			Extra:    rt.GetExtra(),
+		}
+		if updated := rt.GetUpdatedAt(); updated != nil {
+			runtime.UpdatedAt = updated.AsTime().UTC().Format(time.RFC3339)
+		}
+		if ts := rt.GetStartedAt(); ts != nil {
+			started := ts.AsTime().UTC().Format(time.RFC3339)
+			runtime.StartedAt = &started
+		}
+		out.Runtime = &runtime
+	}
+	return out
 }
 
 func moduleAdapterLabel(entry apihttp.ModuleEntry) string {
