@@ -140,6 +140,67 @@ message ModuleActionResponse {
   ModuleEntry module = 1;
 }
 
+message AudioFormat {
+  string encoding = 1;       // e.g. pcm_s16le
+  uint32 sample_rate = 2;    // Hz
+  uint32 channels = 3;       // mono=1, stereo=2
+  uint32 bit_depth = 4;      // bits per sample
+  uint32 frame_duration_ms = 5;
+}
+
+message AudioChunk {
+  bytes data = 1;
+  uint64 sequence = 2;
+  uint32 duration_ms = 3;
+  bool first = 4;
+  bool last = 5;
+  map<string, string> metadata = 6;
+}
+
+message StreamAudioInRequest {
+  string session_id = 1;
+  string stream_id = 2;
+  AudioFormat format = 3; // optional after pierwszego chunku
+  AudioChunk chunk = 4;
+}
+
+message StreamAudioInResponse {
+  uint64 ack_sequence = 1;
+  bool ready = 2;
+  string message = 3;
+}
+
+message StreamAudioOutRequest {
+  string session_id = 1;
+  string stream_id = 2;
+}
+
+message StreamAudioOutResponse {
+  AudioFormat format = 1;
+  AudioChunk chunk = 2;
+}
+
+message InterruptTTSRequest {
+  string session_id = 1;
+  string stream_id = 2;
+  string reason = 3;
+}
+
+message GetAudioCapabilitiesRequest {
+  string session_id = 1;
+}
+
+message AudioCapability {
+  string stream_id = 1;
+  AudioFormat format = 2;
+  map<string, string> metadata = 3;
+}
+
+message GetAudioCapabilitiesResponse {
+  repeated AudioCapability capture = 1;
+  repeated AudioCapability playback = 2;
+}
+
 service DaemonService {
   rpc Status(DaemonStatusRequest) returns (DaemonStatusResponse);
 }
@@ -156,4 +217,11 @@ service ModulesService {
   rpc BindModule(BindModuleRequest) returns (ModuleActionResponse);
   rpc StartModule(ModuleSlotRequest) returns (ModuleActionResponse);
   rpc StopModule(ModuleSlotRequest) returns (ModuleActionResponse);
+}
+
+service AudioService {
+  rpc StreamAudioIn(stream StreamAudioInRequest) returns (StreamAudioInResponse);
+  rpc StreamAudioOut(StreamAudioOutRequest) returns (stream StreamAudioOutResponse);
+  rpc InterruptTTS(InterruptTTSRequest) returns (google.protobuf.Empty);
+  rpc GetAudioCapabilities(GetAudioCapabilitiesRequest) returns (GetAudioCapabilitiesResponse);
 }

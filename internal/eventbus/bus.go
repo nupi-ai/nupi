@@ -47,15 +47,21 @@ func (f ObserverFunc) OnPublish(env Envelope) {
 // New constructs a bus with default topic buffer sizes.
 func New(opts ...BusOption) *Bus {
 	defaults := map[Topic]int{
-		TopicSessionsOutput:     1024,
-		TopicSessionsLifecycle:  256,
-		TopicSessionsTool:       128,
-		TopicPipelineCleaned:    512,
-		TopicPipelineError:      64,
-		TopicConversationPrompt: 256,
-		TopicConversationReply:  256,
-		TopicModulesStatus:      128,
-		TopicModulesLog:         256,
+		TopicSessionsOutput:      1024,
+		TopicSessionsLifecycle:   256,
+		TopicSessionsTool:        128,
+		TopicPipelineCleaned:     512,
+		TopicPipelineError:       64,
+		TopicConversationPrompt:  256,
+		TopicConversationReply:   256,
+		TopicModulesStatus:       128,
+		TopicModulesLog:          256,
+		TopicAudioIngressRaw:     256,
+		TopicAudioIngressSegment: 256,
+		TopicAudioEgressPlayback: 256,
+		TopicSpeechVADDetected:   128,
+		TopicSpeechBargeIn:       64,
+		TopicConversationSpeak:   128,
 	}
 
 	bus := &Bus{
