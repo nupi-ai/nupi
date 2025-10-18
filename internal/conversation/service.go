@@ -87,12 +87,14 @@ func (s *Service) Start(ctx context.Context) error {
 	cleanedSub := s.bus.Subscribe(eventbus.TopicPipelineCleaned, eventbus.WithSubscriptionName("conversation_pipeline"))
 	lifecycleSub := s.bus.Subscribe(eventbus.TopicSessionsLifecycle, eventbus.WithSubscriptionName("conversation_lifecycle"))
 	replySub := s.bus.Subscribe(eventbus.TopicConversationReply, eventbus.WithSubscriptionName("conversation_reply"))
-	s.subs = []*eventbus.Subscription{cleanedSub, lifecycleSub, replySub}
+	bargeSub := s.bus.Subscribe(eventbus.TopicSpeechBargeIn, eventbus.WithSubscriptionName("conversation_barge"))
+	s.subs = []*eventbus.Subscription{cleanedSub, lifecycleSub, replySub, bargeSub}
 
-	s.wg.Add(3)
+	s.wg.Add(4)
 	go s.consumePipeline(derivedCtx, cleanedSub)
 	go s.consumeLifecycle(derivedCtx, lifecycleSub)
 	go s.consumeReplies(derivedCtx, replySub)
+	go s.consumeBarge(derivedCtx, bargeSub)
 	return nil
 }
 
@@ -193,6 +195,29 @@ func (s *Service) consumeReplies(ctx context.Context, sub *eventbus.Subscription
 				continue
 			}
 			s.handleReplyMessage(env.Timestamp, msg)
+		}
+	}
+}
+
+func (s *Service) consumeBarge(ctx context.Context, sub *eventbus.Subscription) {
+	defer s.wg.Done()
+	if sub == nil {
+		return
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case env, ok := <-sub.C():
+			if !ok {
+				return
+			}
+			event, ok := env.Payload.(eventbus.SpeechBargeInEvent)
+			if !ok {
+				continue
+			}
+			s.handleBargeEvent(event)
 		}
 	}
 }
@@ -382,6 +407,38 @@ func (s *Service) handleReplyMessage(ts time.Time, msg eventbus.ConversationRepl
 		history = history[len(history)-s.maxHistory:]
 	}
 	s.sessions[msg.SessionID] = history
+	s.mu.Unlock()
+}
+
+func (s *Service) handleBargeEvent(event eventbus.SpeechBargeInEvent) {
+	if event.SessionID == "" {
+		return
+	}
+
+	s.mu.Lock()
+	history := s.sessions[event.SessionID]
+	for i := len(history) - 1; i >= 0; i-- {
+		turn := history[i]
+		if turn.Origin != eventbus.OriginAI {
+			continue
+		}
+		meta := make(map[string]string, len(turn.Meta)+3)
+		for k, v := range turn.Meta {
+			meta[k] = v
+		}
+		meta["barge_in"] = "true"
+		meta["barge_in_reason"] = event.Reason
+		if !event.Timestamp.IsZero() {
+			meta["barge_in_timestamp"] = event.Timestamp.Format(time.RFC3339Nano)
+		}
+		for k, v := range event.Metadata {
+			meta["barge_"+k] = v
+		}
+		turn.Meta = meta
+		history[i] = turn
+		s.sessions[event.SessionID] = history
+		break
+	}
 	s.mu.Unlock()
 }
 

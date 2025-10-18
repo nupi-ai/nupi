@@ -227,7 +227,41 @@ func (a *audioService) StreamAudioOut(req *apiv1.StreamAudioOutRequest, srv apiv
 }
 
 func (a *audioService) InterruptTTS(ctx context.Context, req *apiv1.InterruptTTSRequest) (*emptypb.Empty, error) {
-	return nil, status.Error(codes.Unimplemented, "InterruptTTS not implemented yet")
+	if _, err := a.api.requireRoleGRPC(ctx, roleAdmin); err != nil {
+		return nil, err
+	}
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+
+	sessionID := strings.TrimSpace(req.GetSessionId())
+	if sessionID == "" {
+		return nil, status.Error(codes.InvalidArgument, "session_id is required")
+	}
+
+	streamID := strings.TrimSpace(req.GetStreamId())
+	if streamID == "" {
+		if a.api.audioEgress != nil {
+			streamID = a.api.audioEgress.DefaultStreamID()
+		} else {
+			streamID = defaultTTSStreamID
+		}
+	}
+
+	reason := strings.TrimSpace(req.GetReason())
+
+	if a.api.sessionManager != nil {
+		if _, err := a.api.sessionManager.GetSession(sessionID); err != nil {
+			return nil, status.Errorf(codes.NotFound, "session %s not found", sessionID)
+		}
+	}
+
+	a.api.publishAudioInterrupt(sessionID, streamID, reason, nil)
+	if a.api.audioEgress != nil {
+		a.api.audioEgress.Interrupt(sessionID, streamID, reason, nil)
+	}
+
+	return &emptypb.Empty{}, nil
 }
 
 func (a *audioService) GetAudioCapabilities(ctx context.Context, req *apiv1.GetAudioCapabilitiesRequest) (*apiv1.GetAudioCapabilitiesResponse, error) {

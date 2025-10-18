@@ -21,6 +21,7 @@ const (
 	TopicAudioIngressRaw     Topic = "audio.ingress.raw"
 	TopicAudioIngressSegment Topic = "audio.ingress.segment"
 	TopicAudioEgressPlayback Topic = "audio.egress.playback"
+	TopicAudioInterrupt      Topic = "audio.interrupt"
 	TopicSpeechTranscript    Topic = "speech.transcript"
 	TopicSpeechVADDetected   Topic = "speech.vad.detected"
 	TopicSpeechBargeIn       Topic = "speech.barge_in"
@@ -40,7 +41,9 @@ const (
 	SourceAudioIngress    Source = "audio_ingress"
 	SourceAudioEgress     Source = "audio_egress"
 	SourceAudioSTT        Source = "audio_stt"
+	SourceSpeechBarge     Source = "speech_barge"
 	SourceSpeechVAD       Source = "speech_vad"
+	SourceClient          Source = "client"
 	SourceUnknown         Source = "unknown"
 )
 
@@ -207,6 +210,15 @@ type AudioEgressPlaybackEvent struct {
 	Format    AudioFormat
 	Data      []byte
 	Final     bool
+	Metadata  map[string]string
+}
+
+// AudioInterruptEvent is emitted when a client requests manual TTS interruption.
+type AudioInterruptEvent struct {
+	SessionID string
+	StreamID  string
+	Reason    string
+	Timestamp time.Time
 	Metadata  map[string]string
 }
 

@@ -67,6 +67,7 @@ var allowedRoles = map[string]struct{}{
 }
 
 const conversationMaxPageLimit = 500
+const defaultTTSStreamID = "tts.primary"
 
 type storedToken struct {
 	ID        string    `json:"id"`
@@ -96,6 +97,7 @@ type APIServer struct {
 	modules        *modules.Service
 	audioIngress   *ingress.Service
 	audioEgress    *egress.Service
+	eventBus       *eventbus.Bus
 	resizeManager  *termresize.Manager
 	port           int
 	httpServer     *http.Server
@@ -168,6 +170,13 @@ type quickstartBinding struct {
 	AdapterID string `json:"adapter_id"`
 }
 
+type audioInterruptRequest struct {
+	SessionID string            `json:"session_id"`
+	StreamID  string            `json:"stream_id"`
+	Reason    string            `json:"reason"`
+	Metadata  map[string]string `json:"metadata"`
+}
+
 type quickstartRequest struct {
 	Complete *bool               `json:"complete,omitempty"`
 	Bindings []quickstartBinding `json:"bindings,omitempty"`
@@ -233,6 +242,11 @@ func (s *APIServer) SetAudioIngressService(service *ingress.Service) {
 // SetAudioEgressService wires the audio egress handler used by playback endpoints.
 func (s *APIServer) SetAudioEgressService(service *egress.Service) {
 	s.audioEgress = service
+}
+
+// SetEventBus wires the event bus used for publishing audio/control events.
+func (s *APIServer) SetEventBus(bus *eventbus.Bus) {
+	s.eventBus = bus
 }
 
 // SetMetricsExporter wires the metrics exporter used by the /metrics endpoint.
@@ -946,6 +960,7 @@ func (s *APIServer) Prepare(ctx context.Context) (*PreparedHTTPServer, error) {
 	mux.HandleFunc("/auth/tokens", s.handleAuthTokens)
 	mux.HandleFunc("/auth/pairings", s.handleAuthPairings)
 	mux.HandleFunc("/auth/pair", s.handleAuthPair)
+ 	mux.HandleFunc("/audio/interrupt", s.handleAudioInterrupt)
 	mux.HandleFunc("/metrics", s.handleMetrics)
 
 	// Create and store the HTTP server with CORS middleware
@@ -2047,6 +2062,91 @@ func (s *APIServer) handleModulesStop(w http.ResponseWriter, r *http.Request) {
 	response := apihttp.ModuleActionResult{Module: bindingStatusToResponse(*status)}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
+}
+
+func (s *APIServer) publishAudioInterrupt(sessionID, streamID, reason string, metadata map[string]string) {
+	if s.eventBus == nil {
+		return
+	}
+
+	event := eventbus.AudioInterruptEvent{
+		SessionID: sessionID,
+		StreamID:  streamID,
+		Reason:    strings.TrimSpace(reason),
+		Timestamp: time.Now().UTC(),
+		Metadata:  cloneStringMap(metadata),
+	}
+
+	s.eventBus.Publish(context.Background(), eventbus.Envelope{
+		Topic:   eventbus.TopicAudioInterrupt,
+		Source:  eventbus.SourceClient,
+		Payload: event,
+	})
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func (s *APIServer) handleAudioInterrupt(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST,OPTIONS")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if _, ok := s.requireRole(w, r, roleAdmin); !ok {
+		return
+	}
+
+	var payload audioInterruptRequest
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	sessionID := strings.TrimSpace(payload.SessionID)
+	if sessionID == "" {
+		http.Error(w, "session_id is required", http.StatusBadRequest)
+		return
+	}
+
+	streamID := strings.TrimSpace(payload.StreamID)
+	if streamID == "" {
+		if s.audioEgress != nil {
+			streamID = s.audioEgress.DefaultStreamID()
+		} else {
+			streamID = defaultTTSStreamID
+		}
+	}
+
+	reason := strings.TrimSpace(payload.Reason)
+	metadata := cloneStringMap(payload.Metadata)
+
+	if s.sessionManager != nil {
+		if _, err := s.sessionManager.GetSession(sessionID); err != nil {
+			http.Error(w, fmt.Sprintf("session %s not found", sessionID), http.StatusNotFound)
+			return
+		}
+	}
+
+	s.publishAudioInterrupt(sessionID, streamID, reason, metadata)
+	if s.audioEgress != nil {
+		s.audioEgress.Interrupt(sessionID, streamID, reason, metadata)
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func bindingStatusToResponse(status modules.BindingStatus) apihttp.ModuleEntry {

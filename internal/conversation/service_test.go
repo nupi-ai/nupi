@@ -100,6 +100,61 @@ func TestConversationPublishesPromptOnUserInput(t *testing.T) {
 	}
 }
 
+func TestConversationMarksBargeInOnLastAITurn(t *testing.T) {
+	bus := eventbus.New()
+	svc := NewService(bus)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("start conversation: %v", err)
+	}
+	defer svc.Shutdown(context.Background())
+
+	now := time.Now().UTC()
+	svc.handlePipelineMessage(now, eventbus.PipelineMessageEvent{
+		SessionID: "session",
+		Origin:    eventbus.OriginUser,
+		Text:      "question",
+	})
+
+	svc.handleReplyMessage(now.Add(10*time.Millisecond), eventbus.ConversationReplyEvent{
+		SessionID: "session",
+		PromptID:  "prompt-1",
+		Text:      "answer",
+	})
+
+	bargeEvent := eventbus.SpeechBargeInEvent{
+		SessionID: "session",
+		StreamID:  "mic",
+		Reason:    "client_interrupt",
+		Timestamp: now.Add(20 * time.Millisecond),
+		Metadata: map[string]string{
+			"origin": "test",
+		},
+	}
+	svc.handleBargeEvent(bargeEvent)
+
+	history := svc.Context("session")
+	if len(history) != 2 {
+		t.Fatalf("unexpected history length: %d", len(history))
+	}
+	aiTurn := history[1]
+	if aiTurn.Origin != eventbus.OriginAI {
+		t.Fatalf("expected AI origin for last turn, got %s", aiTurn.Origin)
+	}
+	if aiTurn.Meta["barge_in"] != "true" {
+		t.Fatalf("expected barge_in metadata, got %+v", aiTurn.Meta)
+	}
+	if aiTurn.Meta["barge_in_reason"] != "client_interrupt" {
+		t.Fatalf("unexpected barge_in_reason: %s", aiTurn.Meta["barge_in_reason"])
+	}
+	if aiTurn.Meta["barge_origin"] != "test" {
+		t.Fatalf("expected barge metadata to include origin, got %+v", aiTurn.Meta)
+	}
+}
+
 func TestConversationKeepsHistoryUntilDetachTimeout(t *testing.T) {
 	bus := eventbus.New()
 	ttl := 100 * time.Millisecond

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -139,8 +140,9 @@ type Service struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	subs []*eventbus.Subscription
-	wg   sync.WaitGroup
+	subs     []*eventbus.Subscription
+	bargeSub *eventbus.Subscription
+	wg       sync.WaitGroup
 
 	mu      sync.Mutex
 	streams map[string]*stream
@@ -176,6 +178,19 @@ func New(bus *eventbus.Bus, opts ...Option) *Service {
 	return svc
 }
 
+// DefaultStreamID returns the default playback stream identifier.
+func (s *Service) DefaultStreamID() string {
+	return s.streamID
+}
+
+// Interrupt stops playback for the specified session/stream.
+func (s *Service) Interrupt(sessionID, streamID, reason string, metadata map[string]string) {
+	if sessionID == "" {
+		return
+	}
+	s.interruptStream(sessionID, streamID, reason, time.Now().UTC(), metadata)
+}
+
 // Start subscribes to bus topics and starts processing.
 func (s *Service) Start(ctx context.Context) error {
 	if s.bus == nil {
@@ -187,12 +202,15 @@ func (s *Service) Start(ctx context.Context) error {
 	replySub := s.bus.Subscribe(eventbus.TopicConversationReply, eventbus.WithSubscriptionName("audio_egress_reply"))
 	speakSub := s.bus.Subscribe(eventbus.TopicConversationSpeak, eventbus.WithSubscriptionName("audio_egress_speak"))
 	lifecycleSub := s.bus.Subscribe(eventbus.TopicSessionsLifecycle, eventbus.WithSubscriptionName("audio_egress_lifecycle"))
-	s.subs = []*eventbus.Subscription{replySub, speakSub, lifecycleSub}
+	bargeSub := s.bus.Subscribe(eventbus.TopicSpeechBargeIn, eventbus.WithSubscriptionName("audio_egress_barge"))
+	s.subs = []*eventbus.Subscription{replySub, speakSub, lifecycleSub, bargeSub}
+	s.bargeSub = bargeSub
 
-	s.wg.Add(3)
+	s.wg.Add(4)
 	go s.consumeReplies(replySub)
 	go s.consumeSpeak(speakSub)
 	go s.consumeLifecycle(lifecycleSub)
+	go s.consumeBarge(bargeSub)
 	return nil
 }
 
@@ -332,6 +350,36 @@ func (s *Service) consumeLifecycle(sub *eventbus.Subscription) {
 	}
 }
 
+func (s *Service) consumeBarge(sub *eventbus.Subscription) {
+	defer s.wg.Done()
+	if sub == nil {
+		return
+	}
+
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case env, ok := <-sub.C():
+			if !ok {
+				return
+			}
+			evt, ok := env.Payload.(eventbus.SpeechBargeInEvent)
+			if !ok {
+				continue
+			}
+			s.handleBargeEvent(evt)
+		}
+	}
+}
+
+func (s *Service) handleBargeEvent(event eventbus.SpeechBargeInEvent) {
+	if event.SessionID == "" || event.StreamID == "" {
+		return
+	}
+	s.interruptStream(event.SessionID, event.StreamID, event.Reason, event.Timestamp, copyMetadata(event.Metadata))
+}
+
 type speakRequest struct {
 	SessionID string
 	StreamID  string
@@ -426,6 +474,41 @@ func (s *Service) removeStream(key string) {
 	if ok {
 		st.stop()
 	}
+}
+
+func (s *Service) interruptStream(sessionID, streamID, reason string, ts time.Time, metadata map[string]string) {
+	if streamID == "" {
+		streamID = s.streamID
+	}
+	key := streamKey(sessionID, streamID)
+	st, ok := s.stream(key)
+	if !ok {
+		return
+	}
+	if ts.IsZero() {
+		ts = time.Now().UTC()
+	}
+	s.clearPending(key)
+	st.interrupt(reasonOrDefault(reason), ts, metadata)
+}
+
+func (s *Service) clearPending(key string) {
+	s.pendingMu.Lock()
+	if queue, ok := s.pending[key]; ok {
+		queue.stopTimer()
+		delete(s.pending, key)
+	}
+	s.pendingMu.Unlock()
+}
+
+func (s *Service) onStreamClosed(key string, st *stream) {
+	s.mu.Lock()
+	current, ok := s.streams[key]
+	if ok && current == st {
+		delete(s.streams, key)
+	}
+	s.mu.Unlock()
+	s.clearPending(key)
 }
 
 type pendingQueue struct {
@@ -542,9 +625,16 @@ type stream struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
 
+	mu sync.RWMutex
+
 	wg      sync.WaitGroup
 	seq     uint64
 	stopped bool
+
+	interrupted        bool
+	interruptReason    string
+	interruptTimestamp time.Time
+	interruptMeta      map[string]string
 }
 
 func newStream(key string, svc *Service, params SessionParams, synth Synthesizer) *stream {
@@ -566,6 +656,46 @@ func newStream(key string, svc *Service, params SessionParams, synth Synthesizer
 	return st
 }
 
+func (st *stream) interrupt(reason string, ts time.Time, metadata map[string]string) {
+	st.service.logger.Printf("[TTS] barge-in interrupt for %s (%s)", st.key, reason)
+	st.mu.Lock()
+	st.interrupted = true
+	st.interruptReason = reason
+	st.interruptTimestamp = ts
+	st.interruptMeta = copyMetadata(metadata)
+	st.mu.Unlock()
+	st.cancel()
+}
+
+func (st *stream) decorateMetadata(meta map[string]string) map[string]string {
+	st.mu.RLock()
+	interrupted := st.interrupted
+	reason := st.interruptReason
+	ts := st.interruptTimestamp
+	extras := copyMetadata(st.interruptMeta)
+	st.mu.RUnlock()
+
+	if !interrupted {
+		return meta
+	}
+	if meta == nil {
+		meta = make(map[string]string)
+	}
+	meta["barge_in"] = "true"
+	if reason != "" {
+		meta["barge_in_reason"] = reason
+	}
+	if !ts.IsZero() {
+		meta["barge_in_timestamp"] = ts.Format(time.RFC3339Nano)
+	}
+	for k, v := range extras {
+		if _, exists := meta[k]; !exists {
+			meta[k] = v
+		}
+	}
+	return meta
+}
+
 func (st *stream) enqueue(req speakRequest) error {
 	select {
 	case <-st.ctx.Done():
@@ -583,6 +713,7 @@ func (st *stream) enqueue(req speakRequest) error {
 
 func (st *stream) run() {
 	defer st.wg.Done()
+	defer st.service.onStreamClosed(st.key, st)
 	for {
 		select {
 		case <-st.ctx.Done():
@@ -630,6 +761,8 @@ func (st *stream) handleRequest(req speakRequest) {
 		if chunk.Format != nil {
 			format = *chunk.Format
 		}
+		metadata := mergeMetadata(st.metadata, chunk.Metadata, req.Metadata)
+		metadata = st.decorateMetadata(metadata)
 		evt := eventbus.AudioEgressPlaybackEvent{
 			SessionID: st.sessionID,
 			StreamID:  st.streamID,
@@ -637,7 +770,7 @@ func (st *stream) handleRequest(req speakRequest) {
 			Format:    format,
 			Data:      append([]byte(nil), chunk.Data...),
 			Final:     chunk.Final,
-			Metadata:  mergeMetadata(st.metadata, chunk.Metadata, req.Metadata),
+			Metadata:  metadata,
 		}
 		st.service.publishPlayback(evt)
 	}
@@ -645,19 +778,23 @@ func (st *stream) handleRequest(req speakRequest) {
 
 func (st *stream) publishFinal() {
 	st.seq++
+	metadata := copyMetadata(st.metadata)
+	metadata = st.decorateMetadata(metadata)
 	evt := eventbus.AudioEgressPlaybackEvent{
 		SessionID: st.sessionID,
 		StreamID:  st.streamID,
 		Sequence:  st.seq,
 		Format:    st.format,
 		Final:     true,
-		Metadata:  copyMetadata(st.metadata),
+		Metadata:  metadata,
 	}
 	st.service.publishPlayback(evt)
 }
 
 func (st *stream) stop() {
+	st.mu.Lock()
 	st.stopped = true
+	st.mu.Unlock()
 	st.cancel()
 	close(st.requestCh)
 }
@@ -686,6 +823,8 @@ func (st *stream) closeSynthesizer(reason string) {
 	}
 	for _, chunk := range chunks {
 		st.seq++
+		metadata := mergeMetadata(st.metadata, chunk.Metadata, nil)
+		metadata = st.decorateMetadata(metadata)
 		evt := eventbus.AudioEgressPlaybackEvent{
 			SessionID: st.sessionID,
 			StreamID:  st.streamID,
@@ -693,11 +832,15 @@ func (st *stream) closeSynthesizer(reason string) {
 			Format:    st.format,
 			Data:      append([]byte(nil), chunk.Data...),
 			Final:     chunk.Final,
-			Metadata:  mergeMetadata(st.metadata, chunk.Metadata, nil),
+			Metadata:  metadata,
 		}
 		st.service.publishPlayback(evt)
 	}
-	if len(chunks) == 0 && !st.stopped {
+	st.mu.RLock()
+	stopped := st.stopped
+	interrupted := st.interrupted
+	st.mu.RUnlock()
+	if len(chunks) == 0 && (!stopped || interrupted) {
 		st.publishFinal()
 	}
 }
@@ -745,4 +888,12 @@ func mergeMetadata(base map[string]string, chunk map[string]string, req map[stri
 
 func streamKey(sessionID, streamID string) string {
 	return sessionID + "::" + streamID
+}
+
+func reasonOrDefault(reason string) string {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return "interrupt"
+	}
+	return reason
 }
