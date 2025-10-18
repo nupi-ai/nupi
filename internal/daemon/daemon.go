@@ -117,6 +117,7 @@ func New(opts Options) (*Daemon, error) {
 	apiServer.SetMetricsExporter(metricsExporter)
 	apiServer.SetConversationStore(conversationService)
 	apiServer.SetModulesService(modulesService)
+	apiServer.SetAudioIngressService(audioIngressService)
 
 	if err := host.Register("audio_ingress", func(ctx context.Context) (daemonruntime.Service, error) {
 		return audioIngressService, nil

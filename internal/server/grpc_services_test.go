@@ -2,15 +2,18 @@ package server
 
 import (
 	"context"
+	"io"
 	"strings"
 	"testing"
 	"time"
 
 	apiv1 "github.com/nupi-ai/nupi/internal/api/grpc/v1"
+	"github.com/nupi-ai/nupi/internal/audio/ingress"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/pty"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	emptypb "google.golang.org/protobuf/types/known/emptypb"
 )
@@ -274,3 +277,142 @@ func TestQuickstartServiceWithoutModulesService(t *testing.T) {
 		t.Fatalf("expected error codes.Unavailable, got %v", status.Code(err))
 	}
 }
+
+func TestAudioServiceStreamAudioIn(t *testing.T) {
+	apiServer, sessionManager := newTestAPIServer(t)
+	bus := eventbus.New()
+	ingressSvc := ingress.New(bus)
+	apiServer.SetAudioIngressService(ingressSvc)
+	sessionManager.UseEventBus(bus)
+
+	opts := pty.StartOptions{Command: "/bin/sh", Args: []string{"-c", "sleep 1"}, Rows: 24, Cols: 80}
+	sess, err := sessionManager.CreateSession(opts, false)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	defer sessionManager.KillSession(sess.ID)
+
+	service := newAudioService(apiServer)
+
+	rawSub := bus.Subscribe(eventbus.TopicAudioIngressRaw)
+	defer rawSub.Close()
+	segSub := bus.Subscribe(eventbus.TopicAudioIngressSegment)
+	defer segSub.Close()
+
+	stream := &fakeAudioInStream{
+		ctx: context.WithValue(context.Background(), authContextKey{}, storedToken{Role: string(roleAdmin)}),
+		reqs: []*apiv1.StreamAudioInRequest{
+			{
+				SessionId: sess.ID,
+				StreamId:  "mic",
+				Format: &apiv1.AudioFormat{
+					Encoding:        "pcm_s16le",
+					SampleRate:      16000,
+					Channels:        1,
+					BitDepth:        16,
+					FrameDurationMs: 20,
+				},
+				Chunk: &apiv1.AudioChunk{
+					Data:     make([]byte, 640),
+					Sequence: 1,
+					Metadata: map[string]string{"client": "test"},
+				},
+			},
+			{
+				SessionId: sess.ID,
+				StreamId:  "mic",
+				Chunk: &apiv1.AudioChunk{
+					Data:     make([]byte, 320),
+					Sequence: 2,
+					Last:     true,
+				},
+			},
+		},
+	}
+
+	if err := service.StreamAudioIn(stream); err != nil {
+		t.Fatalf("StreamAudioIn returned error: %v", err)
+	}
+	if stream.resp == nil || !stream.resp.GetReady() || stream.resp.GetAckSequence() != 2 {
+		t.Fatalf("unexpected response: %+v", stream.resp)
+	}
+
+	raw1 := recvEnvelope(t, rawSub).Payload.(eventbus.AudioIngressRawEvent)
+	if raw1.Sequence != 1 || len(raw1.Data) != 640 {
+		t.Fatalf("unexpected raw event #1: %+v", raw1)
+	}
+	raw2 := recvEnvelope(t, rawSub).Payload.(eventbus.AudioIngressRawEvent)
+	if raw2.Sequence != 2 || len(raw2.Data) != 320 {
+		t.Fatalf("unexpected raw event #2: %+v", raw2)
+	}
+
+	seg1 := recvEnvelope(t, segSub).Payload.(eventbus.AudioIngressSegmentEvent)
+	if !seg1.First || seg1.Last || len(seg1.Data) != 640 || seg1.Duration != 20*time.Millisecond {
+		t.Fatalf("unexpected segment #1: %+v", seg1)
+	}
+	seg2 := recvEnvelope(t, segSub).Payload.(eventbus.AudioIngressSegmentEvent)
+	if seg2.First || !seg2.Last || len(seg2.Data) != 320 {
+		t.Fatalf("unexpected segment #2: %+v", seg2)
+	}
+
+	if _, ok := ingressSvc.Stream(sess.ID, "mic"); ok {
+		t.Fatalf("stream should be removed after close")
+	}
+
+	expectNoEnvelope(t, rawSub)
+	expectNoEnvelope(t, segSub)
+}
+
+func recvEnvelope(t *testing.T, sub *eventbus.Subscription) eventbus.Envelope {
+	t.Helper()
+	select {
+	case env := <-sub.C():
+		return env
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timed out waiting for event")
+	}
+	return eventbus.Envelope{}
+}
+
+func expectNoEnvelope(t *testing.T, sub *eventbus.Subscription) {
+	t.Helper()
+	select {
+	case env := <-sub.C():
+		t.Fatalf("unexpected event: %+v", env)
+	case <-time.After(20 * time.Millisecond):
+	}
+}
+
+type fakeAudioInStream struct {
+	ctx  context.Context
+	reqs []*apiv1.StreamAudioInRequest
+	idx  int
+	resp *apiv1.StreamAudioInResponse
+}
+
+func (f *fakeAudioInStream) Context() context.Context {
+	if f.ctx != nil {
+		return f.ctx
+	}
+	return context.Background()
+}
+
+func (f *fakeAudioInStream) Recv() (*apiv1.StreamAudioInRequest, error) {
+	if f.idx >= len(f.reqs) {
+		return nil, io.EOF
+	}
+	req := f.reqs[f.idx]
+	f.idx++
+	return req, nil
+}
+
+func (f *fakeAudioInStream) SendAndClose(resp *apiv1.StreamAudioInResponse) error {
+	f.resp = resp
+	return nil
+}
+
+func (f *fakeAudioInStream) SetHeader(metadata.MD) error  { return nil }
+func (f *fakeAudioInStream) SendHeader(metadata.MD) error { return nil }
+func (f *fakeAudioInStream) SetTrailer(metadata.MD)       {}
+func (f *fakeAudioInStream) SendMsg(interface{}) error    { return nil }
+func (f *fakeAudioInStream) RecvMsg(interface{}) error    { return nil }

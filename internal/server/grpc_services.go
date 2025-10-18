@@ -4,13 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/nupi-ai/nupi/internal/api"
 	apiv1 "github.com/nupi-ai/nupi/internal/api/grpc/v1"
+	"github.com/nupi-ai/nupi/internal/audio/ingress"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
+	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/modules"
 	"github.com/nupi-ai/nupi/internal/protocol"
 	"google.golang.org/grpc"
@@ -90,6 +94,142 @@ type modulesService struct {
 
 func newModulesService(api *APIServer) *modulesService {
 	return &modulesService{api: api}
+}
+
+type audioService struct {
+	apiv1.UnimplementedAudioServiceServer
+	api *APIServer
+}
+
+func newAudioService(api *APIServer) *audioService {
+	return &audioService{api: api}
+}
+
+func (a *audioService) StreamAudioIn(stream apiv1.AudioService_StreamAudioInServer) error {
+	if a.api.audioIngress == nil {
+		return status.Error(codes.Unavailable, "audio ingress service unavailable")
+	}
+	if _, err := a.api.requireRoleGRPC(stream.Context(), roleAdmin); err != nil {
+		return err
+	}
+
+	var (
+		opened        bool
+		ingressStream *ingress.Stream
+		sessionID     string
+		streamID      string
+		format        eventbus.AudioFormat
+		lastSeq       uint64
+	)
+
+	defer func() {
+		if ingressStream != nil {
+			_ = ingressStream.Close()
+		}
+	}()
+
+	for {
+		req, err := stream.Recv()
+		if err == io.EOF {
+			if ingressStream != nil {
+				if closeErr := ingressStream.Close(); closeErr != nil {
+					return status.Errorf(codes.Internal, "finalise stream: %v", closeErr)
+				}
+				ingressStream = nil
+			}
+			if !opened {
+				return status.Error(codes.InvalidArgument, "no audio frames received")
+			}
+			return stream.SendAndClose(&apiv1.StreamAudioInResponse{
+				AckSequence: lastSeq,
+				Ready:       true,
+			})
+		}
+		if err != nil {
+			return status.Errorf(codes.Internal, "receive audio chunk: %v", err)
+		}
+		if req == nil {
+			continue
+		}
+
+		chunk := req.GetChunk()
+		if chunk == nil {
+			continue
+		}
+
+		if !opened {
+			sessionID = strings.TrimSpace(req.GetSessionId())
+			streamID = strings.TrimSpace(req.GetStreamId())
+			if sessionID == "" || streamID == "" {
+				return status.Error(codes.InvalidArgument, "session_id and stream_id are required")
+			}
+			if _, err := a.api.sessionManager.GetSession(sessionID); err != nil {
+				return status.Errorf(codes.NotFound, "session %s not found", sessionID)
+			}
+			fmtProto := req.GetFormat()
+			var err error
+			format, err = audioFormatFromProto(fmtProto)
+			if err != nil {
+				return status.Errorf(codes.InvalidArgument, "invalid audio format: %v", err)
+			}
+			metadata := copyStringMap(chunk.GetMetadata())
+			ingressStream, err = a.api.audioIngress.OpenStream(sessionID, streamID, format, metadata)
+			if err != nil {
+				return status.Errorf(codes.Internal, "open stream: %v", err)
+			}
+			opened = true
+		} else {
+			if id := strings.TrimSpace(req.GetSessionId()); id != "" && id != sessionID {
+				return status.Error(codes.InvalidArgument, "session_id mismatch")
+			}
+			if id := strings.TrimSpace(req.GetStreamId()); id != "" && id != streamID {
+				return status.Error(codes.InvalidArgument, "stream_id mismatch")
+			}
+			if reqFmt := req.GetFormat(); reqFmt != nil {
+				candidate, err := audioFormatFromProto(reqFmt)
+				if err != nil {
+					return status.Errorf(codes.InvalidArgument, "invalid audio format: %v", err)
+				}
+				if !audioFormatsEqual(candidate, format) {
+					return status.Error(codes.InvalidArgument, "audio format mismatch")
+				}
+			}
+			if ingressStream == nil {
+				return status.Error(codes.FailedPrecondition, "audio stream already closed")
+			}
+		}
+
+		if ingressStream == nil {
+			return status.Error(codes.FailedPrecondition, "audio stream not available")
+		}
+
+		if data := chunk.GetData(); len(data) > 0 {
+			if err := ingressStream.Write(data); err != nil {
+				return status.Errorf(codes.Internal, "write audio chunk: %v", err)
+			}
+		}
+
+		lastSeq = chunk.GetSequence()
+
+		if chunk.GetLast() {
+			if err := ingressStream.Close(); err != nil {
+				return status.Errorf(codes.Internal, "finalise stream: %v", err)
+			}
+			ingressStream = nil
+		}
+	}
+}
+
+func (a *audioService) StreamAudioOut(req *apiv1.StreamAudioOutRequest, srv apiv1.AudioService_StreamAudioOutServer) error {
+	return status.Error(codes.Unimplemented, "StreamAudioOut not implemented yet")
+}
+
+func (a *audioService) InterruptTTS(ctx context.Context, req *apiv1.InterruptTTSRequest) (*emptypb.Empty, error) {
+	return nil, status.Error(codes.Unimplemented, "InterruptTTS not implemented yet")
+}
+
+func (a *audioService) GetAudioCapabilities(ctx context.Context, req *apiv1.GetAudioCapabilitiesRequest) (*apiv1.GetAudioCapabilitiesResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "GetAudioCapabilities not implemented yet")
 }
 
 func (s *sessionsService) ListSessions(ctx context.Context, _ *apiv1.ListSessionsRequest) (*apiv1.ListSessionsResponse, error) {
@@ -265,6 +405,57 @@ func RegisterGRPCServices(api *APIServer, registrar grpc.ServiceRegistrar) {
 	apiv1.RegisterAdaptersServiceServer(registrar, newAdaptersService(api))
 	apiv1.RegisterQuickstartServiceServer(registrar, newQuickstartService(api))
 	apiv1.RegisterModulesServiceServer(registrar, newModulesService(api))
+	if api.audioIngress != nil {
+		apiv1.RegisterAudioServiceServer(registrar, newAudioService(api))
+	}
+}
+
+func audioFormatFromProto(pb *apiv1.AudioFormat) (eventbus.AudioFormat, error) {
+	if pb == nil {
+		return eventbus.AudioFormat{}, fmt.Errorf("audio format is required")
+	}
+	encoding := strings.TrimSpace(strings.ToLower(pb.GetEncoding()))
+	if encoding == "" {
+		encoding = string(eventbus.AudioEncodingPCM16)
+	}
+	if encoding != string(eventbus.AudioEncodingPCM16) {
+		return eventbus.AudioFormat{}, fmt.Errorf("unsupported encoding %q", pb.GetEncoding())
+	}
+	format := eventbus.AudioFormat{
+		Encoding:      eventbus.AudioEncodingPCM16,
+		SampleRate:    int(pb.GetSampleRate()),
+		Channels:      int(pb.GetChannels()),
+		BitDepth:      int(pb.GetBitDepth()),
+		FrameDuration: time.Duration(pb.GetFrameDurationMs()) * time.Millisecond,
+	}
+	if format.SampleRate <= 0 {
+		return eventbus.AudioFormat{}, fmt.Errorf("sample_rate must be positive")
+	}
+	if format.Channels <= 0 {
+		return eventbus.AudioFormat{}, fmt.Errorf("channels must be positive")
+	}
+	if format.BitDepth <= 0 || format.BitDepth%8 != 0 {
+		return eventbus.AudioFormat{}, fmt.Errorf("bit_depth must be divisible by 8")
+	}
+	return format, nil
+}
+
+func audioFormatsEqual(a, b eventbus.AudioFormat) bool {
+	return a.Encoding == b.Encoding &&
+		a.SampleRate == b.SampleRate &&
+		a.Channels == b.Channels &&
+		a.BitDepth == b.BitDepth
+}
+
+func copyStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 func (c *configService) GetTransportConfig(ctx context.Context, _ *emptypb.Empty) (*apiv1.TransportConfig, error) {

@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.3.0
 // - protoc             v6.33.0
-// source: config.proto
+// source: api/grpc/v1/config.proto
 
 package v1
 
@@ -143,7 +143,7 @@ var ConfigService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "config.proto",
+	Metadata: "api/grpc/v1/config.proto",
 }
 
 const (
@@ -344,7 +344,7 @@ var AdaptersService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "config.proto",
+	Metadata: "api/grpc/v1/config.proto",
 }
 
 const (
@@ -471,5 +471,5 @@ var QuickstartService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "config.proto",
+	Metadata: "api/grpc/v1/config.proto",
 }

@@ -510,3 +510,266 @@ var ModulesService_ServiceDesc = grpc.ServiceDesc{
 	Streams:  []grpc.StreamDesc{},
 	Metadata: "api/grpc/v1/nupi.proto",
 }
+
+const (
+	AudioService_StreamAudioIn_FullMethodName        = "/nupi.api.v1.AudioService/StreamAudioIn"
+	AudioService_StreamAudioOut_FullMethodName       = "/nupi.api.v1.AudioService/StreamAudioOut"
+	AudioService_InterruptTTS_FullMethodName         = "/nupi.api.v1.AudioService/InterruptTTS"
+	AudioService_GetAudioCapabilities_FullMethodName = "/nupi.api.v1.AudioService/GetAudioCapabilities"
+)
+
+// AudioServiceClient is the client API for AudioService service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+type AudioServiceClient interface {
+	StreamAudioIn(ctx context.Context, opts ...grpc.CallOption) (AudioService_StreamAudioInClient, error)
+	StreamAudioOut(ctx context.Context, in *StreamAudioOutRequest, opts ...grpc.CallOption) (AudioService_StreamAudioOutClient, error)
+	InterruptTTS(ctx context.Context, in *InterruptTTSRequest, opts ...grpc.CallOption) (*emptypb.Empty, error)
+	GetAudioCapabilities(ctx context.Context, in *GetAudioCapabilitiesRequest, opts ...grpc.CallOption) (*GetAudioCapabilitiesResponse, error)
+}
+
+type audioServiceClient struct {
+	cc grpc.ClientConnInterface
+}
+
+func NewAudioServiceClient(cc grpc.ClientConnInterface) AudioServiceClient {
+	return &audioServiceClient{cc}
+}
+
+func (c *audioServiceClient) StreamAudioIn(ctx context.Context, opts ...grpc.CallOption) (AudioService_StreamAudioInClient, error) {
+	stream, err := c.cc.NewStream(ctx, &AudioService_ServiceDesc.Streams[0], AudioService_StreamAudioIn_FullMethodName, opts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &audioServiceStreamAudioInClient{stream}
+	return x, nil
+}
+
+type AudioService_StreamAudioInClient interface {
+	Send(*StreamAudioInRequest) error
+	CloseAndRecv() (*StreamAudioInResponse, error)
+	grpc.ClientStream
+}
+
+type audioServiceStreamAudioInClient struct {
+	grpc.ClientStream
+}
+
+func (x *audioServiceStreamAudioInClient) Send(m *StreamAudioInRequest) error {
+	return x.ClientStream.SendMsg(m)
+}
+
+func (x *audioServiceStreamAudioInClient) CloseAndRecv() (*StreamAudioInResponse, error) {
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	m := new(StreamAudioInResponse)
+	if err := x.ClientStream.RecvMsg(m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+func (c *audioServiceClient) StreamAudioOut(ctx context.Context, in *StreamAudioOutRequest, opts ...grpc.CallOption) (AudioService_StreamAudioOutClient, error) {
+	stream, err := c.cc.NewStream(ctx, &AudioService_ServiceDesc.Streams[1], AudioService_StreamAudioOut_FullMethodName, opts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &audioServiceStreamAudioOutClient{stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+type AudioService_StreamAudioOutClient interface {
+	Recv() (*StreamAudioOutResponse, error)
+	grpc.ClientStream
+}
+
+type audioServiceStreamAudioOutClient struct {
+	grpc.ClientStream
+}
+
+func (x *audioServiceStreamAudioOutClient) Recv() (*StreamAudioOutResponse, error) {
+	m := new(StreamAudioOutResponse)
+	if err := x.ClientStream.RecvMsg(m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+func (c *audioServiceClient) InterruptTTS(ctx context.Context, in *InterruptTTSRequest, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+	out := new(emptypb.Empty)
+	err := c.cc.Invoke(ctx, AudioService_InterruptTTS_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *audioServiceClient) GetAudioCapabilities(ctx context.Context, in *GetAudioCapabilitiesRequest, opts ...grpc.CallOption) (*GetAudioCapabilitiesResponse, error) {
+	out := new(GetAudioCapabilitiesResponse)
+	err := c.cc.Invoke(ctx, AudioService_GetAudioCapabilities_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// AudioServiceServer is the server API for AudioService service.
+// All implementations must embed UnimplementedAudioServiceServer
+// for forward compatibility
+type AudioServiceServer interface {
+	StreamAudioIn(AudioService_StreamAudioInServer) error
+	StreamAudioOut(*StreamAudioOutRequest, AudioService_StreamAudioOutServer) error
+	InterruptTTS(context.Context, *InterruptTTSRequest) (*emptypb.Empty, error)
+	GetAudioCapabilities(context.Context, *GetAudioCapabilitiesRequest) (*GetAudioCapabilitiesResponse, error)
+	mustEmbedUnimplementedAudioServiceServer()
+}
+
+// UnimplementedAudioServiceServer must be embedded to have forward compatible implementations.
+type UnimplementedAudioServiceServer struct {
+}
+
+func (UnimplementedAudioServiceServer) StreamAudioIn(AudioService_StreamAudioInServer) error {
+	return status.Errorf(codes.Unimplemented, "method StreamAudioIn not implemented")
+}
+func (UnimplementedAudioServiceServer) StreamAudioOut(*StreamAudioOutRequest, AudioService_StreamAudioOutServer) error {
+	return status.Errorf(codes.Unimplemented, "method StreamAudioOut not implemented")
+}
+func (UnimplementedAudioServiceServer) InterruptTTS(context.Context, *InterruptTTSRequest) (*emptypb.Empty, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method InterruptTTS not implemented")
+}
+func (UnimplementedAudioServiceServer) GetAudioCapabilities(context.Context, *GetAudioCapabilitiesRequest) (*GetAudioCapabilitiesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetAudioCapabilities not implemented")
+}
+func (UnimplementedAudioServiceServer) mustEmbedUnimplementedAudioServiceServer() {}
+
+// UnsafeAudioServiceServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to AudioServiceServer will
+// result in compilation errors.
+type UnsafeAudioServiceServer interface {
+	mustEmbedUnimplementedAudioServiceServer()
+}
+
+func RegisterAudioServiceServer(s grpc.ServiceRegistrar, srv AudioServiceServer) {
+	s.RegisterService(&AudioService_ServiceDesc, srv)
+}
+
+func _AudioService_StreamAudioIn_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(AudioServiceServer).StreamAudioIn(&audioServiceStreamAudioInServer{stream})
+}
+
+type AudioService_StreamAudioInServer interface {
+	SendAndClose(*StreamAudioInResponse) error
+	Recv() (*StreamAudioInRequest, error)
+	grpc.ServerStream
+}
+
+type audioServiceStreamAudioInServer struct {
+	grpc.ServerStream
+}
+
+func (x *audioServiceStreamAudioInServer) SendAndClose(m *StreamAudioInResponse) error {
+	return x.ServerStream.SendMsg(m)
+}
+
+func (x *audioServiceStreamAudioInServer) Recv() (*StreamAudioInRequest, error) {
+	m := new(StreamAudioInRequest)
+	if err := x.ServerStream.RecvMsg(m); err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+func _AudioService_StreamAudioOut_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(StreamAudioOutRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(AudioServiceServer).StreamAudioOut(m, &audioServiceStreamAudioOutServer{stream})
+}
+
+type AudioService_StreamAudioOutServer interface {
+	Send(*StreamAudioOutResponse) error
+	grpc.ServerStream
+}
+
+type audioServiceStreamAudioOutServer struct {
+	grpc.ServerStream
+}
+
+func (x *audioServiceStreamAudioOutServer) Send(m *StreamAudioOutResponse) error {
+	return x.ServerStream.SendMsg(m)
+}
+
+func _AudioService_InterruptTTS_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(InterruptTTSRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AudioServiceServer).InterruptTTS(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AudioService_InterruptTTS_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AudioServiceServer).InterruptTTS(ctx, req.(*InterruptTTSRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AudioService_GetAudioCapabilities_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetAudioCapabilitiesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AudioServiceServer).GetAudioCapabilities(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AudioService_GetAudioCapabilities_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AudioServiceServer).GetAudioCapabilities(ctx, req.(*GetAudioCapabilitiesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+// AudioService_ServiceDesc is the grpc.ServiceDesc for AudioService service.
+// It's only intended for direct use with grpc.RegisterService,
+// and not to be introspected or modified (even as a copy)
+var AudioService_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "nupi.api.v1.AudioService",
+	HandlerType: (*AudioServiceServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "InterruptTTS",
+			Handler:    _AudioService_InterruptTTS_Handler,
+		},
+		{
+			MethodName: "GetAudioCapabilities",
+			Handler:    _AudioService_GetAudioCapabilities_Handler,
+		},
+	},
+	Streams: []grpc.StreamDesc{
+		{
+			StreamName:    "StreamAudioIn",
+			Handler:       _AudioService_StreamAudioIn_Handler,
+			ClientStreams: true,
+		},
+		{
+			StreamName:    "StreamAudioOut",
+			Handler:       _AudioService_StreamAudioOut_Handler,
+			ServerStreams: true,
+		},
+	},
+	Metadata: "api/grpc/v1/nupi.proto",
+}
