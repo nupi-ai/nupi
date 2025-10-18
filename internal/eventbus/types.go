@@ -209,6 +209,7 @@ type AudioEgressPlaybackEvent struct {
 	Sequence  uint64
 	Format    AudioFormat
 	Data      []byte
+	Duration  time.Duration
 	Final     bool
 	Metadata  map[string]string
 }

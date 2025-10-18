@@ -183,6 +183,11 @@ func (s *Service) DefaultStreamID() string {
 	return s.streamID
 }
 
+// PlaybackFormat returns the configured output audio format.
+func (s *Service) PlaybackFormat() eventbus.AudioFormat {
+	return s.format
+}
+
 // Interrupt stops playback for the specified session/stream.
 func (s *Service) Interrupt(sessionID, streamID, reason string, metadata map[string]string) {
 	if sessionID == "" {
@@ -761,6 +766,7 @@ func (st *stream) handleRequest(req speakRequest) {
 		if chunk.Format != nil {
 			format = *chunk.Format
 		}
+		duration := chunkDuration(format, chunk)
 		metadata := mergeMetadata(st.metadata, chunk.Metadata, req.Metadata)
 		metadata = st.decorateMetadata(metadata)
 		evt := eventbus.AudioEgressPlaybackEvent{
@@ -768,6 +774,7 @@ func (st *stream) handleRequest(req speakRequest) {
 			StreamID:  st.streamID,
 			Sequence:  st.seq,
 			Format:    format,
+			Duration:  duration,
 			Data:      append([]byte(nil), chunk.Data...),
 			Final:     chunk.Final,
 			Metadata:  metadata,
@@ -785,6 +792,7 @@ func (st *stream) publishFinal() {
 		StreamID:  st.streamID,
 		Sequence:  st.seq,
 		Format:    st.format,
+		Duration:  0,
 		Final:     true,
 		Metadata:  metadata,
 	}
@@ -825,11 +833,16 @@ func (st *stream) closeSynthesizer(reason string) {
 		st.seq++
 		metadata := mergeMetadata(st.metadata, chunk.Metadata, nil)
 		metadata = st.decorateMetadata(metadata)
+		format := st.format
+		if chunk.Format != nil {
+			format = *chunk.Format
+		}
 		evt := eventbus.AudioEgressPlaybackEvent{
 			SessionID: st.sessionID,
 			StreamID:  st.streamID,
 			Sequence:  st.seq,
-			Format:    st.format,
+			Format:    format,
+			Duration:  chunkDuration(format, chunk),
 			Data:      append([]byte(nil), chunk.Data...),
 			Final:     chunk.Final,
 			Metadata:  metadata,
@@ -896,4 +909,31 @@ func reasonOrDefault(reason string) string {
 		return "interrupt"
 	}
 	return reason
+}
+
+func chunkDuration(format eventbus.AudioFormat, chunk SynthesisChunk) time.Duration {
+	if chunk.Duration > 0 {
+		return chunk.Duration
+	}
+	return durationFromPCM(format, len(chunk.Data))
+}
+
+func durationFromPCM(format eventbus.AudioFormat, bytes int) time.Duration {
+	if bytes <= 0 || format.SampleRate <= 0 || format.Channels <= 0 || format.BitDepth <= 0 {
+		return 0
+	}
+	bytesPerSample := format.BitDepth / 8
+	if bytesPerSample <= 0 {
+		return 0
+	}
+	frameSize := format.Channels * bytesPerSample
+	if frameSize <= 0 {
+		return 0
+	}
+	samples := bytes / frameSize
+	if samples <= 0 {
+		return 0
+	}
+	seconds := float64(samples) / float64(format.SampleRate)
+	return time.Duration(seconds * float64(time.Second))
 }

@@ -223,7 +223,82 @@ func (a *audioService) StreamAudioIn(stream apiv1.AudioService_StreamAudioInServ
 }
 
 func (a *audioService) StreamAudioOut(req *apiv1.StreamAudioOutRequest, srv apiv1.AudioService_StreamAudioOutServer) error {
-	return status.Error(codes.Unimplemented, "StreamAudioOut not implemented yet")
+	if _, err := a.api.requireRoleGRPC(srv.Context(), roleAdmin); err != nil {
+		return err
+	}
+	if req == nil {
+		return status.Error(codes.InvalidArgument, "request is required")
+	}
+	if a.api.eventBus == nil {
+		return status.Error(codes.Unavailable, "event bus unavailable")
+	}
+
+	sessionID := strings.TrimSpace(req.GetSessionId())
+	if sessionID == "" {
+		return status.Error(codes.InvalidArgument, "session_id is required")
+	}
+	streamID := strings.TrimSpace(req.GetStreamId())
+	if streamID == "" {
+		if a.api.audioEgress != nil {
+			streamID = a.api.audioEgress.DefaultStreamID()
+		} else {
+			streamID = defaultTTSStreamID
+		}
+	}
+
+	if a.api.sessionManager != nil {
+		if _, err := a.api.sessionManager.GetSession(sessionID); err != nil {
+			return status.Errorf(codes.NotFound, "session %s not found", sessionID)
+		}
+	}
+
+	sub := a.api.eventBus.Subscribe(
+		eventbus.TopicAudioEgressPlayback,
+		eventbus.WithSubscriptionName(fmt.Sprintf("grpc_audio_out_%s_%s_%d", sessionID, streamID, time.Now().UnixNano())),
+		eventbus.WithSubscriptionBuffer(64),
+	)
+	defer sub.Close()
+
+	ctx := srv.Context()
+	firstChunk := true
+
+	for {
+		select {
+		case <-ctx.Done():
+			return status.FromContextError(ctx.Err()).Err()
+		case env, ok := <-sub.C():
+			if !ok {
+				return status.Error(codes.Unavailable, "playback subscription closed")
+			}
+			evt, ok := env.Payload.(eventbus.AudioEgressPlaybackEvent)
+			if !ok {
+				continue
+			}
+			if evt.SessionID != sessionID || evt.StreamID != streamID {
+				continue
+			}
+
+			chunkDuration := playbackDuration(evt)
+			resp := &apiv1.StreamAudioOutResponse{
+				Format: audioFormatToProto(evt.Format),
+				Chunk: &apiv1.AudioChunk{
+					Data:       append([]byte(nil), evt.Data...),
+					Sequence:   evt.Sequence,
+					DurationMs: durationToMillis(chunkDuration),
+					Last:       evt.Final,
+					Metadata:   copyStringMap(evt.Metadata),
+				},
+			}
+			if firstChunk {
+				resp.Chunk.First = true
+				firstChunk = false
+			}
+
+			if err := srv.Send(resp); err != nil {
+				return err
+			}
+		}
+	}
 }
 
 func (a *audioService) InterruptTTS(ctx context.Context, req *apiv1.InterruptTTSRequest) (*emptypb.Empty, error) {
@@ -265,7 +340,37 @@ func (a *audioService) InterruptTTS(ctx context.Context, req *apiv1.InterruptTTS
 }
 
 func (a *audioService) GetAudioCapabilities(ctx context.Context, req *apiv1.GetAudioCapabilitiesRequest) (*apiv1.GetAudioCapabilitiesResponse, error) {
-	return nil, status.Error(codes.Unimplemented, "GetAudioCapabilities not implemented yet")
+	if _, err := a.api.requireRoleGRPC(ctx, roleAdmin, roleReadOnly); err != nil {
+		return nil, err
+	}
+	if req == nil {
+		req = &apiv1.GetAudioCapabilitiesRequest{}
+	}
+
+	sessionID := strings.TrimSpace(req.GetSessionId())
+	if sessionID != "" && a.api.sessionManager != nil {
+		if _, err := a.api.sessionManager.GetSession(sessionID); err != nil {
+			return nil, status.Errorf(codes.NotFound, "session %s not found", sessionID)
+		}
+	}
+
+	resp := &apiv1.GetAudioCapabilitiesResponse{}
+
+	resp.Capture = append(resp.Capture, &apiv1.AudioCapability{
+		StreamId: defaultCaptureStreamID,
+		Format:   audioFormatToProto(defaultCaptureFormat),
+		Metadata: map[string]string{"recommended": "true"},
+	})
+
+	if a.api.audioEgress != nil {
+		resp.Playback = append(resp.Playback, &apiv1.AudioCapability{
+			StreamId: a.api.audioEgress.DefaultStreamID(),
+			Format:   audioFormatToProto(a.api.audioEgress.PlaybackFormat()),
+			Metadata: map[string]string{"recommended": "true"},
+		})
+	}
+
+	return resp, nil
 }
 
 func (s *sessionsService) ListSessions(ctx context.Context, _ *apiv1.ListSessionsRequest) (*apiv1.ListSessionsResponse, error) {
@@ -446,6 +551,16 @@ func RegisterGRPCServices(api *APIServer, registrar grpc.ServiceRegistrar) {
 	}
 }
 
+const defaultCaptureStreamID = "mic"
+
+var defaultCaptureFormat = eventbus.AudioFormat{
+	Encoding:      eventbus.AudioEncodingPCM16,
+	SampleRate:    16000,
+	Channels:      1,
+	BitDepth:      16,
+	FrameDuration: 20 * time.Millisecond,
+}
+
 func audioFormatFromProto(pb *apiv1.AudioFormat) (eventbus.AudioFormat, error) {
 	if pb == nil {
 		return eventbus.AudioFormat{}, fmt.Errorf("audio format is required")
@@ -481,6 +596,56 @@ func audioFormatsEqual(a, b eventbus.AudioFormat) bool {
 		a.SampleRate == b.SampleRate &&
 		a.Channels == b.Channels &&
 		a.BitDepth == b.BitDepth
+}
+
+func audioFormatToProto(format eventbus.AudioFormat) *apiv1.AudioFormat {
+	return &apiv1.AudioFormat{
+		Encoding:        string(format.Encoding),
+		SampleRate:      uint32(maxInt(format.SampleRate)),
+		Channels:        uint32(maxInt(format.Channels)),
+		BitDepth:        uint32(maxInt(format.BitDepth)),
+		FrameDurationMs: durationToMillis(format.FrameDuration),
+	}
+}
+
+func maxInt(v int) int {
+	if v < 0 {
+		return 0
+	}
+	return v
+}
+
+func durationToMillis(d time.Duration) uint32 {
+	if d <= 0 {
+		return 0
+	}
+	return uint32(d / time.Millisecond)
+}
+
+func playbackDuration(evt eventbus.AudioEgressPlaybackEvent) time.Duration {
+	if evt.Duration > 0 {
+		return evt.Duration
+	}
+	return pcmDuration(evt.Format, len(evt.Data))
+}
+
+func pcmDuration(format eventbus.AudioFormat, dataLen int) time.Duration {
+	if dataLen <= 0 || format.SampleRate <= 0 || format.Channels <= 0 || format.BitDepth <= 0 {
+		return 0
+	}
+	bytesPerSample := format.BitDepth / 8
+	if bytesPerSample <= 0 {
+		return 0
+	}
+	frameSize := format.Channels * bytesPerSample
+	if frameSize <= 0 {
+		return 0
+	}
+	samples := dataLen / frameSize
+	if samples <= 0 {
+		return 0
+	}
+	return time.Duration(float64(samples) / float64(format.SampleRate) * float64(time.Second))
 }
 
 func copyStringMap(in map[string]string) map[string]string {

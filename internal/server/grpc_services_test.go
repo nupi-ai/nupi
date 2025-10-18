@@ -4,10 +4,12 @@ import (
 	"context"
 	"io"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	apiv1 "github.com/nupi-ai/nupi/internal/api/grpc/v1"
+	"github.com/nupi-ai/nupi/internal/audio/egress"
 	"github.com/nupi-ai/nupi/internal/audio/ingress"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
@@ -363,6 +365,135 @@ func TestAudioServiceStreamAudioIn(t *testing.T) {
 	expectNoEnvelope(t, segSub)
 }
 
+func TestAudioServiceStreamAudioOut(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	bus := eventbus.New()
+	apiServer.SetEventBus(bus)
+
+	egressSvc := egress.New(bus)
+	apiServer.SetAudioEgressService(egressSvc)
+	apiServer.sessionManager = nil
+
+	service := newAudioService(apiServer)
+
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), authContextKey{}, storedToken{Role: string(roleAdmin)}))
+	defer cancel()
+
+	srv := newFakeAudioOutServer(ctx)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- service.StreamAudioOut(&apiv1.StreamAudioOutRequest{
+			SessionId: "sess-audio",
+		}, srv)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+
+	format := egressSvc.PlaybackFormat()
+	streamID := egressSvc.DefaultStreamID()
+
+	bus.Publish(context.Background(), eventbus.Envelope{
+		Topic: eventbus.TopicAudioEgressPlayback,
+		Payload: eventbus.AudioEgressPlaybackEvent{
+			SessionID: "sess-audio",
+			StreamID:  streamID,
+			Sequence:  1,
+			Format:    format,
+			Duration:  150 * time.Millisecond,
+			Data:      []byte{1, 2, 3, 4},
+			Final:     false,
+			Metadata:  map[string]string{"phase": "speak"},
+		},
+	})
+
+	first := srv.waitForResponses(t, 1, time.Second)[0]
+	if first.GetChunk().GetSequence() != 1 || !first.GetChunk().GetFirst() || first.GetChunk().GetLast() {
+		t.Fatalf("unexpected first chunk: %+v", first.GetChunk())
+	}
+	if len(first.GetChunk().GetData()) != 4 {
+		t.Fatalf("unexpected chunk data length: %d", len(first.GetChunk().GetData()))
+	}
+	if got := first.GetChunk().GetMetadata()["phase"]; got != "speak" {
+		t.Fatalf("metadata not propagated: %+v", first.GetChunk().GetMetadata())
+	}
+	if first.GetChunk().GetDurationMs() != 150 {
+		t.Fatalf("unexpected duration ms: %d", first.GetChunk().GetDurationMs())
+	}
+
+	bus.Publish(context.Background(), eventbus.Envelope{
+		Topic: eventbus.TopicAudioEgressPlayback,
+		Payload: eventbus.AudioEgressPlaybackEvent{
+			SessionID: "sess-audio",
+			StreamID:  streamID,
+			Sequence:  2,
+			Format:    format,
+			Data:      []byte{},
+			Final:     true,
+			Metadata:  map[string]string{"barge_in": "true"},
+		},
+	})
+
+	second := srv.waitForResponses(t, 2, time.Second)[1]
+	if !second.GetChunk().GetLast() {
+		t.Fatalf("expected final chunk, got %+v", second.GetChunk())
+	}
+	if second.GetChunk().GetMetadata()["barge_in"] != "true" {
+		t.Fatalf("expected barge metadata on final chunk, got %+v", second.GetChunk().GetMetadata())
+	}
+	if second.GetChunk().GetDurationMs() != 0 {
+		t.Fatalf("expected zero duration for final chunk, got %d", second.GetChunk().GetDurationMs())
+	}
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if status.Code(err) != codes.Canceled {
+			t.Fatalf("expected canceled error, got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for stream to finish")
+	}
+}
+
+func TestAudioServiceGetAudioCapabilities(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	bus := eventbus.New()
+	apiServer.SetEventBus(bus)
+	ingressSvc := ingress.New(bus)
+	apiServer.SetAudioIngressService(ingressSvc)
+	egressSvc := egress.New(bus)
+	apiServer.SetAudioEgressService(egressSvc)
+	apiServer.sessionManager = nil
+
+	service := newAudioService(apiServer)
+	ctx := context.WithValue(context.Background(), authContextKey{}, storedToken{Role: string(roleAdmin)})
+
+	resp, err := service.GetAudioCapabilities(ctx, &apiv1.GetAudioCapabilitiesRequest{})
+	if err != nil {
+		t.Fatalf("GetAudioCapabilities returned error: %v", err)
+	}
+	if len(resp.GetCapture()) == 0 {
+		t.Fatalf("expected capture capabilities")
+	}
+	if capture := resp.GetCapture()[0]; capture.GetStreamId() != "mic" || capture.GetFormat().GetSampleRate() != 16000 {
+		t.Fatalf("unexpected capture capability: %+v", capture)
+	}
+	if len(resp.GetPlayback()) == 0 {
+		t.Fatalf("expected playback capabilities")
+	}
+	playback := resp.GetPlayback()[0]
+	if playback.GetStreamId() != egressSvc.DefaultStreamID() {
+		t.Fatalf("unexpected playback stream id: %s", playback.GetStreamId())
+	}
+	if playback.GetFormat().GetSampleRate() != uint32(egressSvc.PlaybackFormat().SampleRate) {
+		t.Fatalf("playback format mismatch: %+v", playback.GetFormat())
+	}
+
+	if _, err := service.GetAudioCapabilities(ctx, &apiv1.GetAudioCapabilitiesRequest{SessionId: "sess"}); err != nil {
+		t.Fatalf("GetAudioCapabilities with session returned error: %v", err)
+	}
+}
+
 func recvEnvelope(t *testing.T, sub *eventbus.Subscription) eventbus.Envelope {
 	t.Helper()
 	select {
@@ -416,3 +547,54 @@ func (f *fakeAudioInStream) SendHeader(metadata.MD) error { return nil }
 func (f *fakeAudioInStream) SetTrailer(metadata.MD)       {}
 func (f *fakeAudioInStream) SendMsg(interface{}) error    { return nil }
 func (f *fakeAudioInStream) RecvMsg(interface{}) error    { return nil }
+
+type fakeAudioOutServer struct {
+	ctx       context.Context
+	mu        sync.Mutex
+	responses []*apiv1.StreamAudioOutResponse
+}
+
+func newFakeAudioOutServer(ctx context.Context) *fakeAudioOutServer {
+	return &fakeAudioOutServer{ctx: ctx}
+}
+
+func (f *fakeAudioOutServer) Context() context.Context {
+	if f.ctx != nil {
+		return f.ctx
+	}
+	return context.Background()
+}
+
+func (f *fakeAudioOutServer) Send(resp *apiv1.StreamAudioOutResponse) error {
+	f.mu.Lock()
+	f.responses = append(f.responses, resp)
+	f.mu.Unlock()
+	return nil
+}
+
+func (f *fakeAudioOutServer) waitForResponses(t *testing.T, count int, timeout time.Duration) []*apiv1.StreamAudioOutResponse {
+	t.Helper()
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	for {
+		f.mu.Lock()
+		if len(f.responses) >= count {
+			out := append([]*apiv1.StreamAudioOutResponse(nil), f.responses...)
+			f.mu.Unlock()
+			return out
+		}
+		f.mu.Unlock()
+
+		select {
+		case <-time.After(10 * time.Millisecond):
+		case <-deadline.C:
+			t.Fatalf("timeout waiting for %d responses, got %d", count, len(f.responses))
+		}
+	}
+}
+
+func (f *fakeAudioOutServer) SetHeader(metadata.MD) error  { return nil }
+func (f *fakeAudioOutServer) SendHeader(metadata.MD) error { return nil }
+func (f *fakeAudioOutServer) SetTrailer(metadata.MD)       {}
+func (f *fakeAudioOutServer) SendMsg(interface{}) error    { return nil }
+func (f *fakeAudioOutServer) RecvMsg(interface{}) error    { return nil }
