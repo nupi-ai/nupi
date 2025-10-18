@@ -1,6 +1,7 @@
 package ingress
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -85,6 +86,59 @@ func TestStreamSegmentation(t *testing.T) {
 	}
 }
 
+func TestStreamCloseOnBoundaryEmitsTerminalSegment(t *testing.T) {
+	bus := eventbus.New()
+	svc := New(bus, WithSegmentDuration(20*time.Millisecond))
+
+	format := eventbus.AudioFormat{
+		Encoding:      eventbus.AudioEncodingPCM16,
+		SampleRate:    16000,
+		Channels:      1,
+		BitDepth:      16,
+		FrameDuration: 20 * time.Millisecond,
+	}
+
+	stream, err := svc.OpenStream("sess-boundary", "mic", format, nil)
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+
+	segSub := bus.Subscribe(eventbus.TopicAudioIngressSegment)
+
+	data := make([]byte, 640)
+	if err := stream.Write(data); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	firstEvt := receiveEvent(t, segSub)
+	firstSegment := firstEvt.Payload.(eventbus.AudioIngressSegmentEvent)
+	if firstSegment.Last {
+		t.Fatalf("expected first segment not to be last")
+	}
+
+	if err := stream.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	terminalEvt := receiveEvent(t, segSub)
+	terminal := terminalEvt.Payload.(eventbus.AudioIngressSegmentEvent)
+	if !terminal.Last {
+		t.Fatalf("expected terminal envelope with Last=true")
+	}
+	if terminal.First {
+		t.Fatalf("terminal envelope should not be marked first")
+	}
+	if len(terminal.Data) != 0 {
+		t.Fatalf("terminal envelope should not contain audio data")
+	}
+	if terminal.Duration != 0 {
+		t.Fatalf("terminal envelope duration should be zero")
+	}
+	if terminal.Sequence != firstSegment.Sequence+1 {
+		t.Fatalf("unexpected terminal sequence: got %d want %d", terminal.Sequence, firstSegment.Sequence+1)
+	}
+}
+
 func TestOpenStreamValidation(t *testing.T) {
 	bus := eventbus.New()
 	svc := New(bus)
@@ -97,6 +151,54 @@ func TestOpenStreamValidation(t *testing.T) {
 	_, err = svc.OpenStream("sess", "mic", eventbus.AudioFormat{SampleRate: 16000, Channels: 1, BitDepth: 15}, nil)
 	if err == nil {
 		t.Fatalf("expected error for invalid bit depth")
+	}
+}
+
+func TestServiceShutdownClosesStreams(t *testing.T) {
+	bus := eventbus.New()
+	svc := New(bus, WithSegmentDuration(20*time.Millisecond))
+
+	format := eventbus.AudioFormat{
+		Encoding:      eventbus.AudioEncodingPCM16,
+		SampleRate:    16000,
+		Channels:      1,
+		BitDepth:      16,
+		FrameDuration: 20 * time.Millisecond,
+	}
+
+	stream, err := svc.OpenStream("sess-shutdown", "mic", format, nil)
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+
+	segSub := bus.Subscribe(eventbus.TopicAudioIngressSegment)
+
+	segmentData := make([]byte, 640)
+	if err := stream.Write(segmentData); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	firstEvt := receiveEvent(t, segSub)
+	first := firstEvt.Payload.(eventbus.AudioIngressSegmentEvent)
+	if first.Last {
+		t.Fatalf("expected first segment to not be last before shutdown")
+	}
+
+	if err := svc.Shutdown(context.Background()); err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+
+	terminalEvt := receiveEvent(t, segSub)
+	terminal := terminalEvt.Payload.(eventbus.AudioIngressSegmentEvent)
+	if !terminal.Last {
+		t.Fatalf("expected shutdown to emit terminal segment")
+	}
+	if terminal.Sequence != first.Sequence+1 {
+		t.Fatalf("unexpected terminal sequence after shutdown: got %d want %d", terminal.Sequence, first.Sequence+1)
+	}
+
+	if _, ok := svc.Stream("sess-shutdown", "mic"); ok {
+		t.Fatalf("stream should be removed after shutdown")
 	}
 }
 

@@ -53,13 +53,17 @@ func (s *Service) Start(ctx context.Context) error { //nolint:revive // context 
 // Shutdown closes all active streams and releases resources.
 func (s *Service) Shutdown(ctx context.Context) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	for key, stream := range s.streams {
-		stream.closeLocked()
-		delete(s.streams, key)
+	streams := make([]*Stream, 0, len(s.streams))
+	for _, stream := range s.streams {
+		streams = append(streams, stream)
 	}
-	return nil
+	s.mu.Unlock()
+
+	var err error
+	for _, stream := range streams {
+		err = errors.Join(err, stream.Close())
+	}
+	return err
 }
 
 // OpenStream registers a new audio stream for the given session and stream identifiers.
@@ -133,6 +137,7 @@ type Stream struct {
 	mu           sync.Mutex
 	closed       bool
 	first        bool
+	lastSent     bool
 	rawSeq       uint64
 	segmentSeq   uint64
 	buffer       []byte
@@ -177,9 +182,7 @@ func (st *Stream) closeLocked() error {
 	if st.closed {
 		return nil
 	}
-	if len(st.buffer) > 0 {
-		st.flushSegmentsLocked(true)
-	}
+	st.flushSegmentsLocked(true)
 	st.closed = true
 	st.service.removeStream(st)
 	return nil
@@ -205,18 +208,29 @@ func (st *Stream) publishRaw(data []byte, received time.Time) {
 func (st *Stream) flushSegmentsLocked(closing bool) {
 	segSize := segmentSizeBytes(st.format, st.segmentDur)
 	for segSize > 0 && len(st.buffer) >= segSize {
+		finalSegment := closing && len(st.buffer) == segSize && !st.lastSent
 		segment := st.buffer[:segSize]
-		st.emitSegment(segment, st.segmentDur, false)
+		st.emitSegment(segment, st.segmentDur, finalSegment)
 		st.buffer = st.buffer[segSize:]
+		if finalSegment {
+			st.buffer = nil
+			return
+		}
 	}
 	if closing && len(st.buffer) > 0 {
 		duration := durationForBytes(len(st.buffer), st.format)
 		segment := st.buffer
 		st.emitSegment(segment, duration, true)
 		st.buffer = nil
-	} else if closing {
-		// no leftover -> nothing to emit
+		return
+	}
+
+	if closing {
+		// ensure buffer is cleared after terminal flush
 		st.buffer = nil
+		if !st.lastSent {
+			st.emitTerminalLocked()
+		}
 	}
 }
 
@@ -243,6 +257,38 @@ func (st *Stream) emitSegment(data []byte, duration time.Duration, final bool) {
 	}
 	st.first = false
 	st.segmentStart = endedAt
+	st.service.bus.Publish(context.Background(), eventbus.Envelope{
+		Topic:   eventbus.TopicAudioIngressSegment,
+		Source:  eventbus.SourceAudioIngress,
+		Payload: evt,
+	})
+	st.lastSent = final && len(segmentCopy) > 0
+}
+
+func (st *Stream) emitTerminalLocked() {
+	st.segmentSeq++
+	now := time.Now().UTC()
+	start := st.segmentStart
+	if start.IsZero() {
+		start = now
+	}
+
+	evt := eventbus.AudioIngressSegmentEvent{
+		SessionID: st.sessionID,
+		StreamID:  st.streamID,
+		Sequence:  st.segmentSeq,
+		Format:    st.format,
+		Data:      nil,
+		Duration:  0,
+		First:     st.first,
+		Last:      true,
+		StartedAt: start,
+		EndedAt:   start,
+		Metadata:  copyMetadata(st.metadata),
+	}
+	st.first = false
+	st.lastSent = true
+	st.segmentStart = start
 	st.service.bus.Publish(context.Background(), eventbus.Envelope{
 		Topic:   eventbus.TopicAudioIngressSegment,
 		Source:  eventbus.SourceAudioIngress,
