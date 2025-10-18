@@ -64,7 +64,7 @@ func TestServicePublishesRestartOnConfigChange(t *testing.T) {
 	store := &fakeBindingSource{
 		bindings: []configstore.AdapterBinding{
 			{
-				Slot:      string(SlotSTT),
+				Slot:      string(SlotSTTPrimary),
 				Status:    "active",
 				AdapterID: strPtr("adapter.stt.primary"),
 				Config:    `{"threshold":0.5}`,

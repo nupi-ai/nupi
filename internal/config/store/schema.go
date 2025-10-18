@@ -86,6 +86,7 @@ var schemaStatements = []string{
 
 var requiredAdapterSlots = []string{
 	"stt.primary",
+	"stt.secondary",
 	"ai.primary",
 	"tts.primary",
 	"tunnel.primary",

@@ -89,13 +89,15 @@ func TestEnsureRequiredAdapterSlotsReconcilesStatus(t *testing.T) {
 
 	ctx := context.Background()
 
-	// mark stt.primary inactive without adapter
-	if _, err := store.DB().ExecContext(ctx, `
-		UPDATE adapter_bindings
-		SET status = 'inactive', config = NULL, updated_at = CURRENT_TIMESTAMP
-		WHERE instance_name = ? AND profile_name = ? AND slot = 'stt.primary'
-	`, store.InstanceName(), store.ProfileName()); err != nil {
-		t.Fatalf("prepare slot: %v", err)
+	slots := []string{"stt.primary", "stt.secondary"}
+	for _, slot := range slots {
+		if _, err := store.DB().ExecContext(ctx, `
+			UPDATE adapter_bindings
+			SET status = 'inactive', config = NULL, updated_at = CURRENT_TIMESTAMP
+			WHERE instance_name = ? AND profile_name = ? AND slot = ?
+		`, store.InstanceName(), store.ProfileName(), slot); err != nil {
+			t.Fatalf("prepare slot %s: %v", slot, err)
+		}
 	}
 
 	result, err := store.EnsureRequiredAdapterSlots(ctx)
@@ -103,33 +105,38 @@ func TestEnsureRequiredAdapterSlotsReconcilesStatus(t *testing.T) {
 		t.Fatalf("ensure required slots: %v", err)
 	}
 
-	found := false
-	for _, slot := range result.UpdatedSlots {
-		if slot == "stt.primary" {
-			found = true
-			break
+	found := make(map[string]bool)
+	for _, slot := range slots {
+		for _, repaired := range result.UpdatedSlots {
+			if repaired == slot {
+				found[slot] = true
+			}
 		}
 	}
-	if !found {
-		t.Fatalf("expected stt.primary to be repaired")
+	for _, slot := range slots {
+		if !found[slot] {
+			t.Fatalf("expected %s to be repaired", slot)
+		}
 	}
 
-	var status string
-	var adapter sql.NullString
-	var cfg sql.NullString
-	if err := store.DB().QueryRowContext(ctx, `
-		SELECT status, adapter_id, config FROM adapter_bindings
-		WHERE instance_name = ? AND profile_name = ? AND slot = 'stt.primary'
-	`, store.InstanceName(), store.ProfileName()).Scan(&status, &adapter, &cfg); err != nil {
-		t.Fatalf("query slot: %v", err)
-	}
-	if status != BindingStatusRequired {
-		t.Fatalf("expected status required after repair, got %s", status)
-	}
-	if adapter.Valid {
-		t.Fatalf("expected adapter to remain nil")
-	}
-	if !cfg.Valid || strings.TrimSpace(cfg.String) == "" {
-		t.Fatalf("expected required config to be set, got %v", cfg.String)
+	for _, slot := range slots {
+		var status string
+		var adapter sql.NullString
+		var cfg sql.NullString
+		if err := store.DB().QueryRowContext(ctx, `
+			SELECT status, adapter_id, config FROM adapter_bindings
+			WHERE instance_name = ? AND profile_name = ? AND slot = ?
+		`, store.InstanceName(), store.ProfileName(), slot).Scan(&status, &adapter, &cfg); err != nil {
+			t.Fatalf("query slot %s: %v", slot, err)
+		}
+		if status != BindingStatusRequired {
+			t.Fatalf("expected status required after repair for %s, got %s", slot, status)
+		}
+		if adapter.Valid {
+			t.Fatalf("expected adapter to remain nil for %s", slot)
+		}
+		if !cfg.Valid || strings.TrimSpace(cfg.String) == "" {
+			t.Fatalf("expected required config to be set for %s, got %v", slot, cfg.String)
+		}
 	}
 }
