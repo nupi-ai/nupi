@@ -113,17 +113,18 @@ func TestConversationKeepsHistoryUntilDetachTimeout(t *testing.T) {
 	}
 	defer svc.Shutdown(context.Background())
 
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicPipelineCleaned,
-		Source:  eventbus.SourceContentPipeline,
-		Payload: eventbus.PipelineMessageEvent{SessionID: "detach", Origin: eventbus.OriginUser, Text: "hello"},
-	})
+	svc.mu.Lock()
+	svc.sessions["detach"] = []eventbus.ConversationTurn{
+		{
+			Origin: eventbus.OriginUser,
+			Text:   "hello",
+			At:     time.Now(),
+			Meta:   map[string]string{},
+		},
+	}
+	svc.mu.Unlock()
 
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicSessionsLifecycle,
-		Source:  eventbus.SourceSessionManager,
-		Payload: eventbus.SessionLifecycleEvent{SessionID: "detach", State: eventbus.SessionStateDetached},
-	})
+	svc.scheduleDetachCleanup("detach")
 
 	time.Sleep(ttl / 2)
 	if len(svc.Context("detach")) == 0 {
