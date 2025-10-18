@@ -393,9 +393,6 @@ func isPublicAuthEndpoint(r *http.Request) bool {
 	if path == "/auth/pair" && (r.Method == http.MethodPost || r.Method == http.MethodOptions) {
 		return true
 	}
-	if path == "/metrics" && r.Method == http.MethodGet {
-		return true
-	}
 	return false
 }
 

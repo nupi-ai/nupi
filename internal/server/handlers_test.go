@@ -24,8 +24,10 @@ import (
 	apihttp "github.com/nupi-ai/nupi/internal/api/http"
 	"github.com/nupi-ai/nupi/internal/config"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
+	"github.com/nupi-ai/nupi/internal/contentpipeline"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/modules"
+	"github.com/nupi-ai/nupi/internal/observability"
 	"github.com/nupi-ai/nupi/internal/pty"
 	"github.com/nupi-ai/nupi/internal/session"
 )
@@ -924,10 +926,11 @@ func TestHandleQuickstartCompleteValidation(t *testing.T) {
 func TestHandleMetricsUnavailable(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
 
+	handler := apiServer.wrapWithSecurity(http.HandlerFunc(apiServer.handleMetrics))
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req := withAdmin(apiServer, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 
-	apiServer.handleMetrics(rec, req)
+	handler.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected status %d when exporter is missing, got %d", http.StatusServiceUnavailable, rec.Code)
@@ -938,10 +941,11 @@ func TestHandleMetricsSuccess(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
 	apiServer.SetMetricsExporter(metricsExporterStub{payload: []byte("metric_line\n")})
 
+	handler := apiServer.wrapWithSecurity(http.HandlerFunc(apiServer.handleMetrics))
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req := withAdmin(apiServer, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 
-	apiServer.handleMetrics(rec, req)
+	handler.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
@@ -954,10 +958,67 @@ func TestHandleMetricsSuccess(t *testing.T) {
 	}
 }
 
-func TestIsPublicAuthEndpointAllowsMetrics(t *testing.T) {
+func TestMetricsEndpointAggregatesData(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+
+	bus := eventbus.New()
+	counter := observability.NewEventCounter()
+	bus.AddObserver(counter)
+
+	exporter := observability.NewPrometheusExporter(bus, counter)
+	exporter.WithPipeline(pipelineMetricsStub{processed: 7, errors: 1})
+	apiServer.SetMetricsExporter(exporter)
+
+	bus.Publish(context.Background(), eventbus.Envelope{Topic: eventbus.TopicSessionsOutput})
+	bus.Publish(context.Background(), eventbus.Envelope{Topic: eventbus.TopicPipelineCleaned})
+
+	handler := apiServer.wrapWithSecurity(http.HandlerFunc(apiServer.handleMetrics))
+	rec := httptest.NewRecorder()
+	req := withAdmin(apiServer, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
+	}
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `nupi_eventbus_events_total{topic="pipeline.cleaned"} 1`) {
+		t.Fatalf("expected pipeline.cleaned counter in metrics output:\n%s", body)
+	}
+	if !strings.Contains(body, `nupi_eventbus_events_total{topic="sessions.output"} 1`) {
+		t.Fatalf("expected sessions.output counter in metrics output:\n%s", body)
+	}
+	if !strings.Contains(body, `nupi_pipeline_processed_total 7`) {
+		t.Fatalf("expected pipeline processed metric in output:\n%s", body)
+	}
+	if !strings.Contains(body, `nupi_pipeline_errors_total 1`) {
+		t.Fatalf("expected pipeline error metric in output:\n%s", body)
+	}
+}
+
+func TestHandleMetricsUnauthorized(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	apiServer.authMu.Lock()
+	apiServer.authRequired = true
+	apiServer.authTokens = make(map[string]storedToken)
+	apiServer.authMu.Unlock()
+
+	handler := apiServer.wrapWithSecurity(http.HandlerFunc(apiServer.handleMetrics))
+	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
-	if !isPublicAuthEndpoint(req) {
-		t.Fatalf("expected /metrics GET to be treated as public auth endpoint")
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status %d when no token provided, got %d", http.StatusUnauthorized, rec.Code)
+	}
+}
+
+func TestIsPublicAuthEndpointExcludesMetrics(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	if isPublicAuthEndpoint(req) {
+		t.Fatalf("expected /metrics GET to require auth when auth is enabled")
 	}
 
 	postReq := httptest.NewRequest(http.MethodPost, "/metrics", nil)
@@ -1178,4 +1239,16 @@ type metricsExporterStub struct {
 
 func (m metricsExporterStub) Export() []byte {
 	return m.payload
+}
+
+type pipelineMetricsStub struct {
+	processed uint64
+	errors    uint64
+}
+
+func (p pipelineMetricsStub) Metrics() contentpipeline.Metrics {
+	return contentpipeline.Metrics{
+		Processed: p.processed,
+		Errors:    p.errors,
+	}
 }
