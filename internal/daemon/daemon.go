@@ -100,7 +100,7 @@ func New(opts Options) (*Daemon, error) {
 		return nil, err
 	}
 
-	pipelineService := contentpipeline.NewService(bus, pluginService)
+    pipelineService := contentpipeline.NewService(bus, pluginService, contentpipeline.WithMetricsInterval(30*time.Second))
 	conversationService := conversation.NewService(bus)
 	moduleManager := modules.NewManager(modules.ManagerOptions{
 		Store:  opts.Store,
@@ -196,6 +196,7 @@ func (d *Daemon) Start() error {
 	}
 
 	d.ctx, d.cancel = context.WithCancel(context.Background())
+	d.eventBus.StartMetricsReporter(d.ctx, 30*time.Second, nil)
 
 	if err := d.serviceHost.Start(d.ctx); err != nil {
 		if d.cancel != nil {

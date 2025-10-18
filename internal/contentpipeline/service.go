@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/dop251/goja"
 	"github.com/nupi-ai/nupi/internal/eventbus"
@@ -25,6 +27,11 @@ type Service struct {
 	wg     sync.WaitGroup
 
 	subs []*eventbus.Subscription
+
+	logger          *log.Logger
+	metricsInterval time.Duration
+	processedTotal  atomic.Uint64
+	errorTotal      atomic.Uint64
 }
 
 // PipelineProvider exposes access to pipeline plugins.
@@ -32,13 +39,39 @@ type PipelineProvider interface {
 	PipelinePluginFor(name string) (*plugins.PipelinePlugin, bool)
 }
 
+// Option configures optional behaviour on the Service.
+type Option func(*Service)
+
+// WithLogger overrides the logger used for observability output.
+func WithLogger(logger *log.Logger) Option {
+	return func(s *Service) {
+		if logger != nil {
+			s.logger = logger
+		}
+	}
+}
+
+// WithMetricsInterval enables periodic metrics logging with the specified interval.
+// A non-positive value disables the reporter.
+func WithMetricsInterval(interval time.Duration) Option {
+	return func(s *Service) {
+		s.metricsInterval = interval
+	}
+}
+
 // NewService creates a content pipeline service bound to the provided bus and
 // plugins provider.
-func NewService(bus *eventbus.Bus, provider PipelineProvider) *Service {
-	return &Service{
-		bus:        bus,
-		pluginsSvc: provider,
+func NewService(bus *eventbus.Bus, provider PipelineProvider, opts ...Option) *Service {
+	svc := &Service{
+		bus:             bus,
+		pluginsSvc:      provider,
+		logger:          log.Default(),
+		metricsInterval: 0,
 	}
+	for _, opt := range opts {
+		opt(svc)
+	}
+	return svc
 }
 
 // Start subscribes to session output/tool events and begins streaming cleaned
@@ -60,6 +93,7 @@ func (s *Service) Start(ctx context.Context) error {
 	go s.consumeToolEvents(derivedCtx, toolSub)
 	go s.consumeOutputEvents(derivedCtx, outputSub)
 	go s.consumeLifecycleEvents(derivedCtx, lifecycleSub)
+	s.startMetricsReporter(derivedCtx)
 
 	return nil
 }
@@ -186,6 +220,7 @@ func (s *Service) handleSessionOutput(evt eventbus.SessionOutputEvent) {
 	if plugin, ok := s.selectPlugin(toolKey); ok {
 		newText, extraAnn, err := s.runPlugin(plugin, text, annotations)
 		if err != nil {
+			s.errorTotal.Add(1)
 			log.Printf("[ContentPipeline] transform error for session %s: %v", evt.SessionID, err)
 			s.bus.Publish(context.Background(), eventbus.Envelope{
 				Topic:  eventbus.TopicPipelineError,
@@ -211,6 +246,7 @@ func (s *Service) handleSessionOutput(evt eventbus.SessionOutputEvent) {
 		}
 	}
 
+	s.processedTotal.Add(1)
 	cleaned := eventbus.PipelineMessageEvent{
 		SessionID:   evt.SessionID,
 		Origin:      evt.Origin,
@@ -224,6 +260,45 @@ func (s *Service) handleSessionOutput(evt eventbus.SessionOutputEvent) {
 		Source:  eventbus.SourceContentPipeline,
 		Payload: cleaned,
 	})
+}
+
+// Metrics aggregates processed/error counters.
+type Metrics struct {
+	Processed uint64
+	Errors    uint64
+}
+
+// Metrics returns the current metrics snapshot.
+func (s *Service) Metrics() Metrics {
+	return Metrics{
+		Processed: s.processedTotal.Load(),
+		Errors:    s.errorTotal.Load(),
+	}
+}
+
+func (s *Service) startMetricsReporter(ctx context.Context) {
+	if s.metricsInterval <= 0 {
+		return
+	}
+	logger := s.logger
+	if logger == nil {
+		logger = log.Default()
+	}
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		ticker := time.NewTicker(s.metricsInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				metrics := s.Metrics()
+				logger.Printf("[ContentPipeline] metrics processed_total=%d error_total=%d", metrics.Processed, metrics.Errors)
+			}
+		}
+	}()
 }
 
 func (s *Service) toolName(sessionID string) (string, bool) {

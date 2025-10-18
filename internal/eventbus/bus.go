@@ -358,3 +358,29 @@ func percentile(data []time.Duration, quantile float64) time.Duration {
 	}
 	return data[pos]
 }
+
+// StartMetricsReporter periodically logs bus metrics until the context is cancelled.
+func (b *Bus) StartMetricsReporter(ctx context.Context, interval time.Duration, logger *log.Logger) {
+	if interval <= 0 {
+		return
+	}
+	if logger == nil {
+		logger = b.logger
+	}
+	if logger == nil {
+		logger = log.Default()
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				metrics := b.Metrics()
+				logger.Printf("[eventbus] metrics publish_total=%d dropped_total=%d latency_p50=%s latency_p99=%s", metrics.PublishTotal, metrics.DroppedTotal, metrics.LatencyP50, metrics.LatencyP99)
+			}
+		}
+	}()
+}
