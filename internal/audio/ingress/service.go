@@ -20,6 +20,8 @@ type Service struct {
 	streams map[string]*Stream
 }
 
+var ErrStreamExists = errors.New("audio ingress: stream already exists")
+
 // Option configures optional behaviour on the Service.
 type Option func(*Service)
 
@@ -81,7 +83,7 @@ func (s *Service) OpenStream(sessionID, streamID string, format eventbus.AudioFo
 	defer s.mu.Unlock()
 
 	if _, exists := s.streams[key]; exists {
-		return nil, fmt.Errorf("audio ingress: stream %s already exists", key)
+		return nil, fmt.Errorf("%w: %s", ErrStreamExists, key)
 	}
 
 	stream := &Stream{

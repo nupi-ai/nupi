@@ -160,7 +160,7 @@ message AudioChunk {
 message StreamAudioInRequest {
   string session_id = 1;
   string stream_id = 2;
-  AudioFormat format = 3; // optional after pierwszego chunku
+  AudioFormat format = 3; // optional after first chunk
   AudioChunk chunk = 4;
 }
 

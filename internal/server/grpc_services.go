@@ -153,10 +153,6 @@ func (a *audioService) StreamAudioIn(stream apiv1.AudioService_StreamAudioInServ
 		}
 
 		chunk := req.GetChunk()
-		if chunk == nil {
-			continue
-		}
-
 		if !opened {
 			sessionID = strings.TrimSpace(req.GetSessionId())
 			streamID = strings.TrimSpace(req.GetStreamId())
@@ -172,9 +168,15 @@ func (a *audioService) StreamAudioIn(stream apiv1.AudioService_StreamAudioInServ
 			if err != nil {
 				return status.Errorf(codes.InvalidArgument, "invalid audio format: %v", err)
 			}
-			metadata := copyStringMap(chunk.GetMetadata())
+			var metadata map[string]string
+			if chunk != nil {
+				metadata = copyStringMap(chunk.GetMetadata())
+			}
 			ingressStream, err = a.api.audioIngress.OpenStream(sessionID, streamID, format, metadata)
 			if err != nil {
+				if errors.Is(err, ingress.ErrStreamExists) {
+					return status.Errorf(codes.AlreadyExists, "audio stream %s/%s already exists", sessionID, streamID)
+				}
 				return status.Errorf(codes.Internal, "open stream: %v", err)
 			}
 			opened = true
@@ -199,8 +201,8 @@ func (a *audioService) StreamAudioIn(stream apiv1.AudioService_StreamAudioInServ
 			}
 		}
 
-		if ingressStream == nil {
-			return status.Error(codes.FailedPrecondition, "audio stream not available")
+		if chunk == nil {
+			continue
 		}
 
 		if data := chunk.GetData(); len(data) > 0 {
