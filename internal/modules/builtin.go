@@ -12,13 +12,27 @@ func EnsureBuiltinAdapters(ctx context.Context, store *configstore.Store) error 
 		return nil
 	}
 
-	adapter := configstore.Adapter{
-		ID:      MockSTTAdapterID,
-		Source:  "builtin",
-		Type:    "stt",
-		Name:    "Nupi Mock STT",
-		Version: "dev",
+	adapters := []configstore.Adapter{
+		{
+			ID:      MockSTTAdapterID,
+			Source:  "builtin",
+			Type:    "stt",
+			Name:    "Nupi Mock STT",
+			Version: "dev",
+		},
+		{
+			ID:      MockTTSAdapterID,
+			Source:  "builtin",
+			Type:    "tts",
+			Name:    "Nupi Mock TTS",
+			Version: "dev",
+		},
 	}
 
-	return store.UpsertAdapter(ctx, adapter)
+	for _, adapter := range adapters {
+		if err := store.UpsertAdapter(ctx, adapter); err != nil {
+			return err
+		}
+	}
+	return nil
 }

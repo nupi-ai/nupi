@@ -22,6 +22,7 @@ import (
 
 	"github.com/nupi-ai/nupi/internal/api"
 	apihttp "github.com/nupi-ai/nupi/internal/api/http"
+	"github.com/nupi-ai/nupi/internal/audio/egress"
 	"github.com/nupi-ai/nupi/internal/audio/ingress"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
@@ -94,6 +95,7 @@ type APIServer struct {
 	conversation   ConversationStore
 	modules        *modules.Service
 	audioIngress   *ingress.Service
+	audioEgress    *egress.Service
 	resizeManager  *termresize.Manager
 	port           int
 	httpServer     *http.Server
@@ -226,6 +228,11 @@ func (s *APIServer) SetModulesService(service *modules.Service) {
 // SetAudioIngressService wires the audio ingress handler used by streaming endpoints.
 func (s *APIServer) SetAudioIngressService(service *ingress.Service) {
 	s.audioIngress = service
+}
+
+// SetAudioEgressService wires the audio egress handler used by playback endpoints.
+func (s *APIServer) SetAudioEgressService(service *egress.Service) {
+	s.audioEgress = service
 }
 
 // SetMetricsExporter wires the metrics exporter used by the /metrics endpoint.
