@@ -21,6 +21,7 @@ const (
 	TopicAudioIngressRaw     Topic = "audio.ingress.raw"
 	TopicAudioIngressSegment Topic = "audio.ingress.segment"
 	TopicAudioEgressPlayback Topic = "audio.egress.playback"
+	TopicSpeechTranscript    Topic = "speech.transcript"
 	TopicSpeechVADDetected   Topic = "speech.vad.detected"
 	TopicSpeechBargeIn       Topic = "speech.barge_in"
 	TopicConversationSpeak   Topic = "conversation.speak"
@@ -38,6 +39,7 @@ const (
 	SourceAdapterRunner   Source = "adapter_runner"
 	SourceAudioIngress    Source = "audio_ingress"
 	SourceAudioEgress     Source = "audio_egress"
+	SourceAudioSTT        Source = "audio_stt"
 	SourceSpeechVAD       Source = "speech_vad"
 	SourceUnknown         Source = "unknown"
 )
@@ -206,6 +208,19 @@ type AudioEgressPlaybackEvent struct {
 	Data      []byte
 	Final     bool
 	Metadata  map[string]string
+}
+
+// SpeechTranscriptEvent delivers recognised speech segments produced by STT adapters.
+type SpeechTranscriptEvent struct {
+	SessionID  string
+	StreamID   string
+	Sequence   uint64
+	Text       string
+	Confidence float32
+	Final      bool
+	StartedAt  time.Time
+	EndedAt    time.Time
+	Metadata   map[string]string
 }
 
 // SpeechVADEvent captures voice activity detection changes.

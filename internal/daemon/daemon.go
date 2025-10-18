@@ -17,6 +17,7 @@ import (
 
 	"github.com/nupi-ai/nupi/internal/adapterrunner"
 	"github.com/nupi-ai/nupi/internal/audio/ingress"
+	"github.com/nupi-ai/nupi/internal/audio/stt"
 	"github.com/nupi-ai/nupi/internal/config"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/contentpipeline"
@@ -104,6 +105,7 @@ func New(opts Options) (*Daemon, error) {
 
 	pipelineService := contentpipeline.NewService(bus, pluginService, contentpipeline.WithMetricsInterval(30*time.Second))
 	audioIngressService := ingress.New(bus)
+	audioSTTService := stt.New(bus, stt.WithFactory(stt.NewModuleFactory(opts.Store)))
 	conversationService := conversation.NewService(bus)
 	moduleManager := modules.NewManager(modules.ManagerOptions{
 		Store:  opts.Store,
@@ -121,6 +123,12 @@ func New(opts Options) (*Daemon, error) {
 
 	if err := host.Register("audio_ingress", func(ctx context.Context) (daemonruntime.Service, error) {
 		return audioIngressService, nil
+	}); err != nil {
+		return nil, err
+	}
+
+	if err := host.Register("audio_stt", func(ctx context.Context) (daemonruntime.Service, error) {
+		return audioSTTService, nil
 	}); err != nil {
 		return nil, err
 	}
