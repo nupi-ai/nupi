@@ -63,6 +63,8 @@ type SessionParams struct {
 	StreamID  string
 	Format    eventbus.AudioFormat
 	Metadata  map[string]string
+	AdapterID string
+	Config    map[string]any
 }
 
 // Option configures the Service behaviour.

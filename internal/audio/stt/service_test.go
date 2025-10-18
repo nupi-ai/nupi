@@ -273,10 +273,10 @@ func TestServiceDoesNotBufferWhenFactoryUnavailable(t *testing.T) {
 					Channels:   1,
 					BitDepth:   16,
 				},
-				Data:      make([]byte, 640),
-				Duration:  20 * time.Millisecond,
-				First:     i == 0,
-				Last:      i == 9,
+				Data:     make([]byte, 640),
+				Duration: 20 * time.Millisecond,
+				First:    i == 0,
+				Last:     i == 9,
 			},
 		})
 	}

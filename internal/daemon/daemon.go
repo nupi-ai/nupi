@@ -86,6 +86,10 @@ func New(opts Options) (*Daemon, error) {
 		return nil, fmt.Errorf("daemon: load transport config: %w", err)
 	}
 
+	if err := modules.EnsureBuiltinAdapters(context.Background(), opts.Store); err != nil {
+		return nil, fmt.Errorf("daemon: ensure builtin adapters: %w", err)
+	}
+
 	apiServer, err := server.NewAPIServer(sessionManager, opts.Store, runtimeInfo, transportCfg.Port)
 	if err != nil {
 		return nil, fmt.Errorf("daemon: create API server: %w", err)
