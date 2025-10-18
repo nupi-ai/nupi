@@ -89,7 +89,7 @@ func TestEnsureRequiredAdapterSlotsReconcilesStatus(t *testing.T) {
 
 	ctx := context.Background()
 
-	slots := []string{"stt.primary", "stt.secondary"}
+	slots := []string{"stt.primary", "stt.secondary", "vad.primary"}
 	for _, slot := range slots {
 		if _, err := store.DB().ExecContext(ctx, `
 			UPDATE adapter_bindings

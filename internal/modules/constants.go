@@ -4,4 +4,5 @@ package modules
 const (
 	MockSTTAdapterID = "adapter.stt.mock"
 	MockTTSAdapterID = "adapter.tts.mock"
+	MockVADAdapterID = "adapter.vad.mock"
 )

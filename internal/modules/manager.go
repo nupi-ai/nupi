@@ -21,10 +21,11 @@ const (
 	SlotSTTPrimary   Slot = "stt.primary"
 	SlotSTTSecondary Slot = "stt.secondary"
 	SlotTTS          Slot = "tts.primary"
+	SlotVAD          Slot = "vad.primary"
 	SlotTunnel       Slot = "tunnel.primary"
 )
 
-var defaultSlots = []Slot{SlotAI, SlotSTTPrimary, SlotSTTSecondary, SlotTTS, SlotTunnel}
+var defaultSlots = []Slot{SlotAI, SlotSTTPrimary, SlotSTTSecondary, SlotTTS, SlotVAD, SlotTunnel}
 
 // Binding describes a configured adapter bound to a slot.
 type Binding struct {

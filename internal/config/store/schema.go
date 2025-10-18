@@ -89,6 +89,7 @@ var requiredAdapterSlots = []string{
 	"stt.secondary",
 	"ai.primary",
 	"tts.primary",
+	"vad.primary",
 	"tunnel.primary",
 }
 
