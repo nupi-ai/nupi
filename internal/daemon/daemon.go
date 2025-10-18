@@ -22,6 +22,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/conversation"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/modules"
+	"github.com/nupi-ai/nupi/internal/observability"
 	"github.com/nupi-ai/nupi/internal/plugins"
 	daemonruntime "github.com/nupi-ai/nupi/internal/runtime"
 	"github.com/nupi-ai/nupi/internal/server"
@@ -100,13 +101,18 @@ func New(opts Options) (*Daemon, error) {
 		return nil, err
 	}
 
-    pipelineService := contentpipeline.NewService(bus, pluginService, contentpipeline.WithMetricsInterval(30*time.Second))
+	pipelineService := contentpipeline.NewService(bus, pluginService, contentpipeline.WithMetricsInterval(30*time.Second))
 	conversationService := conversation.NewService(bus)
 	moduleManager := modules.NewManager(modules.ManagerOptions{
 		Store:  opts.Store,
 		Runner: runnerManager,
 	})
 	modulesService := modules.NewService(moduleManager, opts.Store, bus)
+	eventCounter := observability.NewEventCounter()
+	bus.AddObserver(eventCounter)
+	metricsExporter := observability.NewPrometheusExporter(bus, eventCounter)
+	metricsExporter.WithPipeline(pipelineService)
+	apiServer.SetMetricsExporter(metricsExporter)
 	apiServer.SetConversationStore(conversationService)
 	apiServer.SetModulesService(modulesService)
 

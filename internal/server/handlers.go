@@ -47,6 +47,11 @@ type ConversationStore interface {
 	Slice(sessionID string, offset, limit int) (int, []eventbus.ConversationTurn)
 }
 
+// PrometheusExporter renders observability metrics in Prometheus exposition format.
+type PrometheusExporter interface {
+	Export() []byte
+}
+
 type tokenRole string
 
 const (
@@ -109,6 +114,8 @@ type APIServer struct {
 
 	shutdownMu sync.RWMutex
 	shutdownFn func(context.Context) error
+
+	metricsExporter PrometheusExporter
 }
 
 // TransportSnapshot captures the runtime server transport settings.
@@ -212,6 +219,11 @@ func (s *APIServer) SetConversationStore(store ConversationStore) {
 // SetModulesService wires the modules controller used by HTTP handlers.
 func (s *APIServer) SetModulesService(service *modules.Service) {
 	s.modules = service
+}
+
+// SetMetricsExporter wires the metrics exporter used by the /metrics endpoint.
+func (s *APIServer) SetMetricsExporter(exporter PrometheusExporter) {
+	s.metricsExporter = exporter
 }
 
 // CurrentTransportSnapshot returns the currently applied transport configuration.
@@ -379,6 +391,9 @@ func isPublicAuthEndpoint(r *http.Request) bool {
 	}
 	path := strings.TrimSuffix(r.URL.Path, "/")
 	if path == "/auth/pair" && (r.Method == http.MethodPost || r.Method == http.MethodOptions) {
+		return true
+	}
+	if path == "/metrics" && r.Method == http.MethodGet {
 		return true
 	}
 	return false
@@ -920,6 +935,7 @@ func (s *APIServer) Prepare(ctx context.Context) (*PreparedHTTPServer, error) {
 	mux.HandleFunc("/auth/tokens", s.handleAuthTokens)
 	mux.HandleFunc("/auth/pairings", s.handleAuthPairings)
 	mux.HandleFunc("/auth/pair", s.handleAuthPair)
+	mux.HandleFunc("/metrics", s.handleMetrics)
 
 	// Create and store the HTTP server with CORS middleware
 	server := &http.Server{
@@ -1034,6 +1050,31 @@ func (s *APIServer) handleSessionsRoot(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *APIServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.serveMetrics(w, r)
+	case http.MethodOptions:
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *APIServer) serveMetrics(w http.ResponseWriter, r *http.Request) {
+	if s.metricsExporter == nil {
+		http.Error(w, "metrics exporter not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	payload := s.metricsExporter.Export()
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+	w.Header().Set("Cache-Control", "no-cache")
+	if _, err := w.Write(payload); err != nil {
+		log.Printf("[APIServer] failed to write metrics response: %v", err)
 	}
 }
 

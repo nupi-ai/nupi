@@ -921,6 +921,51 @@ func TestHandleQuickstartCompleteValidation(t *testing.T) {
 	}
 }
 
+func TestHandleMetricsUnavailable(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+
+	apiServer.handleMetrics(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected status %d when exporter is missing, got %d", http.StatusServiceUnavailable, rec.Code)
+	}
+}
+
+func TestHandleMetricsSuccess(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	apiServer.SetMetricsExporter(metricsExporterStub{payload: []byte("metric_line\n")})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+
+	apiServer.handleMetrics(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "text/plain; version=0.0.4" {
+		t.Fatalf("unexpected content type: %s", got)
+	}
+	if body := rec.Body.String(); body != "metric_line\n" {
+		t.Fatalf("unexpected response body: %q", body)
+	}
+}
+
+func TestIsPublicAuthEndpointAllowsMetrics(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	if !isPublicAuthEndpoint(req) {
+		t.Fatalf("expected /metrics GET to be treated as public auth endpoint")
+	}
+
+	postReq := httptest.NewRequest(http.MethodPost, "/metrics", nil)
+	if isPublicAuthEndpoint(postReq) {
+		t.Fatalf("expected /metrics POST to require authentication")
+	}
+}
+
 func TestHandleModulesGet(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
 	store := openTestStore(t)
@@ -1126,3 +1171,11 @@ type testModuleHandle struct{}
 func (testModuleHandle) Stop(context.Context) error { return nil }
 
 func (testModuleHandle) PID() int { return 12345 }
+
+type metricsExporterStub struct {
+	payload []byte
+}
+
+func (m metricsExporterStub) Export() []byte {
+	return m.payload
+}

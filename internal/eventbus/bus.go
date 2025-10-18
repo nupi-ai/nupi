@@ -19,6 +19,8 @@ type Bus struct {
 	subscribers  map[Topic]map[uint64]*Subscription
 	topicBuffers map[Topic]int
 	nextID       uint64
+	observerMu   sync.RWMutex
+	observers    []Observer
 
 	publishTotal atomic.Uint64
 	droppedTotal atomic.Uint64
@@ -27,6 +29,19 @@ type Bus struct {
 	latencySamples []time.Duration
 	latencyIndex   int
 	latencyCount   int
+}
+
+// Observer receives notifications for every published envelope.
+type Observer interface {
+	OnPublish(Envelope)
+}
+
+// ObserverFunc adapts a function to the Observer interface.
+type ObserverFunc func(Envelope)
+
+// OnPublish invokes the underlying function.
+func (f ObserverFunc) OnPublish(env Envelope) {
+	f(env)
 }
 
 // New constructs a bus with default topic buffer sizes.
@@ -82,6 +97,15 @@ func WithTopicBuffer(topic Topic, size int) BusOption {
 	}
 }
 
+// WithObserver registers an observer invoked for every published event.
+func WithObserver(observer Observer) BusOption {
+	return func(b *Bus) {
+		if observer != nil {
+			b.observers = append(b.observers, observer)
+		}
+	}
+}
+
 // Publish sends the envelope to all subscribers of the topic.
 func (b *Bus) Publish(ctx context.Context, env Envelope) {
 	if env.Topic == "" {
@@ -104,6 +128,7 @@ func (b *Bus) Publish(ctx context.Context, env Envelope) {
 	}
 	b.mu.RUnlock()
 
+	b.notifyObservers(env)
 	b.storeLatency(time.Since(start))
 }
 
@@ -335,6 +360,29 @@ func (b *Bus) storeLatency(d time.Duration) {
 
 func (b *Bus) recordDrop() {
 	b.droppedTotal.Add(1)
+}
+
+// AddObserver registers additional observers at runtime.
+func (b *Bus) AddObserver(observer Observer) {
+	if observer == nil {
+		return
+	}
+	b.observerMu.Lock()
+	b.observers = append(b.observers, observer)
+	b.observerMu.Unlock()
+}
+
+func (b *Bus) notifyObservers(env Envelope) {
+	b.observerMu.RLock()
+	observers := b.observers
+	b.observerMu.RUnlock()
+
+	for _, observer := range observers {
+		if observer == nil {
+			continue
+		}
+		observer.OnPublish(env)
+	}
 }
 
 func percentile(data []time.Duration, quantile float64) time.Duration {
