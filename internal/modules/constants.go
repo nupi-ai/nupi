@@ -6,3 +6,9 @@ const (
 	MockTTSAdapterID = "adapter.tts.mock"
 	MockVADAdapterID = "adapter.vad.mock"
 )
+
+// RequiredReferenceAdapters lists built-in adapters expected to be available for quickstart completion.
+var RequiredReferenceAdapters = []string{
+	MockSTTAdapterID,
+	MockTTSAdapterID,
+}

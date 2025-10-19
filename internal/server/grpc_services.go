@@ -868,6 +868,14 @@ func (q *quickstartService) Update(ctx context.Context, req *apiv1.UpdateQuickst
 			if len(pending) > 0 {
 				return nil, status.Errorf(codes.FailedPrecondition, "pending slots: %s", strings.Join(pending, ", "))
 			}
+
+			missingRefs, err := q.api.missingReferenceAdapters(ctx)
+			if err != nil {
+				return nil, status.Errorf(codes.Internal, "reference adapter check failed: %v", err)
+			}
+			if len(missingRefs) > 0 {
+				return nil, status.Errorf(codes.FailedPrecondition, "reference adapters missing: %s", strings.Join(missingRefs, ", "))
+			}
 		}
 		if err := q.api.configStore.MarkQuickstartCompleted(ctx, markComplete); err != nil {
 			return nil, status.Errorf(codes.Internal, "update quickstart status: %v", err)

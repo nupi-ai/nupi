@@ -848,6 +848,10 @@ func TestHandleQuickstartGet(t *testing.T) {
 	if len(payload.PendingSlots) == 0 {
 		t.Fatalf("expected pending slots to be populated for required bindings")
 	}
+
+	if !reflect.DeepEqual(payload.MissingReferenceAdapters, modules.RequiredReferenceAdapters) {
+		t.Fatalf("expected missing reference adapters %v, got %v", modules.RequiredReferenceAdapters, payload.MissingReferenceAdapters)
+	}
 }
 
 func TestHandleQuickstartIncludesModules(t *testing.T) {
@@ -882,6 +886,10 @@ func TestHandleQuickstartIncludesModules(t *testing.T) {
 
 	if len(payload.Modules) == 0 {
 		t.Fatalf("expected modules list in quickstart response")
+	}
+
+	if !reflect.DeepEqual(payload.MissingReferenceAdapters, modules.RequiredReferenceAdapters) {
+		t.Fatalf("expected missing reference adapters %v, got %v", modules.RequiredReferenceAdapters, payload.MissingReferenceAdapters)
 	}
 
 	var found bool
@@ -927,6 +935,54 @@ func TestHandleQuickstartCompleteValidation(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected status %d when completing with pending slots, got %d", http.StatusBadRequest, rec.Code)
+	}
+}
+
+func TestHandleQuickstartCompleteFailsWhenReferenceMissing(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	store := apiServer.configStore
+	apiServer.SetModulesService(newTestModulesService(t, store))
+
+	ctx := context.Background()
+	adapters := []configstore.Adapter{
+		{ID: "adapter.ai.quick", Source: "builtin", Type: "ai", Name: "AI"},
+		{ID: "adapter.stt.custom", Source: "builtin", Type: "stt", Name: "STT"},
+		{ID: "adapter.stt.secondary", Source: "builtin", Type: "stt", Name: "STT Secondary"},
+		{ID: "adapter.tts.custom", Source: "builtin", Type: "tts", Name: "TTS"},
+		{ID: "adapter.vad.custom", Source: "builtin", Type: "vad", Name: "VAD"},
+		{ID: "adapter.tunnel.custom", Source: "builtin", Type: "tunnel", Name: "Tunnel"},
+	}
+	for _, adapter := range adapters {
+		if err := store.UpsertAdapter(ctx, adapter); err != nil {
+			t.Fatalf("upsert adapter %s: %v", adapter.ID, err)
+		}
+	}
+
+	bindings := map[string]string{
+		"ai.primary":     "adapter.ai.quick",
+		"stt.primary":    "adapter.stt.custom",
+		"stt.secondary":  "adapter.stt.secondary",
+		"tts.primary":    "adapter.tts.custom",
+		"vad.primary":    "adapter.vad.custom",
+		"tunnel.primary": "adapter.tunnel.custom",
+	}
+	for slot, adapterID := range bindings {
+		if err := store.SetActiveAdapter(ctx, slot, adapterID, nil); err != nil {
+			t.Fatalf("binding %s: %v", slot, err)
+		}
+	}
+
+	req := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/config/quickstart", bytes.NewBufferString(`{"complete":true}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	apiServer.handleQuickstart(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d when reference adapters missing, got %d", http.StatusBadRequest, rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "reference adapters missing") {
+		t.Fatalf("expected reference missing message, got %s", rec.Body.String())
 	}
 }
 

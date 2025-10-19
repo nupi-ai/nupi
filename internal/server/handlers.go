@@ -198,10 +198,11 @@ type transportRequest struct {
 }
 
 type quickstartStatusResponse struct {
-	Completed    bool                  `json:"completed"`
-	CompletedAt  string                `json:"completed_at,omitempty"`
-	PendingSlots []string              `json:"pending_slots"`
-	Modules      []apihttp.ModuleEntry `json:"modules,omitempty"`
+	Completed                bool                  `json:"completed"`
+	CompletedAt              string                `json:"completed_at,omitempty"`
+	PendingSlots             []string              `json:"pending_slots"`
+	Modules                  []apihttp.ModuleEntry `json:"modules,omitempty"`
+	MissingReferenceAdapters []string              `json:"missing_reference_adapters,omitempty"`
 }
 
 type quickstartBinding struct {
@@ -3557,10 +3558,17 @@ func (s *APIServer) handleQuickstartGet(w http.ResponseWriter, r *http.Request) 
 		moduleEntries = append(moduleEntries, bindingStatusToResponse(status))
 	}
 
+	missingRefs, err := s.missingReferenceAdapters(r.Context())
+	if err != nil {
+		http.Error(w, fmt.Sprintf("reference adapter check failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
 	resp := quickstartStatusResponse{
-		Completed:    completed,
-		PendingSlots: pending,
-		Modules:      moduleEntries,
+		Completed:                completed,
+		PendingSlots:             pending,
+		Modules:                  moduleEntries,
+		MissingReferenceAdapters: missingRefs,
 	}
 
 	if completedAt != nil {
@@ -3615,10 +3623,22 @@ func (s *APIServer) handleQuickstartPost(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	missingRefs, err := s.missingReferenceAdapters(ctx)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("reference adapter check failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
 	if payload.Complete != nil {
-		if *payload.Complete && len(pending) > 0 {
-			http.Error(w, "quickstart cannot be completed while required slots remain unassigned", http.StatusBadRequest)
-			return
+		if *payload.Complete {
+			if len(pending) > 0 {
+				http.Error(w, "quickstart cannot be completed while required slots remain unassigned", http.StatusBadRequest)
+				return
+			}
+			if len(missingRefs) > 0 {
+				http.Error(w, fmt.Sprintf("reference adapters missing: %s", strings.Join(missingRefs, ", ")), http.StatusBadRequest)
+				return
+			}
 		}
 
 		if err := s.configStore.MarkQuickstartCompleted(ctx, *payload.Complete); err != nil {
@@ -3649,9 +3669,10 @@ func (s *APIServer) handleQuickstartPost(w http.ResponseWriter, r *http.Request)
 	}
 
 	resp := quickstartStatusResponse{
-		Completed:    completed,
-		PendingSlots: pending,
-		Modules:      moduleEntries,
+		Completed:                completed,
+		PendingSlots:             pending,
+		Modules:                  moduleEntries,
+		MissingReferenceAdapters: missingRefs,
 	}
 
 	if completedAt != nil {
@@ -3673,6 +3694,23 @@ func (s *APIServer) quickstartModuleStatuses(ctx context.Context) ([]modules.Bin
 		return nil, err
 	}
 	return statuses, nil
+}
+
+func (s *APIServer) missingReferenceAdapters(ctx context.Context) ([]string, error) {
+	if s.configStore == nil {
+		return nil, nil
+	}
+	missing := make([]string, 0, len(modules.RequiredReferenceAdapters))
+	for _, id := range modules.RequiredReferenceAdapters {
+		exists, err := s.configStore.AdapterExists(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if !exists {
+			missing = append(missing, id)
+		}
+	}
+	return missing, nil
 }
 
 // handleRecordingsList returns list of all recordings

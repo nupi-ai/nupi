@@ -103,6 +103,19 @@ func (s *Store) RemoveAdapter(ctx context.Context, adapterID string) error {
 	})
 }
 
+// AdapterExists reports whether an adapter with the given identifier is registered.
+func (s *Store) AdapterExists(ctx context.Context, adapterID string) (bool, error) {
+	if strings.TrimSpace(adapterID) == "" {
+		return false, fmt.Errorf("config: adapter id is required")
+	}
+
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM adapters WHERE id = ?`, adapterID).Scan(&count); err != nil {
+		return false, fmt.Errorf("config: check adapter exists: %w", err)
+	}
+	return count > 0, nil
+}
+
 // Adapter bindings ----------------------------------------------------------
 
 // ListAdapterBindings returns all slot bindings for the active profile.

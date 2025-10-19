@@ -13,11 +13,13 @@ import (
 	"github.com/nupi-ai/nupi/internal/audio/ingress"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
+	"github.com/nupi-ai/nupi/internal/modules"
 	"github.com/nupi-ai/nupi/internal/pty"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	emptypb "google.golang.org/protobuf/types/known/emptypb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 func TestSessionsServiceGetConversation(t *testing.T) {
@@ -277,6 +279,55 @@ func TestQuickstartServiceWithoutModulesService(t *testing.T) {
 	}
 	if status.Code(err) != codes.Unavailable {
 		t.Fatalf("expected error codes.Unavailable, got %v", status.Code(err))
+	}
+}
+
+func TestQuickstartServiceUpdateFailsWhenReferenceMissing(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	store := apiServer.configStore
+	service := newQuickstartService(apiServer)
+
+	ctx := context.WithValue(context.Background(), authContextKey{}, storedToken{Role: string(roleAdmin)})
+
+	adapters := []configstore.Adapter{
+		{ID: "adapter.ai.qs", Source: "builtin", Type: "ai", Name: "AI"},
+		{ID: "adapter.stt.custom", Source: "builtin", Type: "stt", Name: "STT"},
+		{ID: "adapter.tts.custom", Source: "builtin", Type: "tts", Name: "TTS"},
+		{ID: "adapter.stt.secondary", Source: "builtin", Type: "stt", Name: "STT Secondary"},
+		{ID: "adapter.vad.custom", Source: "builtin", Type: "vad", Name: "VAD"},
+		{ID: "adapter.tunnel.custom", Source: "builtin", Type: "tunnel", Name: "Tunnel"},
+	}
+	for _, adapter := range adapters {
+		if err := store.UpsertAdapter(ctx, adapter); err != nil {
+			t.Fatalf("upsert adapter: %v", err)
+		}
+	}
+
+	bindings := map[string]string{
+		string(modules.SlotAI):           "adapter.ai.qs",
+		string(modules.SlotSTTPrimary):   "adapter.stt.custom",
+		string(modules.SlotSTTSecondary): "adapter.stt.secondary",
+		string(modules.SlotTTS):          "adapter.tts.custom",
+		string(modules.SlotVAD):          "adapter.vad.custom",
+		string(modules.SlotTunnel):       "adapter.tunnel.custom",
+	}
+	for slot, adapterID := range bindings {
+		if err := store.SetActiveAdapter(ctx, slot, adapterID, nil); err != nil {
+			t.Fatalf("bind slot %s: %v", slot, err)
+		}
+	}
+
+	_, err := service.Update(ctx, &apiv1.UpdateQuickstartRequest{
+		Complete: wrapperspb.Bool(true),
+	})
+	if err == nil {
+		t.Fatalf("expected update to fail when reference adapters missing")
+	}
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected FailedPrecondition, got %v", status.Code(err))
+	}
+	if !strings.Contains(err.Error(), "reference adapters missing") {
+		t.Fatalf("expected reference missing message, got %v", err)
 	}
 }
 

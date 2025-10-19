@@ -1094,10 +1094,11 @@ type transportConfigResponse struct {
 }
 
 type quickstartStatusPayload struct {
-	Completed    bool                  `json:"completed"`
-	CompletedAt  string                `json:"completed_at,omitempty"`
-	PendingSlots []string              `json:"pending_slots"`
-	Modules      []apihttp.ModuleEntry `json:"modules,omitempty"`
+	Completed                bool                  `json:"completed"`
+	CompletedAt              string                `json:"completed_at,omitempty"`
+	PendingSlots             []string              `json:"pending_slots"`
+	Modules                  []apihttp.ModuleEntry `json:"modules,omitempty"`
+	MissingReferenceAdapters []string              `json:"missing_reference_adapters,omitempty"`
 }
 
 type quickstartBindingRequest struct {
@@ -1117,6 +1118,21 @@ type adapterInfo struct {
 	Type    string `json:"type"`
 	Source  string `json:"source"`
 	Version string `json:"version"`
+}
+
+const (
+	quickstartMissingRefsWarning = "⚠ Missing reference adapters: %s\n"
+	quickstartMissingRefsHelp    = "Install the recommended packages before completing quickstart.\n"
+)
+
+func printMissingReferenceAdapters(missing []string, showHelp bool) {
+	if len(missing) == 0 {
+		return
+	}
+	fmt.Printf(quickstartMissingRefsWarning, strings.Join(missing, ", "))
+	if showHelp {
+		fmt.Print(quickstartMissingRefsHelp)
+	}
 }
 
 func resolveDaemonBaseURL(c *client.Client) (string, map[string]interface{}, error) {
@@ -1709,6 +1725,9 @@ func quickstartInit(cmd *cobra.Command, args []string) error {
 		fmt.Println()
 	}
 
+	missingRefs := status.MissingReferenceAdapters
+	printMissingReferenceAdapters(missingRefs, true)
+
 	if status.Completed && len(status.PendingSlots) == 0 {
 		fmt.Println("Quickstart is already completed. Nothing to do.")
 		return nil
@@ -1764,12 +1783,17 @@ func quickstartInit(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	allowComplete := len(missingRefs) == 0
 	complete := false
 	if len(bindings) == len(status.PendingSlots) {
-		fmt.Print("\nAll pending slots have assignments. Mark quickstart as complete? [Y/n]: ")
-		answer, _ := reader.ReadString('\n')
-		answer = strings.TrimSpace(strings.ToLower(answer))
-		complete = answer == "" || answer == "y" || answer == "yes"
+		if !allowComplete {
+			fmt.Println("\nAll pending slots are assigned, but reference adapters are still missing. Quickstart will remain incomplete.")
+		} else {
+			fmt.Print("\nAll pending slots have assignments. Mark quickstart as complete? [Y/n]: ")
+			answer, _ := reader.ReadString('\n')
+			answer = strings.TrimSpace(strings.ToLower(answer))
+			complete = answer == "" || answer == "y" || answer == "yes"
+		}
 	}
 
 	reqPayload := map[string]interface{}{
@@ -1827,6 +1851,8 @@ func quickstartInit(cmd *cobra.Command, args []string) error {
 		printModuleRuntimeMessages(result.Modules)
 	}
 
+	printMissingReferenceAdapters(result.MissingReferenceAdapters, true)
+
 	return nil
 }
 
@@ -1861,6 +1887,10 @@ func quickstartStatus(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	if len(payload.MissingReferenceAdapters) > 0 {
+		printMissingReferenceAdapters(payload.MissingReferenceAdapters, true)
+	}
+
 	if len(payload.Modules) == 0 {
 		fmt.Println("Modules: none reported")
 	} else {
@@ -1884,6 +1914,17 @@ func quickstartComplete(cmd *cobra.Command, args []string) error {
 	flags := cmd.Flags()
 	bindingPairs, _ := flags.GetStringSlice("binding")
 	completeFlag, _ := flags.GetBool("complete")
+
+	if completeFlag {
+		if status, statusErr := fetchQuickstartStatus(c); statusErr == nil {
+			if missing := status.MissingReferenceAdapters; len(missing) > 0 {
+				return out.Error(
+					"Cannot complete quickstart",
+					fmt.Errorf("missing reference adapters: %s (install the recommended packages before completing quickstart)", strings.Join(missing, ", ")),
+				)
+			}
+		}
+	}
 
 	payload := make(map[string]interface{})
 	if len(bindingPairs) > 0 {
