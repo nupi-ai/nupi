@@ -9,7 +9,7 @@ const MAX_METADATA_KEY_LENGTH = 64;
 const MAX_METADATA_VALUE_LENGTH = 512;
 const MAX_METADATA_TOTAL_BYTES = 4096;
 
-const CANCELLED_MESSAGE = "voice stream cancelled by user";
+const CANCELLED_MESSAGE = "Voice stream cancelled by user";
 
 let fallbackOperationCounter = 0;
 
@@ -207,7 +207,7 @@ export function VoicePanel() {
       console.error(error);
       setPlaybackError(null);
       const message = error instanceof Error ? error.message : String(error);
-      if (message.toLowerCase().includes(CANCELLED_MESSAGE)) {
+      if (message.trim().toLowerCase() === CANCELLED_MESSAGE.toLowerCase()) {
         setStatus("Voice stream cancelled");
       } else {
         setStatus(`Voice stream failed: ${message}`);

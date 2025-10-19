@@ -1,8 +1,8 @@
+use once_cell::sync::Lazy;
 use rest_client::{
     ClaimedToken, CreatedPairing, CreatedToken, PairingEntry, RestClient, RestClientError,
     TokenEntry, VoiceStreamRequest, claim_pairing_token,
 };
-use once_cell::sync::Lazy;
 use serde_json::{Value, json, to_value};
 use std::{
     collections::HashMap,
@@ -32,7 +32,7 @@ struct AppState {
     daemon_running: Mutex<bool>,
 }
 
-const CANCELLED_MESSAGE: &str = "voice stream cancelled by user";
+const CANCELLED_MESSAGE: &str = "Voice stream cancelled by user";
 const STALE_OPERATION_TIMEOUT: Duration = Duration::from_secs(3600);
 
 struct VoiceOperation {
@@ -47,9 +47,7 @@ fn cleanup_stale_operations(registry: &mut HashMap<String, VoiceOperation>) {
     registry.retain(|_, op| op.started.elapsed() < STALE_OPERATION_TIMEOUT);
 }
 
-fn register_voice_operation(
-    operation_id: &str,
-) -> Result<(String, watch::Receiver<bool>), String> {
+fn register_voice_operation(operation_id: &str) -> Result<(String, watch::Receiver<bool>), String> {
     let trimmed = operation_id.trim();
     if trimmed.is_empty() {
         return Err("operation_id is required".into());
@@ -388,7 +386,7 @@ async fn voice_stream_from_file(
     if let Some(op) = registered_operation {
         let cancelled = matches!(
             result.as_ref(),
-            Err(RestClientError::Audio(msg)) if msg.to_lowercase().contains(CANCELLED_MESSAGE)
+            Err(RestClientError::Audio(msg)) if msg.trim().eq_ignore_ascii_case(CANCELLED_MESSAGE)
         );
         if !cancelled {
             complete_voice_operation(&op);
@@ -401,10 +399,7 @@ async fn voice_stream_from_file(
 }
 
 #[tauri::command]
-async fn voice_cancel_stream(
-    _app: tauri::AppHandle,
-    operation_id: String,
-) -> Result<bool, String> {
+async fn voice_cancel_stream(_app: tauri::AppHandle, operation_id: String) -> Result<bool, String> {
     cancel_voice_operation(&operation_id)
 }
 

@@ -40,6 +40,18 @@ var schemaStatements = []string{
 		PRIMARY KEY (instance_name, profile_name, key),
 		FOREIGN KEY (instance_name, profile_name) REFERENCES profiles(instance_name, name) ON DELETE CASCADE
 	)`,
+	`CREATE TABLE IF NOT EXISTS audio_settings (
+		instance_name TEXT NOT NULL,
+		profile_name TEXT NOT NULL,
+		capture_device TEXT NOT NULL DEFAULT '',
+		playback_device TEXT NOT NULL DEFAULT '',
+		preferred_format TEXT NOT NULL DEFAULT 'pcm_s16le',
+		vad_threshold REAL NOT NULL DEFAULT 0.5,
+		metadata TEXT,
+		updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (instance_name, profile_name),
+		FOREIGN KEY (instance_name, profile_name) REFERENCES profiles(instance_name, name) ON DELETE CASCADE
+	)`,
 	`CREATE TABLE IF NOT EXISTS adapters (
 		id TEXT PRIMARY KEY,
 		source TEXT NOT NULL,
@@ -179,6 +191,15 @@ func seedDefaults(ctx context.Context, db *sql.DB, instanceName, profileName str
 	`, instanceName, profileName); err != nil {
 		tx.Rollback()
 		return fmt.Errorf("config: seed quickstart status: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO audio_settings (instance_name, profile_name, capture_device, playback_device, preferred_format, vad_threshold, metadata, updated_at)
+		VALUES (?, ?, '', '', 'pcm_s16le', 0.5, NULL, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'))
+		ON CONFLICT(instance_name, profile_name) DO NOTHING
+	`, instanceName, profileName); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("config: seed audio settings: %w", err)
 	}
 
 	for _, slot := range requiredAdapterSlots {

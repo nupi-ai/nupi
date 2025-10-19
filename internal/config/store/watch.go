@@ -3,12 +3,14 @@ package store
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"time"
 )
 
 // ChangeSnapshot captures update markers for configuration tables.
 type ChangeSnapshot struct {
 	Settings        string
+	AudioSettings   string
 	Adapters        string
 	AdapterBindings string
 	ModuleEndpoints string
@@ -17,6 +19,7 @@ type ChangeSnapshot struct {
 // ChangeEvent describes modified configuration groups since the last snapshot.
 type ChangeEvent struct {
 	SettingsChanged        bool
+	AudioSettingsChanged   bool
 	AdaptersChanged        bool
 	AdapterBindingsChanged bool
 	ModuleEndpointsChanged bool
@@ -25,7 +28,7 @@ type ChangeEvent struct {
 
 // Changed returns true when at least one tracked group changed.
 func (e ChangeEvent) Changed() bool {
-	return e.SettingsChanged || e.AdaptersChanged || e.AdapterBindingsChanged || e.ModuleEndpointsChanged
+	return e.SettingsChanged || e.AudioSettingsChanged || e.AdaptersChanged || e.AdapterBindingsChanged || e.ModuleEndpointsChanged
 }
 
 // Watch polls the configuration store for changes and emits events on the returned channel.
@@ -89,6 +92,29 @@ func (s *Store) snapshot(ctx context.Context) (ChangeSnapshot, error) {
 		return ChangeSnapshot{}, err
 	}
 
+	var (
+		captureDevice   string
+		playbackDevice  string
+		preferredFormat string
+		vad             float64
+		metadata        string
+		audioUpdated    string
+	)
+
+	err := s.db.QueryRowContext(ctx, `
+        SELECT capture_device, playback_device, preferred_format, vad_threshold, IFNULL(metadata, ''), IFNULL(updated_at, '')
+        FROM audio_settings
+        WHERE instance_name = ? AND profile_name = ?
+    `, s.instanceName, s.profileName).Scan(&captureDevice, &playbackDevice, &preferredFormat, &vad, &metadata, &audioUpdated)
+	switch {
+	case err == sql.ErrNoRows:
+		snap.AudioSettings = ""
+	case err != nil:
+		return ChangeSnapshot{}, err
+	default:
+		snap.AudioSettings = fmt.Sprintf("%s|%s|%s|%.6f|%s|%s", captureDevice, playbackDevice, preferredFormat, vad, metadata, audioUpdated)
+	}
+
 	if err := s.db.QueryRowContext(ctx, `
         SELECT IFNULL(MAX(updated_at), '')
         FROM adapters
@@ -117,6 +143,7 @@ func (s *Store) snapshot(ctx context.Context) (ChangeSnapshot, error) {
 func diffSnapshots(prev, curr ChangeSnapshot) ChangeEvent {
 	return ChangeEvent{
 		SettingsChanged:        curr.Settings != prev.Settings,
+		AudioSettingsChanged:   curr.AudioSettings != prev.AudioSettings,
 		AdaptersChanged:        curr.Adapters != prev.Adapters,
 		AdapterBindingsChanged: curr.AdapterBindings != prev.AdapterBindings,
 		ModuleEndpointsChanged: curr.ModuleEndpoints != prev.ModuleEndpoints,

@@ -402,9 +402,8 @@ async fn prepare_wav_upload(
         let mut buffer = Vec::with_capacity(64 * 1024);
         for sample in reader.samples::<i16>() {
             if cancel_flag_writer.load(Ordering::SeqCst) {
-                let _ = tx.blocking_send(Err(RestClientError::Audio(
-                    CANCELLED_MESSAGE.to_string(),
-                )));
+                let _ =
+                    tx.blocking_send(Err(RestClientError::Audio(CANCELLED_MESSAGE.to_string())));
                 return Err(RestClientError::Audio(CANCELLED_MESSAGE.to_string()));
             }
             let sample = match sample {
@@ -998,9 +997,11 @@ impl RestClient {
             }
             match abort.take() {
                 Some(mut cancel_signal) => {
-                    let mut capture_future = Box::pin(
-                        self.capture_playback(session_id, &stream_id, playback_output.clone()),
-                    );
+                    let mut capture_future = Box::pin(self.capture_playback(
+                        session_id,
+                        &stream_id,
+                        playback_output.clone(),
+                    ));
                     let result = loop {
                         tokio::select! {
                             res = &mut capture_future => break res,
