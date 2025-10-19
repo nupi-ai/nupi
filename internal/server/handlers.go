@@ -23,6 +23,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/gorilla/websocket"
 	"github.com/nupi-ai/nupi/internal/api"
 	apihttp "github.com/nupi-ai/nupi/internal/api/http"
 	"github.com/nupi-ai/nupi/internal/audio/egress"
@@ -80,9 +81,32 @@ const (
 )
 
 const (
-	defaultIngressBuffer   = 32 * 1024
-	maxAudioUploadDuration = 5 * time.Minute
+	defaultIngressBuffer       = 32 * 1024
+	maxAudioUploadDuration     = 5 * time.Minute
+	maxWebSocketMessageBytes   = 4 * defaultIngressBuffer
+	websocketWriteTimeout      = 10 * time.Second
+	websocketHeartbeatInterval = 30 * time.Second
+	websocketHeartbeatTimeout  = 60 * time.Second
 )
+
+var audioWSUpgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool {
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			return true
+		}
+		if origin == "http://localhost" || origin == "http://127.0.0.1" ||
+			strings.HasPrefix(origin, "http://localhost:") ||
+			strings.HasPrefix(origin, "http://127.0.0.1:") ||
+			origin == "tauri://localhost" ||
+			origin == "https://tauri.localhost" ||
+			origin == "https://tauri.local" ||
+			strings.HasPrefix(origin, "https://tauri.local:") {
+			return true
+		}
+		return false
+	},
+}
 
 type storedToken struct {
 	ID        string    `json:"id"`
@@ -384,7 +408,8 @@ func (s *APIServer) originAllowed(origin string) bool {
 
 	if origin == "tauri://localhost" ||
 		origin == "https://tauri.localhost" ||
-		strings.HasPrefix(origin, "https://tauri.local") ||
+		origin == "https://tauri.local" ||
+		strings.HasPrefix(origin, "https://tauri.local:") ||
 		origin == "http://localhost" ||
 		origin == "http://127.0.0.1" ||
 		strings.HasPrefix(origin, "http://localhost:") ||
@@ -978,6 +1003,8 @@ func (s *APIServer) Prepare(ctx context.Context) (*PreparedHTTPServer, error) {
 	mux.HandleFunc("/audio/interrupt", s.handleAudioInterrupt)
 	mux.HandleFunc("/audio/ingress", s.handleAudioIngress)
 	mux.HandleFunc("/audio/egress", s.handleAudioEgress)
+	mux.HandleFunc("/audio/ingress/ws", s.handleAudioIngressWS)
+	mux.HandleFunc("/audio/egress/ws", s.handleAudioEgressWS)
 	mux.HandleFunc("/metrics", s.handleMetrics)
 
 	// Create and store the HTTP server with CORS middleware
@@ -2330,6 +2357,18 @@ func cloneStringMap(in map[string]string) map[string]string {
 	return out
 }
 
+func writeAudioWebSocketError(conn *websocket.Conn, message string) {
+	if conn == nil {
+		return
+	}
+	bytes, err := json.Marshal(audioEgressHTTPChunk{Error: message, Final: true})
+	if err != nil {
+		return
+	}
+	conn.SetWriteDeadline(time.Now().Add(websocketWriteTimeout))
+	_ = conn.WriteMessage(websocket.TextMessage, bytes)
+}
+
 func parseAudioFormatQuery(values url.Values) (eventbus.AudioFormat, error) {
 	format := defaultCaptureFormat
 
@@ -2373,6 +2412,242 @@ func intQueryParam(values url.Values, key string, def int) (int, error) {
 		return 0, fmt.Errorf("invalid %s", key)
 	}
 	return n, nil
+}
+
+func (s *APIServer) handleAudioIngressWS(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET,OPTIONS")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if _, ok := s.requireRole(w, r, roleAdmin); !ok {
+		return
+	}
+	if s.audioIngress == nil {
+		http.Error(w, "audio ingress unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	query := r.URL.Query()
+	sessionID := strings.TrimSpace(query.Get("session_id"))
+	if sessionID == "" {
+		http.Error(w, "session_id is required", http.StatusBadRequest)
+		return
+	}
+	streamID := strings.TrimSpace(query.Get("stream_id"))
+	if streamID == "" {
+		streamID = defaultCaptureStreamID
+	}
+
+	if s.sessionManager != nil {
+		if _, err := s.sessionManager.GetSession(sessionID); err != nil {
+			http.Error(w, fmt.Sprintf("session %s not found", sessionID), http.StatusNotFound)
+			return
+		}
+	}
+
+	format, err := parseAudioFormatQuery(query)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	metadata, err := metadataFromQuery(query)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("invalid metadata: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	conn, err := audioWSUpgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	conn.SetReadLimit(maxWebSocketMessageBytes)
+	conn.SetReadDeadline(time.Now().Add(maxAudioUploadDuration))
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(websocketHeartbeatTimeout))
+	})
+	pingTicker := time.NewTicker(websocketHeartbeatInterval)
+	defer pingTicker.Stop()
+
+	uploadCtx, cancel := context.WithTimeout(r.Context(), maxAudioUploadDuration)
+	defer cancel()
+
+	stream, err := s.audioIngress.OpenStream(sessionID, streamID, format, metadata)
+	if err != nil {
+		writeAudioWebSocketError(conn, err.Error())
+		_ = conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "open stream failed"))
+		return
+	}
+	defer func() {
+		if stream != nil {
+			_ = stream.Close()
+		}
+	}()
+
+	for {
+		if err := uploadCtx.Err(); err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				writeAudioWebSocketError(conn, "upload timeout")
+				_ = conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "timeout"))
+			}
+			return
+		}
+		select {
+		case <-pingTicker.C:
+			conn.SetWriteDeadline(time.Now().Add(websocketWriteTimeout))
+			if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
+			continue
+		default:
+		}
+
+		messageType, payload, err := conn.ReadMessage()
+		if err != nil {
+			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) || errors.Is(err, context.Canceled) {
+				return
+			}
+			writeAudioWebSocketError(conn, fmt.Sprintf("read error: %v", err))
+			_ = conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseInternalServerErr, "read error"))
+			return
+		}
+		if messageType == websocket.CloseMessage {
+			return
+		}
+		if messageType != websocket.BinaryMessage {
+			writeAudioWebSocketError(conn, "binary frames required")
+			_ = conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseUnsupportedData, "binary frames required"))
+			return
+		}
+		if len(payload) == 0 {
+			continue
+		}
+		if err := stream.Write(payload); err != nil {
+			writeAudioWebSocketError(conn, fmt.Sprintf("write stream: %v", err))
+			_ = conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseInternalServerErr, "write error"))
+			return
+		}
+	}
+}
+
+func (s *APIServer) handleAudioEgressWS(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET,OPTIONS")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if _, ok := s.requireRole(w, r, roleAdmin, roleReadOnly); !ok {
+		return
+	}
+	if s.eventBus == nil {
+		http.Error(w, "event bus unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	query := r.URL.Query()
+	sessionID := strings.TrimSpace(query.Get("session_id"))
+	if sessionID == "" {
+		http.Error(w, "session_id is required", http.StatusBadRequest)
+		return
+	}
+	streamID := strings.TrimSpace(query.Get("stream_id"))
+	if streamID == "" {
+		if s.audioEgress != nil {
+			streamID = s.audioEgress.DefaultStreamID()
+		} else {
+			streamID = defaultTTSStreamID
+		}
+	}
+
+	if s.sessionManager != nil {
+		if _, err := s.sessionManager.GetSession(sessionID); err != nil {
+			http.Error(w, fmt.Sprintf("session %s not found", sessionID), http.StatusNotFound)
+			return
+		}
+	}
+
+	conn, err := audioWSUpgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	conn.SetReadLimit(maxWebSocketMessageBytes)
+	conn.SetReadDeadline(time.Now().Add(websocketHeartbeatTimeout))
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(websocketHeartbeatTimeout))
+	})
+
+	sub := s.eventBus.Subscribe(
+		eventbus.TopicAudioEgressPlayback,
+		eventbus.WithSubscriptionName(fmt.Sprintf("ws_audio_out_%s_%s_%d", sessionID, streamID, time.Now().UnixNano())),
+		eventbus.WithSubscriptionBuffer(64),
+	)
+	defer sub.Close()
+
+	ctx := r.Context()
+	formatSent := false
+	pingTicker := time.NewTicker(websocketHeartbeatInterval)
+	defer pingTicker.Stop()
+
+	for {
+		select {
+		case <-pingTicker.C:
+			conn.SetWriteDeadline(time.Now().Add(websocketWriteTimeout))
+			if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
+			continue
+		case <-ctx.Done():
+			return
+		case env, ok := <-sub.C():
+			if !ok {
+				writeAudioWebSocketError(conn, "playback subscription closed")
+				_ = conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseInternalServerErr, "playback subscription closed"))
+				return
+			}
+			evt, ok := env.Payload.(eventbus.AudioEgressPlaybackEvent)
+			if !ok || evt.SessionID != sessionID || evt.StreamID != streamID {
+				continue
+			}
+
+			payload := audioEgressHTTPChunk{
+				Sequence:   evt.Sequence,
+				DurationMs: durationToMillis(playbackDuration(evt)),
+				Final:      evt.Final,
+				Metadata:   cloneStringMap(evt.Metadata),
+				Data:       base64.StdEncoding.EncodeToString(evt.Data),
+			}
+			if !formatSent {
+				payload.Format = audioFormatPayload(evt.Format)
+				formatSent = true
+			}
+
+			bytes, err := json.Marshal(payload)
+			if err != nil {
+				writeAudioWebSocketError(conn, "encoding error")
+				return
+			}
+			conn.SetWriteDeadline(time.Now().Add(websocketWriteTimeout))
+			if err := conn.WriteMessage(websocket.TextMessage, bytes); err != nil {
+				return
+			}
+			if evt.Final {
+				return
+			}
+		}
+	}
 }
 
 func metadataFromQuery(values url.Values) (map[string]string, error) {

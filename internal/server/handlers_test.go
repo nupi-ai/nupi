@@ -13,6 +13,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -23,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/nupi-ai/nupi/internal/adapterrunner"
 	apihttp "github.com/nupi-ai/nupi/internal/api/http"
 	"github.com/nupi-ai/nupi/internal/audio/egress"
@@ -1501,6 +1503,178 @@ func TestHandleAudioIngressRejectsLargeMetadata(t *testing.T) {
 	if resp.Result().StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected bad request for large metadata, got %d", resp.Result().StatusCode)
 	}
+}
+
+func TestHandleAudioIngressWebSocket(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	bus := eventbus.New()
+	apiServer.SetEventBus(bus)
+	ingressSvc := ingress.New(bus)
+	apiServer.SetAudioIngressService(ingressSvc)
+	apiServer.sessionManager = nil
+
+	token := newStoredToken("ws-admin-token", "ws-admin", string(roleAdmin))
+	apiServer.setAuthTokens([]storedToken{token}, true)
+
+	mux := http.NewServeMux()
+	mux.Handle("/audio/ingress/ws", apiServer.wrapWithSecurity(http.HandlerFunc(apiServer.handleAudioIngressWS)))
+	ts := newLocalHTTPServer(t, mux)
+	if ts == nil {
+		t.Skip("tcp listener unavailable in this environment")
+		return
+	}
+
+	header := http.Header{}
+	header.Set("Authorization", "Bearer "+token.Token)
+	header.Set("Origin", "http://localhost")
+	url := strings.Replace(ts.URL, "http", "ws", 1) + "/audio/ingress/ws?session_id=sess"
+	conn, _, err := websocket.DefaultDialer.Dial(url, header)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer conn.Close()
+
+	rawSub := bus.Subscribe(eventbus.TopicAudioIngressRaw)
+	defer rawSub.Close()
+	segSub := bus.Subscribe(eventbus.TopicAudioIngressSegment)
+	defer segSub.Close()
+
+	payload := []byte{1, 2, 3, 4}
+	if err := conn.WriteMessage(websocket.BinaryMessage, payload); err != nil {
+		t.Fatalf("write payload: %v", err)
+	}
+
+	if err := conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, "bye")); err != nil {
+		// ignore close errors
+	}
+
+	rawEnv := recvEvent(t, rawSub)
+	rawEvt := rawEnv.Payload.(eventbus.AudioIngressRawEvent)
+	if !bytes.Equal(rawEvt.Data, payload) {
+		t.Fatalf("unexpected raw data: %v", rawEvt.Data)
+	}
+
+	segEnv := recvEvent(t, segSub)
+	segEvt := segEnv.Payload.(eventbus.AudioIngressSegmentEvent)
+	if segEvt.SessionID != "sess" {
+		t.Fatalf("unexpected segment session: %s", segEvt.SessionID)
+	}
+}
+
+func TestHandleAudioEgressWebSocket(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	bus := eventbus.New()
+	apiServer.SetEventBus(bus)
+	egressSvc := egress.New(bus)
+	apiServer.SetAudioEgressService(egressSvc)
+	apiServer.sessionManager = nil
+
+	token := newStoredToken("ws-read-token", "ws-read", string(roleReadOnly))
+	apiServer.setAuthTokens([]storedToken{token}, true)
+
+	mux := http.NewServeMux()
+	mux.Handle("/audio/egress/ws", apiServer.wrapWithSecurity(http.HandlerFunc(apiServer.handleAudioEgressWS)))
+	ts := newLocalHTTPServer(t, mux)
+	if ts == nil {
+		t.Skip("tcp listener unavailable in this environment")
+		return
+	}
+
+	header := http.Header{}
+	header.Set("Authorization", "Bearer "+token.Token)
+	header.Set("Origin", "http://localhost")
+	url := strings.Replace(ts.URL, "http", "ws", 1) + "/audio/egress/ws?session_id=sess"
+	conn, _, err := websocket.DefaultDialer.Dial(url, header)
+	if err != nil {
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer conn.Close()
+
+	format := egressSvc.PlaybackFormat()
+	streamID := egressSvc.DefaultStreamID()
+	bus.Publish(context.Background(), eventbus.Envelope{
+		Topic: eventbus.TopicAudioEgressPlayback,
+		Payload: eventbus.AudioEgressPlaybackEvent{
+			SessionID: "sess",
+			StreamID:  streamID,
+			Sequence:  1,
+			Format:    format,
+			Duration:  100 * time.Millisecond,
+			Data:      []byte{9, 8, 7, 6},
+			Final:     false,
+		},
+	})
+	bus.Publish(context.Background(), eventbus.Envelope{
+		Topic: eventbus.TopicAudioEgressPlayback,
+		Payload: eventbus.AudioEgressPlaybackEvent{
+			SessionID: "sess",
+			StreamID:  streamID,
+			Sequence:  2,
+			Format:    format,
+			Duration:  0,
+			Data:      []byte{},
+			Final:     true,
+		},
+	})
+
+	_, msg, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read first chunk: %v", err)
+	}
+	var first audioEgressHTTPChunk
+	if err := json.Unmarshal(msg, &first); err != nil {
+		t.Fatalf("unmarshal first chunk: %v", err)
+	}
+	if first.Sequence != 1 || first.Format == nil {
+		t.Fatalf("unexpected first chunk: %+v", first)
+	}
+
+	_, msg, err = conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read second chunk: %v", err)
+	}
+	var second audioEgressHTTPChunk
+	if err := json.Unmarshal(msg, &second); err != nil {
+		t.Fatalf("unmarshal second chunk: %v", err)
+	}
+	if !second.Final {
+		t.Fatalf("expected final chunk: %+v", second)
+	}
+}
+
+type localHTTPServer struct {
+	URL      string
+	server   *http.Server
+	listener net.Listener
+}
+
+func newLocalHTTPServer(t *testing.T, handler http.Handler) *localHTTPServer {
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("skipping websocket test; listen tcp4 not permitted: %v", err)
+		return nil
+	}
+	srv := &http.Server{Handler: handler}
+	out := &localHTTPServer{
+		URL:      "http://" + ln.Addr().String(),
+		server:   srv,
+		listener: ln,
+	}
+	go func() {
+		_ = srv.Serve(ln)
+	}()
+	t.Cleanup(out.Close)
+	return out
+}
+
+func (s *localHTTPServer) Close() {
+	if s == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_ = s.server.Shutdown(ctx)
+	_ = s.listener.Close()
 }
 
 type metricsExporterStub struct {
