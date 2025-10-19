@@ -78,6 +78,9 @@ type Client struct {
 	errCh     chan error
 
 	wsWriteMu sync.Mutex
+
+	streamHTTPClient *http.Client
+	streamOnce       sync.Once
 }
 
 func newClientWithConfig(baseURL string, tlsConfig *tls.Config, token string) *Client {
@@ -794,4 +797,16 @@ func (c *Client) addAuth(req *http.Request) {
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
+}
+
+func (c *Client) streamingHTTPClient() *http.Client {
+	if c.httpClient == nil {
+		return &http.Client{Timeout: 0}
+	}
+	c.streamOnce.Do(func() {
+		clone := *c.httpClient
+		clone.Timeout = 0
+		c.streamHTTPClient = &clone
+	})
+	return c.streamHTTPClient
 }

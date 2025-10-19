@@ -28,6 +28,7 @@ type Client struct {
 	adapters   apiv1.AdaptersServiceClient
 	quickstart apiv1.QuickstartServiceClient
 	modules    apiv1.ModulesServiceClient
+	audio      apiv1.AudioServiceClient
 	token      string
 }
 
@@ -140,6 +141,7 @@ func dial(address string, tlsConfig *tls.Config, token string) (*Client, error) 
 		adapters:   apiv1.NewAdaptersServiceClient(conn),
 		quickstart: apiv1.NewQuickstartServiceClient(conn),
 		modules:    apiv1.NewModulesServiceClient(conn),
+		audio:      apiv1.NewAudioServiceClient(conn),
 		token:      strings.TrimSpace(token),
 	}, nil
 }
@@ -215,6 +217,27 @@ func (c *Client) StartModule(ctx context.Context, slot string) (*apiv1.ModuleAct
 func (c *Client) StopModule(ctx context.Context, slot string) (*apiv1.ModuleActionResponse, error) {
 	ctx = c.attachToken(ctx)
 	return c.modules.StopModule(ctx, &apiv1.ModuleSlotRequest{Slot: slot})
+}
+
+func (c *Client) StreamAudioIn(ctx context.Context) (apiv1.AudioService_StreamAudioInClient, error) {
+	ctx = c.attachToken(ctx)
+	return c.audio.StreamAudioIn(ctx)
+}
+
+func (c *Client) StreamAudioOut(ctx context.Context, req *apiv1.StreamAudioOutRequest) (apiv1.AudioService_StreamAudioOutClient, error) {
+	ctx = c.attachToken(ctx)
+	return c.audio.StreamAudioOut(ctx, req)
+}
+
+func (c *Client) InterruptTTS(ctx context.Context, req *apiv1.InterruptTTSRequest) error {
+	ctx = c.attachToken(ctx)
+	_, err := c.audio.InterruptTTS(ctx, req)
+	return err
+}
+
+func (c *Client) AudioCapabilities(ctx context.Context, req *apiv1.GetAudioCapabilitiesRequest) (*apiv1.GetAudioCapabilitiesResponse, error) {
+	ctx = c.attachToken(ctx)
+	return c.audio.GetAudioCapabilities(ctx, req)
 }
 
 func (c *Client) attachToken(ctx context.Context) context.Context {

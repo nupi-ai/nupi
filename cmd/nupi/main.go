@@ -432,7 +432,8 @@ func main() {
 
 	pairRootCmd.AddCommand(pairClaimCmd)
 
-	rootCmd.AddCommand(runCmd, listCmd, attachCmd, killCmd, loginCmd, inspectCmd, daemonCmd, configCmd, modulesCmd, quickstartCmd, pairRootCmd)
+	voiceCmd := newVoiceCommand()
+	rootCmd.AddCommand(runCmd, listCmd, attachCmd, killCmd, loginCmd, inspectCmd, daemonCmd, configCmd, modulesCmd, quickstartCmd, voiceCmd, pairRootCmd)
 
 	// Execute
 	if err := rootCmd.Execute(); err != nil {
