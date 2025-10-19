@@ -973,6 +973,13 @@ func (q *quickstartService) fetchStatus(ctx context.Context) (*apiv1.QuickstartS
 			resp.Modules = append(resp.Modules, bindingStatusToProto(status))
 		}
 	}
+	missingRefs, err := q.api.missingReferenceAdapters(ctx)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "reference adapter check failed: %v", err)
+	}
+	if len(missingRefs) > 0 {
+		resp.MissingReferenceAdapters = append(resp.MissingReferenceAdapters, missingRefs...)
+	}
 	return resp, nil
 }
 

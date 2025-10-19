@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"io"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -266,6 +267,9 @@ func TestQuickstartServiceIncludesModules(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("ai.primary slot not present in quickstart modules")
+	}
+	if got := resp.GetMissingReferenceAdapters(); !reflect.DeepEqual(got, modules.RequiredReferenceAdapters) {
+		t.Fatalf("expected missing reference adapters %v, got %v", modules.RequiredReferenceAdapters, got)
 	}
 }
 

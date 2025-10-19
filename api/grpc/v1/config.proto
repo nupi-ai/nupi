@@ -74,6 +74,7 @@ message QuickstartStatusResponse {
   string completed_at = 2;
   repeated string pending_slots = 3;
   repeated ModuleEntry modules = 4;
+  repeated string missing_reference_adapters = 5;
 }
 
 // QuickstartBinding pairs a slot with the adapter chosen via quickstart.

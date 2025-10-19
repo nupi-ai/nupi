@@ -1127,7 +1127,7 @@ type adapterInfo struct {
 }
 
 const (
-	quickstartMissingRefsWarning = "⚠ Missing reference adapters: %s\n"
+	quickstartMissingRefsWarning = "WARN: Missing reference adapters: %s\n"
 	quickstartMissingRefsHelp    = "Install the recommended packages before completing quickstart.\n"
 )
 
@@ -1139,6 +1139,34 @@ func printMissingReferenceAdapters(missing []string, showHelp bool) {
 	if showHelp {
 		fmt.Print(quickstartMissingRefsHelp)
 	}
+}
+
+func adapterTypeForSlot(slot string) string {
+	slot = strings.TrimSpace(slot)
+	if slot == "" {
+		return ""
+	}
+	if idx := strings.IndexRune(slot, '.'); idx >= 0 {
+		if idx == 0 {
+			return ""
+		}
+		slot = slot[:idx]
+	}
+	return strings.ToLower(slot)
+}
+
+func filterAdaptersForSlot(slot string, adapters []adapterInfo) []adapterInfo {
+	expectedType := adapterTypeForSlot(slot)
+	if expectedType == "" {
+		return nil
+	}
+	filtered := make([]adapterInfo, 0, len(adapters))
+	for _, adapter := range adapters {
+		if strings.EqualFold(adapter.Type, expectedType) {
+			filtered = append(filtered, adapter)
+		}
+	}
+	return filtered
 }
 
 func resolveDaemonBaseURL(c *client.Client) (string, map[string]interface{}, error) {
@@ -1289,30 +1317,50 @@ func fetchAdapters(c *client.Client) ([]adapterInfo, error) {
 	return payload.Adapters, nil
 }
 
-func printAvailableAdapters(adapters []adapterInfo) {
+func printAvailableAdaptersForSlot(slot string, adapters []adapterInfo) []adapterInfo {
 	if len(adapters) == 0 {
+		fmt.Println("Available adapters:")
 		fmt.Println("  (no adapters installed)")
-		return
+		return nil
 	}
 
-	fmt.Println("Available adapters:")
-	for idx, adapter := range adapters {
+	expectedType := adapterTypeForSlot(slot)
+	filtered := filterAdaptersForSlot(slot, adapters)
+
+	if len(filtered) > 0 {
+		if expectedType != "" {
+			fmt.Printf("Available adapters for %s (type: %s):\n", slot, expectedType)
+		} else {
+			fmt.Printf("Available adapters for %s:\n", slot)
+		}
+	} else {
+		if expectedType != "" {
+			fmt.Printf("No adapters of type %s installed. Showing all adapters:\n", expectedType)
+		} else {
+			fmt.Println("Available adapters:")
+		}
+		filtered = adapters
+	}
+
+	for idx, adapter := range filtered {
 		label := adapter.ID
 		if adapter.Name != "" {
 			label = fmt.Sprintf("%s (%s)", adapter.Name, adapter.ID)
 		}
 		fmt.Printf("  %d) %s [%s]\n", idx+1, label, adapter.Type)
 	}
+	return filtered
 }
 
-func resolveAdapterChoice(input string, adapters []adapterInfo) (string, bool) {
+func resolveAdapterChoice(input string, ordered []adapterInfo, all []adapterInfo) (string, bool) {
 	if idx, err := strconv.Atoi(input); err == nil {
-		if idx >= 1 && idx <= len(adapters) {
-			return adapters[idx-1].ID, true
+		if idx >= 1 && idx <= len(ordered) {
+			return ordered[idx-1].ID, true
 		}
+		return "", false
 	}
 
-	for _, adapter := range adapters {
+	for _, adapter := range all {
 		if strings.EqualFold(adapter.ID, input) || strings.EqualFold(adapter.Name, input) {
 			return adapter.ID, true
 		}
@@ -1759,7 +1807,7 @@ func quickstartInit(cmd *cobra.Command, args []string) error {
 
 	for _, slot := range status.PendingSlots {
 		fmt.Printf("\nSlot %s requires an adapter.\n", slot)
-		printAvailableAdapters(adapters)
+		slotAdapters := printAvailableAdaptersForSlot(slot, adapters)
 
 		for {
 			fmt.Printf("Select adapter for %s (enter number/id, blank to skip): ", slot)
@@ -1774,7 +1822,7 @@ func quickstartInit(cmd *cobra.Command, args []string) error {
 				break
 			}
 
-			if id, ok := resolveAdapterChoice(choice, adapters); ok {
+			if id, ok := resolveAdapterChoice(choice, slotAdapters, adapters); ok {
 				bindings = append(bindings, quickstartBindingRequest{Slot: slot, AdapterID: id})
 				fmt.Printf("  -> Assigned %s to %s\n", id, slot)
 				break
