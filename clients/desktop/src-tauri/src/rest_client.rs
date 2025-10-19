@@ -1,16 +1,40 @@
-use std::{collections::HashMap, env, fs, path::PathBuf, time::Duration};
+use std::{
+    collections::HashMap,
+    env, fs,
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+use bytes::Bytes;
 use dirs::home_dir;
+use futures_util::StreamExt as FuturesStreamExt;
+use hound::{SampleFormat, WavSpec, WavWriter};
 use reqwest::{Certificate, Client, StatusCode};
-use rusqlite::{params, Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, params};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
+use tokio::{
+    fs as tokio_fs,
+    io::{AsyncBufReadExt, BufReader},
+    sync::{mpsc, oneshot},
+    task,
+};
+use tokio_stream::{StreamExt as TokioStreamExt, wrappers::ReceiverStream};
+use tokio_util::io::StreamReader;
 use url::Url;
 
 use crate::settings;
 
 const INSTANCE_NAME: &str = "default";
 const PROFILE_NAME: &str = "default";
+const MAX_AUDIO_FILE_SIZE: u64 = 500 * 1024 * 1024;
+const DEFAULT_CAPTURE_STREAM_ID: &str = "mic";
+const DEFAULT_PLAYBACK_STREAM_ID: &str = "tts.primary";
 
 #[derive(Debug)]
 pub enum RestClientError {
@@ -21,6 +45,7 @@ pub enum RestClientError {
     Http(reqwest::Error),
     Status(StatusCode),
     Json(serde_json::Error),
+    Audio(String),
 }
 
 impl std::fmt::Display for RestClientError {
@@ -33,6 +58,7 @@ impl std::fmt::Display for RestClientError {
             RestClientError::Http(err) => write!(f, "{err}"),
             RestClientError::Status(code) => write!(f, "HTTP request failed with status {code}"),
             RestClientError::Json(err) => write!(f, "{err}"),
+            RestClientError::Audio(err) => write!(f, "{err}"),
         }
     }
 }
@@ -60,6 +86,18 @@ impl From<reqwest::Error> for RestClientError {
 impl From<serde_json::Error> for RestClientError {
     fn from(value: serde_json::Error) -> Self {
         RestClientError::Json(value)
+    }
+}
+
+impl From<hound::Error> for RestClientError {
+    fn from(value: hound::Error) -> Self {
+        RestClientError::Audio(value.to_string())
+    }
+}
+
+impl From<base64::DecodeError> for RestClientError {
+    fn from(value: base64::DecodeError) -> Self {
+        RestClientError::Audio(value.to_string())
     }
 }
 
@@ -151,10 +189,249 @@ pub struct ClaimedToken {
     pub created_at: Option<String>,
 }
 
+#[derive(Clone)]
 pub struct RestClient {
     inner: Client,
     base_url: String,
     token: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct VoiceStreamRequest {
+    pub session_id: String,
+    pub stream_id: Option<String>,
+    pub input_path: PathBuf,
+    pub playback_output: Option<PathBuf>,
+    pub disable_playback: bool,
+    pub metadata: HashMap<String, String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct VoiceStreamSummary {
+    pub session_id: String,
+    pub stream_id: String,
+    pub bytes_uploaded: u64,
+    pub ingress_source: String,
+    pub playback_chunks: u64,
+    pub playback_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub playback_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub playback_error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct VoiceInterruptSummary {
+    pub session_id: String,
+    pub stream_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "std::collections::HashMap::is_empty", default)]
+    pub metadata: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AudioFormatSummary {
+    pub encoding: String,
+    pub sample_rate: u32,
+    pub channels: u16,
+    pub bit_depth: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frame_ms: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AudioCapabilitySummary {
+    pub stream_id: String,
+    pub format: AudioFormatSummary,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<HashMap<String, String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AudioCapabilitiesSummary {
+    pub capture: Vec<AudioCapabilitySummary>,
+    pub playback: Vec<AudioCapabilitySummary>,
+}
+
+#[derive(Debug)]
+struct PlaybackMetrics {
+    chunks: u64,
+    bytes: u64,
+    saved_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
+struct AudioEgressHttpChunk {
+    #[serde(default)]
+    format: Option<AudioFormatPayload>,
+    #[serde(default)]
+    sequence: u64,
+    #[serde(default)]
+    duration_ms: Option<u32>,
+    #[serde(rename = "final", default)]
+    final_flag: bool,
+    #[serde(default)]
+    data: Option<String>,
+    #[serde(default)]
+    metadata: Option<HashMap<String, String>>,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AudioFormatPayload {
+    #[serde(default)]
+    encoding: Option<String>,
+    #[serde(default)]
+    sample_rate: Option<u32>,
+    #[serde(default)]
+    channels: Option<u16>,
+    #[serde(default)]
+    bit_depth: Option<u16>,
+    #[serde(default, rename = "frame_ms")]
+    frame_ms: Option<u32>,
+    #[serde(default, rename = "frame_duration_ms")]
+    frame_duration_ms: Option<u32>,
+}
+
+impl AudioFormatPayload {
+    fn to_summary(&self) -> AudioFormatSummary {
+        AudioFormatSummary {
+            encoding: self
+                .encoding
+                .clone()
+                .unwrap_or_else(|| "pcm_s16le".to_string()),
+            sample_rate: self.sample_rate.unwrap_or(16_000),
+            channels: self.channels.unwrap_or(1),
+            bit_depth: self.bit_depth.unwrap_or(16),
+            frame_ms: self.frame_ms.or(self.frame_duration_ms),
+        }
+    }
+}
+
+fn normalize_metadata_map(
+    metadata: HashMap<String, String>,
+    client_label: &str,
+) -> HashMap<String, String> {
+    let mut normalized = HashMap::new();
+    for (key, value) in metadata.into_iter() {
+        let trimmed_key = key.trim();
+        if trimmed_key.is_empty() {
+            continue;
+        }
+        normalized.insert(trimmed_key.to_string(), value.trim().to_string());
+    }
+    normalized
+        .entry("client".to_string())
+        .or_insert_with(|| client_label.to_string());
+    normalized
+}
+
+fn default_capture_format_summary() -> AudioFormatSummary {
+    AudioFormatSummary {
+        encoding: "pcm_s16le".to_string(),
+        sample_rate: 16_000,
+        channels: 1,
+        bit_depth: 16,
+        frame_ms: Some(20),
+    }
+}
+
+struct WavUpload {
+    format: AudioFormatSummary,
+    body: reqwest::Body,
+    bytes: Arc<AtomicU64>,
+    task: task::JoinHandle<Result<(), RestClientError>>,
+}
+
+async fn prepare_wav_upload(path: &PathBuf) -> Result<WavUpload, RestClientError> {
+    let path_clone = path.clone();
+    let (tx, rx) = mpsc::channel::<Result<Vec<u8>, RestClientError>>(8);
+    let (format_tx, format_rx) = oneshot::channel::<Result<AudioFormatSummary, RestClientError>>();
+    let bytes_counter = Arc::new(AtomicU64::new(0));
+    let counter_clone = Arc::clone(&bytes_counter);
+
+    let task = task::spawn_blocking(move || -> Result<(), RestClientError> {
+        let mut reader = match hound::WavReader::open(&path_clone) {
+            Ok(reader) => reader,
+            Err(err) => {
+                let message = err.to_string();
+                let _ = format_tx.send(Err(RestClientError::Audio(message.clone())));
+                return Err(RestClientError::Audio(message));
+            }
+        };
+
+        let spec = reader.spec();
+        if spec.sample_format != SampleFormat::Int || spec.bits_per_sample != 16 {
+            let message = "Only 16-bit PCM WAV files are supported for voice streaming".to_string();
+            let _ = format_tx.send(Err(RestClientError::Config(message.clone())));
+            return Err(RestClientError::Config(message));
+        }
+
+        let format = AudioFormatSummary {
+            encoding: "pcm_s16le".to_string(),
+            sample_rate: spec.sample_rate,
+            channels: spec.channels,
+            bit_depth: spec.bits_per_sample,
+            frame_ms: None,
+        };
+
+        if format_tx.send(Ok(format)).is_err() {
+            return Ok(());
+        }
+
+        let mut buffer = Vec::with_capacity(64 * 1024);
+        for sample in reader.samples::<i16>() {
+            let sample = match sample {
+                Ok(value) => value,
+                Err(err) => {
+                    let message = err.to_string();
+                    let _ = tx.blocking_send(Err(RestClientError::Audio(message.clone())));
+                    return Err(RestClientError::Audio(message));
+                }
+            };
+            buffer.extend_from_slice(&sample.to_le_bytes());
+            if buffer.len() >= 64 * 1024 {
+                counter_clone.fetch_add(buffer.len() as u64, Ordering::SeqCst);
+                if tx.blocking_send(Ok(buffer)).is_err() {
+                    return Ok(());
+                }
+                buffer = Vec::with_capacity(64 * 1024);
+            }
+        }
+
+        if !buffer.is_empty() {
+            counter_clone.fetch_add(buffer.len() as u64, Ordering::SeqCst);
+            let _ = tx.blocking_send(Ok(buffer));
+        }
+
+        Ok(())
+    });
+
+    let format = match format_rx.await {
+        Ok(result) => result?,
+        Err(_) => {
+            let join_result = task
+                .await
+                .map_err(|err| RestClientError::Audio(err.to_string()))?;
+            return match join_result {
+                Ok(()) => Err(RestClientError::Audio("Failed to parse WAV header".into())),
+                Err(err) => Err(err),
+            };
+        }
+    };
+
+    let stream = TokioStreamExt::map(ReceiverStream::new(rx), |chunk| chunk.map(Bytes::from));
+    let body = reqwest::Body::wrap_stream(stream);
+
+    Ok(WavUpload {
+        format,
+        body,
+        bytes: bytes_counter,
+        task,
+    })
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -528,6 +805,362 @@ impl RestClient {
         }
         Ok(response.json::<CreatedPairing>().await?)
     }
+    pub async fn voice_stream_from_file(
+        &self,
+        req: VoiceStreamRequest,
+    ) -> Result<VoiceStreamSummary, RestClientError> {
+        let VoiceStreamRequest {
+            session_id,
+            stream_id,
+            input_path,
+            playback_output,
+            disable_playback,
+            metadata,
+        } = req;
+
+        let trimmed_session = session_id.trim();
+        if trimmed_session.is_empty() {
+            return Err(RestClientError::Config("session_id is required".into()));
+        }
+
+        let stream_id_value = stream_id
+            .as_ref()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| DEFAULT_CAPTURE_STREAM_ID.to_string());
+
+        let ingress_source = input_path.display().to_string();
+
+        let file_meta = tokio_fs::metadata(&input_path).await?;
+        if file_meta.len() > MAX_AUDIO_FILE_SIZE {
+            return Err(RestClientError::Config(format!(
+                "audio file too large: {} bytes (max {})",
+                file_meta.len(),
+                MAX_AUDIO_FILE_SIZE
+            )));
+        }
+
+        let extension = input_path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_ascii_lowercase())
+            .unwrap_or_default();
+        if extension != "wav" {
+            return Err(RestClientError::Config(
+                "Only WAV files are currently supported for voice streaming".into(),
+            ));
+        }
+
+        let metadata_norm = normalize_metadata_map(metadata, "desktop");
+
+        let WavUpload {
+            format,
+            body,
+            bytes: upload_bytes,
+            task: upload_task,
+        } = prepare_wav_upload(&input_path).await?;
+
+        let mut url = Url::parse(&format!("{}/audio/ingress", self.base_url))
+            .map_err(|err| RestClientError::Config(format!("Invalid base URL: {err}")))?;
+        {
+            let mut pairs = url.query_pairs_mut();
+            pairs.append_pair("session_id", trimmed_session);
+            pairs.append_pair("stream_id", &stream_id_value);
+            pairs.append_pair("encoding", &format.encoding);
+            pairs.append_pair("sample_rate", &format.sample_rate.to_string());
+            pairs.append_pair("channels", &format.channels.to_string());
+            pairs.append_pair("bit_depth", &format.bit_depth.to_string());
+            if let Some(frame_ms) = format.frame_ms {
+                pairs.append_pair("frame_ms", &frame_ms.to_string());
+            }
+            if !metadata_norm.is_empty() {
+                pairs.append_pair("metadata", &serde_json::to_string(&metadata_norm)?);
+            }
+        }
+
+        let subscribe_playback = !disable_playback || playback_output.is_some();
+
+        let mut request = self.inner.post(url).timeout(Duration::from_secs(600));
+        if let Some(token) = &self.token {
+            request = request.bearer_auth(token);
+        }
+        let send_result = request
+            .header("Content-Type", "application/octet-stream")
+            .body(body)
+            .send()
+            .await;
+
+        let upload_status = upload_task
+            .await
+            .map_err(|err| RestClientError::Audio(err.to_string()))?;
+        if let Err(err) = upload_status {
+            return Err(err);
+        }
+
+        let response = send_result?;
+        if response.status() != StatusCode::NO_CONTENT {
+            return Err(RestClientError::Status(response.status()));
+        }
+
+        let bytes_uploaded = upload_bytes.load(Ordering::SeqCst);
+
+        let mut playback_error: Option<String> = None;
+        let playback_metrics = if subscribe_playback {
+            match self
+                .capture_playback(trimmed_session, &stream_id_value, playback_output.clone())
+                .await
+            {
+                Ok(metrics) => metrics,
+                Err(err) => {
+                    playback_error = Some(err.to_string());
+                    PlaybackMetrics {
+                        chunks: 0,
+                        bytes: 0,
+                        saved_path: None,
+                    }
+                }
+            }
+        } else {
+            PlaybackMetrics {
+                chunks: 0,
+                bytes: 0,
+                saved_path: None,
+            }
+        };
+
+        Ok(VoiceStreamSummary {
+            session_id: trimmed_session.to_string(),
+            stream_id: stream_id_value,
+            bytes_uploaded,
+            ingress_source,
+            playback_chunks: playback_metrics.chunks,
+            playback_bytes: playback_metrics.bytes,
+            playback_path: playback_metrics.saved_path,
+            playback_error,
+        })
+    }
+
+    pub async fn voice_interrupt(
+        &self,
+        session_id: &str,
+        stream_id: Option<&str>,
+        reason: Option<&str>,
+        metadata: HashMap<String, String>,
+    ) -> Result<VoiceInterruptSummary, RestClientError> {
+        let trimmed_session = session_id.trim();
+        if trimmed_session.is_empty() {
+            return Err(RestClientError::Config("session_id is required".into()));
+        }
+
+        let stream_value = stream_id
+            .and_then(|value| {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            })
+            .unwrap_or_else(|| DEFAULT_PLAYBACK_STREAM_ID.to_string());
+
+        let reason_value = reason.and_then(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        });
+
+        let metadata_norm = normalize_metadata_map(metadata, "desktop");
+
+        let mut body = json!({
+            "session_id": trimmed_session,
+        });
+        if !stream_value.is_empty() {
+            body["stream_id"] = stream_value.clone().into();
+        }
+        if let Some(reason) = reason_value.as_ref() {
+            body["reason"] = reason.clone().into();
+        }
+        if !metadata_norm.is_empty() {
+            body["metadata"] = serde_json::to_value(&metadata_norm)?;
+        }
+
+        let mut request = self
+            .inner
+            .post(format!("{}/audio/interrupt", self.base_url));
+        if let Some(token) = &self.token {
+            request = request.bearer_auth(token);
+        }
+        let response = request.json(&body).send().await?;
+        if response.status() != StatusCode::NO_CONTENT {
+            return Err(RestClientError::Status(response.status()));
+        }
+
+        Ok(VoiceInterruptSummary {
+            session_id: trimmed_session.to_string(),
+            stream_id: stream_value,
+            reason: reason_value,
+            metadata: metadata_norm,
+        })
+    }
+
+    pub async fn audio_capabilities(
+        &self,
+        session_id: Option<&str>,
+    ) -> Result<AudioCapabilitiesSummary, RestClientError> {
+        let mut url = Url::parse(&format!("{}/audio/capabilities", self.base_url))
+            .map_err(|err| RestClientError::Config(format!("Invalid base URL: {err}")))?;
+        if let Some(session) = session_id.and_then(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }) {
+            url.query_pairs_mut().append_pair("session_id", &session);
+        }
+
+        let mut request = self.inner.get(url).timeout(Duration::from_secs(10));
+        if let Some(token) = &self.token {
+            request = request.bearer_auth(token);
+        }
+        let response = request.send().await?;
+        if !response.status().is_success() {
+            return Err(RestClientError::Status(response.status()));
+        }
+        response
+            .json::<AudioCapabilitiesSummary>()
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn capture_playback(
+        &self,
+        session_id: &str,
+        stream_id: &str,
+        playback_output: Option<PathBuf>,
+    ) -> Result<PlaybackMetrics, RestClientError> {
+        let mut url = Url::parse(&format!("{}/audio/egress", self.base_url))
+            .map_err(|err| RestClientError::Config(format!("Invalid base URL: {err}")))?;
+        {
+            let mut pairs = url.query_pairs_mut();
+            pairs.append_pair("session_id", session_id);
+            if !stream_id.is_empty() {
+                pairs.append_pair("stream_id", stream_id);
+            }
+        }
+
+        let mut request = self.inner.get(url).timeout(Duration::from_secs(600));
+        if let Some(token) = &self.token {
+            request = request.bearer_auth(token);
+        }
+        let response = request.send().await?;
+        if !response.status().is_success() {
+            return Err(RestClientError::Status(response.status()));
+        }
+
+        let byte_stream = FuturesStreamExt::map(response.bytes_stream(), |result| {
+            result.map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))
+        });
+        let mut reader = BufReader::new(StreamReader::new(byte_stream));
+
+        let mut buffer = String::new();
+        let mut chunks = 0u64;
+        let mut bytes = 0u64;
+        let mut format_summary: Option<AudioFormatSummary> = None;
+        let mut wav_writer: Option<WavWriter<std::io::BufWriter<std::fs::File>>> = None;
+        let mut playback_path = playback_output;
+
+        loop {
+            buffer.clear();
+            let read = reader.read_line(&mut buffer).await?;
+            if read == 0 {
+                break;
+            }
+            let line = buffer.trim();
+            if line.is_empty() {
+                continue;
+            }
+
+            let chunk: AudioEgressHttpChunk = serde_json::from_str(line)?;
+            if let Some(err) = chunk.error.as_ref() {
+                if !err.trim().is_empty() {
+                    return Err(RestClientError::Audio(err.clone()));
+                }
+            }
+
+            if format_summary.is_none() {
+                if let Some(payload) = chunk.format.as_ref() {
+                    format_summary = Some(payload.to_summary());
+                }
+            }
+
+            if playback_path.is_some() && wav_writer.is_none() {
+                let summary = format_summary
+                    .clone()
+                    .unwrap_or_else(default_capture_format_summary);
+                if format_summary.is_none() {
+                    format_summary = Some(summary.clone());
+                }
+                let spec = WavSpec {
+                    channels: summary.channels,
+                    sample_rate: summary.sample_rate,
+                    bits_per_sample: summary.bit_depth,
+                    sample_format: SampleFormat::Int,
+                };
+                wav_writer = Some(WavWriter::create(playback_path.as_ref().unwrap(), spec)?);
+            }
+
+            if let Some(ref data_b64) = chunk.data {
+                let decoded = BASE64_STANDARD.decode(data_b64)?;
+                let decoded_len = decoded.len() as u64;
+                let projected = bytes + decoded_len;
+                if projected > MAX_AUDIO_FILE_SIZE {
+                    return Err(RestClientError::Audio(format!(
+                        "Playback exceeded {} bytes limit",
+                        MAX_AUDIO_FILE_SIZE
+                    )));
+                }
+                bytes = projected;
+                if let Some(writer) = wav_writer.as_mut() {
+                    if decoded.len() % 2 != 0 {
+                        return Err(RestClientError::Audio(
+                            "playback PCM payload has odd length".into(),
+                        ));
+                    }
+                    for sample_bytes in decoded.chunks_exact(2) {
+                        let sample = i16::from_le_bytes([sample_bytes[0], sample_bytes[1]]);
+                        writer.write_sample(sample)?;
+                    }
+                }
+                if !decoded.is_empty() {
+                    chunks += 1;
+                }
+            }
+
+            if chunk.final_flag {
+                break;
+            }
+        }
+
+        let mut saved_path = None;
+        if let Some(writer) = wav_writer {
+            writer.finalize()?;
+            if let Some(path) = playback_path.take() {
+                saved_path = Some(path.to_string_lossy().to_string());
+            }
+        }
+
+        Ok(PlaybackMetrics {
+            chunks,
+            bytes,
+            saved_path,
+        })
+    }
 }
 
 pub async fn claim_pairing_token(
@@ -723,20 +1356,16 @@ fn load_bootstrap_config() -> Result<Option<BootstrapConfig>, RestClientError> {
 }
 
 fn determine_host(binding: &str, tls_enabled: bool) -> String {
+    fn loopback_host(tls_enabled: bool) -> String {
+        if tls_enabled {
+            "localhost".to_string()
+        } else {
+            "127.0.0.1".to_string()
+        }
+    }
+
     match binding.trim().to_lowercase().as_str() {
-        "" | "loopback" => {
-            if tls_enabled {
-                "localhost".to_string()
-            } else {
-                "127.0.0.1".to_string()
-            }
-        }
-        _ => {
-            if tls_enabled {
-                "localhost".to_string()
-            } else {
-                "127.0.0.1".to_string()
-            }
-        }
+        "" | "loopback" | "0.0.0.0" | "::" | "lan" | "public" => loopback_host(tls_enabled),
+        other => other.to_string(),
     }
 }

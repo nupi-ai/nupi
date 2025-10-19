@@ -1005,6 +1005,7 @@ func (s *APIServer) Prepare(ctx context.Context) (*PreparedHTTPServer, error) {
 	mux.HandleFunc("/audio/egress", s.handleAudioEgress)
 	mux.HandleFunc("/audio/ingress/ws", s.handleAudioIngressWS)
 	mux.HandleFunc("/audio/egress/ws", s.handleAudioEgressWS)
+	mux.HandleFunc("/audio/capabilities", s.handleAudioCapabilities)
 	mux.HandleFunc("/metrics", s.handleMetrics)
 
 	// Create and store the HTTP server with CORS middleware
@@ -2701,6 +2702,17 @@ type audioFormatJSON struct {
 	FrameDurationMs uint32 `json:"frame_duration_ms"`
 }
 
+type audioCapabilityJSON struct {
+	StreamID string            `json:"stream_id"`
+	Format   audioFormatJSON   `json:"format"`
+	Metadata map[string]string `json:"metadata,omitempty"`
+}
+
+type audioCapabilitiesResponse struct {
+	Capture  []audioCapabilityJSON `json:"capture"`
+	Playback []audioCapabilityJSON `json:"playback"`
+}
+
 func audioFormatPayload(format eventbus.AudioFormat) *audioFormatJSON {
 	return &audioFormatJSON{
 		Encoding:        string(format.Encoding),
@@ -2750,6 +2762,68 @@ func addMetadataEntry(dst map[string]string, key, value string) error {
 	}
 	dst[key] = trimmedValue
 	return nil
+}
+
+func (s *APIServer) handleAudioCapabilities(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET,OPTIONS")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if _, ok := s.requireRole(w, r, roleAdmin, roleReadOnly); !ok {
+		return
+	}
+
+	query := r.URL.Query()
+	sessionID := strings.TrimSpace(query.Get("session_id"))
+	if sessionID != "" && s.sessionManager != nil {
+		if _, err := s.sessionManager.GetSession(sessionID); err != nil {
+			http.Error(w, fmt.Sprintf("session %s not found", sessionID), http.StatusNotFound)
+			return
+		}
+	}
+
+	resp := audioCapabilitiesResponse{
+		Capture:  make([]audioCapabilityJSON, 0, 1),
+		Playback: make([]audioCapabilityJSON, 0, 1),
+	}
+
+	if s.audioIngress != nil {
+		if format := audioFormatPayload(defaultCaptureFormat); format != nil {
+			resp.Capture = append(resp.Capture, audioCapabilityJSON{
+				StreamID: defaultCaptureStreamID,
+				Format:   *format,
+				Metadata: map[string]string{"recommended": "true"},
+			})
+		}
+	}
+
+	if s.audioEgress != nil {
+		if format := audioFormatPayload(s.audioEgress.PlaybackFormat()); format != nil {
+			resp.Playback = append(resp.Playback, audioCapabilityJSON{
+				StreamID: s.audioEgress.DefaultStreamID(),
+				Format:   *format,
+				Metadata: map[string]string{"recommended": "true"},
+			})
+		}
+	}
+
+	payload, err := json.Marshal(resp)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("encode capabilities: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	if _, err := w.Write(payload); err != nil {
+		log.Printf("[APIServer] failed to write audio capabilities response: %v", err)
+	}
 }
 
 func (s *APIServer) handleAudioInterrupt(w http.ResponseWriter, r *http.Request) {

@@ -4,9 +4,10 @@ import { listen } from "@tauri-apps/api/event";
 import { Sessions } from "./components/Sessions";
 import { History } from "./components/History";
 import { AsciinemaPlayer } from "./components/AsciinemaPlayer";
+import { VoicePanel } from "./components/VoicePanel";
 import "./App.css";
 
-type ViewMode = "sessions" | "history";
+type ViewMode = "sessions" | "history" | "voice";
 
 function App() {
   const [daemonRunning, setDaemonRunning] = useState(false);
@@ -166,6 +167,21 @@ function App() {
               >
                 History
               </button>
+              <button
+                onClick={() => setViewMode('voice')}
+                style={{
+                  padding: '6px 16px',
+                  backgroundColor: viewMode === 'voice' ? '#333' : 'transparent',
+                  color: viewMode === 'voice' ? '#fff' : '#999',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  fontSize: '14px',
+                  transition: 'all 0.2s'
+                }}
+              >
+                Voice
+              </button>
             </div>
 
             {/* Content */}
@@ -189,6 +205,9 @@ function App() {
             )}
             {viewMode === 'history' && daemonPort && (
               <History daemonPort={daemonPort} />
+            )}
+            {viewMode === 'voice' && (
+              <VoicePanel />
             )}
           </>
         ) : (

@@ -1642,6 +1642,102 @@ func TestHandleAudioEgressWebSocket(t *testing.T) {
 	}
 }
 
+func TestHandleAudioCapabilities(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	bus := eventbus.New()
+	apiServer.SetEventBus(bus)
+	ingressSvc := ingress.New(bus)
+	apiServer.SetAudioIngressService(ingressSvc)
+	egressSvc := egress.New(bus)
+	apiServer.SetAudioEgressService(egressSvc)
+
+	req := httptest.NewRequest(http.MethodGet, "/audio/capabilities", nil)
+	req = withReadOnly(apiServer, req)
+	rec := httptest.NewRecorder()
+
+	apiServer.handleAudioCapabilities(rec, req)
+
+	res := rec.Result()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", res.StatusCode, rec.Body.String())
+	}
+	if ct := res.Header.Get("Content-Type"); ct != "application/json" {
+		t.Fatalf("unexpected content-type: %s", ct)
+	}
+
+	var payload audioCapabilitiesResponse
+	if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	if len(payload.Capture) != 1 {
+		t.Fatalf("expected capture capability, got %d", len(payload.Capture))
+	}
+	capCapture := payload.Capture[0]
+	if capCapture.StreamID != defaultCaptureStreamID {
+		t.Fatalf("unexpected capture stream id: %s", capCapture.StreamID)
+	}
+	if capCapture.Format.SampleRate != defaultCaptureFormat.SampleRate {
+		t.Fatalf("unexpected capture sample rate: %d", capCapture.Format.SampleRate)
+	}
+	if int(capCapture.Format.Channels) != defaultCaptureFormat.Channels {
+		t.Fatalf("unexpected capture channels: %d", capCapture.Format.Channels)
+	}
+	if capCapture.Format.BitDepth != defaultCaptureFormat.BitDepth {
+		t.Fatalf("unexpected capture bit depth: %d", capCapture.Format.BitDepth)
+	}
+	expectedCaptureFrame := uint32(defaultCaptureFormat.FrameDuration / time.Millisecond)
+	if capCapture.Format.FrameDurationMs != expectedCaptureFrame {
+		t.Fatalf("unexpected capture frame duration: %d", capCapture.Format.FrameDurationMs)
+	}
+	if capCapture.Metadata["recommended"] != "true" {
+		t.Fatalf("expected capture metadata recommended=true, got %+v", capCapture.Metadata)
+	}
+
+	if len(payload.Playback) != 1 {
+		t.Fatalf("expected playback capability, got %d", len(payload.Playback))
+	}
+	playbackFormat := egressSvc.PlaybackFormat()
+	playbackStream := egressSvc.DefaultStreamID()
+	capPlayback := payload.Playback[0]
+	if capPlayback.StreamID != playbackStream {
+		t.Fatalf("unexpected playback stream id: %s", capPlayback.StreamID)
+	}
+	if capPlayback.Format.SampleRate != playbackFormat.SampleRate {
+		t.Fatalf("unexpected playback sample rate: %d", capPlayback.Format.SampleRate)
+	}
+	if int(capPlayback.Format.Channels) != playbackFormat.Channels {
+		t.Fatalf("unexpected playback channels: %d", capPlayback.Format.Channels)
+	}
+	if capPlayback.Format.BitDepth != playbackFormat.BitDepth {
+		t.Fatalf("unexpected playback bit depth: %d", capPlayback.Format.BitDepth)
+	}
+	expectedPlaybackFrame := uint32(playbackFormat.FrameDuration / time.Millisecond)
+	if capPlayback.Format.FrameDurationMs != expectedPlaybackFrame {
+		t.Fatalf("unexpected playback frame duration: %d", capPlayback.Format.FrameDurationMs)
+	}
+	if capPlayback.Metadata["recommended"] != "true" {
+		t.Fatalf("expected playback metadata recommended=true, got %+v", capPlayback.Metadata)
+	}
+}
+
+func TestHandleAudioCapabilitiesValidatesSession(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	bus := eventbus.New()
+	apiServer.SetEventBus(bus)
+	apiServer.SetAudioIngressService(ingress.New(bus))
+
+	req := httptest.NewRequest(http.MethodGet, "/audio/capabilities?session_id=missing", nil)
+	req = withReadOnly(apiServer, req)
+	rec := httptest.NewRecorder()
+
+	apiServer.handleAudioCapabilities(rec, req)
+
+	if rec.Result().StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for missing session, got %d", rec.Result().StatusCode)
+	}
+}
+
 type localHTTPServer struct {
 	URL      string
 	server   *http.Server

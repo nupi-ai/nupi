@@ -1,14 +1,14 @@
 use rest_client::{
-    claim_pairing_token, ClaimedToken, CreatedPairing, CreatedToken, PairingEntry, RestClient,
-    RestClientError, TokenEntry,
+    ClaimedToken, CreatedPairing, CreatedToken, PairingEntry, RestClient, RestClientError,
+    TokenEntry, VoiceStreamRequest, claim_pairing_token,
 };
-use serde_json::json;
-use std::{env, process::Stdio, sync::Mutex};
+use serde_json::{Value, json, to_value};
+use std::{collections::HashMap, env, path::PathBuf, process::Stdio, sync::Mutex};
 use tauri::{
+    Emitter, Manager,
     image::Image,
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
-    Emitter, Manager,
 };
 use tauri_plugin_shell::ShellExt;
 
@@ -137,11 +137,7 @@ async fn set_base_url(base_url: Option<String>) -> Result<ClientSettings, String
     let mut settings = settings::load();
     let trimmed = base_url.and_then(|value| {
         let t = value.trim().to_string();
-        if t.is_empty() {
-            None
-        } else {
-            Some(t)
-        }
+        if t.is_empty() { None } else { Some(t) }
     });
     settings.base_url = trimmed.clone();
     settings::save(&settings).map_err(|e| e.to_string())?;
@@ -157,11 +153,7 @@ async fn set_api_token(token: Option<String>) -> Result<ClientSettings, String> 
     let mut settings = settings::load();
     let cleaned = token.and_then(|value| {
         let t = value.trim().to_string();
-        if t.is_empty() {
-            None
-        } else {
-            Some(t)
-        }
+        if t.is_empty() { None } else { Some(t) }
     });
     settings.api_token = cleaned.clone();
     settings::save(&settings).map_err(|e| e.to_string())?;
@@ -262,6 +254,112 @@ async fn claim_pairing(
     }
 
     Ok(claimed)
+}
+
+#[tauri::command]
+async fn voice_stream_from_file(
+    _app: tauri::AppHandle,
+    session_id: String,
+    stream_id: Option<String>,
+    input_path: String,
+    playback_output: Option<String>,
+    disable_playback: Option<bool>,
+    metadata: Option<HashMap<String, String>>,
+) -> Result<Value, String> {
+    let trimmed_session = session_id.trim();
+    if trimmed_session.is_empty() {
+        return Err("session_id is required".into());
+    }
+    let trimmed_input = input_path.trim();
+    if trimmed_input.is_empty() {
+        return Err("input_path is required".into());
+    }
+
+    let client = RestClient::discover()
+        .await
+        .map_err(|err| err.to_string())?;
+
+    let request = VoiceStreamRequest {
+        session_id: trimmed_session.to_string(),
+        stream_id: stream_id
+            .as_ref()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string()),
+        input_path: PathBuf::from(trimmed_input),
+        playback_output: playback_output.and_then(|path| {
+            let trimmed = path.trim().to_string();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(PathBuf::from(trimmed))
+            }
+        }),
+        disable_playback: disable_playback.unwrap_or(true),
+        metadata: metadata.unwrap_or_default(),
+    };
+
+    client
+        .voice_stream_from_file(request)
+        .await
+        .map_err(|err| err.to_string())
+        .and_then(|summary| to_value(summary).map_err(|err| err.to_string()))
+}
+
+#[tauri::command]
+async fn voice_interrupt_command(
+    _app: tauri::AppHandle,
+    session_id: String,
+    stream_id: Option<String>,
+    reason: Option<String>,
+    metadata: Option<HashMap<String, String>>,
+) -> Result<Value, String> {
+    let trimmed_session = session_id.trim();
+    if trimmed_session.is_empty() {
+        return Err("session_id is required".into());
+    }
+
+    let client = RestClient::discover()
+        .await
+        .map_err(|err| err.to_string())?;
+
+    client
+        .voice_interrupt(
+            trimmed_session,
+            stream_id
+                .as_ref()
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty()),
+            reason
+                .as_ref()
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty()),
+            metadata.unwrap_or_default(),
+        )
+        .await
+        .map_err(|err| err.to_string())
+        .and_then(|summary| to_value(summary).map_err(|err| err.to_string()))
+}
+
+#[tauri::command]
+async fn voice_status_command(
+    _app: tauri::AppHandle,
+    session_id: Option<String>,
+) -> Result<Value, String> {
+    let client = RestClient::discover()
+        .await
+        .map_err(|err| err.to_string())?;
+
+    let filter = session_id
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty());
+
+    client
+        .audio_capabilities(filter)
+        .await
+        .map_err(|err| err.to_string())
+        .and_then(|caps| to_value(caps).map_err(|err| err.to_string()))
 }
 
 #[tauri::command]
@@ -377,7 +475,10 @@ pub fn run() {
             delete_api_token,
             list_pairings,
             create_pairing,
-            claim_pairing
+            claim_pairing,
+            voice_stream_from_file,
+            voice_interrupt_command,
+            voice_status_command
         ])
         .setup(|app| {
             // Always start daemon with the app
