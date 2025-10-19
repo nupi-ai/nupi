@@ -37,6 +37,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/observability"
 	"github.com/nupi-ai/nupi/internal/pty"
 	"github.com/nupi-ai/nupi/internal/session"
+	"github.com/nupi-ai/nupi/internal/voice/slots"
 )
 
 func TestRegisterSessionListenerIdempotent(t *testing.T) {
@@ -1273,6 +1274,38 @@ func openTestStore(t *testing.T) *configstore.Store {
 	return store
 }
 
+func enableVoiceAdapters(t *testing.T, store *configstore.Store) {
+	enableVoiceAdaptersWithSecondary(t, store, false)
+}
+
+// enableVoiceAdaptersWithSecondary provisions the minimal voice-ready configuration for tests.
+// includeSecondary allows scenarios that assert quickstart completion with stt.secondary.
+func enableVoiceAdaptersWithSecondary(t *testing.T, store *configstore.Store, includeSecondary bool) {
+	t.Helper()
+	ctx := context.Background()
+
+	adapters := []configstore.Adapter{
+		{ID: "adapter.stt.mock", Source: "builtin", Type: "stt", Name: "Mock STT"},
+		{ID: "adapter.tts.mock", Source: "builtin", Type: "tts", Name: "Mock TTS"},
+	}
+	for _, adapter := range adapters {
+		if err := store.UpsertAdapter(ctx, adapter); err != nil {
+			t.Fatalf("upsert adapter %s: %v", adapter.ID, err)
+		}
+	}
+	if err := store.SetActiveAdapter(ctx, slots.STTPrimary, "adapter.stt.mock", nil); err != nil {
+		t.Fatalf("activate stt adapter: %v", err)
+	}
+	if includeSecondary {
+		if err := store.SetActiveAdapter(ctx, slots.STTSecondary, "adapter.stt.mock", nil); err != nil {
+			t.Fatalf("activate stt secondary: %v", err)
+		}
+	}
+	if err := store.SetActiveAdapter(ctx, slots.TTSPrimary, "adapter.tts.mock", nil); err != nil {
+		t.Fatalf("activate tts adapter: %v", err)
+	}
+}
+
 func newTestModulesService(t *testing.T, store *configstore.Store) *modules.Service {
 	t.Helper()
 	manager := modules.NewManager(modules.ManagerOptions{
@@ -1298,6 +1331,7 @@ func (testModuleHandle) PID() int { return 12345 }
 
 func TestHandleAudioIngressStreamsData(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
+	enableVoiceAdapters(t, apiServer.configStore)
 	bus := eventbus.New()
 	apiServer.SetEventBus(bus)
 	ingressSvc := ingress.New(bus)
@@ -1361,6 +1395,7 @@ func TestHandleAudioIngressStreamsData(t *testing.T) {
 
 func TestHandleAudioEgressStreamsChunks(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
+	enableVoiceAdapters(t, apiServer.configStore)
 	bus := eventbus.New()
 	apiServer.SetEventBus(bus)
 	egressSvc := egress.New(bus)
@@ -1481,6 +1516,7 @@ func recvEvent(t *testing.T, sub *eventbus.Subscription) eventbus.Envelope {
 
 func TestHandleAudioIngressRejectsInvalidFormat(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
+	enableVoiceAdapters(t, apiServer.configStore)
 	bus := eventbus.New()
 	apiServer.SetEventBus(bus)
 	ingressSvc := ingress.New(bus)
@@ -1499,8 +1535,11 @@ func TestHandleAudioIngressRejectsInvalidFormat(t *testing.T) {
 
 func TestHandleAudioEgressSignalsError(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
+	enableVoiceAdapters(t, apiServer.configStore)
 	bus := eventbus.New()
 	apiServer.SetEventBus(bus)
+	egressSvc := egress.New(bus)
+	apiServer.SetAudioEgressService(egressSvc)
 	apiServer.sessionManager = nil
 
 	req := httptest.NewRequest(http.MethodGet, "/audio/egress?session_id=sess", nil)
@@ -1541,8 +1580,69 @@ func TestHandleAudioEgressSignalsError(t *testing.T) {
 	t.Fatal("expected error chunk not found")
 }
 
+func TestHandleAudioEgressRequiresTTS(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	bus := eventbus.New()
+	apiServer.SetEventBus(bus)
+	egressSvc := egress.New(bus)
+	apiServer.SetAudioEgressService(egressSvc)
+	apiServer.sessionManager = nil
+
+	req := httptest.NewRequest(http.MethodGet, "/audio/egress?session_id=sess", nil)
+	req = withReadOnly(apiServer, req)
+	rec := httptest.NewRecorder()
+
+	apiServer.handleAudioEgress(rec, req)
+
+	if rec.Result().StatusCode != http.StatusPreconditionFailed {
+		t.Fatalf("expected precondition failure, got %d", rec.Result().StatusCode)
+	}
+
+	var payload voiceErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode voice error: %v", err)
+	}
+	if payload.Error == "" {
+		t.Fatalf("expected error message in response")
+	}
+	if len(payload.Diagnostics) == 0 {
+		t.Fatalf("expected diagnostics for playback")
+	}
+}
+
+func TestHandleAudioIngressRequiresSTT(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	bus := eventbus.New()
+	apiServer.SetEventBus(bus)
+	ingressSvc := ingress.New(bus)
+	apiServer.SetAudioIngressService(ingressSvc)
+	apiServer.sessionManager = nil
+
+	req := httptest.NewRequest(http.MethodPost, "/audio/ingress?session_id=sess&sample_rate=16000&channels=1&bit_depth=16", bytes.NewReader([]byte{0x01}))
+	req = withAdmin(apiServer, req)
+	rec := httptest.NewRecorder()
+
+	apiServer.handleAudioIngress(rec, req)
+
+	if rec.Result().StatusCode != http.StatusPreconditionFailed {
+		t.Fatalf("expected precondition failure, got %d", rec.Result().StatusCode)
+	}
+
+	var payload voiceErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode voice error: %v", err)
+	}
+	if payload.Error == "" {
+		t.Fatalf("expected error message in response")
+	}
+	if len(payload.Diagnostics) == 0 {
+		t.Fatalf("expected diagnostics for capture")
+	}
+}
+
 func TestHandleAudioIngressRejectsLargeMetadata(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
+	enableVoiceAdapters(t, apiServer.configStore)
 	bus := eventbus.New()
 	apiServer.SetEventBus(bus)
 	ingressSvc := ingress.New(bus)
@@ -1563,6 +1663,7 @@ func TestHandleAudioIngressRejectsLargeMetadata(t *testing.T) {
 
 func TestHandleAudioIngressWebSocket(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
+	enableVoiceAdapters(t, apiServer.configStore)
 	bus := eventbus.New()
 	apiServer.SetEventBus(bus)
 	ingressSvc := ingress.New(bus)
@@ -1619,6 +1720,7 @@ func TestHandleAudioIngressWebSocket(t *testing.T) {
 
 func TestHandleAudioEgressWebSocket(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
+	enableVoiceAdapters(t, apiServer.configStore)
 	bus := eventbus.New()
 	apiServer.SetEventBus(bus)
 	egressSvc := egress.New(bus)
@@ -1700,6 +1802,7 @@ func TestHandleAudioEgressWebSocket(t *testing.T) {
 
 func TestHandleAudioCapabilities(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
+	enableVoiceAdapters(t, apiServer.configStore)
 	bus := eventbus.New()
 	apiServer.SetEventBus(bus)
 	ingressSvc := ingress.New(bus)
@@ -1774,6 +1877,16 @@ func TestHandleAudioCapabilities(t *testing.T) {
 	}
 	if capPlayback.Metadata["recommended"] != "true" {
 		t.Fatalf("expected playback metadata recommended=true, got %+v", capPlayback.Metadata)
+	}
+
+	if !payload.CaptureEnabled {
+		t.Fatalf("expected capture to be enabled")
+	}
+	if !payload.PlaybackEnabled {
+		t.Fatalf("expected playback to be enabled")
+	}
+	if len(payload.Diagnostics) != 0 {
+		t.Fatalf("expected no diagnostics, got %+v", payload.Diagnostics)
 	}
 }
 

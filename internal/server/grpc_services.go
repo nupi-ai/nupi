@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/modules"
 	"github.com/nupi-ai/nupi/internal/protocol"
+	"github.com/nupi-ai/nupi/internal/voice/slots"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -168,6 +170,15 @@ func (a *audioService) StreamAudioIn(stream apiv1.AudioService_StreamAudioInServ
 			if err != nil {
 				return status.Errorf(codes.InvalidArgument, "invalid audio format: %v", err)
 			}
+			readiness, err := a.api.voiceReadiness(stream.Context())
+			if err != nil {
+				return status.Errorf(codes.Internal, "voice readiness: %v", err)
+			}
+			if !readiness.CaptureEnabled {
+				diags := filterDiagnostics(mapVoiceDiagnostics(readiness.Issues), slots.STTPrimary)
+				message := voiceIssueSummary(diags, "voice capture unavailable")
+				return status.Error(codes.FailedPrecondition, message)
+			}
 			var metadata map[string]string
 			if chunk != nil {
 				metadata = copyStringMap(chunk.GetMetadata())
@@ -252,6 +263,16 @@ func (a *audioService) StreamAudioOut(req *apiv1.StreamAudioOutRequest, srv apiv
 		}
 	}
 
+	readiness, err := a.api.voiceReadiness(srv.Context())
+	if err != nil {
+		return status.Errorf(codes.Internal, "voice readiness: %v", err)
+	}
+	if !readiness.PlaybackEnabled {
+		diags := filterDiagnostics(mapVoiceDiagnostics(readiness.Issues), slots.TTSPrimary)
+		message := voiceIssueSummary(diags, "voice playback unavailable")
+		return status.Error(codes.FailedPrecondition, message)
+	}
+
 	sub := a.api.eventBus.Subscribe(
 		eventbus.TopicAudioEgressPlayback,
 		eventbus.WithSubscriptionName(fmt.Sprintf("grpc_audio_out_%s_%s_%d", sessionID, streamID, time.Now().UnixNano())),
@@ -331,6 +352,16 @@ func (a *audioService) InterruptTTS(ctx context.Context, req *apiv1.InterruptTTS
 		}
 	}
 
+	readiness, err := a.api.voiceReadiness(ctx)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "voice readiness: %v", err)
+	}
+	if !readiness.PlaybackEnabled {
+		diags := filterDiagnostics(mapVoiceDiagnostics(readiness.Issues), slots.TTSPrimary)
+		message := voiceIssueSummary(diags, "voice playback unavailable")
+		return nil, status.Error(codes.FailedPrecondition, message)
+	}
+
 	a.api.publishAudioInterrupt(sessionID, streamID, reason, nil)
 	if a.api.audioEgress != nil {
 		a.api.audioEgress.Interrupt(sessionID, streamID, reason, nil)
@@ -354,19 +385,43 @@ func (a *audioService) GetAudioCapabilities(ctx context.Context, req *apiv1.GetA
 		}
 	}
 
+	readiness, err := a.api.voiceReadiness(ctx)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "voice readiness: %v", err)
+	}
+	diagnostics := mapVoiceDiagnostics(readiness.Issues)
+
 	resp := &apiv1.GetAudioCapabilitiesResponse{}
 
-	resp.Capture = append(resp.Capture, &apiv1.AudioCapability{
-		StreamId: defaultCaptureStreamID,
-		Format:   audioFormatToProto(defaultCaptureFormat),
-		Metadata: map[string]string{"recommended": "true"},
-	})
+	if a.api.audioIngress != nil {
+		meta := map[string]string{
+			"recommended": "true",
+			"ready":       strconv.FormatBool(readiness.CaptureEnabled),
+		}
+		if !readiness.CaptureEnabled {
+			diags := filterDiagnostics(diagnostics, slots.STTPrimary)
+			meta["diagnostics"] = voiceIssueSummary(diags, "voice capture unavailable")
+		}
+		resp.Capture = append(resp.Capture, &apiv1.AudioCapability{
+			StreamId: defaultCaptureStreamID,
+			Format:   audioFormatToProto(defaultCaptureFormat),
+			Metadata: meta,
+		})
+	}
 
 	if a.api.audioEgress != nil {
+		meta := map[string]string{
+			"recommended": "true",
+			"ready":       strconv.FormatBool(readiness.PlaybackEnabled),
+		}
+		if !readiness.PlaybackEnabled {
+			diags := filterDiagnostics(diagnostics, slots.TTSPrimary)
+			meta["diagnostics"] = voiceIssueSummary(diags, "voice playback unavailable")
+		}
 		resp.Playback = append(resp.Playback, &apiv1.AudioCapability{
 			StreamId: a.api.audioEgress.DefaultStreamID(),
 			Format:   audioFormatToProto(a.api.audioEgress.PlaybackFormat()),
-			Metadata: map[string]string{"recommended": "true"},
+			Metadata: meta,
 		})
 	}
 

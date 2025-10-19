@@ -35,6 +35,8 @@ const PROFILE_NAME: &str = "default";
 const MAX_AUDIO_FILE_SIZE: u64 = 500 * 1024 * 1024;
 const DEFAULT_CAPTURE_STREAM_ID: &str = "mic";
 const DEFAULT_PLAYBACK_STREAM_ID: &str = "tts.primary";
+const SLOT_STT_PRIMARY: &str = "stt.primary";
+const SLOT_TTS_PRIMARY: &str = "tts.primary";
 const CANCELLED_MESSAGE: &str = "Voice stream cancelled by user";
 
 #[derive(Debug)]
@@ -47,6 +49,10 @@ pub enum RestClientError {
     Status(StatusCode),
     Json(serde_json::Error),
     Audio(String),
+    VoiceNotReady {
+        message: String,
+        diagnostics: Vec<VoiceDiagnosticSummary>,
+    },
 }
 
 impl std::fmt::Display for RestClientError {
@@ -60,6 +66,21 @@ impl std::fmt::Display for RestClientError {
             RestClientError::Status(code) => write!(f, "HTTP request failed with status {code}"),
             RestClientError::Json(err) => write!(f, "{err}"),
             RestClientError::Audio(err) => write!(f, "{err}"),
+            RestClientError::VoiceNotReady {
+                message,
+                diagnostics,
+            } => {
+                if diagnostics.is_empty() {
+                    write!(f, "{message}")
+                } else {
+                    let joined = diagnostics
+                        .iter()
+                        .map(|diag| format!("[{}] {}", diag.slot, diag.message))
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    write!(f, "{} ({})", message, joined)
+                }
+            }
         }
     }
 }
@@ -250,9 +271,54 @@ pub struct AudioCapabilitySummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VoiceDiagnosticSummary {
+    pub slot: String,
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioCapabilitiesSummary {
     pub capture: Vec<AudioCapabilitySummary>,
     pub playback: Vec<AudioCapabilitySummary>,
+    #[serde(default)]
+    pub capture_enabled: bool,
+    #[serde(default)]
+    pub playback_enabled: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub diagnostics: Vec<VoiceDiagnosticSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VoiceErrorPayload {
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    diagnostics: Vec<VoiceDiagnosticSummary>,
+    #[serde(default)]
+    capture_ready: Option<bool>,
+    #[serde(default)]
+    playback_ready: Option<bool>,
+}
+
+/// Picks the most relevant diagnostic message for a logical slot, falling back
+/// to the first diagnostic when slot-specific entries are unavailable.
+fn primary_diagnostic_message(
+    diags: &[VoiceDiagnosticSummary],
+    slot: &str,
+    fallback: &str,
+) -> String {
+    for diag in diags {
+        if diag.slot.eq_ignore_ascii_case(slot) {
+            return diag.message.clone();
+        }
+    }
+    diags
+        .first()
+        .map(|diag| diag.message.clone())
+        .unwrap_or_else(|| fallback.to_string())
 }
 
 #[derive(Debug)]
@@ -893,6 +959,36 @@ impl RestClient {
         }
 
         let metadata_norm = normalize_metadata_map(metadata, "desktop");
+        let subscribe_playback = !disable_playback || playback_output.is_some();
+
+        let capabilities = self.audio_capabilities(Some(trimmed_session)).await?;
+
+        if !capabilities.capture_enabled {
+            let message = capabilities.message.clone().unwrap_or_else(|| {
+                primary_diagnostic_message(
+                    &capabilities.diagnostics,
+                    SLOT_STT_PRIMARY,
+                    "Voice capture is disabled",
+                )
+            });
+            return Err(RestClientError::VoiceNotReady {
+                message,
+                diagnostics: capabilities.diagnostics.clone(),
+            });
+        }
+        if subscribe_playback && !capabilities.playback_enabled {
+            let message = capabilities.message.clone().unwrap_or_else(|| {
+                primary_diagnostic_message(
+                    &capabilities.diagnostics,
+                    SLOT_TTS_PRIMARY,
+                    "Voice playback is disabled",
+                )
+            });
+            return Err(RestClientError::VoiceNotReady {
+                message,
+                diagnostics: capabilities.diagnostics.clone(),
+            });
+        }
 
         let cancel_flag = Arc::new(AtomicBool::new(false));
 
@@ -920,8 +1016,6 @@ impl RestClient {
                 pairs.append_pair("metadata", &serde_json::to_string(&metadata_norm)?);
             }
         }
-
-        let subscribe_playback = !disable_playback || playback_output.is_some();
 
         let mut request = self.inner.post(url).timeout(Duration::from_secs(600));
         if let Some(token) = &self.token {
@@ -1099,6 +1193,21 @@ impl RestClient {
 
         let metadata_norm = normalize_metadata_map(metadata, "desktop");
 
+        let capabilities = self.audio_capabilities(Some(trimmed_session)).await?;
+        if !capabilities.playback_enabled {
+            let message = capabilities.message.clone().unwrap_or_else(|| {
+                primary_diagnostic_message(
+                    &capabilities.diagnostics,
+                    SLOT_TTS_PRIMARY,
+                    "Voice playback is disabled",
+                )
+            });
+            return Err(RestClientError::VoiceNotReady {
+                message,
+                diagnostics: capabilities.diagnostics.clone(),
+            });
+        }
+
         let mut body = json!({
             "session_id": trimmed_session,
         });
@@ -1153,8 +1262,20 @@ impl RestClient {
             request = request.bearer_auth(token);
         }
         let response = request.send().await?;
-        if !response.status().is_success() {
-            return Err(RestClientError::Status(response.status()));
+        let status = response.status();
+        if status == StatusCode::PRECONDITION_FAILED {
+            let payload = response.json::<VoiceErrorPayload>().await?;
+            return Ok(AudioCapabilitiesSummary {
+                capture: Vec::new(),
+                playback: Vec::new(),
+                capture_enabled: payload.capture_ready.unwrap_or(false),
+                playback_enabled: payload.playback_ready.unwrap_or(false),
+                diagnostics: payload.diagnostics,
+                message: payload.error,
+            });
+        }
+        if !status.is_success() {
+            return Err(RestClientError::Status(status));
         }
         response
             .json::<AudioCapabilitiesSummary>()

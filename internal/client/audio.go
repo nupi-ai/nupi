@@ -17,6 +17,38 @@ import (
 	"github.com/nupi-ai/nupi/internal/eventbus"
 )
 
+// AudioFormatInfo mirrors audio format metadata returned by the REST API.
+type AudioFormatInfo struct {
+	Encoding        string `json:"encoding"`
+	SampleRate      int    `json:"sample_rate"`
+	Channels        int    `json:"channels"`
+	BitDepth        int    `json:"bit_depth"`
+	FrameDurationMs uint32 `json:"frame_duration_ms"`
+}
+
+// AudioCapabilityInfo captures per-stream capture/playback capabilities.
+type AudioCapabilityInfo struct {
+	StreamID string            `json:"stream_id"`
+	Format   AudioFormatInfo   `json:"format"`
+	Metadata map[string]string `json:"metadata,omitempty"`
+}
+
+// VoiceDiagnostic conveys configuration issues preventing voice features from working.
+type VoiceDiagnostic struct {
+	Slot    string `json:"slot"`
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// AudioCapabilities summarises capture/playback readiness and diagnostics.
+type AudioCapabilities struct {
+	Capture         []AudioCapabilityInfo `json:"capture"`
+	Playback        []AudioCapabilityInfo `json:"playback"`
+	CaptureEnabled  bool                  `json:"capture_enabled"`
+	PlaybackEnabled bool                  `json:"playback_enabled"`
+	Diagnostics     []VoiceDiagnostic     `json:"diagnostics,omitempty"`
+}
+
 // AudioUploadParams encapsulates arguments required to push audio to the daemon.
 type AudioUploadParams struct {
 	SessionID string
@@ -239,6 +271,45 @@ func (s *AudioPlaybackStream) Close() error {
 	s.resp = nil
 	s.decoder = nil
 	return err
+}
+
+// AudioCapabilities fetches capture/playback readiness and diagnostics.
+func (c *Client) AudioCapabilities(ctx context.Context, sessionID string) (AudioCapabilities, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	values := url.Values{}
+	if trimmed := strings.TrimSpace(sessionID); trimmed != "" {
+		values.Set("session_id", trimmed)
+	}
+
+	endpoint := c.baseURL + "/audio/capabilities"
+	if query := values.Encode(); query != "" {
+		endpoint += "?" + query
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return AudioCapabilities{}, fmt.Errorf("audio capabilities: %w", err)
+	}
+	c.addAuth(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return AudioCapabilities{}, fmt.Errorf("audio capabilities: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		return AudioCapabilities{}, fmt.Errorf("audio capabilities: %w", readAPIError(resp))
+	}
+
+	var payload AudioCapabilities
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return AudioCapabilities{}, fmt.Errorf("audio capabilities: decode response: %w", err)
+	}
+	return payload, nil
 }
 
 // AudioInterruptParams configures a manual TTS interruption request.

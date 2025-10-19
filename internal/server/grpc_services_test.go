@@ -333,6 +333,7 @@ func TestQuickstartServiceUpdateFailsWhenReferenceMissing(t *testing.T) {
 
 func TestAudioServiceStreamAudioIn(t *testing.T) {
 	apiServer, sessionManager := newTestAPIServer(t)
+	enableVoiceAdapters(t, apiServer.configStore)
 	bus := eventbus.New()
 	ingressSvc := ingress.New(bus)
 	apiServer.SetAudioIngressService(ingressSvc)
@@ -418,6 +419,7 @@ func TestAudioServiceStreamAudioIn(t *testing.T) {
 
 func TestAudioServiceStreamAudioOut(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
+	enableVoiceAdapters(t, apiServer.configStore)
 	bus := eventbus.New()
 	apiServer.SetEventBus(bus)
 
@@ -508,6 +510,7 @@ func TestAudioServiceStreamAudioOut(t *testing.T) {
 
 func TestAudioServiceGetAudioCapabilities(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
+	enableVoiceAdapters(t, apiServer.configStore)
 	bus := eventbus.New()
 	apiServer.SetEventBus(bus)
 	ingressSvc := ingress.New(bus)
@@ -528,6 +531,10 @@ func TestAudioServiceGetAudioCapabilities(t *testing.T) {
 	}
 	if capture := resp.GetCapture()[0]; capture.GetStreamId() != "mic" || capture.GetFormat().GetSampleRate() != 16000 {
 		t.Fatalf("unexpected capture capability: %+v", capture)
+	} else {
+		if capture.GetMetadata()["ready"] != "true" {
+			t.Fatalf("expected capture ready=true, got %+v", capture.GetMetadata())
+		}
 	}
 	if len(resp.GetPlayback()) == 0 {
 		t.Fatalf("expected playback capabilities")
@@ -538,6 +545,9 @@ func TestAudioServiceGetAudioCapabilities(t *testing.T) {
 	}
 	if playback.GetFormat().GetSampleRate() != uint32(egressSvc.PlaybackFormat().SampleRate) {
 		t.Fatalf("playback format mismatch: %+v", playback.GetFormat())
+	}
+	if playback.GetMetadata()["ready"] != "true" {
+		t.Fatalf("expected playback ready=true, got %+v", playback.GetMetadata())
 	}
 
 	if _, err := service.GetAudioCapabilities(ctx, &apiv1.GetAudioCapabilitiesRequest{SessionId: "sess"}); err != nil {

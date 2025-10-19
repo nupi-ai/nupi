@@ -13,15 +13,43 @@ import (
 	"syscall"
 	"time"
 
-	apiv1 "github.com/nupi-ai/nupi/internal/api/grpc/v1"
 	"github.com/nupi-ai/nupi/internal/audioio"
 	"github.com/nupi-ai/nupi/internal/client"
 	"github.com/nupi-ai/nupi/internal/eventbus"
-	"github.com/nupi-ai/nupi/internal/grpcclient"
+	"github.com/nupi-ai/nupi/internal/voice/slots"
 	"github.com/spf13/cobra"
 )
 
 const maxAudioFileSize = 500 * 1024 * 1024 // 500 MB guardrail for local files
+
+// diagnosticMessages collects user-facing messages for diagnostics, matching slot names
+// case-insensitively because CLI requests may use user-supplied casing.
+func diagnosticMessages(diags []client.VoiceDiagnostic, slot string) []string {
+	if len(diags) == 0 {
+		return nil
+	}
+	var messages []string
+	for _, diag := range diags {
+		if slot != "" && !strings.EqualFold(diag.Slot, slot) {
+			continue
+		}
+		if msg := strings.TrimSpace(diag.Message); msg != "" {
+			messages = append(messages, msg)
+		}
+	}
+	return messages
+}
+
+func diagnosticSummary(diags []client.VoiceDiagnostic, slot, fallback string) string {
+	msgs := diagnosticMessages(diags, slot)
+	if len(msgs) == 0 {
+		msgs = diagnosticMessages(diags, "")
+	}
+	if len(msgs) == 0 {
+		return fallback
+	}
+	return strings.Join(msgs, "; ")
+}
 
 func newVoiceCommand() *cobra.Command {
 	cmd := &cobra.Command{
@@ -150,6 +178,19 @@ func voiceStart(cmd *cobra.Command, _ []string) error {
 	}
 	defer c.Close()
 
+	caps, err := c.AudioCapabilities(ctx, sessionID)
+	if err != nil {
+		return out.Error("Failed to fetch audio capabilities", err)
+	}
+	if !caps.CaptureEnabled {
+		message := diagnosticSummary(caps.Diagnostics, slots.STTPrimary, "voice capture disabled")
+		return out.Error("Voice capture unavailable", errors.New(message))
+	}
+	if !noPlayback && !caps.PlaybackEnabled {
+		message := diagnosticSummary(caps.Diagnostics, slots.TTSPrimary, "voice playback disabled")
+		return out.Error("Voice playback unavailable", errors.New(message))
+	}
+
 	var playbackWG sync.WaitGroup
 	var playbackErr error
 	var playbackBytes int64
@@ -158,7 +199,7 @@ func voiceStart(cmd *cobra.Command, _ []string) error {
 	if !noPlayback {
 		targetStream := playbackStream
 		if targetStream == "" {
-			targetStream = "tts.primary"
+			targetStream = slots.TTSPrimary
 		}
 		playback, err := c.OpenAudioPlayback(ctx, client.AudioPlaybackParams{
 			SessionID: sessionID,
@@ -305,6 +346,9 @@ func voiceInterrupt(cmd *cobra.Command, defaultReason string) error {
 	if reason == "" {
 		reason = defaultReason
 	}
+	if streamID == "" {
+		streamID = slots.TTSPrimary
+	}
 	metadataEntries, _ := cmd.Flags().GetStringSlice("metadata")
 	meta, err := parseMetadata(metadataEntries)
 	if err != nil {
@@ -316,6 +360,15 @@ func voiceInterrupt(cmd *cobra.Command, defaultReason string) error {
 		return out.Error("Failed to connect to daemon", err)
 	}
 	defer c.Close()
+
+	caps, err := c.AudioCapabilities(context.Background(), sessionID)
+	if err != nil {
+		return out.Error("Failed to fetch audio capabilities", err)
+	}
+	if !caps.PlaybackEnabled {
+		message := diagnosticSummary(caps.Diagnostics, slots.TTSPrimary, "voice playback disabled")
+		return out.Error("Voice playback unavailable", errors.New(message))
+	}
 
 	err = c.InterruptAudio(context.Background(), client.AudioInterruptParams{
 		SessionID: sessionID,
@@ -343,73 +396,82 @@ func voiceStatus(cmd *cobra.Command, _ []string) error {
 	out := newOutputFormatter(cmd)
 	sessionID := strings.TrimSpace(cmd.Flag("session").Value.String())
 
-	gc, err := grpcclient.New()
+	c, err := client.New()
 	if err != nil {
-		return out.Error("Failed to connect to daemon (gRPC)", err)
+		return out.Error("Failed to connect to daemon", err)
 	}
-	defer gc.Close()
+	defer c.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	resp, err := gc.AudioCapabilities(ctx, &apiv1.GetAudioCapabilitiesRequest{
-		SessionId: sessionID,
-	})
+	caps, err := c.AudioCapabilities(ctx, sessionID)
 	if err != nil {
 		return out.Error("Failed to fetch audio capabilities", err)
 	}
 
 	if out.jsonMode {
 		payload := map[string]any{
-			"capture":  formatCapabilitiesJSON(resp.GetCapture()),
-			"playback": formatCapabilitiesJSON(resp.GetPlayback()),
+			"capture":          formatCapabilitiesJSON(caps.Capture),
+			"playback":         formatCapabilitiesJSON(caps.Playback),
+			"capture_enabled":  caps.CaptureEnabled,
+			"playback_enabled": caps.PlaybackEnabled,
+		}
+		if len(caps.Diagnostics) > 0 {
+			payload["diagnostics"] = caps.Diagnostics
 		}
 		return out.Print(payload)
 	}
 
+	fmt.Printf("Capture enabled: %v\n", caps.CaptureEnabled)
 	fmt.Println("Capture capabilities:")
-	if len(resp.GetCapture()) == 0 {
+	if len(caps.Capture) == 0 {
 		fmt.Println("  (none)")
 	} else {
-		for _, cap := range resp.GetCapture() {
+		for _, cap := range caps.Capture {
 			fmt.Printf("  - stream=%s %dHz %dbit %dch\n",
-				cap.GetStreamId(),
-				cap.GetFormat().GetSampleRate(),
-				cap.GetFormat().GetBitDepth(),
-				cap.GetFormat().GetChannels(),
+				cap.StreamID,
+				cap.Format.SampleRate,
+				cap.Format.BitDepth,
+				cap.Format.Channels,
 			)
 		}
 	}
 
+	fmt.Printf("Playback enabled: %v\n", caps.PlaybackEnabled)
 	fmt.Println("Playback capabilities:")
-	if len(resp.GetPlayback()) == 0 {
+	if len(caps.Playback) == 0 {
 		fmt.Println("  (none)")
 	} else {
-		for _, cap := range resp.GetPlayback() {
+		for _, cap := range caps.Playback {
 			fmt.Printf("  - stream=%s %dHz %dbit %dch\n",
-				cap.GetStreamId(),
-				cap.GetFormat().GetSampleRate(),
-				cap.GetFormat().GetBitDepth(),
-				cap.GetFormat().GetChannels(),
+				cap.StreamID,
+				cap.Format.SampleRate,
+				cap.Format.BitDepth,
+				cap.Format.Channels,
 			)
+		}
+	}
+
+	if len(caps.Diagnostics) > 0 {
+		fmt.Println("Diagnostics:")
+		for _, diag := range caps.Diagnostics {
+			fmt.Printf("  - [%s] %s\n", diag.Slot, diag.Message)
 		}
 	}
 	return nil
 }
 
-func formatCapabilitiesJSON(caps []*apiv1.AudioCapability) []map[string]any {
+func formatCapabilitiesJSON(caps []client.AudioCapabilityInfo) []map[string]any {
 	result := make([]map[string]any, 0, len(caps))
 	for _, cap := range caps {
-		if cap == nil || cap.Format == nil {
-			continue
-		}
 		result = append(result, map[string]any{
-			"stream_id":   cap.GetStreamId(),
-			"sample_rate": cap.GetFormat().GetSampleRate(),
-			"channels":    cap.GetFormat().GetChannels(),
-			"bit_depth":   cap.GetFormat().GetBitDepth(),
-			"frame_ms":    cap.GetFormat().GetFrameDurationMs(),
-			"metadata":    cap.GetMetadata(),
+			"stream_id":   cap.StreamID,
+			"sample_rate": cap.Format.SampleRate,
+			"channels":    cap.Format.Channels,
+			"bit_depth":   cap.Format.BitDepth,
+			"frame_ms":    cap.Format.FrameDurationMs,
+			"metadata":    cap.Metadata,
 		})
 	}
 	return result

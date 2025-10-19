@@ -11,6 +11,7 @@ import (
 
 	"github.com/nupi-ai/nupi/internal/adapterrunner"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
+	"github.com/nupi-ai/nupi/internal/voice/slots"
 )
 
 // Slot represents a logical module slot configured in adapter_bindings.
@@ -18,9 +19,9 @@ type Slot string
 
 const (
 	SlotAI           Slot = "ai.primary"
-	SlotSTTPrimary   Slot = "stt.primary"
-	SlotSTTSecondary Slot = "stt.secondary"
-	SlotTTS          Slot = "tts.primary"
+	SlotSTTPrimary   Slot = slots.STTPrimary
+	SlotSTTSecondary Slot = slots.STTSecondary
+	SlotTTS          Slot = slots.TTSPrimary
 	SlotVAD          Slot = "vad.primary"
 	SlotTunnel       Slot = "tunnel.primary"
 )

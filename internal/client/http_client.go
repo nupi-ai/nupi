@@ -1,6 +1,7 @@
 package client
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -93,5 +94,18 @@ func readAPIError(resp *http.Response) error {
 	if len(body) == 0 {
 		return errors.New(resp.Status)
 	}
-	return errors.New(strings.TrimSpace(string(body)))
+	trimmed := strings.TrimSpace(string(body))
+	if strings.HasPrefix(trimmed, "{") {
+		var payload struct {
+			Error string `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(trimmed), &payload); err == nil {
+			if msg := strings.TrimSpace(payload.Error); msg != "" {
+				return errors.New(msg)
+			}
+		}
+		// Fall back to returning the raw payload for diagnostics when parsing fails
+		// or the server response omits the "error" field.
+	}
+	return errors.New(trimmed)
 }

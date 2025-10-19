@@ -287,7 +287,19 @@ export function VoicePanel() {
         sessionId: sessionId.trim() || null,
       });
       setCapabilities(payload);
-      setStatus("Capabilities updated");
+      if (
+        payload &&
+        typeof payload === "object" &&
+        payload !== null &&
+        "message" in payload &&
+        typeof (payload as Record<string, unknown>).message === "string"
+      ) {
+        setStatus(
+          (payload as Record<string, unknown>).message as string
+        );
+      } else {
+        setStatus("Capabilities updated");
+      }
     } catch (error) {
       console.error(error);
       setStatus(

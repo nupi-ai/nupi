@@ -168,6 +168,52 @@ func (s *Store) ListAdapterBindings(ctx context.Context) ([]AdapterBinding, erro
 	return bindings, nil
 }
 
+// AdapterBinding retrieves a single binding entry by slot.
+func (s *Store) AdapterBinding(ctx context.Context, slot string) (*AdapterBinding, error) {
+	if s == nil || s.db == nil {
+		return nil, sql.ErrConnDone
+	}
+	slot = strings.TrimSpace(slot)
+	if slot == "" {
+		return nil, fmt.Errorf("config: adapter binding: slot is required")
+	}
+
+	var (
+		adapterID sql.NullString
+		config    sql.NullString
+		status    string
+		updatedAt string
+	)
+
+	err := s.db.QueryRowContext(ctx, `
+        SELECT adapter_id, config, status, updated_at
+        FROM adapter_bindings
+        WHERE instance_name = ? AND profile_name = ? AND slot = ?
+    `, s.instanceName, s.profileName, slot).Scan(&adapterID, &config, &status, &updatedAt)
+	switch {
+	case err == sql.ErrNoRows:
+		return nil, NotFoundError{Entity: "adapter_binding", Key: slot}
+	case err != nil:
+		return nil, fmt.Errorf("config: adapter binding %s: %w", slot, err)
+	}
+
+	binding := AdapterBinding{
+		Slot:      slot,
+		Status:    status,
+		UpdatedAt: updatedAt,
+	}
+	if adapterID.Valid {
+		id := strings.TrimSpace(adapterID.String)
+		if id != "" {
+			binding.AdapterID = &id
+		}
+	}
+	if config.Valid {
+		binding.Config = config.String
+	}
+	return &binding, nil
+}
+
 // SetActiveAdapter binds an adapter to a slot with optional JSON configuration.
 func (s *Store) SetActiveAdapter(ctx context.Context, slot string, adapterID string, config map[string]any) error {
 	if s.readOnly {

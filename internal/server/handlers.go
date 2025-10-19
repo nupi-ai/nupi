@@ -35,6 +35,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/pty"
 	"github.com/nupi-ai/nupi/internal/session"
 	"github.com/nupi-ai/nupi/internal/termresize"
+	"github.com/nupi-ai/nupi/internal/voice/slots"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -71,7 +72,8 @@ var allowedRoles = map[string]struct{}{
 }
 
 const conversationMaxPageLimit = 500
-const defaultTTSStreamID = "tts.primary"
+const defaultTTSStreamID = slots.TTSPrimary
+const voiceIssueCodeServiceUnavailable = "service_unavailable"
 
 const (
 	maxMetadataEntries      = 32
@@ -2167,6 +2169,18 @@ func (s *APIServer) handleAudioIngress(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	readiness, err := s.voiceReadiness(r.Context())
+	if err != nil {
+		http.Error(w, fmt.Sprintf("voice readiness check failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+	if !readiness.CaptureEnabled {
+		diags := filterDiagnostics(mapVoiceDiagnostics(readiness.Issues), slots.STTPrimary)
+		message := voiceIssueSummary(diags, "voice capture unavailable")
+		writeVoiceError(w, http.StatusPreconditionFailed, message, diags, readiness)
+		return
+	}
+
 	format, err := parseAudioFormatQuery(query)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -2276,6 +2290,18 @@ func (s *APIServer) handleAudioEgress(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, fmt.Sprintf("session %s not found", sessionID), http.StatusNotFound)
 			return
 		}
+	}
+
+	readiness, err := s.voiceReadiness(r.Context())
+	if err != nil {
+		http.Error(w, fmt.Sprintf("voice readiness check failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+	if !readiness.PlaybackEnabled {
+		diags := filterDiagnostics(mapVoiceDiagnostics(readiness.Issues), slots.TTSPrimary)
+		message := voiceIssueSummary(diags, "voice playback unavailable")
+		writeVoiceError(w, http.StatusPreconditionFailed, message, diags, readiness)
+		return
 	}
 
 	flusher, ok := w.(http.Flusher)
@@ -2453,6 +2479,18 @@ func (s *APIServer) handleAudioIngressWS(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
+	readiness, err := s.voiceReadiness(r.Context())
+	if err != nil {
+		http.Error(w, fmt.Sprintf("voice readiness check failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+	if !readiness.CaptureEnabled {
+		diags := filterDiagnostics(mapVoiceDiagnostics(readiness.Issues), slots.STTPrimary)
+		message := voiceIssueSummary(diags, "voice capture unavailable")
+		writeVoiceError(w, http.StatusPreconditionFailed, message, diags, readiness)
+		return
+	}
+
 	format, err := parseAudioFormatQuery(query)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -2578,6 +2616,18 @@ func (s *APIServer) handleAudioEgressWS(w http.ResponseWriter, r *http.Request) 
 			http.Error(w, fmt.Sprintf("session %s not found", sessionID), http.StatusNotFound)
 			return
 		}
+	}
+
+	readiness, err := s.voiceReadiness(r.Context())
+	if err != nil {
+		http.Error(w, fmt.Sprintf("voice readiness check failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+	if !readiness.PlaybackEnabled {
+		diags := filterDiagnostics(mapVoiceDiagnostics(readiness.Issues), slots.TTSPrimary)
+		message := voiceIssueSummary(diags, "voice playback unavailable")
+		writeVoiceError(w, http.StatusPreconditionFailed, message, diags, readiness)
+		return
 	}
 
 	conn, err := audioWSUpgrader.Upgrade(w, r, nil)
@@ -2710,8 +2760,118 @@ type audioCapabilityJSON struct {
 }
 
 type audioCapabilitiesResponse struct {
-	Capture  []audioCapabilityJSON `json:"capture"`
-	Playback []audioCapabilityJSON `json:"playback"`
+	Capture         []audioCapabilityJSON `json:"capture"`
+	Playback        []audioCapabilityJSON `json:"playback"`
+	CaptureEnabled  bool                  `json:"capture_enabled"`
+	PlaybackEnabled bool                  `json:"playback_enabled"`
+	Diagnostics     []voiceDiagnostic     `json:"diagnostics,omitempty"`
+}
+
+type voiceDiagnostic struct {
+	Slot    string `json:"slot"`
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+type voiceErrorResponse struct {
+	Error         string            `json:"error"`
+	Diagnostics   []voiceDiagnostic `json:"diagnostics,omitempty"`
+	CaptureReady  *bool             `json:"capture_ready,omitempty"`
+	PlaybackReady *bool             `json:"playback_ready,omitempty"`
+}
+
+func (s *APIServer) voiceReadiness(ctx context.Context) (configstore.VoiceReadiness, error) {
+	if s.configStore == nil {
+		readiness := configstore.VoiceReadiness{
+			CaptureEnabled:  s.audioIngress != nil,
+			PlaybackEnabled: s.audioEgress != nil,
+			Issues:          nil,
+		}
+		if s.audioIngress == nil {
+			readiness.Issues = appendVoiceIssue(readiness.Issues, slots.STTPrimary, voiceIssueCodeServiceUnavailable, "audio ingress service unavailable")
+		}
+		if s.audioEgress == nil {
+			readiness.Issues = appendVoiceIssue(readiness.Issues, slots.TTSPrimary, voiceIssueCodeServiceUnavailable, "audio egress service unavailable")
+		}
+		return readiness, nil
+	}
+	readiness, err := s.configStore.VoiceReadiness(ctx)
+	if err != nil {
+		return configstore.VoiceReadiness{}, err
+	}
+	if s.audioIngress == nil {
+		readiness.CaptureEnabled = false
+		readiness.Issues = appendVoiceIssue(readiness.Issues, slots.STTPrimary, voiceIssueCodeServiceUnavailable, "audio ingress service unavailable")
+	}
+	if s.audioEgress == nil {
+		readiness.PlaybackEnabled = false
+		readiness.Issues = appendVoiceIssue(readiness.Issues, slots.TTSPrimary, voiceIssueCodeServiceUnavailable, "audio egress service unavailable")
+	}
+	return readiness, nil
+}
+
+func appendVoiceIssue(issues []configstore.VoiceIssue, slot, code, message string) []configstore.VoiceIssue {
+	for _, issue := range issues {
+		if issue.Slot == slot && issue.Code == code {
+			return issues
+		}
+	}
+	return append(issues, configstore.VoiceIssue{Slot: slot, Code: code, Message: message})
+}
+
+func mapVoiceDiagnostics(issues []configstore.VoiceIssue) []voiceDiagnostic {
+	if len(issues) == 0 {
+		return nil
+	}
+	out := make([]voiceDiagnostic, 0, len(issues))
+	for _, issue := range issues {
+		out = append(out, voiceDiagnostic{
+			Slot:    issue.Slot,
+			Code:    issue.Code,
+			Message: issue.Message,
+		})
+	}
+	return out
+}
+
+// filterDiagnostics narrows diagnostics to the exact slot name expected by the daemon.
+// Comparison is case-sensitive because slot identifiers are canonicalised upstream.
+func filterDiagnostics(diags []voiceDiagnostic, slot string) []voiceDiagnostic {
+	if len(diags) == 0 {
+		return nil
+	}
+	filtered := make([]voiceDiagnostic, 0, len(diags))
+	for _, diag := range diags {
+		if diag.Slot == slot {
+			filtered = append(filtered, diag)
+		}
+	}
+	return filtered
+}
+
+func voiceIssueSummary(diags []voiceDiagnostic, fallback string) string {
+	for _, diag := range diags {
+		if msg := strings.TrimSpace(diag.Message); msg != "" {
+			return msg
+		}
+	}
+	return fallback
+}
+
+func writeVoiceError(w http.ResponseWriter, status int, message string, diags []voiceDiagnostic, readiness configstore.VoiceReadiness) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+
+	payload := voiceErrorResponse{
+		Error:       message,
+		Diagnostics: diags,
+	}
+	capture := readiness.CaptureEnabled
+	playback := readiness.PlaybackEnabled
+	payload.CaptureReady = &capture
+	payload.PlaybackReady = &playback
+
+	_ = json.NewEncoder(w).Encode(payload)
 }
 
 func audioFormatPayload(format eventbus.AudioFormat) *audioFormatJSON {
@@ -2789,27 +2949,52 @@ func (s *APIServer) handleAudioCapabilities(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
+	readiness, err := s.voiceReadiness(r.Context())
+	if err != nil {
+		http.Error(w, fmt.Sprintf("voice readiness check failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
 	resp := audioCapabilitiesResponse{
-		Capture:  make([]audioCapabilityJSON, 0, 1),
-		Playback: make([]audioCapabilityJSON, 0, 1),
+		Capture:         make([]audioCapabilityJSON, 0, 1),
+		Playback:        make([]audioCapabilityJSON, 0, 1),
+		CaptureEnabled:  readiness.CaptureEnabled,
+		PlaybackEnabled: readiness.PlaybackEnabled,
+		Diagnostics:     mapVoiceDiagnostics(readiness.Issues),
 	}
 
 	if s.audioIngress != nil {
 		if format := audioFormatPayload(defaultCaptureFormat); format != nil {
+			metadata := map[string]string{
+				"recommended": "true",
+				"ready":       strconv.FormatBool(readiness.CaptureEnabled),
+			}
+			if !readiness.CaptureEnabled {
+				diags := filterDiagnostics(mapVoiceDiagnostics(readiness.Issues), slots.STTPrimary)
+				metadata["diagnostics"] = voiceIssueSummary(diags, "voice capture unavailable")
+			}
 			resp.Capture = append(resp.Capture, audioCapabilityJSON{
 				StreamID: defaultCaptureStreamID,
 				Format:   *format,
-				Metadata: map[string]string{"recommended": "true"},
+				Metadata: metadata,
 			})
 		}
 	}
 
 	if s.audioEgress != nil {
 		if format := audioFormatPayload(s.audioEgress.PlaybackFormat()); format != nil {
+			metadata := map[string]string{
+				"recommended": "true",
+				"ready":       strconv.FormatBool(readiness.PlaybackEnabled),
+			}
+			if !readiness.PlaybackEnabled {
+				diags := filterDiagnostics(mapVoiceDiagnostics(readiness.Issues), slots.TTSPrimary)
+				metadata["diagnostics"] = voiceIssueSummary(diags, "voice playback unavailable")
+			}
 			resp.Playback = append(resp.Playback, audioCapabilityJSON{
 				StreamID: s.audioEgress.DefaultStreamID(),
 				Format:   *format,
-				Metadata: map[string]string{"recommended": "true"},
+				Metadata: metadata,
 			})
 		}
 	}
@@ -2871,6 +3056,18 @@ func (s *APIServer) handleAudioInterrupt(w http.ResponseWriter, r *http.Request)
 			http.Error(w, fmt.Sprintf("session %s not found", sessionID), http.StatusNotFound)
 			return
 		}
+	}
+
+	readiness, err := s.voiceReadiness(r.Context())
+	if err != nil {
+		http.Error(w, fmt.Sprintf("voice readiness check failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+	if !readiness.PlaybackEnabled {
+		diags := filterDiagnostics(mapVoiceDiagnostics(readiness.Issues), defaultTTSStreamID)
+		message := voiceIssueSummary(diags, "voice playback unavailable")
+		writeVoiceError(w, http.StatusPreconditionFailed, message, diags, readiness)
+		return
 	}
 
 	s.publishAudioInterrupt(sessionID, streamID, reason, metadata)
