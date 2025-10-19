@@ -4,6 +4,11 @@ import { open, save } from "@tauri-apps/api/dialog";
 
 type JsonValue = unknown;
 
+const MAX_METADATA_ENTRIES = 32;
+const MAX_METADATA_KEY_LENGTH = 64;
+const MAX_METADATA_VALUE_LENGTH = 512;
+const MAX_METADATA_TOTAL_BYTES = 4096;
+
 function stringify(value: JsonValue): string {
   if (value === null || value === undefined) {
     return "";
@@ -13,6 +18,83 @@ function stringify(value: JsonValue): string {
   } catch {
     return String(value);
   }
+}
+
+function normalizeMetadataMap(entries: Record<string, string>): Record<string, string> {
+  const normalized: Record<string, string> = {};
+  const seen = new Set<string>();
+  Object.entries(entries ?? {}).forEach(([rawKey, rawValue]) => {
+    const key = rawKey.trim();
+    if (!key || seen.has(key)) {
+      if (key && seen.has(key)) {
+        console.warn(`Duplicate metadata key after normalization ignored: "${key}"`);
+      }
+      return;
+    }
+    seen.add(key);
+    normalized[key] = (rawValue ?? "").toString().trim();
+  });
+  return normalized;
+}
+
+function utf8ByteLength(value: string): number {
+  return new TextEncoder().encode(value).length;
+}
+
+function validateMetadataMap(
+  entries: Record<string, string>,
+): { metadata: Record<string, string>; error?: string } {
+  const metadata = normalizeMetadataMap(entries);
+  const pairs = Object.entries(metadata);
+
+  if (pairs.length > MAX_METADATA_ENTRIES) {
+    return {
+      metadata,
+      error: `Metadata includes ${pairs.length} entries (limit ${MAX_METADATA_ENTRIES})`,
+    };
+  }
+
+  let total = 0;
+  for (const [key, value] of pairs) {
+    const keyBytes = utf8ByteLength(key);
+    const valueBytes = utf8ByteLength(value);
+
+    if (keyBytes > MAX_METADATA_KEY_LENGTH) {
+      return {
+        metadata,
+        error: `Metadata key “${key}” exceeds ${MAX_METADATA_KEY_LENGTH} characters`,
+      };
+    }
+    if (valueBytes > MAX_METADATA_VALUE_LENGTH) {
+      return {
+        metadata,
+        error: `Metadata value for “${key}” exceeds ${MAX_METADATA_VALUE_LENGTH} characters`,
+      };
+    }
+
+    total += keyBytes + valueBytes;
+    if (total > MAX_METADATA_TOTAL_BYTES) {
+      return {
+        metadata,
+        error: `Metadata payload exceeds ${MAX_METADATA_TOTAL_BYTES} characters in total`,
+      };
+    }
+  }
+
+  return { metadata };
+}
+
+function extractPlaybackError(payload: JsonValue): string | null {
+  if (payload && typeof payload === "object" && !Array.isArray(payload)) {
+    const candidate = (payload as Record<string, unknown>).playback_error;
+    if (typeof candidate === "string") {
+      const trimmed = candidate.trim();
+      if (trimmed.length > 0) {
+        return trimmed;
+      }
+    }
+  }
+  return null;
 }
 
 export function VoicePanel() {
@@ -25,6 +107,7 @@ export function VoicePanel() {
   const [result, setResult] = useState<JsonValue>(null);
   const [capabilities, setCapabilities] = useState<JsonValue>(null);
   const [isBusy, setBusy] = useState(false);
+  const [playbackError, setPlaybackError] = useState<string | null>(null);
 
   const metadata = useMemo(() => ({ client: "desktop" }), []);
 
@@ -75,9 +158,16 @@ export function VoicePanel() {
       return;
     }
 
+    const metadataValidation = validateMetadataMap(metadata);
+    if (metadataValidation.error) {
+      setStatus(`Invalid metadata: ${metadataValidation.error}`);
+      return;
+    }
+
     setBusy(true);
     setStatus("Streaming audio…");
     setResult(null);
+    setPlaybackError(null);
     try {
       const payload = await invoke<JsonValue>("voice_stream_from_file", {
         sessionId: sessionId.trim(),
@@ -85,12 +175,20 @@ export function VoicePanel() {
         inputPath,
         playbackOutput: outputPath,
         disablePlayback,
-        metadata,
+        metadata: metadataValidation.metadata,
       });
       setResult(payload);
-      setStatus("Voice stream completed");
+      const playbackIssue = extractPlaybackError(payload);
+      if (playbackIssue) {
+        setPlaybackError(playbackIssue);
+        setStatus(`Voice stream completed (playback warning: ${playbackIssue})`);
+      } else {
+        setPlaybackError(null);
+        setStatus("Voice stream completed");
+      }
     } catch (error) {
       console.error(error);
+      setPlaybackError(null);
       setStatus(
         `Voice stream failed: ${
           error instanceof Error ? error.message : String(error)
@@ -106,18 +204,27 @@ export function VoicePanel() {
       setStatus("Provide a target session identifier");
       return;
     }
+
+    const metadataValidation = validateMetadataMap(metadata);
+    if (metadataValidation.error) {
+      setStatus(`Invalid metadata: ${metadataValidation.error}`);
+      return;
+    }
+
     setBusy(true);
     setStatus("Sending interrupt…");
     try {
       const payload = await invoke<JsonValue>("voice_interrupt_command", {
         sessionId: sessionId.trim(),
         streamId: streamId.trim() || null,
-        metadata,
+        metadata: metadataValidation.metadata,
       });
       setResult(payload);
+      setPlaybackError(null);
       setStatus("Interrupt sent");
     } catch (error) {
       console.error(error);
+      setPlaybackError(null);
       setStatus(
         `Interrupt failed: ${
           error instanceof Error ? error.message : String(error)
@@ -334,6 +441,11 @@ export function VoicePanel() {
         {outputPath && (
           <p style={{ color: "#6b7280", fontSize: "0.85rem" }}>
             Playback will be saved to: <code>{outputPath}</code>
+          </p>
+        )}
+        {playbackError && (
+          <p style={{ color: "#f87171", fontSize: "0.85rem" }}>
+            Playback warning: {playbackError}
           </p>
         )}
       </section>
