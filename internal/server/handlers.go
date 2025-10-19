@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/base32"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -13,12 +14,14 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/nupi-ai/nupi/internal/api"
 	apihttp "github.com/nupi-ai/nupi/internal/api/http"
@@ -68,6 +71,18 @@ var allowedRoles = map[string]struct{}{
 
 const conversationMaxPageLimit = 500
 const defaultTTSStreamID = "tts.primary"
+
+const (
+	maxMetadataEntries      = 32
+	maxMetadataKeyRunes     = 64
+	maxMetadataValueRunes   = 512
+	maxMetadataTotalPayload = 4096
+)
+
+const (
+	defaultIngressBuffer   = 32 * 1024
+	maxAudioUploadDuration = 5 * time.Minute
+)
 
 type storedToken struct {
 	ID        string    `json:"id"`
@@ -960,7 +975,9 @@ func (s *APIServer) Prepare(ctx context.Context) (*PreparedHTTPServer, error) {
 	mux.HandleFunc("/auth/tokens", s.handleAuthTokens)
 	mux.HandleFunc("/auth/pairings", s.handleAuthPairings)
 	mux.HandleFunc("/auth/pair", s.handleAuthPair)
- 	mux.HandleFunc("/audio/interrupt", s.handleAudioInterrupt)
+	mux.HandleFunc("/audio/interrupt", s.handleAudioInterrupt)
+	mux.HandleFunc("/audio/ingress", s.handleAudioIngress)
+	mux.HandleFunc("/audio/egress", s.handleAudioEgress)
 	mux.HandleFunc("/metrics", s.handleMetrics)
 
 	// Create and store the HTTP server with CORS middleware
@@ -2084,6 +2101,224 @@ func (s *APIServer) publishAudioInterrupt(sessionID, streamID, reason string, me
 	})
 }
 
+func (s *APIServer) handleAudioIngress(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", "POST,OPTIONS")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if _, ok := s.requireRole(w, r, roleAdmin); !ok {
+		return
+	}
+	if s.audioIngress == nil {
+		http.Error(w, "audio ingress unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	query := r.URL.Query()
+	sessionID := strings.TrimSpace(query.Get("session_id"))
+	if sessionID == "" {
+		http.Error(w, "session_id is required", http.StatusBadRequest)
+		return
+	}
+	streamID := strings.TrimSpace(query.Get("stream_id"))
+	if streamID == "" {
+		streamID = defaultCaptureStreamID
+	}
+
+	if s.sessionManager != nil {
+		if _, err := s.sessionManager.GetSession(sessionID); err != nil {
+			http.Error(w, fmt.Sprintf("session %s not found", sessionID), http.StatusNotFound)
+			return
+		}
+	}
+
+	format, err := parseAudioFormatQuery(query)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	metadata, err := metadataFromQuery(query)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("invalid metadata: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	uploadCtx, cancel := context.WithTimeout(r.Context(), maxAudioUploadDuration)
+	defer cancel()
+
+	stream, err := s.audioIngress.OpenStream(sessionID, streamID, format, metadata)
+	if err != nil {
+		switch {
+		case errors.Is(err, ingress.ErrStreamExists):
+			http.Error(w, fmt.Sprintf("audio stream %s/%s already exists", sessionID, streamID), http.StatusConflict)
+		default:
+			http.Error(w, fmt.Sprintf("open stream: %v", err), http.StatusInternalServerError)
+		}
+		return
+	}
+	defer func() {
+		if stream != nil {
+			_ = stream.Close()
+		}
+	}()
+
+	buffer := make([]byte, defaultIngressBuffer)
+	for {
+		if err := uploadCtx.Err(); err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				http.Error(w, "upload timeout", http.StatusRequestTimeout)
+			} else {
+				w.WriteHeader(http.StatusNoContent)
+			}
+			return
+		}
+		n, readErr := r.Body.Read(buffer)
+		if n > 0 {
+			if err := stream.Write(buffer[:n]); err != nil {
+				http.Error(w, fmt.Sprintf("write stream: %v", err), http.StatusInternalServerError)
+				return
+			}
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			if errors.Is(readErr, context.Canceled) {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			http.Error(w, fmt.Sprintf("read body: %v", readErr), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	if err := stream.Close(); err != nil {
+		http.Error(w, fmt.Sprintf("close stream: %v", err), http.StatusInternalServerError)
+		return
+	}
+	stream = nil
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *APIServer) handleAudioEgress(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET,OPTIONS")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if _, ok := s.requireRole(w, r, roleAdmin, roleReadOnly); !ok {
+		return
+	}
+	if s.eventBus == nil {
+		http.Error(w, "event bus unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	query := r.URL.Query()
+	sessionID := strings.TrimSpace(query.Get("session_id"))
+	if sessionID == "" {
+		http.Error(w, "session_id is required", http.StatusBadRequest)
+		return
+	}
+	streamID := strings.TrimSpace(query.Get("stream_id"))
+	if streamID == "" {
+		if s.audioEgress != nil {
+			streamID = s.audioEgress.DefaultStreamID()
+		} else {
+			streamID = defaultTTSStreamID
+		}
+	}
+
+	if s.sessionManager != nil {
+		if _, err := s.sessionManager.GetSession(sessionID); err != nil {
+			http.Error(w, fmt.Sprintf("session %s not found", sessionID), http.StatusNotFound)
+			return
+		}
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	sub := s.eventBus.Subscribe(
+		eventbus.TopicAudioEgressPlayback,
+		eventbus.WithSubscriptionName(fmt.Sprintf("http_audio_out_%s_%s_%d", sessionID, streamID, time.Now().UnixNano())),
+		eventbus.WithSubscriptionBuffer(64),
+	)
+	defer sub.Close()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+
+	encoder := json.NewEncoder(w)
+	ctx := r.Context()
+	formatSent := false
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case env, ok := <-sub.C():
+			if !ok {
+				errorChunk := audioEgressHTTPChunk{
+					Error: "playback subscription closed",
+					Final: true,
+				}
+				_ = encoder.Encode(errorChunk)
+				flusher.Flush()
+				return
+			}
+			evt, ok := env.Payload.(eventbus.AudioEgressPlaybackEvent)
+			if !ok || evt.SessionID != sessionID || evt.StreamID != streamID {
+				continue
+			}
+
+			payload := audioEgressHTTPChunk{
+				Sequence:   evt.Sequence,
+				DurationMs: durationToMillis(playbackDuration(evt)),
+				Final:      evt.Final,
+				Metadata:   cloneStringMap(evt.Metadata),
+				Data:       base64.StdEncoding.EncodeToString(evt.Data),
+			}
+			if !formatSent {
+				payload.Format = audioFormatPayload(evt.Format)
+				formatSent = true
+			}
+
+			if err := encoder.Encode(payload); err != nil {
+				errorChunk := audioEgressHTTPChunk{
+					Error: "encoding error",
+					Final: true,
+				}
+				_ = encoder.Encode(errorChunk)
+				flusher.Flush()
+				return
+			}
+			flusher.Flush()
+
+			if evt.Final {
+				return
+			}
+		}
+	}
+}
+
 func cloneStringMap(in map[string]string) map[string]string {
 	if len(in) == 0 {
 		return nil
@@ -2093,6 +2328,153 @@ func cloneStringMap(in map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+func parseAudioFormatQuery(values url.Values) (eventbus.AudioFormat, error) {
+	format := defaultCaptureFormat
+
+	if v := strings.TrimSpace(values.Get("encoding")); v != "" {
+		if !strings.EqualFold(v, string(eventbus.AudioEncodingPCM16)) {
+			return eventbus.AudioFormat{}, fmt.Errorf("unsupported encoding %q", v)
+		}
+	}
+
+	sampleRate, err := intQueryParam(values, "sample_rate", format.SampleRate)
+	if err != nil {
+		return eventbus.AudioFormat{}, err
+	}
+	channels, err := intQueryParam(values, "channels", format.Channels)
+	if err != nil {
+		return eventbus.AudioFormat{}, err
+	}
+	bitDepth, err := intQueryParam(values, "bit_depth", format.BitDepth)
+	if err != nil {
+		return eventbus.AudioFormat{}, err
+	}
+	frameMs, err := intQueryParam(values, "frame_ms", int(format.FrameDuration/time.Millisecond))
+	if err != nil {
+		return eventbus.AudioFormat{}, err
+	}
+
+	format.SampleRate = sampleRate
+	format.Channels = channels
+	format.BitDepth = bitDepth
+	format.FrameDuration = time.Duration(frameMs) * time.Millisecond
+	return format, nil
+}
+
+func intQueryParam(values url.Values, key string, def int) (int, error) {
+	val := strings.TrimSpace(values.Get(key))
+	if val == "" {
+		return def, nil
+	}
+	n, err := strconv.Atoi(val)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("invalid %s", key)
+	}
+	return n, nil
+}
+
+func metadataFromQuery(values url.Values) (map[string]string, error) {
+	var metadata map[string]string
+	if raw := strings.TrimSpace(values.Get("metadata")); raw != "" {
+		if len(raw) > maxMetadataTotalPayload {
+			return nil, fmt.Errorf("metadata payload too large")
+		}
+		var parsed map[string]string
+		if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+			return nil, err
+		}
+		metadata = make(map[string]string, len(parsed))
+		if err := mergeMetadataEntries(metadata, parsed); err != nil {
+			return nil, err
+		}
+	}
+	for key, vals := range values {
+		if !strings.HasPrefix(key, "meta_") {
+			continue
+		}
+		if len(vals) == 0 {
+			continue
+		}
+		entryKey := strings.TrimPrefix(key, "meta_")
+		if metadata == nil {
+			metadata = make(map[string]string)
+		}
+		if err := addMetadataEntry(metadata, entryKey, vals[len(vals)-1]); err != nil {
+			return nil, fmt.Errorf("metadata %s: %w", entryKey, err)
+		}
+	}
+	return metadata, nil
+}
+
+type audioEgressHTTPChunk struct {
+	Format     *audioFormatJSON  `json:"format,omitempty"`
+	Sequence   uint64            `json:"sequence,omitempty"`
+	DurationMs uint32            `json:"duration_ms,omitempty"`
+	Final      bool              `json:"final,omitempty"`
+	Error      string            `json:"error,omitempty"`
+	Metadata   map[string]string `json:"metadata,omitempty"`
+	Data       string            `json:"data,omitempty"`
+}
+
+type audioFormatJSON struct {
+	Encoding        string `json:"encoding"`
+	SampleRate      int    `json:"sample_rate"`
+	Channels        int    `json:"channels"`
+	BitDepth        int    `json:"bit_depth"`
+	FrameDurationMs uint32 `json:"frame_duration_ms"`
+}
+
+func audioFormatPayload(format eventbus.AudioFormat) *audioFormatJSON {
+	return &audioFormatJSON{
+		Encoding:        string(format.Encoding),
+		SampleRate:      format.SampleRate,
+		Channels:        format.Channels,
+		BitDepth:        format.BitDepth,
+		FrameDurationMs: uint32((format.FrameDuration + time.Millisecond/2) / time.Millisecond),
+	}
+}
+
+func mergeMetadataEntries(dst map[string]string, src map[string]string) error {
+	for k, v := range src {
+		if err := addMetadataEntry(dst, k, v); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func addMetadataEntry(dst map[string]string, key, value string) error {
+	if dst == nil {
+		return fmt.Errorf("metadata map nil")
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return fmt.Errorf("empty key")
+	}
+	if utf8.RuneCountInString(key) > maxMetadataKeyRunes {
+		return fmt.Errorf("key too long")
+	}
+	trimmedValue := strings.TrimSpace(value)
+	if utf8.RuneCountInString(trimmedValue) > maxMetadataValueRunes {
+		return fmt.Errorf("value too long")
+	}
+	if len(dst) >= maxMetadataEntries {
+		if _, exists := dst[key]; !exists {
+			return fmt.Errorf("too many metadata entries")
+		}
+	}
+	currentTotal := 0
+	for k, v := range dst {
+		currentTotal += len(k) + len(v)
+	}
+	entrySize := len(key) + len(trimmedValue)
+	if currentTotal+entrySize > maxMetadataTotalPayload {
+		return fmt.Errorf("metadata payload too large")
+	}
+	dst[key] = trimmedValue
+	return nil
 }
 
 func (s *APIServer) handleAudioInterrupt(w http.ResponseWriter, r *http.Request) {

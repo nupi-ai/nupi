@@ -645,6 +645,10 @@ func pcmDuration(format eventbus.AudioFormat, dataLen int) time.Duration {
 	if samples <= 0 {
 		return 0
 	}
+	const maxPCMFrames = 1 << 30
+	if samples > maxPCMFrames {
+		return 0
+	}
 	return time.Duration(float64(samples) / float64(format.SampleRate) * float64(time.Second))
 }
 

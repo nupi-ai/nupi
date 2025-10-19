@@ -1,18 +1,21 @@
 package server
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -22,6 +25,8 @@ import (
 
 	"github.com/nupi-ai/nupi/internal/adapterrunner"
 	apihttp "github.com/nupi-ai/nupi/internal/api/http"
+	"github.com/nupi-ai/nupi/internal/audio/egress"
+	"github.com/nupi-ai/nupi/internal/audio/ingress"
 	"github.com/nupi-ai/nupi/internal/config"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/contentpipeline"
@@ -1232,6 +1237,271 @@ type testModuleHandle struct{}
 func (testModuleHandle) Stop(context.Context) error { return nil }
 
 func (testModuleHandle) PID() int { return 12345 }
+
+func TestHandleAudioIngressStreamsData(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	bus := eventbus.New()
+	apiServer.SetEventBus(bus)
+	ingressSvc := ingress.New(bus)
+	apiServer.SetAudioIngressService(ingressSvc)
+	apiServer.sessionManager = nil
+
+	rawSub := bus.Subscribe(eventbus.TopicAudioIngressRaw)
+	defer rawSub.Close()
+	segSub := bus.Subscribe(eventbus.TopicAudioIngressSegment)
+	defer segSub.Close()
+
+	payload := bytes.Repeat([]byte{0x01, 0x02}, 320)
+	req := httptest.NewRequest(http.MethodPost, "/audio/ingress?session_id=sess&stream_id=mic&sample_rate=16000&channels=1&bit_depth=16&metadata=%7B%22client%22%3A%22web%22%7D", bytes.NewReader(payload))
+	req = withAdmin(apiServer, req)
+
+	rec := httptest.NewRecorder()
+	apiServer.handleAudioIngress(rec, req)
+
+	if rec.Result().StatusCode != http.StatusNoContent {
+		t.Fatalf("unexpected status: %d", rec.Result().StatusCode)
+	}
+
+	rawEvtEnv := recvEvent(t, rawSub)
+	rawEvt, ok := rawEvtEnv.Payload.(eventbus.AudioIngressRawEvent)
+	if !ok {
+		t.Fatalf("unexpected raw payload %T", rawEvtEnv.Payload)
+	}
+	if rawEvt.SessionID != "sess" || rawEvt.StreamID != "mic" {
+		t.Fatalf("unexpected raw identifiers: %+v", rawEvt)
+	}
+	if len(rawEvt.Data) != len(payload) {
+		t.Fatalf("unexpected raw size: %d", len(rawEvt.Data))
+	}
+	if rawEvt.Metadata["client"] != "web" {
+		t.Fatalf("metadata not propagated: %+v", rawEvt.Metadata)
+	}
+
+	var (
+		finalSeg eventbus.AudioIngressSegmentEvent
+		observed []time.Duration
+	)
+	for {
+		env := recvEvent(t, segSub)
+		segEvt, ok := env.Payload.(eventbus.AudioIngressSegmentEvent)
+		if !ok {
+			t.Fatalf("unexpected segment payload %T", env.Payload)
+		}
+		observed = append(observed, segEvt.Duration)
+		if segEvt.Last {
+			finalSeg = segEvt
+			break
+		}
+	}
+	if len(observed) == 0 || observed[0] <= 0 {
+		t.Fatalf("expected positive segment duration, got %v", observed)
+	}
+	if finalSeg.Metadata["client"] != "web" {
+		t.Fatalf("metadata missing on final segment: %+v", finalSeg.Metadata)
+	}
+}
+
+func TestHandleAudioEgressStreamsChunks(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	bus := eventbus.New()
+	apiServer.SetEventBus(bus)
+	egressSvc := egress.New(bus)
+	apiServer.SetAudioEgressService(egressSvc)
+	apiServer.sessionManager = nil
+
+	req := httptest.NewRequest(http.MethodGet, "/audio/egress?session_id=sess", nil)
+	req = withReadOnly(apiServer, req)
+	rec := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		apiServer.handleAudioEgress(rec, req)
+		close(done)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+
+	format := egressSvc.PlaybackFormat()
+	streamID := egressSvc.DefaultStreamID()
+
+	bus.Publish(context.Background(), eventbus.Envelope{
+		Topic: eventbus.TopicAudioEgressPlayback,
+		Payload: eventbus.AudioEgressPlaybackEvent{
+			SessionID: "sess",
+			StreamID:  streamID,
+			Sequence:  1,
+			Format:    format,
+			Duration:  150 * time.Millisecond,
+			Data:      []byte{0x01, 0x02, 0x03, 0x04},
+			Final:     false,
+			Metadata:  map[string]string{"phase": "speak"},
+		},
+	})
+
+	bus.Publish(context.Background(), eventbus.Envelope{
+		Topic: eventbus.TopicAudioEgressPlayback,
+		Payload: eventbus.AudioEgressPlaybackEvent{
+			SessionID: "sess",
+			StreamID:  streamID,
+			Sequence:  2,
+			Format:    format,
+			Duration:  0,
+			Data:      []byte{},
+			Final:     true,
+			Metadata:  map[string]string{"barge_in": "true"},
+		},
+	})
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for audio egress handler")
+	}
+
+	res := rec.Result()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected status: %d", res.StatusCode)
+	}
+	if ct := res.Header.Get("Content-Type"); ct != "application/json" {
+		t.Fatalf("unexpected content-type: %s", ct)
+	}
+
+	scanner := bufio.NewScanner(res.Body)
+	var lines []string
+	for scanner.Scan() {
+		lines = append(lines, scanner.Text())
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan body: %v", err)
+	}
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 chunks, got %d", len(lines))
+	}
+
+	var first audioEgressHTTPChunk
+	if err := json.Unmarshal([]byte(lines[0]), &first); err != nil {
+		t.Fatalf("unmarshal first chunk: %v", err)
+	}
+	if first.Format == nil || first.Format.SampleRate != format.SampleRate {
+		t.Fatalf("unexpected format %+v", first.Format)
+	}
+	if first.Sequence != 1 || first.Final {
+		t.Fatalf("unexpected first chunk fields: %+v", first)
+	}
+	if first.DurationMs != 150 {
+		t.Fatalf("unexpected first chunk duration: %d", first.DurationMs)
+	}
+	data, err := base64.StdEncoding.DecodeString(first.Data)
+	if err != nil {
+		t.Fatalf("decode data: %v", err)
+	}
+	if len(data) != 4 {
+		t.Fatalf("unexpected data length: %d", len(data))
+	}
+
+	var second audioEgressHTTPChunk
+	if err := json.Unmarshal([]byte(lines[1]), &second); err != nil {
+		t.Fatalf("unmarshal second chunk: %v", err)
+	}
+	if !second.Final || second.DurationMs != 0 {
+		t.Fatalf("unexpected second chunk: %+v", second)
+	}
+	if second.Metadata["barge_in"] != "true" {
+		t.Fatalf("barge metadata missing: %+v", second.Metadata)
+	}
+}
+
+func recvEvent(t *testing.T, sub *eventbus.Subscription) eventbus.Envelope {
+	select {
+	case env := <-sub.C():
+		return env
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for event")
+	}
+	return eventbus.Envelope{}
+}
+
+func TestHandleAudioIngressRejectsInvalidFormat(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	bus := eventbus.New()
+	apiServer.SetEventBus(bus)
+	ingressSvc := ingress.New(bus)
+	apiServer.SetAudioIngressService(ingressSvc)
+	apiServer.sessionManager = nil
+
+	req := httptest.NewRequest(http.MethodPost, "/audio/ingress?session_id=sess&sample_rate=abc", bytes.NewReader([]byte{0x00}))
+	req = withAdmin(apiServer, req)
+	resp := httptest.NewRecorder()
+	apiServer.handleAudioIngress(resp, req)
+
+	if resp.Result().StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected bad request, got %d", resp.Result().StatusCode)
+	}
+}
+
+func TestHandleAudioEgressSignalsError(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	bus := eventbus.New()
+	apiServer.SetEventBus(bus)
+	apiServer.sessionManager = nil
+
+	req := httptest.NewRequest(http.MethodGet, "/audio/egress?session_id=sess", nil)
+	req = withReadOnly(apiServer, req)
+	rec := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		apiServer.handleAudioEgress(rec, req)
+		close(done)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	bus.Shutdown()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for error signalling")
+	}
+
+	l := bufio.NewScanner(rec.Result().Body)
+	for l.Scan() {
+		var chunk audioEgressHTTPChunk
+		if err := json.Unmarshal(l.Bytes(), &chunk); err != nil {
+			t.Fatalf("unmarshal chunk: %v", err)
+		}
+		if chunk.Error != "" {
+			if !chunk.Final {
+				t.Fatalf("error chunk should be final: %+v", chunk)
+			}
+			return
+		}
+	}
+	if err := l.Err(); err != nil {
+		t.Fatalf("scan body: %v", err)
+	}
+	t.Fatal("expected error chunk not found")
+}
+
+func TestHandleAudioIngressRejectsLargeMetadata(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	bus := eventbus.New()
+	apiServer.SetEventBus(bus)
+	ingressSvc := ingress.New(bus)
+	apiServer.SetAudioIngressService(ingressSvc)
+	apiServer.sessionManager = nil
+
+	bigValue := strings.Repeat("a", maxMetadataTotalPayload+1)
+	metadata := fmt.Sprintf("{\"extra\":\"%s\"}", bigValue)
+	req := httptest.NewRequest(http.MethodPost, "/audio/ingress?session_id=sess&metadata="+url.QueryEscape(metadata), bytes.NewReader([]byte{0x00}))
+	req = withAdmin(apiServer, req)
+	resp := httptest.NewRecorder()
+	apiServer.handleAudioIngress(resp, req)
+
+	if resp.Result().StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected bad request for large metadata, got %d", resp.Result().StatusCode)
+	}
+}
 
 type metricsExporterStub struct {
 	payload []byte
