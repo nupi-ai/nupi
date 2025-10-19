@@ -202,6 +202,47 @@ func TestServiceShutdownClosesStreams(t *testing.T) {
 	}
 }
 
+func TestServiceMetricsTracksBytes(t *testing.T) {
+	bus := eventbus.New()
+	svc := New(bus, WithSegmentDuration(20*time.Millisecond))
+
+	if metrics := svc.Metrics(); metrics.BytesTotal != 0 {
+		t.Fatalf("expected initial BytesTotal to be 0, got %d", metrics.BytesTotal)
+	}
+
+	format := eventbus.AudioFormat{
+		Encoding:      eventbus.AudioEncodingPCM16,
+		SampleRate:    16000,
+		Channels:      1,
+		BitDepth:      16,
+		FrameDuration: 20 * time.Millisecond,
+	}
+
+	stream, err := svc.OpenStream("sess-metrics", "mic", format, nil)
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+
+	data := make([]byte, 640)
+	if err := stream.Write(data); err != nil {
+		t.Fatalf("write data: %v", err)
+	}
+
+	more := make([]byte, 320)
+	if err := stream.Write(more); err != nil {
+		t.Fatalf("write more data: %v", err)
+	}
+
+	want := uint64(len(data) + len(more))
+	if metrics := svc.Metrics(); metrics.BytesTotal != want {
+		t.Fatalf("expected BytesTotal %d, got %d", want, metrics.BytesTotal)
+	}
+
+	if err := stream.Close(); err != nil {
+		t.Fatalf("close stream: %v", err)
+	}
+}
+
 func receiveEvent(t *testing.T, sub *eventbus.Subscription) eventbus.Envelope {
 	t.Helper()
 	select {

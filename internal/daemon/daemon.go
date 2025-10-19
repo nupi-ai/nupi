@@ -124,6 +124,18 @@ func New(opts Options) (*Daemon, error) {
 	bus.AddObserver(eventCounter)
 	metricsExporter := observability.NewPrometheusExporter(bus, eventCounter)
 	metricsExporter.WithPipeline(pipelineService)
+	metricsExporter.WithAudioMetrics(func() observability.AudioMetricsSnapshot {
+		ingressStats := audioIngressService.Metrics()
+		sttStats := audioSTTService.Metrics()
+		ttsStats := audioEgressService.Metrics()
+		bargeStats := audioBargeService.Metrics()
+		return observability.AudioMetricsSnapshot{
+			AudioIngressBytes:  ingressStats.BytesTotal,
+			STTSegments:        sttStats.SegmentsTotal,
+			TTSActiveStreams:   ttsStats.ActiveStreams,
+			SpeechBargeInTotal: bargeStats.BargeInTotal,
+		}
+	})
 	apiServer.SetMetricsExporter(metricsExporter)
 	apiServer.SetConversationStore(conversationService)
 	apiServer.SetModulesService(modulesService)

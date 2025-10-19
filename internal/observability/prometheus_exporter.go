@@ -15,11 +15,20 @@ type PrometheusExporter struct {
 	bus      *eventbus.Bus
 	counter  *EventCounter
 	pipeline PipelineMetricsProvider
+	audio    func() AudioMetricsSnapshot
 }
 
 // PipelineMetricsProvider exposes a Metrics method compatible with content pipeline services.
 type PipelineMetricsProvider interface {
 	Metrics() contentpipeline.Metrics
+}
+
+// AudioMetricsSnapshot represents a point-in-time snapshot of audio-related counters.
+type AudioMetricsSnapshot struct {
+	AudioIngressBytes  uint64
+	STTSegments        uint64
+	TTSActiveStreams   int64
+	SpeechBargeInTotal uint64
 }
 
 // NewPrometheusExporter constructs an exporter backed by the provided bus and event counter.
@@ -35,6 +44,11 @@ func (e *PrometheusExporter) WithPipeline(provider PipelineMetricsProvider) {
 	e.pipeline = provider
 }
 
+// WithAudioMetrics enables exporting snapshot-based audio metrics via the exporter.
+func (e *PrometheusExporter) WithAudioMetrics(provider func() AudioMetricsSnapshot) {
+	e.audio = provider
+}
+
 // Export produces the metrics payload in Prometheus' text exposition format.
 func (e *PrometheusExporter) Export() []byte {
 	var buf bytes.Buffer
@@ -42,6 +56,7 @@ func (e *PrometheusExporter) Export() []byte {
 	e.writeEventCounters(&buf)
 	e.writeBusMetrics(&buf)
 	e.writePipelineMetrics(&buf)
+	e.writeAudioMetrics(&buf)
 
 	return buf.Bytes()
 }
@@ -104,6 +119,30 @@ func (e *PrometheusExporter) writePipelineMetrics(buf *bytes.Buffer) {
 	buf.WriteString("# HELP nupi_pipeline_errors_total Total number of content pipeline processing errors.\n")
 	buf.WriteString("# TYPE nupi_pipeline_errors_total counter\n")
 	buf.WriteString(fmt.Sprintf("nupi_pipeline_errors_total %d\n", metrics.Errors))
+}
+
+func (e *PrometheusExporter) writeAudioMetrics(buf *bytes.Buffer) {
+	if e.audio == nil {
+		return
+	}
+
+	snapshot := e.audio()
+
+	buf.WriteString("# HELP nupi_audio_ingress_bytes_total Total number of bytes received by audio ingress.\n")
+	buf.WriteString("# TYPE nupi_audio_ingress_bytes_total counter\n")
+	buf.WriteString(fmt.Sprintf("nupi_audio_ingress_bytes_total %d\n", snapshot.AudioIngressBytes))
+
+	buf.WriteString("# HELP nupi_stt_segments_total Total number of audio segments processed by STT.\n")
+	buf.WriteString("# TYPE nupi_stt_segments_total counter\n")
+	buf.WriteString(fmt.Sprintf("nupi_stt_segments_total %d\n", snapshot.STTSegments))
+
+	buf.WriteString("# HELP nupi_tts_active_streams Number of active TTS playback streams.\n")
+	buf.WriteString("# TYPE nupi_tts_active_streams gauge\n")
+	buf.WriteString(fmt.Sprintf("nupi_tts_active_streams %d\n", snapshot.TTSActiveStreams))
+
+	buf.WriteString("# HELP nupi_speech_barge_in_total Total number of speech barge-in events emitted.\n")
+	buf.WriteString("# TYPE nupi_speech_barge_in_total counter\n")
+	buf.WriteString(fmt.Sprintf("nupi_speech_barge_in_total %d\n", snapshot.SpeechBargeInTotal))
 }
 
 func durationSeconds(d time.Duration) float64 {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nupi-ai/nupi/internal/eventbus"
@@ -142,6 +143,8 @@ type Service struct {
 
 	sub *eventbus.Subscription
 	wg  sync.WaitGroup
+
+	segmentsTotal atomic.Uint64
 }
 
 // New constructs an STT service bound to the provided event bus.
@@ -258,6 +261,8 @@ func (s *Service) handleSegment(segment eventbus.AudioIngressSegmentEvent) {
 	if segment.SessionID == "" || segment.StreamID == "" {
 		return
 	}
+
+	s.segmentsTotal.Add(1)
 
 	key := streamKey(segment.SessionID, segment.StreamID)
 
@@ -596,4 +601,16 @@ func copyMetadata(src map[string]string) map[string]string {
 		dst[k] = v
 	}
 	return dst
+}
+
+// Metrics represents aggregated statistics for the STT service.
+type Metrics struct {
+	SegmentsTotal uint64
+}
+
+// Metrics returns the current STT metrics snapshot.
+func (s *Service) Metrics() Metrics {
+	return Metrics{
+		SegmentsTotal: s.segmentsTotal.Load(),
+	}
 }

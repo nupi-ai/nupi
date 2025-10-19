@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nupi-ai/nupi/internal/eventbus"
@@ -149,6 +150,8 @@ type Service struct {
 
 	pendingMu sync.Mutex
 	pending   map[string]*pendingQueue
+
+	activeStreams atomic.Int64
 }
 
 // New constructs an audio egress service.
@@ -265,6 +268,9 @@ func (s *Service) closeStreams() []*stream {
 	for key, st := range s.streams {
 		streams = append(streams, st)
 		delete(s.streams, key)
+	}
+	if count := len(streams); count > 0 {
+		s.activeStreams.Add(-int64(count))
 	}
 	for _, st := range streams {
 		st.stop()
@@ -463,6 +469,7 @@ func (s *Service) createStream(key string, params SessionParams) (*stream, error
 		return existing, nil
 	}
 	s.streams[key] = stream
+	s.activeStreams.Add(1)
 	s.mu.Unlock()
 
 	s.flushPending(key, stream)
@@ -470,13 +477,21 @@ func (s *Service) createStream(key string, params SessionParams) (*stream, error
 }
 
 func (s *Service) removeStream(key string) {
+	var (
+		st      *stream
+		removed bool
+	)
 	s.mu.Lock()
-	st, ok := s.streams[key]
-	if ok {
+	if existing, ok := s.streams[key]; ok {
+		st = existing
 		delete(s.streams, key)
+		removed = true
 	}
 	s.mu.Unlock()
-	if ok {
+	if removed {
+		s.activeStreams.Add(-1)
+	}
+	if st != nil {
 		st.stop()
 	}
 }
@@ -507,12 +522,16 @@ func (s *Service) clearPending(key string) {
 }
 
 func (s *Service) onStreamClosed(key string, st *stream) {
+	removed := false
 	s.mu.Lock()
-	current, ok := s.streams[key]
-	if ok && current == st {
+	if current, ok := s.streams[key]; ok && current == st {
 		delete(s.streams, key)
+		removed = true
 	}
 	s.mu.Unlock()
+	if removed {
+		s.activeStreams.Add(-1)
+	}
 	s.clearPending(key)
 }
 
@@ -936,4 +955,16 @@ func durationFromPCM(format eventbus.AudioFormat, bytes int) time.Duration {
 	}
 	seconds := float64(samples) / float64(format.SampleRate)
 	return time.Duration(seconds * float64(time.Second))
+}
+
+// Metrics reports aggregated statistics for the TTS service.
+type Metrics struct {
+	ActiveStreams int64
+}
+
+// Metrics returns the current TTS metrics snapshot.
+func (s *Service) Metrics() Metrics {
+	return Metrics{
+		ActiveStreams: s.activeStreams.Load(),
+	}
 }

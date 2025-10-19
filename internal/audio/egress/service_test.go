@@ -198,6 +198,77 @@ func receivePlayback(t *testing.T, sub *eventbus.Subscription) eventbus.AudioEgr
 	}
 }
 
+func TestServiceMetricsActiveStreams(t *testing.T) {
+	bus := eventbus.New()
+	svc := New(bus, WithFactory(FactoryFunc(func(context.Context, SessionParams) (Synthesizer, error) {
+		return &noopSynth{}, nil
+	})))
+	svc.ctx, svc.cancel = context.WithCancel(context.Background())
+	t.Cleanup(func() {
+		if svc.cancel != nil {
+			svc.cancel()
+		}
+	})
+
+	if metrics := svc.Metrics(); metrics.ActiveStreams != 0 {
+		t.Fatalf("expected initial ActiveStreams = 0, got %d", metrics.ActiveStreams)
+	}
+
+	params := SessionParams{
+		SessionID: "sess-metrics-1",
+		StreamID:  "stream-1",
+		Format: eventbus.AudioFormat{
+			Encoding:      eventbus.AudioEncodingPCM16,
+			SampleRate:    16000,
+			Channels:      1,
+			BitDepth:      16,
+			FrameDuration: 20 * time.Millisecond,
+		},
+	}
+
+	stream, err := svc.createStream(streamKey(params.SessionID, params.StreamID), params)
+	if err != nil {
+		t.Fatalf("create stream: %v", err)
+	}
+
+	if metrics := svc.Metrics(); metrics.ActiveStreams != 1 {
+		t.Fatalf("expected ActiveStreams = 1, got %d", metrics.ActiveStreams)
+	}
+
+	svc.onStreamClosed(streamKey(params.SessionID, params.StreamID), stream)
+	if metrics := svc.Metrics(); metrics.ActiveStreams != 0 {
+		t.Fatalf("expected ActiveStreams to return to 0, got %d", metrics.ActiveStreams)
+	}
+
+	params2 := params
+	params2.SessionID = "sess-metrics-2"
+	params2.StreamID = "stream-2"
+	if _, err := svc.createStream(streamKey(params.SessionID, params.StreamID), params); err != nil {
+		t.Fatalf("create stream 2: %v", err)
+	}
+	if _, err := svc.createStream(streamKey(params2.SessionID, params2.StreamID), params2); err != nil {
+		t.Fatalf("create stream 3: %v", err)
+	}
+
+	streams := svc.closeStreams()
+	if len(streams) != 2 {
+		t.Fatalf("expected closeStreams to return 2 streams, got %d", len(streams))
+	}
+	if metrics := svc.Metrics(); metrics.ActiveStreams != 0 {
+		t.Fatalf("expected ActiveStreams = 0 after closeStreams, got %d", metrics.ActiveStreams)
+	}
+}
+
+type noopSynth struct{}
+
+func (n *noopSynth) Speak(context.Context, SpeakRequest) ([]SynthesisChunk, error) {
+	return []SynthesisChunk{{Final: true}}, nil
+}
+
+func (n *noopSynth) Close(context.Context) ([]SynthesisChunk, error) {
+	return nil, nil
+}
+
 type interruptSynth struct {
 	closeOnce sync.Once
 	closeCh   chan struct{}

@@ -325,3 +325,19 @@ func TestCoordinatorQuietPeriodBlocksVAD(t *testing.T) {
 	case <-time.After(150 * time.Millisecond):
 	}
 }
+
+func TestServiceMetricsBargeInTotal(t *testing.T) {
+	bus := eventbus.New()
+	svc := New(bus)
+
+	if metrics := svc.Metrics(); metrics.BargeInTotal != 0 {
+		t.Fatalf("expected initial BargeInTotal = 0, got %d", metrics.BargeInTotal)
+	}
+
+	svc.publishBargeIn("metrics-session", "tts.primary", time.Now().UTC(), "test", 0.5, nil)
+	svc.publishBargeIn("metrics-session", "tts.primary", time.Now().UTC(), "test", 0.5, nil)
+
+	if metrics := svc.Metrics(); metrics.BargeInTotal != 2 {
+		t.Fatalf("expected BargeInTotal = 2, got %d", metrics.BargeInTotal)
+	}
+}
