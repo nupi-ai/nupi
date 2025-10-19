@@ -2,8 +2,16 @@ use rest_client::{
     ClaimedToken, CreatedPairing, CreatedToken, PairingEntry, RestClient, RestClientError,
     TokenEntry, VoiceStreamRequest, claim_pairing_token,
 };
+use once_cell::sync::Lazy;
 use serde_json::{Value, json, to_value};
-use std::{collections::HashMap, env, path::PathBuf, process::Stdio, sync::Mutex};
+use std::{
+    collections::HashMap,
+    env,
+    path::PathBuf,
+    process::Stdio,
+    sync::Mutex,
+    time::{Duration, Instant},
+};
 use tauri::{
     Emitter, Manager,
     image::Image,
@@ -11,6 +19,7 @@ use tauri::{
     tray::TrayIconBuilder,
 };
 use tauri_plugin_shell::ShellExt;
+use tokio::sync::watch;
 
 mod installer;
 mod rest_client;
@@ -21,6 +30,70 @@ use settings::ClientSettings;
 struct AppState {
     daemon_pid: Mutex<Option<u32>>,
     daemon_running: Mutex<bool>,
+}
+
+const CANCELLED_MESSAGE: &str = "voice stream cancelled by user";
+const STALE_OPERATION_TIMEOUT: Duration = Duration::from_secs(3600);
+
+struct VoiceOperation {
+    sender: watch::Sender<bool>,
+    started: Instant,
+}
+
+static ACTIVE_VOICE_STREAMS: Lazy<Mutex<HashMap<String, VoiceOperation>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+fn cleanup_stale_operations(registry: &mut HashMap<String, VoiceOperation>) {
+    registry.retain(|_, op| op.started.elapsed() < STALE_OPERATION_TIMEOUT);
+}
+
+fn register_voice_operation(
+    operation_id: &str,
+) -> Result<(String, watch::Receiver<bool>), String> {
+    let trimmed = operation_id.trim();
+    if trimmed.is_empty() {
+        return Err("operation_id is required".into());
+    }
+
+    let mut registry = ACTIVE_VOICE_STREAMS
+        .lock()
+        .map_err(|_| "voice operation registry poisoned".to_string())?;
+    cleanup_stale_operations(&mut registry);
+    if registry.contains_key(trimmed) {
+        return Err("a voice upload is already active for this identifier".into());
+    }
+    let (sender, receiver) = watch::channel(false);
+    registry.insert(
+        trimmed.to_string(),
+        VoiceOperation {
+            sender,
+            started: Instant::now(),
+        },
+    );
+    Ok((trimmed.to_string(), receiver))
+}
+
+fn complete_voice_operation(operation_id: &str) {
+    if let Ok(mut registry) = ACTIVE_VOICE_STREAMS.lock() {
+        registry.remove(operation_id);
+    }
+}
+
+fn cancel_voice_operation(operation_id: &str) -> Result<bool, String> {
+    let trimmed = operation_id.trim();
+    if trimmed.is_empty() {
+        return Err("operation_id is required".into());
+    }
+    let mut registry = ACTIVE_VOICE_STREAMS
+        .lock()
+        .map_err(|_| "voice operation registry poisoned".to_string())?;
+    cleanup_stale_operations(&mut registry);
+    if let Some(operation) = registry.remove(trimmed) {
+        let _ = operation.sender.send(true);
+        Ok(true)
+    } else {
+        Ok(false)
+    }
 }
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
@@ -265,6 +338,7 @@ async fn voice_stream_from_file(
     playback_output: Option<String>,
     disable_playback: Option<bool>,
     metadata: Option<HashMap<String, String>>,
+    operation_id: Option<String>,
 ) -> Result<Value, String> {
     let trimmed_session = session_id.trim();
     if trimmed_session.is_empty() {
@@ -298,12 +372,40 @@ async fn voice_stream_from_file(
         disable_playback: disable_playback.unwrap_or(true),
         metadata: metadata.unwrap_or_default(),
     };
+    let mut registered_operation: Option<String> = None;
+    let mut cancel_receiver: Option<watch::Receiver<bool>> = None;
 
-    client
-        .voice_stream_from_file(request)
-        .await
+    if let Some(op_id) = operation_id {
+        let (key, receiver) = register_voice_operation(&op_id)?;
+        registered_operation = Some(key);
+        cancel_receiver = Some(receiver);
+    }
+
+    let result = client
+        .voice_stream_from_file(request, cancel_receiver)
+        .await;
+
+    if let Some(op) = registered_operation {
+        let cancelled = matches!(
+            result.as_ref(),
+            Err(RestClientError::Audio(msg)) if msg.to_lowercase().contains(CANCELLED_MESSAGE)
+        );
+        if !cancelled {
+            complete_voice_operation(&op);
+        }
+    }
+
+    result
         .map_err(|err| err.to_string())
         .and_then(|summary| to_value(summary).map_err(|err| err.to_string()))
+}
+
+#[tauri::command]
+async fn voice_cancel_stream(
+    _app: tauri::AppHandle,
+    operation_id: String,
+) -> Result<bool, String> {
+    cancel_voice_operation(&operation_id)
 }
 
 #[tauri::command]
@@ -477,6 +579,7 @@ pub fn run() {
             create_pairing,
             claim_pairing,
             voice_stream_from_file,
+            voice_cancel_stream,
             voice_interrupt_command,
             voice_status_command
         ])

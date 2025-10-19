@@ -4,7 +4,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -21,7 +21,7 @@ use serde_json::{Map, Value, json};
 use tokio::{
     fs as tokio_fs,
     io::{AsyncBufReadExt, BufReader},
-    sync::{mpsc, oneshot},
+    sync::{mpsc, oneshot, watch},
     task,
 };
 use tokio_stream::{StreamExt as TokioStreamExt, wrappers::ReceiverStream};
@@ -35,6 +35,7 @@ const PROFILE_NAME: &str = "default";
 const MAX_AUDIO_FILE_SIZE: u64 = 500 * 1024 * 1024;
 const DEFAULT_CAPTURE_STREAM_ID: &str = "mic";
 const DEFAULT_PLAYBACK_STREAM_ID: &str = "tts.primary";
+const CANCELLED_MESSAGE: &str = "Voice stream cancelled by user";
 
 #[derive(Debug)]
 pub enum RestClientError {
@@ -346,14 +347,22 @@ struct WavUpload {
     task: task::JoinHandle<Result<(), RestClientError>>,
 }
 
-async fn prepare_wav_upload(path: &PathBuf) -> Result<WavUpload, RestClientError> {
+async fn prepare_wav_upload(
+    path: &PathBuf,
+    cancel_flag: Arc<AtomicBool>,
+) -> Result<WavUpload, RestClientError> {
     let path_clone = path.clone();
     let (tx, rx) = mpsc::channel::<Result<Vec<u8>, RestClientError>>(8);
     let (format_tx, format_rx) = oneshot::channel::<Result<AudioFormatSummary, RestClientError>>();
     let bytes_counter = Arc::new(AtomicU64::new(0));
     let counter_clone = Arc::clone(&bytes_counter);
 
+    let cancel_flag_writer = Arc::clone(&cancel_flag);
     let task = task::spawn_blocking(move || -> Result<(), RestClientError> {
+        if cancel_flag_writer.load(Ordering::SeqCst) {
+            return Err(RestClientError::Audio(CANCELLED_MESSAGE.to_string()));
+        }
+
         let mut reader = match hound::WavReader::open(&path_clone) {
             Ok(reader) => reader,
             Err(err) => {
@@ -363,11 +372,19 @@ async fn prepare_wav_upload(path: &PathBuf) -> Result<WavUpload, RestClientError
             }
         };
 
+        if cancel_flag_writer.load(Ordering::SeqCst) {
+            return Err(RestClientError::Audio(CANCELLED_MESSAGE.to_string()));
+        }
+
         let spec = reader.spec();
         if spec.sample_format != SampleFormat::Int || spec.bits_per_sample != 16 {
             let message = "Only 16-bit PCM WAV files are supported for voice streaming".to_string();
             let _ = format_tx.send(Err(RestClientError::Config(message.clone())));
             return Err(RestClientError::Config(message));
+        }
+
+        if cancel_flag_writer.load(Ordering::SeqCst) {
+            return Err(RestClientError::Audio(CANCELLED_MESSAGE.to_string()));
         }
 
         let format = AudioFormatSummary {
@@ -384,6 +401,12 @@ async fn prepare_wav_upload(path: &PathBuf) -> Result<WavUpload, RestClientError
 
         let mut buffer = Vec::with_capacity(64 * 1024);
         for sample in reader.samples::<i16>() {
+            if cancel_flag_writer.load(Ordering::SeqCst) {
+                let _ = tx.blocking_send(Err(RestClientError::Audio(
+                    CANCELLED_MESSAGE.to_string(),
+                )));
+                return Err(RestClientError::Audio(CANCELLED_MESSAGE.to_string()));
+            }
             let sample = match sample {
                 Ok(value) => value,
                 Err(err) => {
@@ -432,6 +455,23 @@ async fn prepare_wav_upload(path: &PathBuf) -> Result<WavUpload, RestClientError
         bytes: bytes_counter,
         task,
     })
+}
+
+async fn wait_for_cancel_signal(
+    signal: &mut watch::Receiver<bool>,
+    flag: &Arc<AtomicBool>,
+) -> bool {
+    if *signal.borrow() {
+        flag.store(true, Ordering::SeqCst);
+        return true;
+    }
+    while signal.changed().await.is_ok() {
+        if *signal.borrow() {
+            flag.store(true, Ordering::SeqCst);
+            return true;
+        }
+    }
+    false
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -808,6 +848,7 @@ impl RestClient {
     pub async fn voice_stream_from_file(
         &self,
         req: VoiceStreamRequest,
+        abort: Option<watch::Receiver<bool>>,
     ) -> Result<VoiceStreamSummary, RestClientError> {
         let VoiceStreamRequest {
             session_id,
@@ -854,12 +895,14 @@ impl RestClient {
 
         let metadata_norm = normalize_metadata_map(metadata, "desktop");
 
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+
         let WavUpload {
             format,
             body,
             bytes: upload_bytes,
             task: upload_task,
-        } = prepare_wav_upload(&input_path).await?;
+        } = prepare_wav_upload(&input_path, Arc::clone(&cancel_flag)).await?;
 
         let mut url = Url::parse(&format!("{}/audio/ingress", self.base_url))
             .map_err(|err| RestClientError::Config(format!("Invalid base URL: {err}")))?;
@@ -885,11 +928,31 @@ impl RestClient {
         if let Some(token) = &self.token {
             request = request.bearer_auth(token);
         }
-        let send_result = request
+        let request = request
             .header("Content-Type", "application/octet-stream")
-            .body(body)
-            .send()
-            .await;
+            .body(body);
+
+        let mut send_future = Box::pin(request.send());
+        let response = if let Some(mut cancel_signal) = abort.clone() {
+            loop {
+                tokio::select! {
+                    res = &mut send_future => break res?,
+                    cancelled = wait_for_cancel_signal(&mut cancel_signal, &cancel_flag) => {
+                        if cancelled {
+                            let _ = upload_task.await;
+                            return Err(RestClientError::Audio(CANCELLED_MESSAGE.into()));
+                        } else {
+                            break send_future.await?;
+                        }
+                    }
+                }
+            }
+        } else {
+            send_future.await?
+        };
+        if response.status() != StatusCode::NO_CONTENT {
+            return Err(RestClientError::Status(response.status()));
+        }
 
         let upload_status = upload_task
             .await
@@ -898,28 +961,84 @@ impl RestClient {
             return Err(err);
         }
 
-        let response = send_result?;
-        if response.status() != StatusCode::NO_CONTENT {
-            return Err(RestClientError::Status(response.status()));
+        if cancel_flag.load(Ordering::SeqCst) {
+            return Err(RestClientError::Audio(CANCELLED_MESSAGE.into()));
         }
 
         let bytes_uploaded = upload_bytes.load(Ordering::SeqCst);
 
+        self.finalize_voice_stream(
+            trimmed_session,
+            stream_id_value,
+            ingress_source,
+            playback_output,
+            subscribe_playback,
+            abort,
+            cancel_flag,
+            bytes_uploaded,
+        )
+        .await
+    }
+
+    async fn finalize_voice_stream(
+        &self,
+        session_id: &str,
+        stream_id: String,
+        ingress_source: String,
+        playback_output: Option<PathBuf>,
+        subscribe_playback: bool,
+        mut abort: Option<watch::Receiver<bool>>,
+        cancel_flag: Arc<AtomicBool>,
+        bytes_uploaded: u64,
+    ) -> Result<VoiceStreamSummary, RestClientError> {
         let mut playback_error: Option<String> = None;
         let playback_metrics = if subscribe_playback {
-            match self
-                .capture_playback(trimmed_session, &stream_id_value, playback_output.clone())
-                .await
-            {
-                Ok(metrics) => metrics,
-                Err(err) => {
-                    playback_error = Some(err.to_string());
-                    PlaybackMetrics {
-                        chunks: 0,
-                        bytes: 0,
-                        saved_path: None,
+            if cancel_flag.load(Ordering::SeqCst) {
+                return Err(RestClientError::Audio(CANCELLED_MESSAGE.into()));
+            }
+            match abort.take() {
+                Some(mut cancel_signal) => {
+                    let mut capture_future = Box::pin(
+                        self.capture_playback(session_id, &stream_id, playback_output.clone()),
+                    );
+                    let result = loop {
+                        tokio::select! {
+                            res = &mut capture_future => break res,
+                            cancelled = wait_for_cancel_signal(&mut cancel_signal, &cancel_flag) => {
+                                if cancelled {
+                                    return Err(RestClientError::Audio(CANCELLED_MESSAGE.into()));
+                                } else {
+                                    break capture_future.await;
+                                }
+                            }
+                        }
+                    };
+                    match result {
+                        Ok(metrics) => metrics,
+                        Err(err) => {
+                            playback_error = Some(err.to_string());
+                            PlaybackMetrics {
+                                chunks: 0,
+                                bytes: 0,
+                                saved_path: None,
+                            }
+                        }
                     }
                 }
+                None => match self
+                    .capture_playback(session_id, &stream_id, playback_output.clone())
+                    .await
+                {
+                    Ok(metrics) => metrics,
+                    Err(err) => {
+                        playback_error = Some(err.to_string());
+                        PlaybackMetrics {
+                            chunks: 0,
+                            bytes: 0,
+                            saved_path: None,
+                        }
+                    }
+                },
             }
         } else {
             PlaybackMetrics {
@@ -929,9 +1048,13 @@ impl RestClient {
             }
         };
 
+        if cancel_flag.load(Ordering::SeqCst) {
+            return Err(RestClientError::Audio(CANCELLED_MESSAGE.into()));
+        }
+
         Ok(VoiceStreamSummary {
-            session_id: trimmed_session.to_string(),
-            stream_id: stream_id_value,
+            session_id: session_id.to_string(),
+            stream_id,
             bytes_uploaded,
             ingress_source,
             playback_chunks: playback_metrics.chunks,

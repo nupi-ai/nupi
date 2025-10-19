@@ -9,6 +9,18 @@ const MAX_METADATA_KEY_LENGTH = 64;
 const MAX_METADATA_VALUE_LENGTH = 512;
 const MAX_METADATA_TOTAL_BYTES = 4096;
 
+const CANCELLED_MESSAGE = "voice stream cancelled by user";
+
+let fallbackOperationCounter = 0;
+
+function createOperationId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  fallbackOperationCounter += 1;
+  return `voice-${Date.now()}-${fallbackOperationCounter}-${Math.random().toString(36).slice(2)}`;
+}
+
 function stringify(value: JsonValue): string {
   if (value === null || value === undefined) {
     return "";
@@ -108,6 +120,8 @@ export function VoicePanel() {
   const [capabilities, setCapabilities] = useState<JsonValue>(null);
   const [isBusy, setBusy] = useState(false);
   const [playbackError, setPlaybackError] = useState<string | null>(null);
+  const [activeOperationId, setActiveOperationId] = useState<string | null>(null);
+  const [isCancelling, setCancelling] = useState(false);
 
   const metadata = useMemo(() => ({ client: "desktop" }), []);
 
@@ -168,6 +182,8 @@ export function VoicePanel() {
     setStatus("Streaming audio…");
     setResult(null);
     setPlaybackError(null);
+    const operationId = createOperationId();
+    setActiveOperationId(operationId);
     try {
       const payload = await invoke<JsonValue>("voice_stream_from_file", {
         sessionId: sessionId.trim(),
@@ -176,6 +192,7 @@ export function VoicePanel() {
         playbackOutput: outputPath,
         disablePlayback,
         metadata: metadataValidation.metadata,
+        operationId,
       });
       setResult(payload);
       const playbackIssue = extractPlaybackError(payload);
@@ -189,13 +206,16 @@ export function VoicePanel() {
     } catch (error) {
       console.error(error);
       setPlaybackError(null);
-      setStatus(
-        `Voice stream failed: ${
-          error instanceof Error ? error.message : String(error)
-        }`
-      );
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.toLowerCase().includes(CANCELLED_MESSAGE)) {
+        setStatus("Voice stream cancelled");
+      } else {
+        setStatus(`Voice stream failed: ${message}`);
+      }
     } finally {
       setBusy(false);
+      setActiveOperationId(null);
+      setCancelling(false);
     }
   }, [disablePlayback, inputPath, metadata, outputPath, sessionId, streamId]);
 
@@ -234,6 +254,30 @@ export function VoicePanel() {
       setBusy(false);
     }
   }, [metadata, sessionId, streamId]);
+
+  const cancelUpload = useCallback(async () => {
+    if (!activeOperationId || isCancelling) {
+      return;
+    }
+    setCancelling(true);
+    setStatus("Cancelling voice stream…");
+    try {
+      const cancelled = await invoke<boolean>("voice_cancel_stream", {
+        operationId: activeOperationId,
+      });
+      if (!cancelled) {
+        setStatus("No active voice upload to cancel");
+        setCancelling(false);
+        setBusy(false);
+        setActiveOperationId(null);
+      }
+    } catch (error) {
+      console.error(error);
+      const message = error instanceof Error ? error.message : String(error);
+      setStatus(`Cancel request failed: ${message}`);
+      setCancelling(false);
+    }
+  }, [activeOperationId, isCancelling]);
 
   const fetchCapabilities = useCallback(async () => {
     setBusy(true);
@@ -428,6 +472,22 @@ export function VoicePanel() {
           >
             Refresh Capabilities
           </button>
+          {isBusy && activeOperationId && (
+            <button
+              onClick={cancelUpload}
+              disabled={isCancelling}
+              style={{
+                padding: "10px 22px",
+                backgroundColor: "#ef4444",
+                color: "#fff",
+                border: "none",
+                borderRadius: "6px",
+                cursor: isCancelling ? "wait" : "pointer",
+              }}
+            >
+              {isCancelling ? "Cancelling…" : "Cancel Upload"}
+            </button>
+          )}
         </div>
 
         <p style={{ marginTop: "16px", color: "#9ca3af", fontSize: "0.9rem" }}>
