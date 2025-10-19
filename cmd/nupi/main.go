@@ -1079,6 +1079,12 @@ func configMigrate(cmd *cobra.Command, args []string) error {
 		fmt.Println("  Pending quickstart slots: (none)")
 	}
 
+	if summary.AudioSettingsUpdated {
+		fmt.Println("  Audio settings: defaults reconciled")
+	} else {
+		fmt.Println("  Audio settings: already up-to-date")
+	}
+
 	return nil
 }
 

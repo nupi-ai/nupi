@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"math"
 	"strings"
 )
 
@@ -53,6 +54,53 @@ func defaultAudioSettings() AudioSettings {
 	}
 }
 
+func normalizeAudioSettings(settings AudioSettings) (AudioSettings, bool) {
+	normalized := settings
+	changed := false
+
+	if trimmed := strings.TrimSpace(settings.CaptureDevice); trimmed != settings.CaptureDevice {
+		normalized.CaptureDevice = trimmed
+		changed = true
+	}
+
+	if trimmed := strings.TrimSpace(settings.PlaybackDevice); trimmed != settings.PlaybackDevice {
+		normalized.PlaybackDevice = trimmed
+		changed = true
+	}
+
+	if trimmed := strings.TrimSpace(settings.PreferredFormat); trimmed == "" {
+		if settings.PreferredFormat != defaultAudioFormat {
+			normalized.PreferredFormat = defaultAudioFormat
+			changed = true
+		}
+	} else if trimmed != settings.PreferredFormat {
+		normalized.PreferredFormat = trimmed
+		changed = true
+	}
+
+	vad := settings.VADThreshold
+	if math.IsNaN(float64(vad)) || vad < 0 || vad > 1 {
+		normalized.VADThreshold = defaultVADThreshold
+		changed = true
+	}
+
+	if settings.Metadata.Valid {
+		trimmed := strings.TrimSpace(settings.Metadata.String)
+		if trimmed == "" {
+			normalized.Metadata = sql.NullString{}
+			changed = true
+		} else if trimmed != settings.Metadata.String {
+			normalized.Metadata = sql.NullString{String: trimmed, Valid: true}
+			changed = true
+		}
+	} else {
+		// Metadata already empty; keep as-is (no change to 'changed' flag).
+		normalized.Metadata = sql.NullString{}
+	}
+
+	return normalized, changed
+}
+
 // LoadAudioSettings returns audio preferences for the active profile.
 func (s *Store) LoadAudioSettings(ctx context.Context) (AudioSettings, error) {
 	if s == nil || s.db == nil {
@@ -96,24 +144,11 @@ func (s *Store) SaveAudioSettings(ctx context.Context, settings AudioSettings) e
 		return fmt.Errorf("config: save audio settings: store opened read-only")
 	}
 
-	captureDevice := strings.TrimSpace(settings.CaptureDevice)
-	playbackDevice := strings.TrimSpace(settings.PlaybackDevice)
-	preferredFormat := strings.TrimSpace(settings.PreferredFormat)
-	if preferredFormat == "" {
-		preferredFormat = defaultAudioFormat
-	}
+	normalized, _ := normalizeAudioSettings(settings)
 
 	var metadata interface{}
-	if settings.Metadata.Valid {
-		meta := strings.TrimSpace(settings.Metadata.String)
-		if meta != "" {
-			metadata = meta
-		}
-	}
-
-	vad := settings.VADThreshold
-	if vad < 0 || vad > 1 || (vad != vad) { // NaN check via self compare
-		vad = defaultVADThreshold
+	if normalized.Metadata.Valid {
+		metadata = normalized.Metadata.String
 	}
 
 	_, err := s.db.ExecContext(
@@ -121,10 +156,10 @@ func (s *Store) SaveAudioSettings(ctx context.Context, settings AudioSettings) e
 		updateAudioSettingsSQL,
 		s.instanceName,
 		s.profileName,
-		captureDevice,
-		playbackDevice,
-		preferredFormat,
-		float64(vad),
+		normalized.CaptureDevice,
+		normalized.PlaybackDevice,
+		normalized.PreferredFormat,
+		float64(normalized.VADThreshold),
 		metadata,
 	)
 	if err != nil {

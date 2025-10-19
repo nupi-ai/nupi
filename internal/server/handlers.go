@@ -1916,9 +1916,16 @@ func (s *APIServer) handleConfigMigrate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	audioUpdated, err := s.configStore.EnsureAudioSettings(r.Context())
+	if err != nil {
+		http.Error(w, fmt.Sprintf("audio settings migration failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
 	response := configMigrationResponse{
-		UpdatedSlots: append([]string{}, result.UpdatedSlots...),
-		PendingSlots: append([]string{}, result.PendingSlots...),
+		UpdatedSlots:         append([]string{}, result.UpdatedSlots...),
+		PendingSlots:         append([]string{}, result.PendingSlots...),
+		AudioSettingsUpdated: audioUpdated,
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(response); err != nil {
@@ -1944,8 +1951,9 @@ type moduleActionRequest struct {
 }
 
 type configMigrationResponse struct {
-	UpdatedSlots []string `json:"updated_slots"`
-	PendingSlots []string `json:"pending_slots"`
+	UpdatedSlots         []string `json:"updated_slots"`
+	PendingSlots         []string `json:"pending_slots"`
+	AudioSettingsUpdated bool     `json:"audio_settings_updated"`
 }
 
 func (s *APIServer) handleModulesGet(w http.ResponseWriter, r *http.Request) {

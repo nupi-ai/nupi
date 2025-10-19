@@ -387,6 +387,11 @@ func TestHandleConfigMigrate(t *testing.T) {
 	`, store.InstanceName(), store.ProfileName()); err != nil {
 		t.Fatalf("delete slot: %v", err)
 	}
+	if _, err := store.DB().ExecContext(context.Background(), `
+		DELETE FROM audio_settings WHERE instance_name = ? AND profile_name = ?
+	`, store.InstanceName(), store.ProfileName()); err != nil {
+		t.Fatalf("delete audio settings: %v", err)
+	}
 
 	req := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/config/migrate", nil))
 	rec := httptest.NewRecorder()
@@ -433,6 +438,20 @@ func TestHandleConfigMigrate(t *testing.T) {
 	}
 	if !restored {
 		t.Fatalf("expected tts.primary slot to exist after migration")
+	}
+
+	if !payload.AudioSettingsUpdated {
+		t.Fatalf("expected audio settings to be reconciled, payload=%+v", payload)
+	}
+
+	var audioCount int
+	if err := store.DB().QueryRowContext(context.Background(), `
+		SELECT COUNT(1) FROM audio_settings WHERE instance_name = ? AND profile_name = ?
+	`, store.InstanceName(), store.ProfileName()).Scan(&audioCount); err != nil {
+		t.Fatalf("count audio settings: %v", err)
+	}
+	if audioCount != 1 {
+		t.Fatalf("expected audio settings row to be recreated, count=%d", audioCount)
 	}
 }
 

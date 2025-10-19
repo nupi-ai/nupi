@@ -90,3 +90,41 @@ func (s *Store) EnsureRequiredAdapterSlots(ctx context.Context) (MigrationResult
 
 	return result, nil
 }
+
+// EnsureAudioSettings ensures audio preferences row exists and is sanitised.
+func (s *Store) EnsureAudioSettings(ctx context.Context) (bool, error) {
+	if s.readOnly {
+		return false, fmt.Errorf("config: ensure audio settings: store opened read-only")
+	}
+
+	var count int
+	if err := s.db.QueryRowContext(ctx, `
+        SELECT COUNT(1)
+        FROM audio_settings
+        WHERE instance_name = ? AND profile_name = ?
+    `, s.instanceName, s.profileName).Scan(&count); err != nil {
+		return false, fmt.Errorf("config: count audio settings: %w", err)
+	}
+
+	if count == 0 {
+		if err := s.SaveAudioSettings(ctx, defaultAudioSettings()); err != nil {
+			return false, fmt.Errorf("config: seed audio settings: %w", err)
+		}
+		return true, nil
+	}
+
+	settings, err := s.LoadAudioSettings(ctx)
+	if err != nil {
+		return false, fmt.Errorf("config: load audio settings: %w", err)
+	}
+
+	normalized, changed := normalizeAudioSettings(settings)
+	if !changed {
+		return false, nil
+	}
+
+	if err := s.SaveAudioSettings(ctx, normalized); err != nil {
+		return false, fmt.Errorf("config: reconcile audio settings: %w", err)
+	}
+	return true, nil
+}

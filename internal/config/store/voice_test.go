@@ -84,12 +84,12 @@ func TestVoiceReadinessActiveAdapters(t *testing.T) {
 		t.Fatalf("upsert tts adapter: %v", err)
 	}
 
-    if err := store.SetActiveAdapter(ctx, slots.STTPrimary, "adapter.stt.mock", nil); err != nil {
-        t.Fatalf("activate stt: %v", err)
-    }
-    if err := store.SetActiveAdapter(ctx, slots.TTSPrimary, "adapter.tts.mock", nil); err != nil {
-        t.Fatalf("activate tts: %v", err)
-    }
+	if err := store.SetActiveAdapter(ctx, slots.STTPrimary, "adapter.stt.mock", nil); err != nil {
+		t.Fatalf("activate stt: %v", err)
+	}
+	if err := store.SetActiveAdapter(ctx, slots.TTSPrimary, "adapter.tts.mock", nil); err != nil {
+		t.Fatalf("activate tts: %v", err)
+	}
 
 	readiness, err := store.VoiceReadiness(ctx)
 	if err != nil {
@@ -128,12 +128,12 @@ func TestVoiceReadinessInactiveBinding(t *testing.T) {
 		t.Fatalf("upsert tts adapter: %v", err)
 	}
 
-    if err := store.SetActiveAdapter(ctx, slots.TTSPrimary, "adapter.tts.mock", nil); err != nil {
-        t.Fatalf("activate tts: %v", err)
-    }
-    if err := store.UpdateAdapterBindingStatus(ctx, slots.TTSPrimary, BindingStatusInactive); err != nil {
-        t.Fatalf("set binding inactive: %v", err)
-    }
+	if err := store.SetActiveAdapter(ctx, slots.TTSPrimary, "adapter.tts.mock", nil); err != nil {
+		t.Fatalf("activate tts: %v", err)
+	}
+	if err := store.UpdateAdapterBindingStatus(ctx, slots.TTSPrimary, BindingStatusInactive); err != nil {
+		t.Fatalf("set binding inactive: %v", err)
+	}
 
 	readiness, err := store.VoiceReadiness(ctx)
 	if err != nil {
@@ -144,10 +144,10 @@ func TestVoiceReadinessInactiveBinding(t *testing.T) {
 	}
 
 	foundInactive := false
-    for _, issue := range readiness.Issues {
-        if issue.Slot == slots.TTSPrimary && issue.Code == voiceIssueAdapterInactive {
-            foundInactive = true
-        }
+	for _, issue := range readiness.Issues {
+		if issue.Slot == slots.TTSPrimary && issue.Code == voiceIssueAdapterInactive {
+			foundInactive = true
+		}
 	}
 	if !foundInactive {
 		t.Fatalf("expected inactive adapter issue in %+v", readiness.Issues)
