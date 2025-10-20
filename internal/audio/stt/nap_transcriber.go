@@ -39,9 +39,9 @@ func newNAPTranscriber(ctx context.Context, params SessionParams, endpoint confi
 		return nil, fmt.Errorf("stt: module %s missing gRPC address", endpoint.AdapterID)
 	}
 
-	dialOpts := []grpc.DialOption{
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-	}
+    dialOpts := []grpc.DialOption{
+        grpc.WithTransportCredentials(insecure.NewCredentials()), // TODO(#NAP-TLS): wire TLS credentials for remote adapters
+    }
 	if dialer := dialerFromContext(ctx); dialer != nil {
 		dialOpts = append(dialOpts, grpc.WithContextDialer(dialer))
 	}

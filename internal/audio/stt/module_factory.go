@@ -15,8 +15,6 @@ type moduleFactory struct {
 }
 
 // NewModuleFactory creates a factory based on module bindings stored in config.Store.
-// It currently validates the presence of an active adapter and returns an error until
-// transport clients are implemented.
 func NewModuleFactory(store *configstore.Store) Factory {
 	if store == nil {
 		return FactoryFunc(func(context.Context, SessionParams) (Transcriber, error) {
