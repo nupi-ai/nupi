@@ -26,8 +26,6 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/nupi-ai/nupi/internal/api"
 	apihttp "github.com/nupi-ai/nupi/internal/api/http"
-	"github.com/nupi-ai/nupi/internal/audio/egress"
-	"github.com/nupi-ai/nupi/internal/audio/ingress"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/modules"
@@ -135,9 +133,9 @@ type APIServer struct {
 	runtime        RuntimeInfoProvider
 	wsServer       *Server
 	conversation   ConversationStore
-	modules        *modules.Service
-	audioIngress   *ingress.Service
-	audioEgress    *egress.Service
+	modules        ModulesController
+	audioIngress   AudioCaptureProvider
+	audioEgress    AudioPlaybackController
 	eventBus       *eventbus.Bus
 	resizeManager  *termresize.Manager
 	port           int
@@ -271,19 +269,19 @@ func (s *APIServer) SetConversationStore(store ConversationStore) {
 	s.conversation = store
 }
 
-// SetModulesService wires the modules controller used by HTTP handlers.
-func (s *APIServer) SetModulesService(service *modules.Service) {
-	s.modules = service
+// SetModulesController wires the modules controller used by HTTP handlers.
+func (s *APIServer) SetModulesController(controller ModulesController) {
+	s.modules = controller
 }
 
-// SetAudioIngressService wires the audio ingress handler used by streaming endpoints.
-func (s *APIServer) SetAudioIngressService(service *ingress.Service) {
-	s.audioIngress = service
+// SetAudioIngress wires the audio ingress handler used by streaming endpoints.
+func (s *APIServer) SetAudioIngress(provider AudioCaptureProvider) {
+	s.audioIngress = provider
 }
 
-// SetAudioEgressService wires the audio egress handler used by playback endpoints.
-func (s *APIServer) SetAudioEgressService(service *egress.Service) {
-	s.audioEgress = service
+// SetAudioEgress wires the audio egress handler used by playback endpoints.
+func (s *APIServer) SetAudioEgress(controller AudioPlaybackController) {
+	s.audioEgress = controller
 }
 
 // SetEventBus wires the event bus used for publishing audio/control events.
@@ -2207,7 +2205,7 @@ func (s *APIServer) handleAudioIngress(w http.ResponseWriter, r *http.Request) {
 	stream, err := s.audioIngress.OpenStream(sessionID, streamID, format, metadata)
 	if err != nil {
 		switch {
-		case errors.Is(err, ingress.ErrStreamExists):
+		case errors.Is(err, ErrAudioStreamExists):
 			http.Error(w, fmt.Sprintf("audio stream %s/%s already exists", sessionID, streamID), http.StatusConflict)
 		default:
 			http.Error(w, fmt.Sprintf("open stream: %v", err), http.StatusInternalServerError)

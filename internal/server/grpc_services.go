@@ -13,7 +13,6 @@ import (
 
 	"github.com/nupi-ai/nupi/internal/api"
 	apiv1 "github.com/nupi-ai/nupi/internal/api/grpc/v1"
-	"github.com/nupi-ai/nupi/internal/audio/ingress"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/modules"
@@ -117,7 +116,7 @@ func (a *audioService) StreamAudioIn(stream apiv1.AudioService_StreamAudioInServ
 
 	var (
 		opened        bool
-		ingressStream *ingress.Stream
+		ingressStream AudioCaptureStream
 		sessionID     string
 		streamID      string
 		format        eventbus.AudioFormat
@@ -185,7 +184,7 @@ func (a *audioService) StreamAudioIn(stream apiv1.AudioService_StreamAudioInServ
 			}
 			ingressStream, err = a.api.audioIngress.OpenStream(sessionID, streamID, format, metadata)
 			if err != nil {
-				if errors.Is(err, ingress.ErrStreamExists) {
+				if errors.Is(err, ErrAudioStreamExists) {
 					return status.Errorf(codes.AlreadyExists, "audio stream %s/%s already exists", sessionID, streamID)
 				}
 				return status.Errorf(codes.Internal, "open stream: %v", err)

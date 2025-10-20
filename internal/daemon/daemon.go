@@ -31,6 +31,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/plugins"
 	daemonruntime "github.com/nupi-ai/nupi/internal/runtime"
 	"github.com/nupi-ai/nupi/internal/server"
+	"github.com/nupi-ai/nupi/internal/server/runtimebridge"
 	"github.com/nupi-ai/nupi/internal/session"
 )
 
@@ -140,9 +141,9 @@ func New(opts Options) (*Daemon, error) {
 	})
 	apiServer.SetMetricsExporter(metricsExporter)
 	apiServer.SetConversationStore(conversationService)
-	apiServer.SetModulesService(modulesService)
-	apiServer.SetAudioIngressService(audioIngressService)
-	apiServer.SetAudioEgressService(audioEgressService)
+	apiServer.SetModulesController(modulesService)
+	apiServer.SetAudioIngress(runtimebridge.AudioIngressProvider(audioIngressService))
+	apiServer.SetAudioEgress(runtimebridge.AudioEgressController(audioEgressService))
 	apiServer.SetEventBus(bus)
 
 	if err := host.Register("audio_ingress", func(ctx context.Context) (daemonruntime.Service, error) {

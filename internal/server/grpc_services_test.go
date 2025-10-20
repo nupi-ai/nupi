@@ -142,7 +142,7 @@ func TestModulesServiceOverview(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
 	store := openTestStore(t)
 	modulesSvc := newTestModulesService(t, store)
-	apiServer.SetModulesService(modulesSvc)
+	apiServer.SetModulesController(modulesSvc)
 
 	ctx := context.Background()
 	adapter := configstore.Adapter{ID: "adapter.ai.primary", Source: "builtin", Type: "ai", Name: "Primary AI"}
@@ -185,7 +185,7 @@ func TestModulesServiceBindStartStop(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
 	store := openTestStore(t)
 	modulesSvc := newTestModulesService(t, store)
-	apiServer.SetModulesService(modulesSvc)
+	apiServer.SetModulesController(modulesSvc)
 
 	ctx := context.Background()
 	adapter := configstore.Adapter{ID: "adapter.ai.bind", Source: "builtin", Type: "ai", Name: "Bind AI"}
@@ -236,7 +236,7 @@ func TestQuickstartServiceIncludesModules(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
 	store := apiServer.configStore
 	modulesSvc := newTestModulesService(t, store)
-	apiServer.SetModulesService(modulesSvc)
+	apiServer.SetModulesController(modulesSvc)
 
 	ctx := context.Background()
 	adapter := configstore.Adapter{ID: "adapter.ai.quickstart", Source: "builtin", Type: "ai", Name: "Quickstart AI"}
@@ -340,7 +340,7 @@ func TestAudioServiceStreamAudioIn(t *testing.T) {
 	enableVoiceAdapters(t, apiServer.configStore)
 	bus := eventbus.New()
 	ingressSvc := ingress.New(bus)
-	apiServer.SetAudioIngressService(ingressSvc)
+	apiServer.SetAudioIngress(newTestAudioIngressProvider(ingressSvc))
 	sessionManager.UseEventBus(bus)
 
 	opts := pty.StartOptions{Command: "/bin/sh", Args: []string{"-c", "sleep 1"}, Rows: 24, Cols: 80}
@@ -428,7 +428,7 @@ func TestAudioServiceStreamAudioOut(t *testing.T) {
 	apiServer.SetEventBus(bus)
 
 	egressSvc := egress.New(bus)
-	apiServer.SetAudioEgressService(egressSvc)
+	apiServer.SetAudioEgress(newTestAudioEgressController(egressSvc))
 	apiServer.sessionManager = nil
 
 	service := newAudioService(apiServer)
@@ -518,9 +518,9 @@ func TestAudioServiceGetAudioCapabilities(t *testing.T) {
 	bus := eventbus.New()
 	apiServer.SetEventBus(bus)
 	ingressSvc := ingress.New(bus)
-	apiServer.SetAudioIngressService(ingressSvc)
+	apiServer.SetAudioIngress(newTestAudioIngressProvider(ingressSvc))
 	egressSvc := egress.New(bus)
-	apiServer.SetAudioEgressService(egressSvc)
+	apiServer.SetAudioEgress(newTestAudioEgressController(egressSvc))
 	apiServer.sessionManager = nil
 
 	service := newAudioService(apiServer)

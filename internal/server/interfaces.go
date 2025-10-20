@@ -1,0 +1,37 @@
+package server
+
+import (
+	"context"
+	"errors"
+
+	"github.com/nupi-ai/nupi/internal/eventbus"
+	"github.com/nupi-ai/nupi/internal/modules"
+)
+
+// ErrAudioStreamExists signals that an audio ingress stream already exists for the given identifiers.
+var ErrAudioStreamExists = errors.New("audio stream already exists")
+
+// AudioCaptureStream models an open audio ingress stream.
+type AudioCaptureStream interface {
+	Write([]byte) error
+	Close() error
+}
+
+// AudioCaptureProvider exposes operations required by the HTTP/gRPC layer to accept audio input.
+type AudioCaptureProvider interface {
+	OpenStream(sessionID, streamID string, format eventbus.AudioFormat, metadata map[string]string) (AudioCaptureStream, error)
+}
+
+// AudioPlaybackController exposes playback control operations used by API handlers.
+type AudioPlaybackController interface {
+	DefaultStreamID() string
+	PlaybackFormat() eventbus.AudioFormat
+	Interrupt(sessionID, streamID, reason string, metadata map[string]string)
+}
+
+// ModulesController exposes module lifecycle operations required by the API.
+type ModulesController interface {
+	Overview(ctx context.Context) ([]modules.BindingStatus, error)
+	StartSlot(ctx context.Context, slot modules.Slot) (*modules.BindingStatus, error)
+	StopSlot(ctx context.Context, slot modules.Slot) (*modules.BindingStatus, error)
+}
