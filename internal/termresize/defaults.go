@@ -1,15 +1,12 @@
 package termresize
 
-// NewManagerWithDefaults registers placeholder modes and returns a manager instance.
+// NewManagerWithDefaults registers the production-ready host-lock mode so the PTY size is
+// always anchored to the host terminal. Remaining modes stay unregistered until their
+// implementations are complete.
 func NewManagerWithDefaults() (*Manager, error) {
-	noop := NewNoopMode()
 	hostLock := NewHostLockMode()
-	presenter := NewActivePresenterMode()
-	guided := NewGuidedFitMode()
-	pinned := NewPinnedWidthMode()
-	snapshot := NewSnapshotRelayMode()
 
-	manager, err := NewManager(noop, hostLock, presenter, guided, pinned, snapshot)
+	manager, err := NewManager(hostLock)
 	if err != nil {
 		return nil, err
 	}
