@@ -20,6 +20,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/audio/egress"
 	"github.com/nupi-ai/nupi/internal/audio/ingress"
 	"github.com/nupi-ai/nupi/internal/audio/stt"
+	"github.com/nupi-ai/nupi/internal/audio/vad"
 	"github.com/nupi-ai/nupi/internal/config"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/contentpipeline"
@@ -112,6 +113,7 @@ func New(opts Options) (*Daemon, error) {
 	pipelineService := contentpipeline.NewService(bus, pluginService, contentpipeline.WithMetricsInterval(30*time.Second))
 	audioIngressService := ingress.New(bus)
 	audioSTTService := stt.New(bus, stt.WithFactory(stt.NewModuleFactory(opts.Store)))
+	audioVADService := vad.New(bus, vad.WithFactory(vad.NewModuleFactory(opts.Store)))
 	audioBargeService := barge.New(bus)
 	audioEgressService := egress.New(bus, egress.WithFactory(egress.NewModuleFactory(opts.Store)))
 	conversationService := conversation.NewService(bus)
@@ -151,6 +153,12 @@ func New(opts Options) (*Daemon, error) {
 
 	if err := host.Register("audio_stt", func(ctx context.Context) (daemonruntime.Service, error) {
 		return audioSTTService, nil
+	}); err != nil {
+		return nil, err
+	}
+
+	if err := host.Register("audio_vad", func(ctx context.Context) (daemonruntime.Service, error) {
+		return audioVADService, nil
 	}); err != nil {
 		return nil, err
 	}
