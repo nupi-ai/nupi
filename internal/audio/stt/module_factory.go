@@ -73,6 +73,13 @@ func (m moduleFactory) Create(ctx context.Context, params SessionParams) (Transc
 		return newMockTranscriber(params)
 	}
 
-	// TODO(#audio-stt-nap): replace the stub once NAP client integration is available.
-	return nil, ErrAdapterUnavailable
+	endpoint, err := m.store.GetModuleEndpoint(ctx, activeAdapter)
+	if err != nil {
+		if configstore.IsNotFound(err) {
+			return nil, ErrAdapterUnavailable
+		}
+		return nil, fmt.Errorf("stt: fetch module endpoint for %s: %w", activeAdapter, err)
+	}
+
+	return newNAPTranscriber(ctx, params, endpoint)
 }
