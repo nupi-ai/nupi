@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -232,7 +233,7 @@ func (s *Service) handleSegment(segment eventbus.AudioIngressSegmentEvent) {
 
 	if st, ok := s.stream(key); ok {
 		if err := st.enqueue(segment); err != nil && !errors.Is(err, context.Canceled) {
-			s.logger.Printf("[VAD] enqueue segment for %s failed: %v", key, err)
+			s.logger.Printf("[VAD] enqueue segment session=%s stream=%s failed: %v", segment.SessionID, segment.StreamID, err)
 		}
 		return
 	}
@@ -248,14 +249,14 @@ func (s *Service) handleSegment(segment eventbus.AudioIngressSegmentEvent) {
 	switch {
 	case err == nil:
 		if err := stream.enqueue(segment); err != nil && !errors.Is(err, context.Canceled) {
-			s.logger.Printf("[VAD] enqueue segment for %s failed: %v", key, err)
+			s.logger.Printf("[VAD] enqueue segment session=%s stream=%s failed: %v", segment.SessionID, segment.StreamID, err)
 		}
 	case errors.Is(err, ErrAdapterUnavailable):
 		s.bufferPending(key, params, segment)
 	case errors.Is(err, ErrFactoryUnavailable):
-		s.logger.Printf("[VAD] factory unavailable for %s, dropping segment", key)
+		s.logger.Printf("[VAD] factory unavailable session=%s stream=%s, dropping segment", segment.SessionID, segment.StreamID)
 	default:
-		s.logger.Printf("[VAD] create stream %s failed: %v", key, err)
+		s.logger.Printf("[VAD] create stream session=%s stream=%s failed: %v", segment.SessionID, segment.StreamID, err)
 	}
 }
 
@@ -295,6 +296,9 @@ func (s *Service) createStream(key string, params SessionParams) (*stream, error
 	}
 	s.streams[key] = stream
 	s.mu.Unlock()
+	if s.logger != nil {
+		s.logger.Printf("[VAD] analyzer started session=%s stream=%s", params.SessionID, params.StreamID)
+	}
 
 	s.flushPending(key, stream)
 	return stream, nil
@@ -313,9 +317,12 @@ func (s *Service) bufferPending(key string, params SessionParams, segment eventb
 	}
 	if len(queue.segments) >= maxPendingSegments {
 		queue.segments = queue.segments[1:]
-		s.logger.Printf("[VAD] pending buffer full for %s, dropping oldest segment", key)
+		s.logger.Printf("[VAD] pending buffer full session=%s stream=%s, dropping oldest segment", params.SessionID, params.StreamID)
 	}
 	queue.segments = append(queue.segments, segment)
+	if s.logger != nil {
+		s.logger.Printf("[VAD] buffered segment %d session=%s stream=%s (pending=%d)", segment.Sequence, params.SessionID, params.StreamID, len(queue.segments))
+	}
 	queue.scheduleRetry(s, key)
 }
 
@@ -327,10 +334,13 @@ func (s *Service) flushPending(key string, st *stream) {
 		segments := append([]eventbus.AudioIngressSegmentEvent(nil), queue.segments...)
 		delete(s.pending, key)
 		s.pendingMu.Unlock()
+		if len(segments) > 0 && s.logger != nil {
+			s.logger.Printf("[VAD] replaying %d buffered segments session=%s stream=%s", len(segments), st.sessionID, st.streamID)
+		}
 
 		for _, segment := range segments {
 			if err := st.enqueue(segment); err != nil && !errors.Is(err, context.Canceled) {
-				s.logger.Printf("[VAD] enqueue pending segment for %s failed: %v", key, err)
+				s.logger.Printf("[VAD] enqueue pending segment session=%s stream=%s failed: %v", segment.SessionID, segment.StreamID, err)
 			}
 		}
 		return
@@ -352,7 +362,7 @@ func (s *Service) retryPending(key string) {
 	stream, err := s.createStream(key, params)
 	if err != nil {
 		if !errors.Is(err, ErrAdapterUnavailable) && !errors.Is(err, context.Canceled) {
-			s.logger.Printf("[VAD] retry stream %s failed: %v", key, err)
+			s.logger.Printf("[VAD] retry stream session=%s stream=%s failed: %v", params.SessionID, params.StreamID, err)
 		}
 		s.pendingMu.Lock()
 		if queue, ok := s.pending[key]; ok {
@@ -378,6 +388,10 @@ func (s *Service) publishDetection(sessionID, streamID string, segment eventbus.
 		Timestamp:   segment.EndedAt,
 		Metadata:    mergeMetadata(copyMetadata(segment.Metadata), det.Metadata),
 		EnergyLevel: 0,
+	}
+
+	if s.logger != nil && det.Active {
+		s.logger.Printf("[VAD] detection active session=%s stream=%s confidence=%.2f", sessionID, streamID, det.Confidence)
 	}
 
 	s.bus.Publish(context.Background(), eventbus.Envelope{
@@ -453,7 +467,7 @@ func (st *stream) run() {
 func (st *stream) handleSegment(segment eventbus.AudioIngressSegmentEvent) {
 	detections, err := st.analyzer.OnSegment(st.ctx, segment)
 	if err != nil {
-		st.service.logger.Printf("[VAD] analyze segment %s failed: %v", st.key, err)
+		st.service.logger.Printf("[VAD] analyze segment session=%s stream=%s failed: %v", st.sessionID, st.streamID, err)
 		return
 	}
 
@@ -465,6 +479,9 @@ func (st *stream) handleSegment(segment eventbus.AudioIngressSegmentEvent) {
 func (st *stream) stop() {
 	st.cancel()
 	close(st.requestCh)
+	if st.service.logger != nil {
+		st.service.logger.Printf("[VAD] analyzer stopping session=%s stream=%s", st.sessionID, st.streamID)
+	}
 }
 
 func (st *stream) wait(ctx context.Context) {
@@ -488,7 +505,7 @@ func (st *stream) closeAnalyzer(reason string) {
 
 	detections, err := st.analyzer.Close(ctx)
 	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-		st.service.logger.Printf("[VAD] close analyzer %s (%s): %v", st.key, reason, err)
+		st.service.logger.Printf("[VAD] close analyzer session=%s stream=%s (%s): %v", st.sessionID, st.streamID, reason, err)
 	}
 	if len(detections) == 0 {
 		return
@@ -527,6 +544,10 @@ func (ps *pendingStream) scheduleRetry(s *Service, key string) {
 	ps.timer = time.AfterFunc(delay, func() {
 		s.retryPending(key)
 	})
+	if s.logger != nil {
+		sessionID, streamID := splitStreamKey(key)
+		s.logger.Printf("[VAD] scheduling adapter retry session=%s stream=%s in %s", sessionID, streamID, delay)
+	}
 }
 
 func (ps *pendingStream) stopTimer() {
@@ -560,6 +581,14 @@ func mergeMetadata(base map[string]string, override map[string]string) map[strin
 		out[k] = v
 	}
 	return out
+}
+
+func splitStreamKey(key string) (string, string) {
+	const sep = "::"
+	if idx := strings.Index(key, sep); idx >= 0 {
+		return key[:idx], key[idx+len(sep):]
+	}
+	return key, ""
 }
 
 func streamKey(sessionID, streamID string) string {

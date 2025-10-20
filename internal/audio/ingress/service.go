@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"sync"
 	"sync/atomic"
@@ -21,12 +22,22 @@ type Service struct {
 	streams map[string]*Stream
 
 	bytesTotal atomic.Uint64
+	logger     *log.Logger
 }
 
 var ErrStreamExists = errors.New("audio ingress: stream already exists")
 
 // Option configures optional behaviour on the Service.
 type Option func(*Service)
+
+// WithLogger overrides the logger used for diagnostics.
+func WithLogger(logger *log.Logger) Option {
+	return func(s *Service) {
+		if logger != nil {
+			s.logger = logger
+		}
+	}
+}
 
 // WithSegmentDuration override the target duration for emitted segments (default 20ms).
 func WithSegmentDuration(d time.Duration) Option {
@@ -43,6 +54,7 @@ func New(bus *eventbus.Bus, opts ...Option) *Service {
 		bus:             bus,
 		segmentDuration: 20 * time.Millisecond,
 		streams:         make(map[string]*Stream),
+		logger:          log.Default(),
 	}
 	for _, opt := range opts {
 		opt(svc)
@@ -99,6 +111,9 @@ func (s *Service) OpenStream(sessionID, streamID string, format eventbus.AudioFo
 		first:      true,
 	}
 	s.streams[key] = stream
+	if s.logger != nil {
+		s.logger.Printf("[Ingress] opened stream %s/%s (rate=%dHz, channels=%d, bit_depth=%d)", sessionID, streamID, format.SampleRate, format.Channels, format.BitDepth)
+	}
 	return stream, nil
 }
 
@@ -190,6 +205,9 @@ func (st *Stream) closeLocked() error {
 	}
 	st.flushSegmentsLocked(true)
 	st.closed = true
+	if st.service.logger != nil {
+		st.service.logger.Printf("[Ingress] closed stream %s/%s (raw=%d, segments=%d)", st.sessionID, st.streamID, st.rawSeq, st.segmentSeq)
+	}
 	st.service.removeStream(st)
 	return nil
 }

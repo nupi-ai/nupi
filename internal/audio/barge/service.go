@@ -223,9 +223,15 @@ func (s *Service) consumePlayback() {
 
 func (s *Service) handleVADEvent(event eventbus.SpeechVADEvent) {
 	if !event.Active {
+		if s.logger != nil {
+			s.logger.Printf("[Barge] ignoring VAD event session=%s stream=%s: inactive", event.SessionID, event.StreamID)
+		}
 		return
 	}
 	if event.Confidence < s.minConfidence {
+		if s.logger != nil {
+			s.logger.Printf("[Barge] ignoring VAD event session=%s stream=%s: low confidence %.2f < %.2f", event.SessionID, event.StreamID, event.Confidence, s.minConfidence)
+		}
 		return
 	}
 
@@ -236,6 +242,9 @@ func (s *Service) handleVADEvent(event eventbus.SpeechVADEvent) {
 
 	streamID, ok := s.targetStreamForSession(event.SessionID, ts)
 	if !ok {
+		if s.logger != nil {
+			s.logger.Printf("[Barge] no active playback for session=%s; VAD event ignored", event.SessionID)
+		}
 		return
 	}
 
@@ -273,6 +282,9 @@ func (s *Service) handleClientEvent(event eventbus.AudioInterruptEvent) {
 		}
 	}
 	if streamID == "" {
+		if s.logger != nil {
+			s.logger.Printf("[Barge] no playback stream resolved for client interrupt session=%s", event.SessionID)
+		}
 		return
 	}
 
@@ -341,6 +353,10 @@ func (s *Service) registerTrigger(key string, ts time.Time) bool {
 	defer s.mu.Unlock()
 	last := s.lastEvent[key]
 	if !last.IsZero() && ts.Sub(last) < s.cooldown {
+		if s.logger != nil {
+			sessionID, streamID := splitStreamKey(key)
+			s.logger.Printf("[Barge] suppressing trigger session=%s stream=%s during cooldown (%s elapsed)", sessionID, streamID, ts.Sub(last))
+		}
 		return false
 	}
 	s.lastEvent[key] = ts
@@ -353,6 +369,10 @@ func (s *Service) publishBargeIn(sessionID, streamID string, ts time.Time, reaso
 	}
 
 	s.bargeInTotal.Add(1)
+
+	if s.logger != nil {
+		s.logger.Printf("[Barge] publishing barge-in session=%s stream=%s reason=%s confidence=%.2f", sessionID, streamID, reason, confidence)
+	}
 
 	metadata := sanitizeMetadata(meta)
 	metadata["trigger"] = reason
