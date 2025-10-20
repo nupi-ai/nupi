@@ -1,17 +1,15 @@
-package stt
+package vad
 
 import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
-	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/modules"
 	testutil "github.com/nupi-ai/nupi/internal/testutil"
 )
 
-func TestModuleFactoryCreatesMockTranscriber(t *testing.T) {
+func TestModuleFactoryReturnsMockAnalyzer(t *testing.T) {
 	ctx := context.Background()
 	store, cleanup := testutil.OpenStore(t)
 	defer cleanup()
@@ -19,50 +17,30 @@ func TestModuleFactoryCreatesMockTranscriber(t *testing.T) {
 	if err := modules.EnsureBuiltinAdapters(ctx, store); err != nil {
 		t.Fatalf("ensure builtin adapters: %v", err)
 	}
-
-	if err := store.SetActiveAdapter(ctx, string(modules.SlotSTTPrimary), modules.MockSTTAdapterID, map[string]any{
-		"text": "factory",
+	if err := store.SetActiveAdapter(ctx, string(modules.SlotVAD), modules.MockVADAdapterID, map[string]any{
+		"threshold":  0.05,
+		"min_frames": 2,
 	}); err != nil {
-		t.Fatalf("activate mock adapter: %v", err)
+		t.Fatalf("set active adapter: %v", err)
 	}
 
 	factory := NewModuleFactory(store)
-
-	params := SessionParams{
+	analyzer, err := factory.Create(ctx, SessionParams{
 		SessionID: "sess",
 		StreamID:  "mic",
-		Format: eventbus.AudioFormat{
-			Encoding:   eventbus.AudioEncodingPCM16,
-			SampleRate: 16000,
-			Channels:   1,
-			BitDepth:   16,
-		},
-	}
-
-	transcriber, err := factory.Create(ctx, params)
+	})
 	if err != nil {
-		t.Fatalf("create transcriber: %v", err)
+		t.Fatalf("expected analyzer, got error: %v", err)
 	}
-
-	segment := eventbus.AudioIngressSegmentEvent{
-		SessionID: "sess",
-		StreamID:  "mic",
-		Sequence:  1,
-		Format:    params.Format,
-		Data:      make([]byte, 640),
-		Duration:  20 * time.Millisecond,
-		First:     true,
-		Last:      true,
-		StartedAt: time.Now().UTC(),
-		EndedAt:   time.Now().UTC().Add(20 * time.Millisecond),
+	mock, ok := analyzer.(*mockAnalyzer)
+	if !ok {
+		t.Fatalf("expected *mockAnalyzer, got %T", analyzer)
 	}
-
-	transcripts, err := transcriber.OnSegment(ctx, segment)
-	if err != nil {
-		t.Fatalf("transcribe: %v", err)
+	if mock.threshold != 0.05 {
+		t.Fatalf("expected threshold 0.05, got %f", mock.threshold)
 	}
-	if len(transcripts) == 0 || transcripts[0].Text != "factory" {
-		t.Fatalf("unexpected transcript: %+v", transcripts)
+	if mock.minFrames != 2 {
+		t.Fatalf("expected minFrames 2, got %d", mock.minFrames)
 	}
 }
 
@@ -74,7 +52,7 @@ func TestModuleFactoryReturnsErrorOnConfigParseFailure(t *testing.T) {
 	if err := modules.EnsureBuiltinAdapters(ctx, store); err != nil {
 		t.Fatalf("ensure builtin adapters: %v", err)
 	}
-	if err := store.SetActiveAdapter(ctx, string(modules.SlotSTTPrimary), modules.MockSTTAdapterID, nil); err != nil {
+	if err := store.SetActiveAdapter(ctx, string(modules.SlotVAD), modules.MockVADAdapterID, nil); err != nil {
 		t.Fatalf("set active adapter: %v", err)
 	}
 
@@ -82,7 +60,7 @@ func TestModuleFactoryReturnsErrorOnConfigParseFailure(t *testing.T) {
         UPDATE adapter_bindings
         SET config = '{invalid'
         WHERE slot = ? AND instance_name = ? AND profile_name = ?
-    `, string(modules.SlotSTTPrimary), store.InstanceName(), store.ProfileName())
+    `, string(modules.SlotVAD), store.InstanceName(), store.ProfileName())
 	if err != nil {
 		t.Fatalf("corrupt config: %v", err)
 	}
@@ -91,12 +69,6 @@ func TestModuleFactoryReturnsErrorOnConfigParseFailure(t *testing.T) {
 	_, err = factory.Create(ctx, SessionParams{
 		SessionID: "sess",
 		StreamID:  "mic",
-		Format: eventbus.AudioFormat{
-			Encoding:   eventbus.AudioEncodingPCM16,
-			SampleRate: 16000,
-			Channels:   1,
-			BitDepth:   16,
-		},
 	})
 	if err == nil {
 		t.Fatalf("expected error due to invalid config")
@@ -112,12 +84,6 @@ func TestModuleFactoryReturnsUnavailableWhenAdapterMissing(t *testing.T) {
 	_, err := factory.Create(ctx, SessionParams{
 		SessionID: "sess",
 		StreamID:  "mic",
-		Format: eventbus.AudioFormat{
-			Encoding:   eventbus.AudioEncodingPCM16,
-			SampleRate: 16000,
-			Channels:   1,
-			BitDepth:   16,
-		},
 	})
 	if !errors.Is(err, ErrAdapterUnavailable) {
 		t.Fatalf("expected ErrAdapterUnavailable, got %v", err)
