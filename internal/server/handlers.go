@@ -89,6 +89,29 @@ const (
 	websocketHeartbeatTimeout  = 60 * time.Second
 )
 
+const (
+	maxAdapterIDLength      = 128
+	maxAdapterNameLength    = 256
+	maxAdapterVersionLength = 64
+	maxAdapterManifestBytes = 64 * 1024
+)
+
+var allowedAdapterTypes = map[string]struct{}{
+	"stt":          {},
+	"tts":          {},
+	"ai":           {},
+	"vad":          {},
+	"tunnel":       {},
+	"detector":     {},
+	"tool-cleaner": {},
+}
+
+var allowedModuleTransports = map[string]struct{}{
+	"grpc":    {},
+	"http":    {},
+	"process": {},
+}
+
 var audioWSUpgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
 		origin := r.Header.Get("Origin")
@@ -992,6 +1015,7 @@ func (s *APIServer) Prepare(ctx context.Context) (*PreparedHTTPServer, error) {
 	mux.HandleFunc("/config/adapters", s.handleAdapters)
 	mux.HandleFunc("/config/adapter-bindings", s.handleAdapterBindings)
 	mux.HandleFunc("/modules", s.handleModules)
+	mux.HandleFunc("/modules/register", s.handleModulesRegister)
 	mux.HandleFunc("/modules/bind", s.handleModulesBind)
 	mux.HandleFunc("/modules/start", s.handleModulesStart)
 	mux.HandleFunc("/modules/stop", s.handleModulesStop)
@@ -1939,6 +1963,152 @@ func (s *APIServer) handleModules(w http.ResponseWriter, r *http.Request) {
 		s.handleModulesGet(w, r)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *APIServer) handleModulesRegister(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := s.requireRole(w, r, roleAdmin); !ok {
+		return
+	}
+	if s.configStore == nil {
+		http.Error(w, "configuration store unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	var payload apihttp.ModuleRegistrationRequest
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, fmt.Sprintf("invalid JSON payload: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	adapterID := strings.TrimSpace(payload.AdapterID)
+	if adapterID == "" {
+		http.Error(w, "adapter_id is required", http.StatusBadRequest)
+		return
+	}
+	if len(adapterID) > maxAdapterIDLength {
+		http.Error(w, fmt.Sprintf("adapter_id too long (max %d chars)", maxAdapterIDLength), http.StatusBadRequest)
+		return
+	}
+
+	adapterType := strings.TrimSpace(payload.Type)
+	if adapterType != "" {
+		if _, ok := allowedAdapterTypes[adapterType]; !ok {
+			http.Error(w, fmt.Sprintf("invalid adapter type: %s (expected: stt, tts, ai, vad, tunnel, detector, tool-cleaner)", adapterType), http.StatusBadRequest)
+			return
+		}
+	}
+
+	adapterName := strings.TrimSpace(payload.Name)
+	if len(adapterName) > maxAdapterNameLength {
+		http.Error(w, fmt.Sprintf("name too long (max %d chars)", maxAdapterNameLength), http.StatusBadRequest)
+		return
+	}
+
+	adapterVersion := strings.TrimSpace(payload.Version)
+	if len(adapterVersion) > maxAdapterVersionLength {
+		http.Error(w, fmt.Sprintf("version too long (max %d chars)", maxAdapterVersionLength), http.StatusBadRequest)
+		return
+	}
+
+	if len(payload.Manifest) > maxAdapterManifestBytes {
+		http.Error(w, fmt.Sprintf("manifest too large (max %d bytes)", maxAdapterManifestBytes), http.StatusBadRequest)
+		return
+	}
+
+	adapter := configstore.Adapter{
+		ID:      adapterID,
+		Source:  strings.TrimSpace(payload.Source),
+		Version: adapterVersion,
+		Type:    adapterType,
+		Name:    adapterName,
+	}
+	if len(payload.Manifest) > 0 {
+		adapter.Manifest = strings.TrimSpace(string(payload.Manifest))
+	}
+
+	if err := s.configStore.UpsertAdapter(r.Context(), adapter); err != nil {
+		http.Error(w, fmt.Sprintf("register adapter failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	if payload.Endpoint != nil {
+		transport := strings.TrimSpace(payload.Endpoint.Transport)
+		address := strings.TrimSpace(payload.Endpoint.Address)
+		command := strings.TrimSpace(payload.Endpoint.Command)
+
+		if transport == "" {
+			if address != "" || command != "" || len(payload.Endpoint.Args) > 0 || len(payload.Endpoint.Env) > 0 {
+				http.Error(w, "endpoint transport required when endpoint fields are provided", http.StatusBadRequest)
+				return
+			}
+		} else {
+			if _, ok := allowedModuleTransports[transport]; !ok {
+				http.Error(w, fmt.Sprintf("invalid transport: %s (expected: grpc, http, process)", transport), http.StatusBadRequest)
+				return
+			}
+			switch transport {
+			case "grpc", "http":
+				if address == "" {
+					http.Error(w, fmt.Sprintf("endpoint address required for %s transport", transport), http.StatusBadRequest)
+					return
+				}
+				if command != "" || len(payload.Endpoint.Args) > 0 {
+					http.Error(w, fmt.Sprintf("endpoint command/args not allowed for %s transport", transport), http.StatusBadRequest)
+					return
+				}
+			case "process":
+				if command == "" {
+					http.Error(w, "endpoint command required for process transport", http.StatusBadRequest)
+					return
+				}
+				if address != "" {
+					http.Error(w, "endpoint address not used for process transport", http.StatusBadRequest)
+					return
+				}
+			}
+
+			endpoint := configstore.ModuleEndpoint{
+				AdapterID: adapterID,
+				Transport: transport,
+				Address:   address,
+				Command:   command,
+			}
+			if len(payload.Endpoint.Args) > 0 {
+				endpoint.Args = append([]string(nil), payload.Endpoint.Args...)
+			}
+			if len(payload.Endpoint.Env) > 0 {
+				endpoint.Env = cloneStringMap(payload.Endpoint.Env)
+			}
+			if err := s.configStore.UpsertModuleEndpoint(r.Context(), endpoint); err != nil {
+				http.Error(w, fmt.Sprintf("register module endpoint failed: %v", err), http.StatusInternalServerError)
+				return
+			}
+		}
+	}
+
+	result := apihttp.ModuleRegistrationResult{
+		Adapter: apihttp.ModuleAdapter{
+			ID:       adapter.ID,
+			Source:   adapter.Source,
+			Version:  adapter.Version,
+			Type:     adapter.Type,
+			Name:     adapter.Name,
+			Manifest: payload.Manifest,
+		},
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(result); err != nil {
+		log.Printf("[APIServer] failed to encode module registration result: %v", err)
 	}
 }
 

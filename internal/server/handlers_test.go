@@ -1154,6 +1154,144 @@ func TestHandleModulesGet(t *testing.T) {
 	}
 }
 
+func TestHandleModulesRegister(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	store := openTestStore(t)
+	modulesService := newTestModulesService(t, store)
+	apiServer.SetModulesController(modulesService)
+
+	payload := `{"adapter_id":"nupi-whisper-local-stt","type":"stt","name":"Nupi Whisper Local STT","source":"external","version":"0.1.0","endpoint":{"transport":"grpc","address":"127.0.0.1:55555"}}`
+	req := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/modules/register", bytes.NewBufferString(payload)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	apiServer.handleModulesRegister(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
+	}
+
+	var resp apihttp.ModuleRegistrationResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid response: %v", err)
+	}
+	if resp.Adapter.ID != "nupi-whisper-local-stt" {
+		t.Fatalf("unexpected adapter id %q", resp.Adapter.ID)
+	}
+
+	ctx := context.Background()
+	exists, err := store.AdapterExists(ctx, resp.Adapter.ID)
+	if err != nil {
+		t.Fatalf("adapter exists check failed: %v", err)
+	}
+	if !exists {
+		t.Fatalf("expected adapter to be registered")
+	}
+
+	endpoint, err := store.GetModuleEndpoint(ctx, resp.Adapter.ID)
+	if err != nil {
+		t.Fatalf("fetch module endpoint: %v", err)
+	}
+	if endpoint.Transport != "grpc" {
+		t.Fatalf("unexpected transport %q", endpoint.Transport)
+	}
+	if endpoint.Address != "127.0.0.1:55555" {
+		t.Fatalf("unexpected address %q", endpoint.Address)
+	}
+}
+
+func TestHandleModulesRegisterRequiresAdapterID(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	req := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/modules/register", bytes.NewBufferString(`{"type":"stt"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	apiServer.handleModulesRegister(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestHandleModulesRegisterRejectsInvalidType(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	req := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/modules/register", bytes.NewBufferString(`{"adapter_id":"test","type":"invalid"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	apiServer.handleModulesRegister(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestHandleModulesRegisterRejectsInvalidTransport(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	req := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/modules/register", bytes.NewBufferString(`{"adapter_id":"test","type":"stt","endpoint":{"transport":"smtp"}}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	apiServer.handleModulesRegister(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestHandleModulesRegisterRejectsLargeManifest(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	largeManifest := strings.Repeat("a", maxAdapterManifestBytes+1)
+	req := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/modules/register", bytes.NewBufferString(fmt.Sprintf(`{"adapter_id":"test","manifest":"%s"}`, largeManifest))))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	apiServer.handleModulesRegister(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestHandleModulesRegisterRequiresEndpointAddressForGRPC(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	req := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/modules/register", bytes.NewBufferString(`{"adapter_id":"test","type":"stt","endpoint":{"transport":"grpc"}}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	apiServer.handleModulesRegister(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestHandleModulesRegisterRequiresEndpointCommandForProcess(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	req := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/modules/register", bytes.NewBufferString(`{"adapter_id":"test","type":"ai","endpoint":{"transport":"process"}}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	apiServer.handleModulesRegister(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+}
+
+func TestHandleModulesRegisterRequiresAdminRole(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	req := withReadOnly(apiServer, httptest.NewRequest(http.MethodPost, "/modules/register", bytes.NewBufferString(`{"adapter_id":"test"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	apiServer.handleModulesRegister(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", rec.Code)
+	}
+}
+
 func TestHandleModulesBindStartStop(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
 	store := openTestStore(t)

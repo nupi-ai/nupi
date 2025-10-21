@@ -40,6 +40,23 @@ var (
 	instanceDir string
 )
 
+var (
+	allowedModuleTypes = map[string]struct{}{
+		"stt":          {},
+		"tts":          {},
+		"ai":           {},
+		"vad":          {},
+		"tunnel":       {},
+		"detector":     {},
+		"tool-cleaner": {},
+	}
+	allowedEndpointTransports = map[string]struct{}{
+		"grpc":    {},
+		"http":    {},
+		"process": {},
+	}
+)
+
 // OutputFormatter handles output in JSON or human-readable format
 type OutputFormatter struct {
 	jsonMode bool
@@ -269,6 +286,42 @@ func main() {
 	}
 	modulesCmd.PersistentFlags().Bool("grpc", false, "Use gRPC transport for module operations")
 
+	modulesRegisterCmd := &cobra.Command{
+		Use:           "register",
+		Short:         "Register or update a module adapter",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE:          modulesRegister,
+	}
+	modulesRegisterCmd.Example = `  # Register gRPC-based STT module
+  nupi modules register \
+    --id nupi-whisper-local-stt \
+    --type stt \
+    --name "Nupi Whisper Local STT" \
+    --version 0.1.0 \
+    --endpoint-transport grpc \
+    --endpoint-address 127.0.0.1:50051
+
+  # Register process-based AI module
+  nupi modules register \
+    --id custom-ai \
+    --type ai \
+    --endpoint-transport process \
+    --endpoint-command /path/to/binary \
+    --endpoint-arg "--config" \
+    --endpoint-arg "/etc/module.json"`
+	modulesRegisterCmd.Flags().String("id", "", "Adapter identifier (slug)")
+	modulesRegisterCmd.Flags().String("type", "", "Adapter type (stt/tts/ai/vad/...)")
+	modulesRegisterCmd.Flags().String("name", "", "Human readable adapter name")
+	modulesRegisterCmd.Flags().String("source", "external", "Adapter source/provider")
+	modulesRegisterCmd.Flags().String("version", "", "Adapter version")
+	modulesRegisterCmd.Flags().String("manifest", "", "Optional manifest JSON payload")
+	modulesRegisterCmd.Flags().String("endpoint-transport", "grpc", "Module endpoint transport (process|grpc|http)")
+	modulesRegisterCmd.Flags().String("endpoint-address", "", "Module endpoint address (for grpc/http transports)")
+	modulesRegisterCmd.Flags().String("endpoint-command", "", "Command to launch module (process transport)")
+	modulesRegisterCmd.Flags().StringArray("endpoint-arg", nil, "Argument for module command (repeatable)")
+	modulesRegisterCmd.Flags().StringArray("endpoint-env", nil, "Environment variable KEY=VALUE for module command (repeatable)")
+
 	modulesListCmd := &cobra.Command{
 		Use:           "list",
 		Short:         "Show module slots, bindings and runtime status",
@@ -305,7 +358,7 @@ func main() {
 		RunE:          modulesStop,
 	}
 
-	modulesCmd.AddCommand(modulesListCmd, modulesBindCmd, modulesStartCmd, modulesStopCmd)
+	modulesCmd.AddCommand(modulesRegisterCmd, modulesListCmd, modulesBindCmd, modulesStartCmd, modulesStopCmd)
 
 	quickstartCmd := &cobra.Command{
 		Use:           "quickstart",
@@ -1262,6 +1315,67 @@ func fetchModulesOverview(c *client.Client) (apihttp.ModulesOverview, error) {
 	return payload, nil
 }
 
+func modulesRegisterHTTP(out *OutputFormatter, payload apihttp.ModuleRegistrationRequest) (apihttp.ModuleAdapter, error) {
+	c, err := client.New()
+	if err != nil {
+		return apihttp.ModuleAdapter{}, out.Error("Failed to initialise client", err)
+	}
+	defer c.Close()
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return apihttp.ModuleAdapter{}, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, c.BaseURL()+"/modules/register", bytes.NewReader(body))
+	if err != nil {
+		return apihttp.ModuleAdapter{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := doRequest(c, req)
+	if err != nil {
+		return apihttp.ModuleAdapter{}, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return apihttp.ModuleAdapter{}, errors.New(readErrorMessage(resp))
+	}
+
+	var result apihttp.ModuleRegistrationResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return apihttp.ModuleAdapter{}, err
+	}
+	return result.Adapter, nil
+}
+
+func parseKeyValuePairs(values []string) (map[string]string, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]string, len(values))
+	for _, entry := range values {
+		trimmed := strings.TrimSpace(entry)
+		if trimmed == "" {
+			continue
+		}
+		parts := strings.SplitN(trimmed, "=", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid key=value pair: %s", entry)
+		}
+		key := strings.TrimSpace(parts[0])
+		if key == "" {
+			return nil, fmt.Errorf("invalid key in %s", entry)
+		}
+		out[key] = parts[1]
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
 func postModuleAction(c *client.Client, endpoint string, payload moduleActionRequestPayload) (apihttp.ModuleEntry, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -1377,6 +1491,119 @@ func modulesList(cmd *cobra.Command, _ []string) error {
 		return modulesListGRPC(out)
 	}
 	return modulesListHTTP(out)
+}
+
+func modulesRegister(cmd *cobra.Command, _ []string) error {
+	out := newOutputFormatter(cmd)
+
+	adapterID, _ := cmd.Flags().GetString("id")
+	adapterID = strings.TrimSpace(adapterID)
+	if adapterID == "" {
+		return out.Error("--id is required", errors.New("missing adapter id"))
+	}
+
+	adapterType, _ := cmd.Flags().GetString("type")
+	adapterType = strings.TrimSpace(adapterType)
+	if adapterType != "" {
+		if _, ok := allowedModuleTypes[adapterType]; !ok {
+			return out.Error(fmt.Sprintf("invalid type %q (expected: stt, tts, ai, vad, tunnel, detector, tool-cleaner)", adapterType), errors.New("invalid adapter type"))
+		}
+	}
+
+	name, _ := cmd.Flags().GetString("name")
+	name = strings.TrimSpace(name)
+	source, _ := cmd.Flags().GetString("source")
+	source = strings.TrimSpace(source)
+	version, _ := cmd.Flags().GetString("version")
+	version = strings.TrimSpace(version)
+	manifestRaw, _ := cmd.Flags().GetString("manifest")
+
+	transportOpt, _ := cmd.Flags().GetString("endpoint-transport")
+	transportOpt = strings.TrimSpace(transportOpt)
+	addressOpt, _ := cmd.Flags().GetString("endpoint-address")
+	addressOpt = strings.TrimSpace(addressOpt)
+	commandOpt, _ := cmd.Flags().GetString("endpoint-command")
+	commandOpt = strings.TrimSpace(commandOpt)
+	argsOpt, _ := cmd.Flags().GetStringArray("endpoint-arg")
+	envOpt, _ := cmd.Flags().GetStringArray("endpoint-env")
+
+	var manifest json.RawMessage
+	if trimmed := strings.TrimSpace(manifestRaw); trimmed != "" {
+		if !json.Valid([]byte(trimmed)) {
+			return out.Error("Manifest must be valid JSON", fmt.Errorf("invalid manifest payload"))
+		}
+		manifest = json.RawMessage(trimmed)
+	}
+
+	endpointEnv, err := parseKeyValuePairs(envOpt)
+	if err != nil {
+		return out.Error("Invalid --endpoint-env value", err)
+	}
+
+	var endpoint *apihttp.ModuleEndpointConfig
+	if transportOpt != "" || addressOpt != "" || commandOpt != "" || len(argsOpt) > 0 || len(endpointEnv) > 0 {
+		if transportOpt == "" {
+			return out.Error("--endpoint-transport required when endpoint flags are specified", errors.New("missing transport"))
+		}
+		if _, ok := allowedEndpointTransports[transportOpt]; !ok {
+			return out.Error(fmt.Sprintf("invalid transport: %s (expected: grpc, http, process)", transportOpt), errors.New("invalid transport"))
+		}
+		switch transportOpt {
+		case "grpc", "http":
+			if addressOpt == "" {
+				return out.Error(fmt.Sprintf("--endpoint-address required for %s transport", transportOpt), errors.New("missing address"))
+			}
+			if commandOpt != "" || len(argsOpt) > 0 {
+				return out.Error(fmt.Sprintf("--endpoint-command/--endpoint-arg not allowed for %s transport", transportOpt), errors.New("conflicting endpoint flags"))
+			}
+		case "process":
+			if commandOpt == "" {
+				return out.Error("--endpoint-command required for process transport", errors.New("missing command"))
+			}
+			if addressOpt != "" {
+				return out.Error("--endpoint-address not used for process transport", errors.New("unexpected address"))
+			}
+		}
+
+		endpoint = &apihttp.ModuleEndpointConfig{
+			Transport: transportOpt,
+			Address:   addressOpt,
+			Command:   commandOpt,
+			Args:      append([]string(nil), argsOpt...),
+			Env:       endpointEnv,
+		}
+	}
+
+	useGRPC, _ := cmd.Flags().GetBool("grpc")
+	if useGRPC {
+		return out.Error("Modules register over gRPC is not supported yet", errors.New("grpc not implemented"))
+	}
+
+	payload := apihttp.ModuleRegistrationRequest{
+		AdapterID: adapterID,
+		Source:    source,
+		Version:   version,
+		Type:      adapterType,
+		Name:      name,
+		Manifest:  manifest,
+		Endpoint:  endpoint,
+	}
+
+	adapter, err := modulesRegisterHTTP(out, payload)
+	if err != nil {
+		return err
+	}
+
+	if out.jsonMode {
+		return out.Print(apihttp.ModuleRegistrationResult{Adapter: adapter})
+	}
+
+	fmt.Printf("Registered adapter %s", adapter.ID)
+	if adapter.Type != "" {
+		fmt.Printf(" (%s)", adapter.Type)
+	}
+	fmt.Println()
+	return nil
 }
 
 func modulesBind(cmd *cobra.Command, args []string) error {
