@@ -55,8 +55,10 @@ func TestServicePublishesTranscripts(t *testing.T) {
 	}
 	defer svc.Shutdown(context.Background())
 
-	sub := bus.Subscribe(eventbus.TopicSpeechTranscript)
-	defer sub.Close()
+	partialSub := bus.Subscribe(eventbus.TopicSpeechTranscriptPartial)
+	defer partialSub.Close()
+	finalSub := bus.Subscribe(eventbus.TopicSpeechTranscriptFinal)
+	defer finalSub.Close()
 
 	segment1 := eventbus.AudioIngressSegmentEvent{
 		SessionID: "sess-1",
@@ -94,7 +96,7 @@ func TestServicePublishesTranscripts(t *testing.T) {
 		Payload: segment1,
 	})
 
-	first := receiveTranscript(t, sub, 1*time.Second)
+	first := receiveTranscript(t, partialSub, 1*time.Second)
 	if first.Sequence != 1 {
 		t.Fatalf("unexpected sequence: got %d want 1", first.Sequence)
 	}
@@ -105,18 +107,24 @@ func TestServicePublishesTranscripts(t *testing.T) {
 		t.Fatalf("metadata not propagated: %+v", first.Metadata)
 	}
 
+	if first.Final {
+		t.Fatalf("expected non-final transcript on partial topic")
+	}
+
 	bus.Publish(context.Background(), eventbus.Envelope{
 		Topic:   eventbus.TopicAudioIngressSegment,
 		Payload: segment2,
 	})
 
-	second := receiveTranscript(t, sub, 1*time.Second)
-	if second.Sequence != 2 {
-		t.Fatalf("unexpected second sequence: %d", second.Sequence)
+	finalTranscript := receiveTranscript(t, finalSub, 1*time.Second)
+	if finalTranscript.Sequence != 2 || !finalTranscript.Final {
+		t.Fatalf("unexpected final transcript on dedicated topic: %+v", finalTranscript)
 	}
-	if second.Text != "hello world" || !second.Final {
-		t.Fatalf("unexpected final transcript: %+v", second)
+	if finalTranscript.Text != "hello world" {
+		t.Fatalf("unexpected final transcript contents: %+v", finalTranscript)
 	}
+
+	expectNoEvent(t, partialSub, 50*time.Millisecond)
 
 	if !transcriber.closed() {
 		t.Fatalf("expected transcriber Close to be invoked")
@@ -139,7 +147,7 @@ func TestServiceFactoryError(t *testing.T) {
 	}
 	defer svc.Shutdown(context.Background())
 
-	sub := bus.Subscribe(eventbus.TopicSpeechTranscript)
+	sub := bus.Subscribe(eventbus.TopicSpeechTranscriptPartial)
 	defer sub.Close()
 
 	bus.Publish(context.Background(), eventbus.Envelope{
@@ -232,7 +240,7 @@ func TestServiceBuffersUntilAdapterAvailable(t *testing.T) {
 	}
 	defer svc.Shutdown(context.Background())
 
-	sub := bus.Subscribe(eventbus.TopicSpeechTranscript)
+	sub := bus.Subscribe(eventbus.TopicSpeechTranscriptFinal)
 	defer sub.Close()
 
 	segment := eventbus.AudioIngressSegmentEvent{
@@ -289,7 +297,7 @@ func TestServiceDoesNotBufferWhenFactoryUnavailable(t *testing.T) {
 	}
 	defer svc.Shutdown(context.Background())
 
-	sub := bus.Subscribe(eventbus.TopicSpeechTranscript)
+	sub := bus.Subscribe(eventbus.TopicSpeechTranscriptFinal)
 	defer sub.Close()
 
 	for i := 0; i < 10; i++ {
@@ -372,7 +380,7 @@ func TestPendingBufferDropsOldestWhenFull(t *testing.T) {
 	}
 	defer svc.Shutdown(context.Background())
 
-	sub := bus.Subscribe(eventbus.TopicSpeechTranscript)
+	sub := bus.Subscribe(eventbus.TopicSpeechTranscriptFinal)
 	defer sub.Close()
 
 	for i := 0; i < totalSegments; i++ {
@@ -421,6 +429,18 @@ func receiveTranscript(t *testing.T, sub *eventbus.Subscription, timeout time.Du
 		t.Fatalf("timeout waiting for transcript")
 	}
 	return eventbus.SpeechTranscriptEvent{}
+}
+
+func expectNoEvent(t *testing.T, sub *eventbus.Subscription, timeout time.Duration) {
+	t.Helper()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case env := <-sub.C():
+		t.Fatalf("unexpected event on topic: %+v", env.Payload)
+	case <-timer.C:
+	}
 }
 
 type scriptedTranscriber struct {

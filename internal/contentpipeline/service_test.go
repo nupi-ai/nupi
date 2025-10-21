@@ -173,3 +173,69 @@ func TestContentPipelineEmitsErrors(t *testing.T) {
 		t.Fatal("timeout waiting for pipeline error")
 	}
 }
+
+func TestContentPipelineHandlesTranscripts(t *testing.T) {
+	bus := eventbus.New()
+	cp := NewService(bus, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := cp.Start(ctx); err != nil {
+		t.Fatalf("start pipeline: %v", err)
+	}
+	defer cp.Shutdown(context.Background())
+
+	cleanedSub := bus.Subscribe(eventbus.TopicPipelineCleaned)
+	defer cleanedSub.Close()
+
+	bus.Publish(context.Background(), eventbus.Envelope{
+		Topic:  eventbus.TopicSpeechTranscriptFinal,
+		Source: eventbus.SourceAudioSTT,
+		Payload: eventbus.SpeechTranscriptEvent{
+			SessionID:  "voice-session",
+			StreamID:   "mic",
+			Sequence:   7,
+			Text:       "turn lights on",
+			Confidence: 0.87,
+			Final:      true,
+			Metadata: map[string]string{
+				"locale": "en-US",
+			},
+		},
+	})
+
+	select {
+	case env := <-cleanedSub.C():
+		msg, ok := env.Payload.(eventbus.PipelineMessageEvent)
+		if !ok {
+			t.Fatalf("unexpected payload type %T", env.Payload)
+		}
+		if msg.SessionID != "voice-session" {
+			t.Fatalf("unexpected session id %q", msg.SessionID)
+		}
+		if msg.Origin != eventbus.OriginUser {
+			t.Fatalf("expected OriginUser, got %s", msg.Origin)
+		}
+		if msg.Text != "turn lights on" {
+			t.Fatalf("unexpected text: %q", msg.Text)
+		}
+		if msg.Sequence != 7 {
+			t.Fatalf("unexpected sequence: %d", msg.Sequence)
+		}
+		if msg.Annotations["input_source"] != "voice" {
+			t.Fatalf("missing input_source annotation: %+v", msg.Annotations)
+		}
+		if msg.Annotations["stream_id"] != "mic" {
+			t.Fatalf("missing stream_id annotation: %+v", msg.Annotations)
+		}
+		if msg.Annotations["locale"] != "en-US" {
+			t.Fatalf("metadata not propagated: %+v", msg.Annotations)
+		}
+		if _, ok := msg.Annotations["confidence"]; !ok {
+			t.Fatalf("expected confidence annotation")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for cleaned transcript event")
+	}
+}

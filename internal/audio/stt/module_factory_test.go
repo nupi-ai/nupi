@@ -171,7 +171,7 @@ func TestModuleFactoryCreatesNAPTranscriber(t *testing.T) {
 	}
 
 	factory := NewModuleFactory(store)
-	ctx = contextWithDialer(ctx, dialer)
+	ctx = ContextWithDialer(ctx, dialer)
 	params := SessionParams{
 		SessionID: "sess",
 		StreamID:  "mic",

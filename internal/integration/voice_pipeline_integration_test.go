@@ -3,19 +3,28 @@ package integration
 import (
 	"context"
 	"encoding/binary"
+	"errors"
+	"fmt"
+	"io"
+	"net"
 	"sync"
 	"testing"
 	"time"
 
+	napv1 "github.com/nupi-ai/nupi/api/nap/v1"
 	"github.com/nupi-ai/nupi/internal/audio/barge"
 	"github.com/nupi-ai/nupi/internal/audio/egress"
 	"github.com/nupi-ai/nupi/internal/audio/ingress"
 	"github.com/nupi-ai/nupi/internal/audio/stt"
 	"github.com/nupi-ai/nupi/internal/audio/vad"
+	configstore "github.com/nupi-ai/nupi/internal/config/store"
+	"github.com/nupi-ai/nupi/internal/contentpipeline"
 	"github.com/nupi-ai/nupi/internal/conversation"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/modules"
 	testutil "github.com/nupi-ai/nupi/internal/testutil"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/test/bufconn"
 )
 
 func TestVoicePipelineEndToEndWithBarge(t *testing.T) {
@@ -77,12 +86,15 @@ func TestVoicePipelineEndToEndWithBarge(t *testing.T) {
 		egress.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
 	)
 
+	pipelineSvc := contentpipeline.NewService(bus, nil)
+
 	conversationSvc := conversation.NewService(bus,
 		conversation.WithHistoryLimit(8),
 		conversation.WithDetachTTL(5*time.Second),
 	)
 
 	services := []startStopper{
+		pipelineSvc,
 		ingressSvc,
 		sttSvc,
 		vadSvc,
@@ -101,8 +113,6 @@ func TestVoicePipelineEndToEndWithBarge(t *testing.T) {
 		defer svc.Shutdown(context.Background())
 	}
 
-	transcriptSub := bus.Subscribe(eventbus.TopicSpeechTranscript)
-	defer transcriptSub.Close()
 	promptSub := bus.Subscribe(eventbus.TopicConversationPrompt)
 	defer promptSub.Close()
 	playbackSub := bus.Subscribe(eventbus.TopicAudioEgressPlayback)
@@ -115,36 +125,6 @@ func TestVoicePipelineEndToEndWithBarge(t *testing.T) {
 	defer func() {
 		bridgeCancel()
 		bridgeWG.Wait()
-	}()
-
-	bridgeWG.Add(1)
-	go func() {
-		defer bridgeWG.Done()
-		for {
-			select {
-			case <-bridgeCtx.Done():
-				return
-			case env, ok := <-transcriptSub.C():
-				if !ok {
-					return
-				}
-				transcript, ok := env.Payload.(eventbus.SpeechTranscriptEvent)
-				if !ok || !transcript.Final {
-					continue
-				}
-				bus.Publish(context.Background(), eventbus.Envelope{
-					Topic:  eventbus.TopicPipelineCleaned,
-					Source: eventbus.SourceContentPipeline,
-					Payload: eventbus.PipelineMessageEvent{
-						SessionID:   transcript.SessionID,
-						Origin:      eventbus.OriginUser,
-						Text:        transcript.Text,
-						Annotations: transcript.Metadata,
-						Sequence:    transcript.Sequence,
-					},
-				})
-			}
-		}
 	}()
 
 	bridgeWG.Add(1)
@@ -332,6 +312,238 @@ func waitForPlayback(t *testing.T, sub *eventbus.Subscription, timeout time.Dura
 	}
 }
 
+func TestAudioIngressToSTTGRPCPipeline(t *testing.T) {
+	ctx := context.Background()
+	bus := eventbus.New()
+
+	store, cleanup := testutil.OpenStore(t)
+	defer cleanup()
+
+	if err := modules.EnsureBuiltinAdapters(ctx, store); err != nil {
+		t.Fatalf("ensure builtin adapters: %v", err)
+	}
+
+	const adapterID = "adapter.stt.grpc.test"
+	adapter := configstore.Adapter{
+		ID:      adapterID,
+		Source:  "local",
+		Type:    "stt",
+		Name:    "Test gRPC STT",
+		Version: "dev",
+	}
+	if err := store.UpsertAdapter(ctx, adapter); err != nil {
+		t.Fatalf("upsert adapter: %v", err)
+	}
+	if err := store.SetActiveAdapter(ctx, string(modules.SlotSTTPrimary), adapterID, nil); err != nil {
+		t.Fatalf("activate stt adapter: %v", err)
+	}
+
+	const bufSize = 1024 * 1024
+	lis := bufconn.Listen(bufSize)
+	grpcServer := grpc.NewServer()
+	napv1.RegisterSpeechToTextServiceServer(grpcServer, &grpcTestSTTServer{})
+	go func() {
+		if err := grpcServer.Serve(lis); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+			t.Logf("grpc server stopped: %v", err)
+		}
+	}()
+	t.Cleanup(func() {
+		grpcServer.GracefulStop()
+		_ = lis.Close()
+	})
+	dialer := func(ctx context.Context, _ string) (net.Conn, error) {
+		return lis.DialContext(ctx)
+	}
+
+	if err := store.UpsertModuleEndpoint(ctx, configstore.ModuleEndpoint{
+		AdapterID: adapterID,
+		Transport: "grpc",
+		Address:   "bufconn",
+	}); err != nil {
+		t.Fatalf("register module endpoint: %v", err)
+	}
+
+	ingressSvc := ingress.New(bus)
+	sttSvc := stt.New(
+		bus,
+		stt.WithFactory(stt.NewModuleFactory(store)),
+		stt.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
+	)
+	pipelineSvc := contentpipeline.NewService(bus, nil)
+	conversationSvc := conversation.NewService(bus, conversation.WithHistoryLimit(8), conversation.WithDetachTTL(time.Second))
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	if err := ingressSvc.Start(runCtx); err != nil {
+		t.Fatalf("start ingress service: %v", err)
+	}
+	defer ingressSvc.Shutdown(context.Background())
+
+	if err := sttSvc.Start(stt.ContextWithDialer(runCtx, dialer)); err != nil {
+		t.Fatalf("start stt service: %v", err)
+	}
+	defer sttSvc.Shutdown(context.Background())
+
+	if err := pipelineSvc.Start(runCtx); err != nil {
+		t.Fatalf("start pipeline service: %v", err)
+	}
+	defer pipelineSvc.Shutdown(context.Background())
+
+	if err := conversationSvc.Start(runCtx); err != nil {
+		t.Fatalf("start conversation service: %v", err)
+	}
+	defer conversationSvc.Shutdown(context.Background())
+
+	finalSub := bus.Subscribe(eventbus.TopicSpeechTranscriptFinal, eventbus.WithSubscriptionName("test_final_transcripts"))
+	defer finalSub.Close()
+	promptSub := bus.Subscribe(eventbus.TopicConversationPrompt, eventbus.WithSubscriptionName("test_conversation_prompt"))
+	defer promptSub.Close()
+
+	finalCh := make(chan eventbus.SpeechTranscriptEvent, 1)
+	pipelineCh := make(chan eventbus.PipelineMessageEvent, 1)
+	promptCh := make(chan eventbus.ConversationPromptEvent, 1)
+
+	bridgeCtx, bridgeCancel := context.WithCancel(runCtx)
+	defer bridgeCancel()
+
+	go func() {
+		for {
+			select {
+			case <-bridgeCtx.Done():
+				return
+			case env, ok := <-finalSub.C():
+				if !ok {
+					return
+				}
+				tr, ok := env.Payload.(eventbus.SpeechTranscriptEvent)
+				if !ok {
+					continue
+				}
+				select {
+				case finalCh <- tr:
+				default:
+				}
+			}
+		}
+	}()
+
+	pipelineSub := bus.Subscribe(eventbus.TopicPipelineCleaned, eventbus.WithSubscriptionName("test_pipeline_cleaned"))
+	defer pipelineSub.Close()
+
+	go func() {
+		for {
+			select {
+			case <-bridgeCtx.Done():
+				return
+			case env, ok := <-pipelineSub.C():
+				if !ok {
+					return
+				}
+				evt, ok := env.Payload.(eventbus.PipelineMessageEvent)
+				if !ok {
+					continue
+				}
+				select {
+				case pipelineCh <- evt:
+				default:
+				}
+			}
+		}
+	}()
+	go func() {
+		for {
+			select {
+			case <-bridgeCtx.Done():
+				return
+			case env, ok := <-promptSub.C():
+				if !ok {
+					return
+				}
+				prompt, ok := env.Payload.(eventbus.ConversationPromptEvent)
+				if !ok {
+					continue
+				}
+				select {
+				case promptCh <- prompt:
+				default:
+				}
+			}
+		}
+	}()
+
+	sessionID := "grpc-session"
+	bus.Publish(context.Background(), eventbus.Envelope{
+		Topic:  eventbus.TopicSessionsLifecycle,
+		Source: eventbus.SourceSessionManager,
+		Payload: eventbus.SessionLifecycleEvent{
+			SessionID: sessionID,
+			State:     eventbus.SessionStateRunning,
+		},
+	})
+
+	format := eventbus.AudioFormat{
+		Encoding:      eventbus.AudioEncodingPCM16,
+		SampleRate:    16000,
+		Channels:      1,
+		BitDepth:      16,
+		FrameDuration: 20 * time.Millisecond,
+	}
+
+	stream, err := ingressSvc.OpenStream(sessionID, "mic", format, map[string]string{
+		"locale": "en-US",
+	})
+	if err != nil {
+		t.Fatalf("open ingress stream: %v", err)
+	}
+
+	segment := make([]byte, 640)
+	for i := 0; i < 2; i++ {
+		if err := stream.Write(segment); err != nil {
+			t.Fatalf("write segment %d: %v", i+1, err)
+		}
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatalf("close stream: %v", err)
+	}
+
+	finalEvent := waitFor(t, finalCh, 2*time.Second)
+	if !finalEvent.Final {
+		t.Fatalf("expected final transcript, got %+v", finalEvent)
+	}
+	if finalEvent.Text != fmt.Sprintf("final-%d", finalEvent.Sequence) {
+		t.Fatalf("unexpected final transcript text: %+v", finalEvent)
+	}
+
+	pipelineEvent := waitFor(t, pipelineCh, time.Second)
+	if pipelineEvent.Text != finalEvent.Text {
+		t.Fatalf("pipeline text mismatch: got %q want %q", pipelineEvent.Text, finalEvent.Text)
+	}
+
+	promptEvent := waitFor(t, promptCh, time.Second)
+	if promptEvent.NewMessage.Text != finalEvent.Text {
+		t.Fatalf("prompt text mismatch: got %q want %q", promptEvent.NewMessage.Text, finalEvent.Text)
+	}
+	if promptEvent.NewMessage.Origin != eventbus.OriginUser {
+		t.Fatalf("unexpected prompt origin: %s", promptEvent.NewMessage.Origin)
+	}
+}
+
+func waitFor[T any](t *testing.T, ch <-chan T, timeout time.Duration) T {
+	t.Helper()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case v := <-ch:
+		return v
+	case <-timer.C:
+		t.Fatalf("timeout waiting for value (%s)", timeout)
+	}
+	var zero T
+	return zero
+}
+
 func waitForBargeEvent(t *testing.T, sub *eventbus.Subscription, timeout time.Duration) eventbus.SpeechBargeInEvent {
 	t.Helper()
 	timer := time.NewTimer(timeout)
@@ -437,4 +649,48 @@ func copyStringMap(src map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+type grpcTestSTTServer struct {
+	napv1.UnimplementedSpeechToTextServiceServer
+}
+
+func (s *grpcTestSTTServer) StreamTranscription(stream napv1.SpeechToTextService_StreamTranscriptionServer) error {
+	for {
+		req, err := stream.Recv()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
+		}
+
+		if req.GetFlush() {
+			return nil
+		}
+
+		segment := req.GetSegment()
+		if segment == nil {
+			continue
+		}
+
+		text := fmt.Sprintf("segment-%d", segment.GetSequence())
+		if segment.GetLast() {
+			text = fmt.Sprintf("final-%d", segment.GetSequence())
+		}
+
+		resp := &napv1.Transcript{
+			Sequence:   segment.GetSequence(),
+			Text:       text,
+			Confidence: 0.8,
+			Final:      segment.GetLast(),
+			Metadata:   segment.GetMetadata(),
+			StartedAt:  segment.GetStartedAt(),
+			EndedAt:    segment.GetEndedAt(),
+		}
+
+		if err := stream.Send(resp); err != nil {
+			return err
+		}
+	}
 }

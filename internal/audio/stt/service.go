@@ -437,8 +437,12 @@ func (s *Service) publishTranscript(st *stream, tr Transcription) {
 		Metadata:   copyMetadata(tr.Metadata),
 	}
 
+	specificTopic := eventbus.TopicSpeechTranscriptPartial
+	if tr.Final {
+		specificTopic = eventbus.TopicSpeechTranscriptFinal
+	}
 	s.bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicSpeechTranscript,
+		Topic:   specificTopic,
 		Source:  eventbus.SourceAudioSTT,
 		Payload: evt,
 	})

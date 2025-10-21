@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -87,12 +88,14 @@ func (s *Service) Start(ctx context.Context) error {
 	toolSub := s.bus.Subscribe(eventbus.TopicSessionsTool, eventbus.WithSubscriptionName("pipeline_tool"))
 	outputSub := s.bus.Subscribe(eventbus.TopicSessionsOutput, eventbus.WithSubscriptionName("pipeline_output"))
 	lifecycleSub := s.bus.Subscribe(eventbus.TopicSessionsLifecycle, eventbus.WithSubscriptionName("pipeline_lifecycle"))
-	s.subs = []*eventbus.Subscription{toolSub, outputSub, lifecycleSub}
+	transcriptSub := s.bus.Subscribe(eventbus.TopicSpeechTranscriptFinal, eventbus.WithSubscriptionName("pipeline_transcripts"))
+	s.subs = []*eventbus.Subscription{toolSub, outputSub, lifecycleSub, transcriptSub}
 
-	s.wg.Add(3)
+	s.wg.Add(4)
 	go s.consumeToolEvents(derivedCtx, toolSub)
 	go s.consumeOutputEvents(derivedCtx, outputSub)
 	go s.consumeLifecycleEvents(derivedCtx, lifecycleSub)
+	go s.consumeTranscriptEvents(derivedCtx, transcriptSub)
 	s.startMetricsReporter(derivedCtx)
 
 	return nil
@@ -200,6 +203,28 @@ func (s *Service) consumeLifecycleEvents(ctx context.Context, sub *eventbus.Subs
 	}
 }
 
+func (s *Service) consumeTranscriptEvents(ctx context.Context, sub *eventbus.Subscription) {
+	defer s.wg.Done()
+	if sub == nil {
+		return
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case env, ok := <-sub.C():
+			if !ok {
+				return
+			}
+			payload, ok := env.Payload.(eventbus.SpeechTranscriptEvent)
+			if !ok {
+				continue
+			}
+			s.handleTranscript(payload)
+		}
+	}
+}
+
 func (s *Service) handleSessionOutput(evt eventbus.SessionOutputEvent) {
 	text := string(bytes.ReplaceAll(evt.Data, []byte("\r\n"), []byte("\n")))
 
@@ -255,10 +280,50 @@ func (s *Service) handleSessionOutput(evt eventbus.SessionOutputEvent) {
 		Sequence:    evt.Sequence,
 	}
 
+	s.publishPipelineMessage(cleaned)
+}
+
+func (s *Service) handleTranscript(evt eventbus.SpeechTranscriptEvent) {
+	if evt.SessionID == "" {
+		return
+	}
+	if strings.TrimSpace(evt.Text) == "" {
+		return
+	}
+
+	annotations := map[string]string{
+		"input_source": "voice",
+	}
+	if evt.StreamID != "" {
+		annotations["stream_id"] = evt.StreamID
+	}
+	if evt.Confidence > 0 {
+		annotations["confidence"] = fmt.Sprintf("%.3f", evt.Confidence)
+	}
+	for k, v := range evt.Metadata {
+		if v == "" {
+			continue
+		}
+		annotations[k] = v
+	}
+
+	s.processedTotal.Add(1)
+	cleaned := eventbus.PipelineMessageEvent{
+		SessionID:   evt.SessionID,
+		Origin:      eventbus.OriginUser,
+		Text:        evt.Text,
+		Annotations: annotations,
+		Sequence:    evt.Sequence,
+	}
+
+	s.publishPipelineMessage(cleaned)
+}
+
+func (s *Service) publishPipelineMessage(evt eventbus.PipelineMessageEvent) {
 	s.bus.Publish(context.Background(), eventbus.Envelope{
 		Topic:   eventbus.TopicPipelineCleaned,
 		Source:  eventbus.SourceContentPipeline,
-		Payload: cleaned,
+		Payload: evt,
 	})
 }
 

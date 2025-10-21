@@ -39,9 +39,9 @@ func newNAPTranscriber(ctx context.Context, params SessionParams, endpoint confi
 		return nil, fmt.Errorf("stt: module %s missing gRPC address", endpoint.AdapterID)
 	}
 
-    dialOpts := []grpc.DialOption{
-        grpc.WithTransportCredentials(insecure.NewCredentials()), // TODO(#NAP-TLS): wire TLS credentials for remote adapters
-    }
+	dialOpts := []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()), // TODO(#NAP-TLS): wire TLS credentials for remote adapters
+	}
 	if dialer := dialerFromContext(ctx); dialer != nil {
 		dialOpts = append(dialOpts, grpc.WithContextDialer(dialer))
 	}
@@ -254,8 +254,11 @@ func timestampOrNil(t time.Time) *timestamppb.Timestamp {
 
 type dialerContextKey struct{}
 
-// contextWithDialer attaches a custom dialer to the context (used in tests).
-func contextWithDialer(ctx context.Context, dialer func(context.Context, string) (net.Conn, error)) context.Context {
+// ContextWithDialer attaches a custom dialer to the context.
+// It is primarily intended for tests that exercise gRPC connectivity via bufconn
+// without opening real network sockets. Production code should dial the adapter
+// endpoint directly and does not need to override the dialer.
+func ContextWithDialer(ctx context.Context, dialer func(context.Context, string) (net.Conn, error)) context.Context {
 	if ctx == nil || dialer == nil {
 		return ctx
 	}
