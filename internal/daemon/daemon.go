@@ -43,23 +43,22 @@ type Options struct {
 
 // Daemon represents the main daemon process.
 type Daemon struct {
-	store                *configstore.Store
-	sessionManager       *session.Manager
-	apiServer            *server.APIServer
-	serviceHost          *daemonruntime.ServiceHost
-	runtimeInfo          *RuntimeInfo
-	lifecycle            *daemonruntime.Lifecycle
-	instancePaths        config.InstancePaths
-	runnerManager        *adapterrunner.Manager
-	eventBus             *eventbus.Bus
-	ctx                  context.Context
-	cancel               context.CancelFunc
-	errMu                sync.Mutex
-	runErr               error
-	configMu             sync.Mutex
-	configCancel         context.CancelFunc
-	transportMonitorStop context.CancelFunc
-	transportSnapshot    server.TransportSnapshot
+	store             *configstore.Store
+	sessionManager    *session.Manager
+	apiServer         *server.APIServer
+	serviceHost       *daemonruntime.ServiceHost
+	runtimeInfo       *RuntimeInfo
+	lifecycle         *daemonruntime.Lifecycle
+	instancePaths     config.InstancePaths
+	runnerManager     *adapterrunner.Manager
+	eventBus          *eventbus.Bus
+	ctx               context.Context
+	cancel            context.CancelFunc
+	errMu             sync.Mutex
+	runErr            error
+	configMu          sync.Mutex
+	configCancel      context.CancelFunc
+	transportSnapshot server.TransportSnapshot
 }
 
 // New creates a new daemon instance bound to the provided configuration store.
@@ -271,7 +270,9 @@ func (d *Daemon) Start() error {
 		return fmt.Errorf("daemon: start services: %w", err)
 	}
 	d.watchHostErrors()
+	d.configMu.Lock()
 	d.transportSnapshot = d.apiServer.CurrentTransportSnapshot()
+	d.configMu.Unlock()
 	if err := d.startConfigWatcher(); err != nil {
 		log.Printf("[Daemon] config watcher error: %v", err)
 	}
@@ -308,11 +309,12 @@ func (d *Daemon) Start() error {
 // Shutdown signals the daemon to stop.
 func (d *Daemon) Shutdown() error {
 	d.lifecycle.Shutdown()
-	if d.configCancel != nil {
-		d.configCancel()
-	}
-	if d.transportMonitorStop != nil {
-		d.transportMonitorStop()
+	d.configMu.Lock()
+	cancelConfig := d.configCancel
+	d.configCancel = nil
+	d.configMu.Unlock()
+	if cancelConfig != nil {
+		cancelConfig()
 	}
 	if d.cancel != nil {
 		d.cancel()
@@ -348,7 +350,9 @@ func (d *Daemon) startConfigWatcher() error {
 	if err != nil {
 		return err
 	}
+	d.configMu.Lock()
 	d.configCancel = cancel
+	d.configMu.Unlock()
 	return nil
 }
 
@@ -404,15 +408,12 @@ func (d *Daemon) startTransportMonitor() error {
 		return nil
 	}
 
-	ctx, cancel := context.WithCancel(d.ctx)
-	d.transportMonitorStop = cancel
-
 	go func() {
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-ctx.Done():
+			case <-d.ctx.Done():
 				return
 			case <-ticker.C:
 				d.checkTransportFiles()

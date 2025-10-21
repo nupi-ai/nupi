@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -71,7 +72,11 @@ type Wrapper struct {
 	eventsMutex  sync.RWMutex
 	eventsClosed bool
 
-	isRunning bool
+	commandMu sync.RWMutex
+
+	isRunning atomic.Bool
+	exitCode  atomic.Int32
+	waitOnce  sync.Once
 	startTime time.Time
 	pid       int
 }
@@ -176,7 +181,9 @@ func (w *Wrapper) Start(opts StartOptions) error {
 	}
 	w.SetWinSize(rows, cols)
 
-	w.isRunning = true
+	w.isRunning.Store(true)
+	w.exitCode.Store(-1)
+	w.waitOnce = sync.Once{}
 	w.startTime = time.Now()
 	if w.command.Process != nil {
 		w.pid = w.command.Process.Pid
@@ -203,12 +210,10 @@ func (w *Wrapper) captureWithBuffer() {
 	for {
 		n, err := w.ptyFile.Read(buffer)
 		if err != nil {
-			w.isRunning = false
+			w.isRunning.Store(false)
+			_ = w.reapProcess()
 
-			exitCode := -1
-			if w.command.ProcessState != nil {
-				exitCode = w.command.ProcessState.ExitCode()
-			}
+			exitCode := int(w.exitCode.Load())
 
 			w.emitEvent(Event{
 				Type:      "process_exited",
@@ -339,22 +344,33 @@ func (w *Wrapper) notifyResize(rows, cols int) {
 
 // Stop stops the PTY process gracefully with timeout.
 func (w *Wrapper) Stop(timeout time.Duration) error {
-	if !w.isRunning || w.command == nil || w.command.Process == nil {
+	if !w.isRunning.Load() {
 		return nil
 	}
 
-	if err := w.command.Process.Signal(syscall.SIGTERM); err != nil {
+	w.commandMu.RLock()
+	cmd := w.command
+	w.commandMu.RUnlock()
+	if cmd == nil || cmd.Process == nil {
+		return nil
+	}
+	proc := cmd.Process
+	if proc == nil {
+		return nil
+	}
+
+	if err := proc.Signal(syscall.SIGTERM); err != nil {
 		return err
 	}
 
 	done := make(chan error, 1)
 	go func() {
-		done <- w.command.Wait()
+		done <- w.reapProcess()
 	}()
 
 	select {
 	case err := <-done:
-		w.isRunning = false
+		w.isRunning.Store(false)
 		w.eventsMutex.Lock()
 		if !w.eventsClosed {
 			close(w.events)
@@ -366,10 +382,20 @@ func (w *Wrapper) Stop(timeout time.Duration) error {
 		}
 		return err
 	case <-time.After(timeout):
-		if err := w.command.Process.Kill(); err != nil {
+		w.commandMu.RLock()
+		cmd := w.command
+		w.commandMu.RUnlock()
+		if cmd == nil || cmd.Process == nil {
+			return nil
+		}
+		proc := cmd.Process
+		if proc == nil {
+			return nil
+		}
+		if err := proc.Kill(); err != nil {
 			return err
 		}
-		w.isRunning = false
+		w.isRunning.Store(false)
 		w.eventsMutex.Lock()
 		if !w.eventsClosed {
 			close(w.events)
@@ -384,9 +410,31 @@ func (w *Wrapper) Stop(timeout time.Duration) error {
 	}
 }
 
+func (w *Wrapper) reapProcess() error {
+	var waitErr error
+	w.waitOnce.Do(func() {
+		w.commandMu.Lock()
+		defer w.commandMu.Unlock()
+
+		if w.command == nil {
+			w.exitCode.Store(-1)
+			return
+		}
+
+		waitErr = w.command.Wait()
+
+		if state := w.command.ProcessState; state != nil {
+			w.exitCode.Store(int32(state.ExitCode()))
+		} else {
+			w.exitCode.Store(-1)
+		}
+	})
+	return waitErr
+}
+
 // IsRunning returns whether the PTY process is running.
 func (w *Wrapper) IsRunning() bool {
-	return w.isRunning
+	return w.isRunning.Load()
 }
 
 // GetPID returns the process ID.
@@ -396,13 +444,10 @@ func (w *Wrapper) GetPID() int {
 
 // GetExitCode returns the exit code (or -1 if still running).
 func (w *Wrapper) GetExitCode() (int, error) {
-	if w.isRunning {
+	if w.isRunning.Load() {
 		return -1, nil
 	}
-	if w.command.ProcessState == nil {
-		return -1, nil
-	}
-	return w.command.ProcessState.ExitCode(), nil
+	return int(w.exitCode.Load()), nil
 }
 
 // Events returns the event channel.

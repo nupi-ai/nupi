@@ -159,10 +159,9 @@ func (m *Manager) AddEventListener(listener SessionEventListener) {
 
 // notifyListeners notifies all listeners about an event
 func (m *Manager) notifyListeners(event string, session *Session) {
-	// Call listeners without holding the lock to avoid deadlock
-	listeners := make([]SessionEventListener, len(m.listeners))
+	// Call listeners without holding the write lock to avoid deadlock
 	m.mu.RLock()
-	copy(listeners, m.listeners)
+	listeners := append([]SessionEventListener(nil), m.listeners...)
 	m.mu.RUnlock()
 
 	for _, listener := range listeners {

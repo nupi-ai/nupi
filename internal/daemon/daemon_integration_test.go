@@ -18,6 +18,17 @@ import (
 	"github.com/nupi-ai/nupi/internal/protocol"
 )
 
+type lockedBuffer struct {
+	mu  *sync.Mutex
+	buf *bytes.Buffer
+}
+
+func (lb lockedBuffer) Write(p []byte) (int, error) {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+	return lb.buf.Write(p)
+}
+
 func TestDaemonClientIntegration_CreateAttachStream(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("PTY integration tests are not supported on Windows")
@@ -101,19 +112,26 @@ func TestDaemonClientIntegration_CreateAttachStream(t *testing.T) {
 	}
 
 	streamDone := make(chan error, 1)
+	var streamMu sync.Mutex
 	go func() {
-		streamDone <- c.StreamOutputContext(ctx, &streamBuf)
+		streamDone <- c.StreamOutputContext(ctx, lockedBuffer{buf: &streamBuf, mu: &streamMu})
 	}()
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if strings.Contains(streamBuf.String(), "ready:client-env-value") {
+		streamMu.Lock()
+		snapshot := streamBuf.String()
+		streamMu.Unlock()
+		if strings.Contains(snapshot, "ready:client-env-value") {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if !strings.Contains(streamBuf.String(), "ready:client-env-value") {
-		t.Fatalf("expected stream output to contain 'ready:client-env-value', got %q", streamBuf.String())
+	streamMu.Lock()
+	finalSnapshot := streamBuf.String()
+	streamMu.Unlock()
+	if !strings.Contains(finalSnapshot, "ready:client-env-value") {
+		t.Fatalf("expected stream output to contain 'ready:client-env-value', got %q", finalSnapshot)
 	}
 
 	cancel()
