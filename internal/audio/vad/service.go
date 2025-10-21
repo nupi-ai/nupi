@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nupi-ai/nupi/internal/eventbus"
@@ -23,6 +24,8 @@ const (
 	defaultRetryInitial  = 200 * time.Millisecond
 	defaultRetryMax      = 5 * time.Second
 	maxPendingSegments   = 100
+	maxRetryFailures     = 10
+	maxRetryDuration     = 2 * time.Minute
 )
 
 // Detection represents the outcome of processing a segment.
@@ -117,6 +120,10 @@ type Service struct {
 
 	pendingMu sync.Mutex
 	pending   map[string]*pendingStream
+
+	detectionsTotal    atomic.Uint64
+	retryAttemptsTotal atomic.Uint64
+	retryFailuresTotal atomic.Uint64
 }
 
 // New constructs a VAD bridge service bound to the provided event bus.
@@ -272,14 +279,17 @@ func (s *Service) createStream(key string, params SessionParams) (*stream, error
 		return nil, ErrFactoryUnavailable
 	}
 
-	if st, ok := s.stream(key); ok {
-		return st, nil
-	}
-
 	ctx := s.ctx
 	if ctx == nil {
 		ctx = context.Background()
 	}
+
+	s.mu.Lock()
+	if existing, ok := s.streams[key]; ok {
+		s.mu.Unlock()
+		return existing, nil
+	}
+	s.mu.Unlock()
 
 	analyzer, err := s.factory.Create(ctx, params)
 	if err != nil {
@@ -292,6 +302,11 @@ func (s *Service) createStream(key string, params SessionParams) (*stream, error
 	if existing, ok := s.streams[key]; ok {
 		s.mu.Unlock()
 		stream.stop()
+		if stream.analyzer != nil {
+			closeCtx, closeCancel := context.WithTimeout(context.Background(), 2*time.Second)
+			_, _ = stream.analyzer.Close(closeCtx)
+			closeCancel()
+		}
 		return existing, nil
 	}
 	s.streams[key] = stream
@@ -359,10 +374,33 @@ func (s *Service) retryPending(key string) {
 	params := queue.params
 	s.pendingMu.Unlock()
 
+	s.retryAttemptsTotal.Add(1)
+
 	stream, err := s.createStream(key, params)
 	if err != nil {
-		if !errors.Is(err, ErrAdapterUnavailable) && !errors.Is(err, context.Canceled) {
-			s.logger.Printf("[VAD] retry stream session=%s stream=%s failed: %v", params.SessionID, params.StreamID, err)
+		permanentFailure := !errors.Is(err, ErrAdapterUnavailable) && !errors.Is(err, context.Canceled)
+		if permanentFailure {
+			s.retryFailuresTotal.Add(1)
+			s.pendingMu.Lock()
+			if queue, ok := s.pending[key]; ok {
+				queue.failureCount++
+				if queue.firstFailureAt.IsZero() {
+					queue.firstFailureAt = time.Now()
+				}
+				elapsed := time.Since(queue.firstFailureAt)
+				if queue.failureCount >= maxRetryFailures || elapsed >= maxRetryDuration {
+					delete(s.pending, key)
+					s.pendingMu.Unlock()
+					if s.logger != nil {
+						s.logger.Printf("[VAD] abandoning retry session=%s stream=%s after %d failures", params.SessionID, params.StreamID, queue.failureCount)
+					}
+					return
+				}
+			}
+			s.pendingMu.Unlock()
+			if s.logger != nil {
+				s.logger.Printf("[VAD] retry stream session=%s stream=%s failed: %v", params.SessionID, params.StreamID, err)
+			}
 		}
 		s.pendingMu.Lock()
 		if queue, ok := s.pending[key]; ok {
@@ -393,6 +431,8 @@ func (s *Service) publishDetection(sessionID, streamID string, segment eventbus.
 	if s.logger != nil && det.Active {
 		s.logger.Printf("[VAD] detection active session=%s stream=%s confidence=%.2f", sessionID, streamID, det.Confidence)
 	}
+
+	s.detectionsTotal.Add(1)
 
 	s.bus.Publish(context.Background(), eventbus.Envelope{
 		Topic:   eventbus.TopicSpeechVADDetected,
@@ -521,10 +561,12 @@ func (st *stream) closeAnalyzer(reason string) {
 }
 
 type pendingStream struct {
-	params   SessionParams
-	segments []eventbus.AudioIngressSegmentEvent
-	timer    *time.Timer
-	delay    time.Duration
+	params         SessionParams
+	segments       []eventbus.AudioIngressSegmentEvent
+	timer          *time.Timer
+	delay          time.Duration
+	failureCount   int
+	firstFailureAt time.Time
 }
 
 func (ps *pendingStream) scheduleRetry(s *Service, key string) {
@@ -593,4 +635,25 @@ func splitStreamKey(key string) (string, string) {
 
 func streamKey(sessionID, streamID string) string {
 	return sessionID + "::" + streamID
+}
+
+// Metrics aggregates counters for the VAD service.
+//
+// Fields:
+//   - DetectionsTotal: total number of VAD detection events published (active and inactive)
+//   - RetryAttemptsTotal: total number of adapter reconnection attempts triggered by the service
+//   - RetryFailuresTotal: total number of retry attempts that failed with a non-recoverable error
+type Metrics struct {
+	DetectionsTotal    uint64
+	RetryAttemptsTotal uint64
+	RetryFailuresTotal uint64
+}
+
+// Metrics returns the current metrics snapshot for the VAD service.
+func (s *Service) Metrics() Metrics {
+	return Metrics{
+		DetectionsTotal:    s.detectionsTotal.Load(),
+		RetryAttemptsTotal: s.retryAttemptsTotal.Load(),
+		RetryFailuresTotal: s.retryFailuresTotal.Load(),
+	}
 }

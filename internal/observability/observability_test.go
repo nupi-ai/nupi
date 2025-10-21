@@ -44,6 +44,9 @@ func TestPrometheusExporter(t *testing.T) {
 			STTSegments:        12,
 			TTSActiveStreams:   3,
 			SpeechBargeInTotal: 4,
+			VADDetections:      7,
+			VADRetryAttempts:   2,
+			VADRetryFailures:   1,
 		}
 	})
 
@@ -76,6 +79,15 @@ func TestPrometheusExporter(t *testing.T) {
 	if !strings.Contains(metrics, `nupi_speech_barge_in_total 4`) {
 		t.Fatalf("expected speech barge-in counter in metrics output:\n%s", metrics)
 	}
+	if !strings.Contains(metrics, `nupi_vad_detections_total 7`) {
+		t.Fatalf("expected VAD detections counter in metrics output:\n%s", metrics)
+	}
+	if !strings.Contains(metrics, `nupi_vad_retry_attempts_total 2`) {
+		t.Fatalf("expected VAD retry attempts counter in metrics output:\n%s", metrics)
+	}
+	if !strings.Contains(metrics, `nupi_vad_retry_failures_total 1`) {
+		t.Fatalf("expected VAD retry failures counter in metrics output:\n%s", metrics)
+	}
 	if !strings.Contains(metrics, `nupi_eventbus_latency_seconds{quantile="0.50"}`) {
 		t.Fatalf("expected latency quantile metric in output:\n%s", metrics)
 	}
@@ -104,6 +116,9 @@ func TestPrometheusExporterConcurrency(t *testing.T) {
 			STTSegments:        12,
 			TTSActiveStreams:   3,
 			SpeechBargeInTotal: 4,
+			VADDetections:      5,
+			VADRetryAttempts:   1,
+			VADRetryFailures:   0,
 		}
 	})
 

@@ -118,29 +118,17 @@ func New(opts Options) (*Daemon, error) {
 	audioEgressService := egress.New(bus, egress.WithFactory(egress.NewModuleFactory(opts.Store)))
 	conversationService := conversation.NewService(bus)
 	moduleManager := modules.NewManager(modules.ManagerOptions{
-		Store:        opts.Store,
-		Runner:       runnerManager,
-		Adapters:     opts.Store,
-		PluginDir:    pluginService.PluginDir(),
-		Bus:          bus,
+		Store:     opts.Store,
+		Runner:    runnerManager,
+		Adapters:  opts.Store,
+		PluginDir: pluginService.PluginDir(),
+		Bus:       bus,
 	})
 	modulesService := modules.NewService(moduleManager, opts.Store, bus)
 	eventCounter := observability.NewEventCounter()
 	bus.AddObserver(eventCounter)
 	metricsExporter := observability.NewPrometheusExporter(bus, eventCounter)
 	metricsExporter.WithPipeline(pipelineService)
-	metricsExporter.WithAudioMetrics(func() observability.AudioMetricsSnapshot {
-		ingressStats := audioIngressService.Metrics()
-		sttStats := audioSTTService.Metrics()
-		ttsStats := audioEgressService.Metrics()
-		bargeStats := audioBargeService.Metrics()
-		return observability.AudioMetricsSnapshot{
-			AudioIngressBytes:  ingressStats.BytesTotal,
-			STTSegments:        sttStats.SegmentsTotal,
-			TTSActiveStreams:   ttsStats.ActiveStreams,
-			SpeechBargeInTotal: bargeStats.BargeInTotal,
-		}
-	})
 	apiServer.SetMetricsExporter(metricsExporter)
 	apiServer.SetConversationStore(conversationService)
 	apiServer.SetModulesController(modulesService)
@@ -214,14 +202,6 @@ func New(opts Options) (*Daemon, error) {
 		return nil, err
 	}
 
-	apiServer.AddTransportListener(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := host.Restart(ctx, "transport_gateway"); err != nil {
-			log.Printf("[Daemon] Failed to restart transport_gateway after transport change: %v", err)
-		}
-	})
-
 	runtimeInfo.SetPort(transportCfg.Port)
 	runtimeInfo.SetGRPCPort(transportCfg.GRPCPort)
 
@@ -236,6 +216,41 @@ func New(opts Options) (*Daemon, error) {
 		runnerManager:  runnerManager,
 		eventBus:       bus,
 	}
+
+	metricsExporter.WithAudioMetrics(func() observability.AudioMetricsSnapshot {
+		select {
+		case <-d.lifecycle.Done():
+			return observability.AudioMetricsSnapshot{}
+		default:
+		}
+		ingressStats := audioIngressService.Metrics()
+		sttStats := audioSTTService.Metrics()
+		ttsStats := audioEgressService.Metrics()
+		bargeStats := audioBargeService.Metrics()
+		vadStats := audioVADService.Metrics()
+		return observability.AudioMetricsSnapshot{
+			AudioIngressBytes:  ingressStats.BytesTotal,
+			STTSegments:        sttStats.SegmentsTotal,
+			TTSActiveStreams:   ttsStats.ActiveStreams,
+			SpeechBargeInTotal: bargeStats.BargeInTotal,
+			VADDetections:      vadStats.DetectionsTotal,
+			VADRetryAttempts:   vadStats.RetryAttemptsTotal,
+			VADRetryFailures:   vadStats.RetryFailuresTotal,
+		}
+	})
+
+	apiServer.AddTransportListener(func() {
+		select {
+		case <-d.lifecycle.Done():
+			return
+		default:
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := host.Restart(ctx, "transport_gateway"); err != nil {
+			log.Printf("[Daemon] Failed to restart transport_gateway after transport change: %v", err)
+		}
+	})
 
 	apiServer.SetShutdownFunc(func(ctx context.Context) error {
 		go func() {

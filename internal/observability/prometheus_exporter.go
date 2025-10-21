@@ -29,6 +29,9 @@ type AudioMetricsSnapshot struct {
 	STTSegments        uint64
 	TTSActiveStreams   int64
 	SpeechBargeInTotal uint64
+	VADDetections      uint64
+	VADRetryAttempts   uint64
+	VADRetryFailures   uint64
 }
 
 // NewPrometheusExporter constructs an exporter backed by the provided bus and event counter.
@@ -143,6 +146,18 @@ func (e *PrometheusExporter) writeAudioMetrics(buf *bytes.Buffer) {
 	buf.WriteString("# HELP nupi_speech_barge_in_total Total number of speech barge-in events emitted.\n")
 	buf.WriteString("# TYPE nupi_speech_barge_in_total counter\n")
 	buf.WriteString(fmt.Sprintf("nupi_speech_barge_in_total %d\n", snapshot.SpeechBargeInTotal))
+
+	buf.WriteString("# HELP nupi_vad_detections_total Total number of VAD detections published.\n")
+	buf.WriteString("# TYPE nupi_vad_detections_total counter\n")
+	buf.WriteString(fmt.Sprintf("nupi_vad_detections_total %d\n", snapshot.VADDetections))
+
+	buf.WriteString("# HELP nupi_vad_retry_attempts_total Total number of VAD adapter retry attempts.\n")
+	buf.WriteString("# TYPE nupi_vad_retry_attempts_total counter\n")
+	buf.WriteString(fmt.Sprintf("nupi_vad_retry_attempts_total %d\n", snapshot.VADRetryAttempts))
+
+	buf.WriteString("# HELP nupi_vad_retry_failures_total Total number of VAD adapter retry attempts that failed.\n")
+	buf.WriteString("# TYPE nupi_vad_retry_failures_total counter\n")
+	buf.WriteString(fmt.Sprintf("nupi_vad_retry_failures_total %d\n", snapshot.VADRetryFailures))
 }
 
 func durationSeconds(d time.Duration) float64 {
