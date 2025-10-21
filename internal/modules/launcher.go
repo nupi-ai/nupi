@@ -19,7 +19,7 @@ var (
 
 type execLauncher struct{}
 
-func (execLauncher) Launch(ctx context.Context, binary string, args []string, env []string) (ProcessHandle, error) {
+func (execLauncher) Launch(ctx context.Context, binary string, args []string, env []string, stdout io.Writer, stderr io.Writer) (ProcessHandle, error) {
 	if strings.TrimSpace(binary) == "" {
 		return nil, ErrRunnerBinaryUnset
 	}
@@ -32,8 +32,16 @@ func (execLauncher) Launch(ctx context.Context, binary string, args []string, en
 
 	procCtx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(procCtx, binary, args...)
-	cmd.Stdout = io.Discard
-	cmd.Stderr = io.Discard
+	if stdout == nil {
+		cmd.Stdout = io.Discard
+	} else {
+		cmd.Stdout = stdout
+	}
+	if stderr == nil {
+		cmd.Stderr = io.Discard
+	} else {
+		cmd.Stderr = stderr
+	}
 	if len(env) > 0 {
 		cmd.Env = append(os.Environ(), env...)
 	}

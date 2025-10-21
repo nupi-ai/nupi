@@ -496,6 +496,9 @@ func (s *Service) Shutdown(ctx context.Context) error {
 }
 
 func bindingFingerprint(binding Binding) string {
+	if fp := strings.TrimSpace(binding.Fingerprint); fp != "" {
+		return fp
+	}
 	raw := strings.TrimSpace(binding.RawConfig)
 	if raw == "" && len(binding.Config) > 0 {
 		rawBytes, _ := json.Marshal(binding.Config)

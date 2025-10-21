@@ -25,9 +25,10 @@ func TestServicePublishesStatusOnStart(t *testing.T) {
 	}
 	launcher := NewMockLauncher()
 	manager := NewManager(ManagerOptions{
-		Store:    store,
-		Runner:   adapterrunner.NewManager(t.TempDir()),
-		Launcher: launcher,
+		Store:     store,
+		Runner:    adapterrunner.NewManager(t.TempDir()),
+		Launcher:  launcher,
+		PluginDir: t.TempDir(),
 	})
 
 	bus := eventbus.New()
@@ -73,9 +74,10 @@ func TestServicePublishesRestartOnConfigChange(t *testing.T) {
 	}
 	launcher := NewMockLauncher()
 	manager := NewManager(ManagerOptions{
-		Store:    store,
-		Runner:   adapterrunner.NewManager(t.TempDir()),
-		Launcher: launcher,
+		Store:     store,
+		Runner:    adapterrunner.NewManager(t.TempDir()),
+		Launcher:  launcher,
+		PluginDir: t.TempDir(),
 	})
 
 	bus := eventbus.New()
@@ -147,9 +149,10 @@ func TestServicePublishesErrorOnEnsureFailure(t *testing.T) {
 	launcher := NewMockLauncher()
 	launcher.SetError(errors.New("launch failure"))
 	manager := NewManager(ManagerOptions{
-		Store:    store,
-		Runner:   adapterrunner.NewManager(t.TempDir()),
-		Launcher: launcher,
+		Store:     store,
+		Runner:    adapterrunner.NewManager(t.TempDir()),
+		Launcher:  launcher,
+		PluginDir: t.TempDir(),
 	})
 
 	bus := eventbus.New()
@@ -191,9 +194,10 @@ func TestServiceErrorCacheClearedOnRecovery(t *testing.T) {
 	launcher := NewMockLauncher()
 	launcher.SetError(errors.New("launch failure"))
 	manager := NewManager(ManagerOptions{
-		Store:    store,
-		Runner:   adapterrunner.NewManager(t.TempDir()),
-		Launcher: launcher,
+		Store:     store,
+		Runner:    adapterrunner.NewManager(t.TempDir()),
+		Launcher:  launcher,
+		PluginDir: t.TempDir(),
 	})
 
 	bus := eventbus.New()
@@ -275,9 +279,10 @@ func TestServiceOverviewStartStop(t *testing.T) {
 
 	launcher := NewMockLauncher()
 	manager := NewManager(ManagerOptions{
-		Store:    store,
-		Runner:   adapterrunner.NewManager(t.TempDir()),
-		Launcher: launcher,
+		Store:     store,
+		Runner:    adapterrunner.NewManager(t.TempDir()),
+		Launcher:  launcher,
+		PluginDir: t.TempDir(),
 	})
 
 	bus := eventbus.New()

@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
@@ -1476,7 +1477,7 @@ func newTestModulesService(t *testing.T, store *configstore.Store) *modules.Serv
 
 type testModuleLauncher struct{}
 
-func (testModuleLauncher) Launch(context.Context, string, []string, []string) (modules.ProcessHandle, error) {
+func (testModuleLauncher) Launch(context.Context, string, []string, []string, io.Writer, io.Writer) (modules.ProcessHandle, error) {
 	return testModuleHandle{}, nil
 }
 

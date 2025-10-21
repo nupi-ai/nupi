@@ -47,6 +47,38 @@ func (s *Store) ListAdapters(ctx context.Context) ([]Adapter, error) {
 	return adapters, nil
 }
 
+// GetAdapter retrieves adapter metadata by identifier.
+func (s *Store) GetAdapter(ctx context.Context, adapterID string) (Adapter, error) {
+	adapterID = strings.TrimSpace(adapterID)
+	if adapterID == "" {
+		return Adapter{}, fmt.Errorf("config: get adapter: adapter id required")
+	}
+
+	row := s.db.QueryRowContext(ctx, `
+        SELECT id, source, version, type, name, manifest, created_at, updated_at
+        FROM adapters
+        WHERE id = ?
+    `, adapterID)
+
+	var adapter Adapter
+	if err := row.Scan(
+		&adapter.ID,
+		&adapter.Source,
+		&adapter.Version,
+		&adapter.Type,
+		&adapter.Name,
+		&adapter.Manifest,
+		&adapter.CreatedAt,
+		&adapter.UpdatedAt,
+	); err != nil {
+		if err == sql.ErrNoRows {
+			return Adapter{}, NotFoundError{Entity: "adapter", Key: adapterID}
+		}
+		return Adapter{}, fmt.Errorf("config: get adapter %q: %w", adapterID, err)
+	}
+	return adapter, nil
+}
+
 // UpsertAdapter inserts or updates metadata for the given adapter.
 func (s *Store) UpsertAdapter(ctx context.Context, adapter Adapter) error {
 	if s.readOnly {

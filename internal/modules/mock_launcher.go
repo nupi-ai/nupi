@@ -2,6 +2,7 @@ package modules
 
 import (
 	"context"
+	"io"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +18,8 @@ type LaunchRecord struct {
 	Slot       string
 	Adapter    string
 	LaunchedAt time.Time
+	StdoutNil  bool
+	StderrNil  bool
 }
 
 // MockLauncher implements ProcessLauncher for tests, recording launches without spawning processes.
@@ -44,7 +47,7 @@ func (m *MockLauncher) SetError(err error) {
 }
 
 // Launch records module metadata and returns a controllable handle.
-func (m *MockLauncher) Launch(ctx context.Context, binary string, args []string, env []string) (ProcessHandle, error) {
+func (m *MockLauncher) Launch(ctx context.Context, binary string, args []string, env []string, stdout io.Writer, stderr io.Writer) (ProcessHandle, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.err != nil {
@@ -58,6 +61,8 @@ func (m *MockLauncher) Launch(ctx context.Context, binary string, args []string,
 		Slot:       slotFromArgs(args),
 		Adapter:    adapterFromArgs(args),
 		LaunchedAt: time.Now().UTC(),
+		StdoutNil:  stdout == nil,
+		StderrNil:  stderr == nil,
 	}
 	m.records = append(m.records, record)
 

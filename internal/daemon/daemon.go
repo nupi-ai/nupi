@@ -118,8 +118,11 @@ func New(opts Options) (*Daemon, error) {
 	audioEgressService := egress.New(bus, egress.WithFactory(egress.NewModuleFactory(opts.Store)))
 	conversationService := conversation.NewService(bus)
 	moduleManager := modules.NewManager(modules.ManagerOptions{
-		Store:  opts.Store,
-		Runner: runnerManager,
+		Store:        opts.Store,
+		Runner:       runnerManager,
+		Adapters:     opts.Store,
+		PluginDir:    pluginService.PluginDir(),
+		Bus:          bus,
 	})
 	modulesService := modules.NewService(moduleManager, opts.Store, bus)
 	eventCounter := observability.NewEventCounter()
