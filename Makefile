@@ -5,6 +5,7 @@
 BINARY_DIR := bin
 APP_DIR := clients/desktop
 TAURI_BINARY_DIR := $(APP_DIR)/src-tauri/binaries
+RUNNER_VERSION := $(shell git describe --tags --always 2>/dev/null || echo dev)
 
 # Platform detection
 UNAME_S := $(shell uname -s)
@@ -33,10 +34,10 @@ GREEN := \033[0;32m
 YELLOW := \033[1;33m
 NC := \033[0m # No Color
 
-.PHONY: all clean cli daemon app dev test help install
+.PHONY: all clean cli daemon adapter-runner app dev test help install
 
 # Default target
-all: cli daemon app
+all: cli daemon adapter-runner app
 	@echo "$(GREEN)✓ Build complete!$(NC)"
 
 # Build CLI binary
@@ -52,6 +53,13 @@ daemon:
 	@mkdir -p $(BINARY_DIR)
 	@go build -o $(BINARY_DIR)/nupid ./cmd/nupid
 	@echo "$(GREEN)✓ Daemon built: $(BINARY_DIR)/nupid$(NC)"
+
+# Build adapter-runner binary
+adapter-runner:
+	@echo "$(YELLOW)Building adapter-runner...$(NC)"
+	@mkdir -p $(BINARY_DIR)
+	@go build -o $(BINARY_DIR)/adapter-runner ./cmd/adapter-runner
+	@echo "$(GREEN)✓ Adapter-runner built: $(BINARY_DIR)/adapter-runner$(NC)"
 
 # Build desktop app
 app: cli daemon
@@ -84,13 +92,24 @@ test:
 	@echo "$(GREEN)✓ Tests complete$(NC)"
 
 # Install locally to ~/.nupi/bin (no sudo required)
-install: cli daemon
+install: cli daemon adapter-runner
 	@echo "$(YELLOW)Installing Nupi to ~/.nupi/bin/...$(NC)"
 	@mkdir -p $(HOME)/.nupi/bin
 	@cp $(BINARY_DIR)/nupi $(HOME)/.nupi/bin/nupi
 	@cp $(BINARY_DIR)/nupid $(HOME)/.nupi/bin/nupid
 	@chmod +x $(HOME)/.nupi/bin/nupi
 	@chmod +x $(HOME)/.nupi/bin/nupid
+	@runner_root="$(HOME)/.nupi/bin/adapter-runner"; \
+	version="$(RUNNER_VERSION)"; \
+	rm -f "$$runner_root"; \
+	mkdir -p "$$runner_root/versions/$$version"; \
+	cp $(BINARY_DIR)/adapter-runner "$$runner_root/versions/$$version/adapter-runner"; \
+	chmod +x "$$runner_root/versions/$$version/adapter-runner"; \
+	rm -rf "$$runner_root/current"; \
+	mkdir -p "$$runner_root/current"; \
+	ln -sf "../versions/$$version/adapter-runner" "$$runner_root/current/adapter-runner"; \
+	echo "$$version" > "$$runner_root/current/VERSION"; \
+	ln -sf "$$runner_root/current/adapter-runner" $(HOME)/.nupi/bin/adapter-runner
 	@echo "$(GREEN)✓ Nupi installed to ~/.nupi/bin/$(NC)"
 	@echo ""
 	@echo "$(YELLOW)Add to your PATH:$(NC)"
@@ -116,6 +135,7 @@ help:
 	@echo "  $(GREEN)make$(NC)         - Build everything (CLI, daemon, and desktop app)"
 	@echo "  $(GREEN)make cli$(NC)     - Build only the CLI binary"
 	@echo "  $(GREEN)make daemon$(NC)  - Build only the daemon binary"
+	@echo "  $(GREEN)make adapter-runner$(NC) - Build only the adapter-runner binary"
 	@echo "  $(GREEN)make app$(NC)     - Build the desktop application"
 	@echo "  $(GREEN)make dev$(NC)     - Run in development mode"
 	@echo "  $(GREEN)make test$(NC)    - Run all tests"
@@ -126,6 +146,7 @@ help:
 	@echo "Build outputs:"
 	@echo "  CLI:     $(BINARY_DIR)/nupi"
 	@echo "  Daemon:  $(BINARY_DIR)/nupid"
+	@echo "  Runner:  $(BINARY_DIR)/adapter-runner"
 	@echo "  App:     $(APP_DIR)/src-tauri/target/release/bundle/"
 	@echo ""
 	@echo "Installation:"

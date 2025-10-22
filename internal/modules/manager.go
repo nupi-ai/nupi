@@ -323,10 +323,10 @@ func (m *Manager) startModule(ctx context.Context, plan bindingPlan) (*moduleIns
 	binary := strings.TrimSpace(m.runner.BinaryPath())
 	args := []string{"--slot", string(binding.Slot), "--adapter", binding.AdapterID}
 
-	env := []string{
-		"NUPI_MODULE_SLOT=" + string(binding.Slot),
-		"NUPI_MODULE_ADAPTER=" + binding.AdapterID,
-	}
+	env := append(os.Environ(),
+		"NUPI_MODULE_SLOT="+string(binding.Slot),
+		"NUPI_MODULE_ADAPTER="+binding.AdapterID,
+	)
 
 	var (
 		moduleHome     string

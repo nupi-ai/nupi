@@ -61,8 +61,26 @@ RUNNER_URL=$(echo "$RELEASE_JSON" | grep -Eo "https://[^"]+adapter-runner_${TARG
 TAG_NAME=$(echo "$RELEASE_JSON" | grep -m1 '"tag_name":' | cut -d '"' -f 4)
 
 if [ -z "$DOWNLOAD_URL" ]; then
-    echo -e "${RED}Error: Could not find release for $TARGET${NC}"
-    exit 1
+    if [ -f "go.mod" ] && [ -d "cmd/nupi" ]; then
+        echo -e "${YELLOW}No release found for $TARGET. Building from source...${NC}"
+        mkdir -p "$INSTALL_DIR"
+        if ! go build -o "$INSTALL_DIR/nupi" ./cmd/nupi; then
+            echo -e "${RED}Error: failed to build CLI from source.${NC}"
+            exit 1
+        fi
+        if ! go build -o "$INSTALL_DIR/nupid" ./cmd/nupid; then
+            echo -e "${RED}Error: failed to build daemon from source.${NC}"
+            exit 1
+        fi
+        chmod +x "$INSTALL_DIR/nupi" "$INSTALL_DIR/nupid"
+        build_adapter_runner_local "$TAG_NAME" "$NUPI_HOME/bin/adapter-runner"
+        echo -e "${GREEN}✓ Installed binaries to $INSTALL_DIR${NC}"
+        exit 0
+    else
+        echo -e "${RED}Error: Could not find release for $TARGET${NC}"
+        echo -e "${YELLOW}Hint: clone https://github.com/$REPO and run ./install.sh locally to build from source.${NC}"
+        exit 1
+    fi
 fi
 
 echo -e "Download URL: ${GREEN}$DOWNLOAD_URL${NC}"
@@ -91,6 +109,29 @@ cp nupid "$INSTALL_DIR/nupid"
 chmod +x "$INSTALL_DIR/nupi"
 chmod +x "$INSTALL_DIR/nupid"
 
+build_adapter_runner_local() {
+    local version="$1"
+    local runner_root="$2"
+
+    if [ ! -d "cmd/adapter-runner" ]; then
+        echo -e "${YELLOW}adapter-runner source not found; skipping.${NC}"
+        return
+    fi
+
+    echo -e "${YELLOW}Building adapter-runner from source...${NC}"
+    mkdir -p "$runner_root/current"
+    if ! go build -o "$runner_root/current/adapter-runner" ./cmd/adapter-runner; then
+        echo -e "${RED}Error: failed to build adapter-runner from source.${NC}"
+        exit 1
+    fi
+    chmod +x "$runner_root/current/adapter-runner"
+    echo "$version" > "$runner_root/current/VERSION"
+
+    mkdir -p "$INSTALL_DIR"
+    cp "$runner_root/current/adapter-runner" "$INSTALL_DIR/adapter-runner"
+    echo -e "${GREEN}✓ adapter-runner ${version} built locally${NC}"
+}
+
 install_adapter_runner() {
     local version="$1"
     local url="$2"
@@ -100,7 +141,7 @@ install_adapter_runner() {
     fi
 
     if [ -z "$url" ]; then
-        echo -e "${YELLOW}Skipping adapter-runner installation (asset not found).${NC}"
+        build_adapter_runner_local "$version" "$NUPI_HOME/bin/adapter-runner"
         return
     fi
 

@@ -72,11 +72,32 @@ func (m *Manager) EnsureLayout() error {
 		if strings.TrimSpace(dir) == "" {
 			continue
 		}
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := ensureDirectory(dir, 0o755); err != nil {
 			return fmt.Errorf("create adapter-runner directory %q: %w", dir, err)
 		}
 	}
 	return nil
+}
+
+func ensureDirectory(path string, perm os.FileMode) error {
+	if strings.TrimSpace(path) == "" {
+		return nil
+	}
+	info, err := os.Stat(path)
+	switch {
+	case err == nil:
+		if info.IsDir() {
+			return nil
+		}
+		if removeErr := os.Remove(path); removeErr != nil {
+			return removeErr
+		}
+	case os.IsNotExist(err):
+		// proceed to create directory
+	default:
+		return err
+	}
+	return os.MkdirAll(path, perm)
 }
 
 // VersionRoot returns the directory containing assets for the provided version.
