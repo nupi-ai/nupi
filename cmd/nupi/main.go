@@ -323,6 +323,28 @@ func main() {
 	modulesRegisterCmd.Flags().StringArray("endpoint-arg", nil, "Argument for module command (repeatable)")
 	modulesRegisterCmd.Flags().StringArray("endpoint-env", nil, "Environment variable KEY=VALUE for module command (repeatable)")
 
+	modulesInstallLocalCmd := &cobra.Command{
+		Use:           "install-local",
+		Short:         "Register a module from local manifest and binary",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE:          modulesInstallLocal,
+	}
+	modulesInstallLocalCmd.Example = `  # Install a local Whisper STT module
+	nupi modules install-local \
+	  --manifest-file ./module-nupi-whisper-local-stt/module.yaml \
+	  --binary $(pwd)/module-nupi-whisper-local-stt/dist/module-nupi-whisper-local-stt \
+	  --endpoint-address 127.0.0.1:50051 \
+	  --slot stt.primary`
+	modulesInstallLocalCmd.Flags().String("manifest-file", "", "Path to module manifest (YAML or JSON)")
+	modulesInstallLocalCmd.Flags().String("id", "", "Override adapter identifier (defaults to manifest metadata.slug)")
+	modulesInstallLocalCmd.Flags().String("binary", "", "Path to module executable (overrides manifest entrypoint.command)")
+	modulesInstallLocalCmd.Flags().String("endpoint-address", "", "Address for gRPC/HTTP transport")
+	modulesInstallLocalCmd.Flags().StringArray("endpoint-arg", nil, "Additional command argument (repeatable)")
+	modulesInstallLocalCmd.Flags().StringArray("endpoint-env", nil, "Environment variable KEY=VALUE passed to the module (repeatable)")
+	modulesInstallLocalCmd.Flags().String("slot", "", "Optional slot to bind after registration (e.g. stt.primary)")
+	modulesInstallLocalCmd.Flags().String("config", "", "Optional JSON configuration payload for slot binding")
+
 	modulesListCmd := &cobra.Command{
 		Use:           "list",
 		Short:         "Show module slots, bindings and runtime status",
@@ -360,6 +382,7 @@ func main() {
 	}
 
 	modulesCmd.AddCommand(modulesRegisterCmd, modulesListCmd, modulesBindCmd, modulesStartCmd, modulesStopCmd)
+	modulesCmd.AddCommand(modulesInstallLocalCmd)
 
 	quickstartCmd := &cobra.Command{
 		Use:           "quickstart",
@@ -1351,6 +1374,34 @@ func modulesRegisterHTTP(out *OutputFormatter, payload apihttp.ModuleRegistratio
 	return result.Adapter, nil
 }
 
+type moduleManifestSpec struct {
+	Metadata struct {
+		Name string `yaml:"name"`
+		Slug string `yaml:"slug"`
+	} `yaml:"metadata"`
+	Spec struct {
+		ModuleType string `yaml:"moduleType"`
+		Entrypoint struct {
+			Command   string   `yaml:"command"`
+			Args      []string `yaml:"args"`
+			Transport string   `yaml:"transport"`
+			ListenEnv string   `yaml:"listenEnv"`
+		} `yaml:"entrypoint"`
+	} `yaml:"spec"`
+}
+
+func loadModuleManifestFile(path string) (moduleManifestSpec, string, error) {
+	var spec moduleManifestSpec
+	content, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		return spec, "", err
+	}
+	if err := yaml.Unmarshal(content, &spec); err != nil {
+		return spec, "", fmt.Errorf("parse manifest: %w", err)
+	}
+	return spec, string(content), nil
+}
+
 func parseManifest(manifestRaw string) (json.RawMessage, error) {
 	trimmed := strings.TrimSpace(manifestRaw)
 	if trimmed == "" {
@@ -1380,7 +1431,7 @@ func normalizeYAML(value interface{}) interface{} {
 
 func normalizeYAMLWithDepth(value interface{}, depth, maxDepth int) interface{} {
 	if depth >= maxDepth {
-		return value
+		return fmt.Sprint(value)
 	}
 
 	switch v := value.(type) {
@@ -1667,6 +1718,146 @@ func modulesRegister(cmd *cobra.Command, _ []string) error {
 		fmt.Printf(" (%s)", adapter.Type)
 	}
 	fmt.Println()
+	return nil
+}
+
+func modulesInstallLocal(cmd *cobra.Command, _ []string) error {
+	out := newOutputFormatter(cmd)
+
+	manifestPath, _ := cmd.Flags().GetString("manifest-file")
+	manifestPath = strings.TrimSpace(manifestPath)
+	if manifestPath == "" {
+		return out.Error("--manifest-file is required", errors.New("missing manifest file"))
+	}
+
+	spec, manifestRaw, err := loadModuleManifestFile(manifestPath)
+	if err != nil {
+		return out.Error("Failed to read manifest", err)
+	}
+
+	manifestJSON, err := parseManifest(manifestRaw)
+	if err != nil {
+		return out.Error("Failed to parse manifest", err)
+	}
+
+	adapterIDFlag, _ := cmd.Flags().GetString("id")
+	adapterID := strings.TrimSpace(adapterIDFlag)
+	if adapterID == "" {
+		adapterID = strings.TrimSpace(spec.Metadata.Slug)
+	}
+	if adapterID == "" {
+		return out.Error("Adapter identifier required", errors.New("manifest metadata.slug missing; use --id"))
+	}
+
+	moduleType := strings.TrimSpace(spec.Spec.ModuleType)
+	if moduleType == "" {
+		return out.Error("Module type missing in manifest", errors.New("manifest spec.moduleType empty"))
+	}
+	if _, ok := allowedModuleTypes[moduleType]; !ok {
+		return out.Error(fmt.Sprintf("unsupported module type %q", moduleType), errors.New("invalid module type"))
+	}
+
+	binaryFlag, _ := cmd.Flags().GetString("binary")
+	command := strings.TrimSpace(binaryFlag)
+	if command == "" {
+		command = strings.TrimSpace(spec.Spec.Entrypoint.Command)
+	}
+	if strings.TrimSpace(binaryFlag) != "" {
+		if _, err := os.Stat(command); err != nil {
+			return out.Error(fmt.Sprintf("module binary not found: %s", command), err)
+		}
+	}
+
+	args := append([]string(nil), spec.Spec.Entrypoint.Args...)
+	extraArgs, _ := cmd.Flags().GetStringArray("endpoint-arg")
+	if len(extraArgs) > 0 {
+		args = append(args, extraArgs...)
+	}
+
+	endpointEnvValues, _ := cmd.Flags().GetStringArray("endpoint-env")
+	endpointEnv, err := parseKeyValuePairs(endpointEnvValues)
+	if err != nil {
+		return out.Error("Invalid --endpoint-env value", err)
+	}
+
+	transport := strings.TrimSpace(spec.Spec.Entrypoint.Transport)
+	if transport == "" {
+		transport = "process"
+	}
+	if _, ok := allowedEndpointTransports[transport]; !ok {
+		return out.Error(fmt.Sprintf("manifest transport %q unsupported", transport), errors.New("invalid manifest transport"))
+	}
+
+	addressFlag, _ := cmd.Flags().GetString("endpoint-address")
+	address := strings.TrimSpace(addressFlag)
+	switch transport {
+	case "grpc", "http":
+		if address == "" {
+			return out.Error(fmt.Sprintf("--endpoint-address required for %s transport", transport), errors.New("missing endpoint address"))
+		}
+	case "process":
+		if command == "" {
+			return out.Error("--binary or manifest entrypoint.command required for process transport", errors.New("missing command"))
+		}
+		if address != "" {
+			return out.Error("--endpoint-address not used for process transport", errors.New("unexpected address"))
+		}
+	}
+
+	adapterName := strings.TrimSpace(spec.Metadata.Name)
+
+	payload := apihttp.ModuleRegistrationRequest{
+		AdapterID: adapterID,
+		Source:    "local",
+		Type:      moduleType,
+		Name:      adapterName,
+		Manifest:  manifestJSON,
+	}
+
+	payload.Endpoint = &apihttp.ModuleEndpointConfig{
+		Transport: transport,
+		Address:   address,
+		Command:   command,
+		Args:      args,
+		Env:       endpointEnv,
+	}
+
+	adapter, err := modulesRegisterHTTP(out, payload)
+	if err != nil {
+		return err
+	}
+
+	if out.jsonMode {
+		if err := out.Print(apihttp.ModuleRegistrationResult{Adapter: adapter}); err != nil {
+			return err
+		}
+	} else {
+		fmt.Printf("Installed local adapter %s (%s)\n", adapter.Name, adapter.ID)
+	}
+
+	slot, _ := cmd.Flags().GetString("slot")
+	slot = strings.TrimSpace(slot)
+	if slot == "" {
+		return nil
+	}
+
+	configRaw, _ := cmd.Flags().GetString("config")
+	configRaw = strings.TrimSpace(configRaw)
+	var bindConfig json.RawMessage
+	if configRaw != "" {
+		if !json.Valid([]byte(configRaw)) {
+			return out.Error("Config must be valid JSON", errors.New("invalid config payload"))
+		}
+		bindConfig = json.RawMessage(configRaw)
+	}
+
+	if err := modulesBindHTTP(out, slot, adapterID, bindConfig); err != nil {
+		return err
+	}
+
+	if !out.jsonMode {
+		fmt.Printf("Bound adapter %s to %s\n", adapterID, slot)
+	}
 	return nil
 }
 
