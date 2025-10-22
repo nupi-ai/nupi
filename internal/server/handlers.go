@@ -2056,13 +2056,18 @@ func (s *APIServer) handleModulesRegister(w http.ResponseWriter, r *http.Request
 				return
 			}
 			switch transport {
-			case "grpc", "http":
+			case "grpc":
 				if address == "" {
-					http.Error(w, fmt.Sprintf("endpoint address required for %s transport", transport), http.StatusBadRequest)
+					http.Error(w, "endpoint address required for grpc transport", http.StatusBadRequest)
+					return
+				}
+			case "http":
+				if address == "" {
+					http.Error(w, "endpoint address required for http transport", http.StatusBadRequest)
 					return
 				}
 				if command != "" || len(payload.Endpoint.Args) > 0 {
-					http.Error(w, fmt.Sprintf("endpoint command/args not allowed for %s transport", transport), http.StatusBadRequest)
+					http.Error(w, "endpoint command/args not allowed for http transport", http.StatusBadRequest)
 					return
 				}
 			case "process":

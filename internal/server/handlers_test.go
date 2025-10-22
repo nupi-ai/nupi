@@ -1201,6 +1201,45 @@ func TestHandleModulesRegister(t *testing.T) {
 	}
 }
 
+func TestHandleModulesRegisterAllowsGrpcCommand(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	store := openTestStore(t)
+	modulesService := newTestModulesService(t, store)
+	apiServer.SetModulesController(modulesService)
+
+	payload := `{"adapter_id":"nupi-whisper-local-stt","type":"stt","endpoint":{"transport":"grpc","address":"127.0.0.1:50051","command":"/opt/modules/whisper","args":["--variant","base"],"env":{"FOO":"bar"}}}`
+	req := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/modules/register", bytes.NewBufferString(payload)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	apiServer.handleModulesRegister(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
+	}
+
+	ctx := context.Background()
+	endpoint, err := store.GetModuleEndpoint(ctx, "nupi-whisper-local-stt")
+	if err != nil {
+		t.Fatalf("fetch module endpoint: %v", err)
+	}
+	if endpoint.Transport != "grpc" {
+		t.Fatalf("unexpected transport %q", endpoint.Transport)
+	}
+	if endpoint.Address != "127.0.0.1:50051" {
+		t.Fatalf("unexpected address %q", endpoint.Address)
+	}
+	if endpoint.Command != "/opt/modules/whisper" {
+		t.Fatalf("unexpected command %q", endpoint.Command)
+	}
+	if len(endpoint.Args) != 2 || endpoint.Args[0] != "--variant" || endpoint.Args[1] != "base" {
+		t.Fatalf("unexpected args %#v", endpoint.Args)
+	}
+	if endpoint.Env["FOO"] != "bar" {
+		t.Fatalf("unexpected env %#v", endpoint.Env)
+	}
+}
+
 func TestHandleModulesRegisterRequiresAdapterID(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
 	req := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/modules/register", bytes.NewBufferString(`{"type":"stt"}`)))

@@ -1609,12 +1609,16 @@ func modulesRegister(cmd *cobra.Command, _ []string) error {
 			return out.Error(fmt.Sprintf("invalid transport: %s (expected: grpc, http, process)", transportOpt), errors.New("invalid transport"))
 		}
 		switch transportOpt {
-		case "grpc", "http":
+		case "grpc":
 			if addressOpt == "" {
-				return out.Error(fmt.Sprintf("--endpoint-address required for %s transport", transportOpt), errors.New("missing address"))
+				return out.Error("--endpoint-address required for grpc transport", errors.New("missing address"))
+			}
+		case "http":
+			if addressOpt == "" {
+				return out.Error("--endpoint-address required for http transport", errors.New("missing address"))
 			}
 			if commandOpt != "" || len(argsOpt) > 0 {
-				return out.Error(fmt.Sprintf("--endpoint-command/--endpoint-arg not allowed for %s transport", transportOpt), errors.New("conflicting endpoint flags"))
+				return out.Error("--endpoint-command/--endpoint-arg not allowed for http transport", errors.New("conflicting endpoint flags"))
 			}
 		case "process":
 			if commandOpt == "" {
