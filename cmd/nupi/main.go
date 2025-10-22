@@ -9,9 +9,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"sort"
@@ -33,7 +35,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const errorMessageLimit = 2048
+const (
+	errorMessageLimit   = 2048
+	moduleSlugMaxLength = 64
+)
 
 // Global variables for use across commands
 var (
@@ -339,6 +344,9 @@ func main() {
 	modulesInstallLocalCmd.Flags().String("manifest-file", "", "Path to module manifest (YAML or JSON)")
 	modulesInstallLocalCmd.Flags().String("id", "", "Override adapter identifier (defaults to manifest metadata.slug)")
 	modulesInstallLocalCmd.Flags().String("binary", "", "Path to module executable (overrides manifest entrypoint.command)")
+	modulesInstallLocalCmd.Flags().Bool("copy-binary", false, "Copy module binary into the instance plugin directory")
+	modulesInstallLocalCmd.Flags().Bool("build", false, "Build the module from sources before registration")
+	modulesInstallLocalCmd.Flags().String("module-dir", "", "Module source directory (required with --build)")
 	modulesInstallLocalCmd.Flags().String("endpoint-address", "", "Address for gRPC/HTTP transport")
 	modulesInstallLocalCmd.Flags().StringArray("endpoint-arg", nil, "Additional command argument (repeatable)")
 	modulesInstallLocalCmd.Flags().StringArray("endpoint-env", nil, "Environment variable KEY=VALUE passed to the module (repeatable)")
@@ -1729,6 +1737,11 @@ func modulesInstallLocal(cmd *cobra.Command, _ []string) error {
 	if manifestPath == "" {
 		return out.Error("--manifest-file is required", errors.New("missing manifest file"))
 	}
+	absManifestPath, err := filepath.Abs(config.ExpandPath(manifestPath))
+	if err != nil {
+		return out.Error("Failed to resolve manifest path", err)
+	}
+	manifestDir := filepath.Dir(absManifestPath)
 
 	spec, manifestRaw, err := loadModuleManifestFile(manifestPath)
 	if err != nil {
@@ -1756,15 +1769,84 @@ func modulesInstallLocal(cmd *cobra.Command, _ []string) error {
 	if _, ok := allowedModuleTypes[moduleType]; !ok {
 		return out.Error(fmt.Sprintf("unsupported module type %q", moduleType), errors.New("invalid module type"))
 	}
+	copyBinary, _ := cmd.Flags().GetBool("copy-binary")
+	buildFlag, _ := cmd.Flags().GetBool("build")
+	moduleDirFlag, _ := cmd.Flags().GetString("module-dir")
+	moduleDir := strings.TrimSpace(moduleDirFlag)
+	if moduleDir != "" {
+		moduleDir = config.ExpandPath(moduleDir)
+		absDir, err := filepath.Abs(moduleDir)
+		if err != nil {
+			return out.Error("Failed to resolve module directory", err)
+		}
+		moduleDir = absDir
+	}
 
 	binaryFlag, _ := cmd.Flags().GetString("binary")
-	command := strings.TrimSpace(binaryFlag)
-	if command == "" {
-		command = strings.TrimSpace(spec.Spec.Entrypoint.Command)
+	binaryFlag = strings.TrimSpace(binaryFlag)
+	if binaryFlag != "" {
+		binaryFlag = config.ExpandPath(binaryFlag)
+		if !filepath.IsAbs(binaryFlag) {
+			baseDir := moduleDir
+			if baseDir == "" {
+				baseDir = manifestDir
+			}
+			if baseDir != "" {
+				binaryFlag = filepath.Join(baseDir, binaryFlag)
+			}
+		}
+		if absBinary, err := filepath.Abs(binaryFlag); err == nil {
+			binaryFlag = absBinary
+		}
 	}
-	if strings.TrimSpace(binaryFlag) != "" {
-		if _, err := os.Stat(command); err != nil {
-			return out.Error(fmt.Sprintf("module binary not found: %s", command), err)
+
+	if buildFlag && binaryFlag != "" {
+		return out.Error("Cannot combine --build with --binary", errors.New("conflicting binary options"))
+	}
+	if buildFlag && moduleDir == "" {
+		return out.Error("--module-dir is required when --build is set", errors.New("missing module directory"))
+	}
+
+	slug := sanitizeModuleSlug(adapterID)
+
+	var command string
+	if buildFlag {
+		outputDir := filepath.Join(moduleDir, "dist")
+		if err := os.MkdirAll(outputDir, 0o755); err != nil {
+			return out.Error("Failed to create dist directory", err)
+		}
+		outputPath := filepath.Join(outputDir, slug)
+		buildCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		buildCmd := exec.CommandContext(buildCtx, "go", "build", "-o", outputPath, "./cmd/adapter")
+		buildCmd.Dir = moduleDir
+		buildCmd.Env = os.Environ()
+		if output, err := buildCmd.CombinedOutput(); err != nil {
+			buildErr := err
+			if trimmed := strings.TrimSpace(string(output)); trimmed != "" {
+				buildErr = fmt.Errorf("%w: %s", err, trimmed)
+			}
+			return out.Error("Failed to build module", buildErr)
+		}
+		command = outputPath
+	} else if binaryFlag != "" {
+		if _, err := os.Stat(binaryFlag); err != nil {
+			return out.Error(fmt.Sprintf("module binary not found: %s", binaryFlag), err)
+		}
+		command = binaryFlag
+	} else {
+		command = strings.TrimSpace(spec.Spec.Entrypoint.Command)
+		if command != "" {
+			command = config.ExpandPath(command)
+			if !filepath.IsAbs(command) && strings.Contains(command, string(os.PathSeparator)) {
+				baseDir := moduleDir
+				if baseDir == "" {
+					baseDir = manifestDir
+				}
+				if baseDir != "" {
+					command = filepath.Join(baseDir, command)
+				}
+			}
 		}
 	}
 
@@ -1802,6 +1884,41 @@ func modulesInstallLocal(cmd *cobra.Command, _ []string) error {
 		if address != "" {
 			return out.Error("--endpoint-address not used for process transport", errors.New("unexpected address"))
 		}
+	}
+
+	if copyBinary {
+		if command == "" {
+			return out.Error("--binary or --build required when --copy-binary is set", errors.New("missing module binary"))
+		}
+		srcPath := command
+		if !filepath.IsAbs(srcPath) {
+			absSrc, err := filepath.Abs(srcPath)
+			if err != nil {
+				return out.Error("Failed to resolve module binary", err)
+			}
+			srcPath = absSrc
+		}
+		paths, err := config.EnsureInstanceDirs("")
+		if err != nil {
+			return out.Error("Failed to prepare instance directories", err)
+		}
+		moduleHome := filepath.Join(paths.Home, "plugins", slug)
+		binDir := filepath.Join(moduleHome, "bin")
+		if err := os.MkdirAll(binDir, 0o755); err != nil {
+			return out.Error("Failed to create module bin directory", err)
+		}
+		destName := filepath.Base(srcPath)
+		if destName == "" {
+			destName = slug
+		}
+		destPath := filepath.Join(binDir, destName)
+		if rel, err := filepath.Rel(moduleHome, destPath); err != nil || strings.HasPrefix(rel, "..") || strings.HasPrefix(filepath.ToSlash(rel), "../") {
+			return out.Error("Resolved destination escapes module directory", errors.New("invalid destination path"))
+		}
+		if err := copyFile(srcPath, destPath, 0o755); err != nil {
+			return out.Error("Failed to copy module binary", err)
+		}
+		command = destPath
 	}
 
 	adapterName := strings.TrimSpace(spec.Metadata.Name)
@@ -3126,5 +3243,89 @@ func pairClaim(cmd *cobra.Command, args []string) error {
 		fmt.Printf("  Name:  %s\n", payload.Name)
 	}
 	fmt.Printf("  Role:  %s\n", payload.Role)
+	return nil
+}
+
+func sanitizeModuleSlug(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var b strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '-' || r == '_':
+			b.WriteRune(r)
+		case r == ' ' || r == '.' || r == '/':
+			b.WriteRune('-')
+		}
+	}
+	res := strings.Trim(b.String(), "-_")
+	if res == "" {
+		return "module"
+	}
+	if len(res) > moduleSlugMaxLength {
+		return res[:moduleSlugMaxLength]
+	}
+	return res
+}
+
+func copyFile(src, dst string, perm fs.FileMode) error {
+	cleanSrc := filepath.Clean(src)
+	cleanDst := filepath.Clean(dst)
+
+	absSrc, err := filepath.Abs(cleanSrc)
+	if err != nil {
+		return err
+	}
+	absDst, err := filepath.Abs(cleanDst)
+	if err != nil {
+		return err
+	}
+
+	if absSrc == absDst {
+		return fmt.Errorf("source and destination are the same: %s", absSrc)
+	}
+
+	srcInfo, err := os.Lstat(absSrc)
+	if err != nil {
+		return err
+	}
+	if srcInfo.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("source is a symlink: %s", absSrc)
+	}
+	if !srcInfo.Mode().IsRegular() {
+		return fmt.Errorf("source must be a regular file: %s", absSrc)
+	}
+
+	if _, err := os.Stat(absDst); err == nil {
+		return fmt.Errorf("destination already exists: %s", absDst)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	if err := os.MkdirAll(filepath.Dir(absDst), 0o755); err != nil {
+		return err
+	}
+
+	srcFile, err := os.Open(absSrc)
+	if err != nil {
+		return err
+	}
+	defer srcFile.Close()
+
+	dstFile, err := os.OpenFile(absDst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if err != nil {
+		return err
+	}
+	defer dstFile.Close()
+
+	if _, err := io.Copy(dstFile, srcFile); err != nil {
+		return err
+	}
+
+	if err := dstFile.Chmod(perm); err != nil {
+		return err
+	}
+
 	return nil
 }

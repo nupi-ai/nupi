@@ -2,11 +2,19 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
+
+	apihttp "github.com/nupi-ai/nupi/internal/api/http"
+	"github.com/nupi-ai/nupi/internal/config"
+	"github.com/spf13/cobra"
 )
 
 func TestParseManifest_Empty(t *testing.T) {
@@ -194,4 +202,329 @@ spec:
 	if strings.TrimSpace(raw) == "" {
 		t.Fatalf("expected raw manifest contents to be returned")
 	}
+}
+
+func TestModulesInstallLocalRegistersAndCopiesBinary(t *testing.T) {
+	var registerPayload apihttp.ModuleRegistrationRequest
+	handlers := map[string]httpHandlerFunc{
+		"/modules/register": func(r *http.Request) *http.Response {
+			if r.Method != http.MethodPost {
+				t.Fatalf("unexpected method %s", r.Method)
+			}
+			if err := json.NewDecoder(r.Body).Decode(&registerPayload); err != nil {
+				t.Fatalf("decode register payload: %v", err)
+			}
+			rec := httptest.NewRecorder()
+			resp := apihttp.ModuleRegistrationResult{Adapter: apihttp.ModuleAdapter{ID: registerPayload.AdapterID, Type: registerPayload.Type, Name: registerPayload.Name}}
+			if err := json.NewEncoder(rec).Encode(resp); err != nil {
+				t.Fatalf("encode register response: %v", err)
+			}
+			return rec.Result()
+		},
+		"/modules/bind": func(r *http.Request) *http.Response {
+			if r.Method != http.MethodPost {
+				t.Fatalf("unexpected method %s", r.Method)
+			}
+			adapterID := registerPayload.AdapterID
+			rec := httptest.NewRecorder()
+			resp := apihttp.ModuleActionResult{
+				Module: apihttp.ModuleEntry{
+					Slot:      "stt.primary",
+					AdapterID: &adapterID,
+				},
+			}
+			if err := json.NewEncoder(rec).Encode(resp); err != nil {
+				t.Fatalf("encode bind response: %v", err)
+			}
+			return rec.Result()
+		},
+	}
+	fixture := setupInstallLocalTest(t, `apiVersion: nap.nupi.ai/v1alpha1
+kind: ModuleManifest
+metadata:
+  name: Local STT
+  slug: local-stt
+spec:
+  moduleType: stt
+  entrypoint:
+    command: ./module
+    args: ["--variant", "base"]
+    transport: grpc
+`, "http://modules.test", handlers)
+
+	binaryPath := filepath.Join(t.TempDir(), "module-bin")
+	if err := os.WriteFile(binaryPath, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("write binary: %v", err)
+	}
+
+	mustSetFlag(t, fixture.cmd, "binary", binaryPath)
+	mustSetFlag(t, fixture.cmd, "copy-binary", "true")
+	mustSetFlag(t, fixture.cmd, "endpoint-address", "127.0.0.1:50051")
+	mustSetFlag(t, fixture.cmd, "slot", "stt.primary")
+
+	if err := modulesInstallLocal(fixture.cmd, nil); err != nil {
+		t.Fatalf("install-local failed: %v", err)
+	}
+
+	paths, err := config.EnsureInstanceDirs("")
+	if err != nil {
+		t.Fatalf("ensure instance dirs: %v", err)
+	}
+	expectedDir := filepath.Join(paths.Home, "plugins", sanitizeModuleSlug(registerPayload.AdapterID), "bin")
+	expectedFile := filepath.Join(expectedDir, filepath.Base(binaryPath))
+	if _, err := os.Stat(expectedFile); err != nil {
+		t.Fatalf("expected binary at %s: %v", expectedFile, err)
+	}
+	if registerPayload.Endpoint.Command != expectedFile {
+		t.Fatalf("expected command %s, got %s", expectedFile, registerPayload.Endpoint.Command)
+	}
+}
+
+func TestModulesInstallLocalBuildsModule(t *testing.T) {
+	moduleDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(moduleDir, "go.mod"), []byte(`module example.com/localmodule
+
+go 1.21
+`), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+	adapterDir := filepath.Join(moduleDir, "cmd", "adapter")
+	if err := os.MkdirAll(adapterDir, 0o755); err != nil {
+		t.Fatalf("create adapter dir: %v", err)
+	}
+	mainSrc := `package main
+
+import "fmt"
+
+func main() { fmt.Println("ok") }
+`
+	if err := os.WriteFile(filepath.Join(adapterDir, "main.go"), []byte(mainSrc), 0o644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+
+	var registerPayload apihttp.ModuleRegistrationRequest
+	handlers := map[string]httpHandlerFunc{
+		"/modules/register": func(r *http.Request) *http.Response {
+			if r.Method != http.MethodPost {
+				t.Fatalf("unexpected method %s", r.Method)
+			}
+			if err := json.NewDecoder(r.Body).Decode(&registerPayload); err != nil {
+				t.Fatalf("decode register payload: %v", err)
+			}
+			rec := httptest.NewRecorder()
+			resp := apihttp.ModuleRegistrationResult{Adapter: apihttp.ModuleAdapter{ID: registerPayload.AdapterID, Type: registerPayload.Type, Name: registerPayload.Name}}
+			if err := json.NewEncoder(rec).Encode(resp); err != nil {
+				t.Fatalf("encode register response: %v", err)
+			}
+			return rec.Result()
+		},
+	}
+	fixture := setupInstallLocalTest(t, `apiVersion: nap.nupi.ai/v1alpha1
+kind: ModuleManifest
+metadata:
+  name: Local STT
+  slug: local-stt
+spec:
+  moduleType: stt
+  entrypoint:
+    command: ./module
+    transport: grpc
+`, "http://modules.test", handlers)
+
+	mustSetFlag(t, fixture.cmd, "build", "true")
+	mustSetFlag(t, fixture.cmd, "module-dir", moduleDir)
+	mustSetFlag(t, fixture.cmd, "endpoint-address", "127.0.0.1:50051")
+
+	if err := modulesInstallLocal(fixture.cmd, nil); err != nil {
+		t.Fatalf("install-local build failed: %v", err)
+	}
+
+	expectedBinary := filepath.Join(moduleDir, "dist", "local-stt")
+	if _, err := os.Stat(expectedBinary); err != nil {
+		t.Fatalf("expected built binary at %s: %v", expectedBinary, err)
+	}
+	if registerPayload.Endpoint.Command != expectedBinary {
+		t.Fatalf("expected command %s, got %s", expectedBinary, registerPayload.Endpoint.Command)
+	}
+}
+
+func TestSanitizeModuleSlug(t *testing.T) {
+	cases := map[string]string{
+		"Local STT":         "local-stt",
+		"UPPER_case--Slug":  "upper_case--slug",
+		"   spaced slug   ": "spaced-slug",
+		"../dangerous/path": "dangerous-path",
+		"@@@":               "module",
+		"slug-with-extremely-long-name-that-should-be-trimmed-because-it-exceeds-sixty-four-characters": "slug-with-extremely-long-name-that-should-be-trimmed-because-it-",
+	}
+
+	for input, expected := range cases {
+		if actual := sanitizeModuleSlug(input); actual != expected {
+			t.Fatalf("sanitizeModuleSlug(%q) = %q, expected %q", input, actual, expected)
+		}
+	}
+}
+
+func TestCopyFile(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	srcPath := filepath.Join(srcDir, "source.txt")
+	content := []byte("hello world")
+	if err := os.WriteFile(srcPath, content, 0o644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+
+	dstPath := filepath.Join(dstDir, "copied.txt")
+	if err := copyFile(srcPath, dstPath, 0o711); err != nil {
+		t.Fatalf("copyFile error: %v", err)
+	}
+
+	data, err := os.ReadFile(dstPath)
+	if err != nil {
+		t.Fatalf("read dst: %v", err)
+	}
+	if string(data) != string(content) {
+		t.Fatalf("expected copied contents %q, got %q", content, data)
+	}
+
+	info, err := os.Stat(dstPath)
+	if err != nil {
+		t.Fatalf("stat dst: %v", err)
+	}
+	if info.Mode().Perm() != 0o711 {
+		t.Fatalf("expected permissions 0711, got %v", info.Mode().Perm())
+	}
+}
+
+func TestCopyFile_SameSourceAndDestination(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "file.txt")
+	if err := os.WriteFile(path, []byte("content"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	err := copyFile(path, path, 0o644)
+	if err == nil || !strings.Contains(err.Error(), "source and destination are the same") {
+		t.Fatalf("expected same-path error, got %v", err)
+	}
+}
+
+func TestCopyFile_DestinationExists(t *testing.T) {
+	tmpDir := t.TempDir()
+	src := filepath.Join(tmpDir, "src.txt")
+	dst := filepath.Join(tmpDir, "dst.txt")
+
+	if err := os.WriteFile(src, []byte("src"), 0o644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+	if err := os.WriteFile(dst, []byte("dst"), 0o644); err != nil {
+		t.Fatalf("write dst: %v", err)
+	}
+
+	err := copyFile(src, dst, 0o644)
+	if err == nil || !strings.Contains(err.Error(), "destination already exists") {
+		t.Fatalf("expected destination exists error, got %v", err)
+	}
+}
+
+func TestCopyFile_SourceIsSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires elevated privileges on Windows")
+	}
+
+	tmpDir := t.TempDir()
+	target := filepath.Join(tmpDir, "target.txt")
+	link := filepath.Join(tmpDir, "link.txt")
+	dst := filepath.Join(tmpDir, "dst.txt")
+
+	if err := os.WriteFile(target, []byte("content"), 0o644); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink not supported: %v", err)
+	}
+
+	err := copyFile(link, dst, 0o644)
+	if err == nil || !strings.Contains(err.Error(), "source is a symlink") {
+		t.Fatalf("expected symlink error, got %v", err)
+	}
+}
+
+func TestCopyFile_SourceMissing(t *testing.T) {
+	tmpDir := t.TempDir()
+	dst := filepath.Join(tmpDir, "dst.txt")
+
+	err := copyFile(filepath.Join(tmpDir, "missing.txt"), dst, 0o644)
+	if err == nil || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected not exist error, got %v", err)
+	}
+}
+
+type httpHandlerFunc func(*http.Request) *http.Response
+
+type mockTransport struct {
+	t        *testing.T
+	handlers map[string]httpHandlerFunc
+}
+
+type installLocalTestFixture struct {
+	cmd *cobra.Command
+}
+
+func setupInstallLocalTest(t *testing.T, manifest string, baseURL string, handlers map[string]httpHandlerFunc) installLocalTestFixture {
+	t.Helper()
+
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	setHTTPMockTransport(t, handlers)
+	t.Setenv("NUPI_BASE_URL", baseURL)
+
+	manifestPath := filepath.Join(t.TempDir(), "module.yaml")
+	if err := os.WriteFile(manifestPath, []byte(manifest), 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+
+	cmd := newInstallLocalCommand()
+	mustSetFlag(t, cmd, "manifest-file", manifestPath)
+	return installLocalTestFixture{cmd: cmd}
+}
+
+func newInstallLocalCommand() *cobra.Command {
+	cmd := &cobra.Command{Use: "install-local"}
+	cmd.Flags().String("manifest-file", "", "")
+	cmd.Flags().String("id", "", "")
+	cmd.Flags().String("binary", "", "")
+	cmd.Flags().Bool("copy-binary", false, "")
+	cmd.Flags().Bool("build", false, "")
+	cmd.Flags().String("module-dir", "", "")
+	cmd.Flags().String("endpoint-address", "", "")
+	cmd.Flags().StringArray("endpoint-arg", nil, "")
+	cmd.Flags().StringArray("endpoint-env", nil, "")
+	cmd.Flags().String("slot", "", "")
+	cmd.Flags().String("config", "", "")
+	return cmd
+}
+
+func mustSetFlag(t *testing.T, cmd *cobra.Command, name, value string) {
+	t.Helper()
+	if err := cmd.Flags().Set(name, value); err != nil {
+		t.Fatalf("set flag %s: %v", name, err)
+	}
+}
+
+func (m *mockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if handler, ok := m.handlers[req.URL.Path]; ok {
+		return handler(req), nil
+	}
+	m.t.Fatalf("unexpected request path: %s", req.URL.Path)
+	panic("unreachable")
+}
+
+func setHTTPMockTransport(t *testing.T, handlers map[string]httpHandlerFunc) {
+	t.Helper()
+	original := http.DefaultTransport
+	http.DefaultTransport = &mockTransport{t: t, handlers: handlers}
+	t.Cleanup(func() { http.DefaultTransport = original })
 }
