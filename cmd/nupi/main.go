@@ -30,6 +30,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/protocol"
 	"github.com/spf13/cobra"
 	"golang.org/x/crypto/ssh/terminal"
+	"gopkg.in/yaml.v3"
 )
 
 const errorMessageLimit = 2048
@@ -1350,6 +1351,68 @@ func modulesRegisterHTTP(out *OutputFormatter, payload apihttp.ModuleRegistratio
 	return result.Adapter, nil
 }
 
+func parseManifest(manifestRaw string) (json.RawMessage, error) {
+	trimmed := strings.TrimSpace(manifestRaw)
+	if trimmed == "" {
+		return nil, nil
+	}
+
+	if json.Valid([]byte(trimmed)) {
+		return json.RawMessage(trimmed), nil
+	}
+
+	var yamlData interface{}
+	if err := yaml.Unmarshal([]byte(trimmed), &yamlData); err != nil {
+		return nil, fmt.Errorf("invalid YAML manifest: %w", err)
+	}
+
+	normalized := normalizeYAML(yamlData)
+	encoded, err := json.Marshal(normalized)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(encoded), nil
+}
+
+func normalizeYAML(value interface{}) interface{} {
+	return normalizeYAMLWithDepth(value, 0, 1024)
+}
+
+func normalizeYAMLWithDepth(value interface{}, depth, maxDepth int) interface{} {
+	if depth >= maxDepth {
+		return value
+	}
+
+	switch v := value.(type) {
+	case map[interface{}]interface{}:
+		m := make(map[string]interface{}, len(v))
+		for key, val := range v {
+			keyStr := ""
+			if ks, ok := key.(string); ok {
+				keyStr = ks
+			} else {
+				keyStr = fmt.Sprint(key)
+			}
+			m[keyStr] = normalizeYAMLWithDepth(val, depth+1, maxDepth)
+		}
+		return m
+	case map[string]interface{}:
+		m := make(map[string]interface{}, len(v))
+		for key, val := range v {
+			m[key] = normalizeYAMLWithDepth(val, depth+1, maxDepth)
+		}
+		return m
+	case []interface{}:
+		result := make([]interface{}, len(v))
+		for i, elem := range v {
+			result[i] = normalizeYAMLWithDepth(elem, depth+1, maxDepth)
+		}
+		return result
+	default:
+		return v
+	}
+}
+
 func parseKeyValuePairs(values []string) (map[string]string, error) {
 	if len(values) == 0 {
 		return nil, nil
@@ -1518,6 +1581,11 @@ func modulesRegister(cmd *cobra.Command, _ []string) error {
 	version = strings.TrimSpace(version)
 	manifestRaw, _ := cmd.Flags().GetString("manifest")
 
+	manifest, err := parseManifest(manifestRaw)
+	if err != nil {
+		return out.Error("Manifest must be valid JSON or YAML", err)
+	}
+
 	transportOpt, _ := cmd.Flags().GetString("endpoint-transport")
 	transportOpt = strings.TrimSpace(transportOpt)
 	addressOpt, _ := cmd.Flags().GetString("endpoint-address")
@@ -1526,14 +1594,6 @@ func modulesRegister(cmd *cobra.Command, _ []string) error {
 	commandOpt = strings.TrimSpace(commandOpt)
 	argsOpt, _ := cmd.Flags().GetStringArray("endpoint-arg")
 	envOpt, _ := cmd.Flags().GetStringArray("endpoint-env")
-
-	var manifest json.RawMessage
-	if trimmed := strings.TrimSpace(manifestRaw); trimmed != "" {
-		if !json.Valid([]byte(trimmed)) {
-			return out.Error("Manifest must be valid JSON", fmt.Errorf("invalid manifest payload"))
-		}
-		manifest = json.RawMessage(trimmed)
-	}
 
 	endpointEnv, err := parseKeyValuePairs(envOpt)
 	if err != nil {
