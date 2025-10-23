@@ -12,12 +12,11 @@ import (
 	"github.com/nupi-ai/nupi/internal/config"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/daemon"
+	nupiversion "github.com/nupi-ai/nupi/internal/version"
 	"github.com/spf13/cobra"
 )
 
 func main() {
-	setupLogging()
-
 	rootCmd := &cobra.Command{
 		Use:           "nupid",
 		Short:         "Nupi daemon - manages PTY sessions and HTTP API",
@@ -25,6 +24,8 @@ func main() {
 		SilenceErrors: true,
 		RunE:          runDaemon,
 	}
+	rootCmd.Version = nupiversion.String()
+	rootCmd.SetVersionTemplate("{{printf \"%s\\n\" .Version}}")
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -33,6 +34,10 @@ func main() {
 }
 
 func runDaemon(cmd *cobra.Command, args []string) error {
+	if err := setupLogging(); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to initialise logging: %v\n", err)
+	}
+
 	if daemon.IsRunning() {
 		return fmt.Errorf("daemon is already running")
 	}
@@ -87,23 +92,20 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func setupLogging() {
+func setupLogging() error {
 	paths, err := config.EnsureInstanceDirs(config.DefaultInstance)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to initialise instance directories: %v\n", err)
-		return
+		return fmt.Errorf("initialise instance directories: %w", err)
 	}
 
 	if err := os.MkdirAll(paths.Logs, 0o755); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to create logs directory: %v\n", err)
-		return
+		return fmt.Errorf("create logs directory: %w", err)
 	}
 
 	logPath := filepath.Join(paths.Logs, "daemon.log")
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to open log file: %v\n", err)
-		return
+		return fmt.Errorf("open log file: %w", err)
 	}
 
 	multi := io.MultiWriter(os.Stdout, logFile)
@@ -112,4 +114,5 @@ func setupLogging() {
 
 	log.Printf("=== Nupi Daemon Starting (PID: %d) ===", os.Getpid())
 	log.Printf("Log file: %s", logPath)
+	return nil
 }

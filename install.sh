@@ -57,7 +57,6 @@ echo -e "${YELLOW}Fetching latest release...${NC}"
 RELEASE_URL="https://api.github.com/repos/$REPO/releases/latest"
 RELEASE_JSON=$(curl -s "$RELEASE_URL")
 DOWNLOAD_URL=$(echo "$RELEASE_JSON" | grep -Eo "https://[^"]+nupi_${TARGET}\\.tar\\.gz" | head -n1)
-RUNNER_URL=$(echo "$RELEASE_JSON" | grep -Eo "https://[^"]+adapter-runner_${TARGET}\\.tar\\.gz" | head -n1)
 TAG_NAME=$(echo "$RELEASE_JSON" | grep -m1 '"tag_name":' | cut -d '"' -f 4)
 
 if [ -z "$DOWNLOAD_URL" ]; then
@@ -73,7 +72,11 @@ if [ -z "$DOWNLOAD_URL" ]; then
             exit 1
         fi
         chmod +x "$INSTALL_DIR/nupi" "$INSTALL_DIR/nupid"
-        build_adapter_runner_local "$TAG_NAME" "$NUPI_HOME/bin/adapter-runner"
+        if ! go build -o "$INSTALL_DIR/adapter-runner" ./cmd/adapter-runner; then
+            echo -e "${RED}Error: failed to build adapter-runner from source.${NC}"
+            exit 1
+        fi
+        chmod +x "$INSTALL_DIR/adapter-runner"
         echo -e "${GREEN}✓ Installed binaries to $INSTALL_DIR${NC}"
         exit 0
     else
@@ -109,76 +112,17 @@ cp nupid "$INSTALL_DIR/nupid"
 chmod +x "$INSTALL_DIR/nupi"
 chmod +x "$INSTALL_DIR/nupid"
 
-build_adapter_runner_local() {
-    local version="$1"
-    local runner_root="$2"
-
-    if [ ! -d "cmd/adapter-runner" ]; then
-        echo -e "${YELLOW}adapter-runner source not found; skipping.${NC}"
-        return
-    fi
-
-    echo -e "${YELLOW}Building adapter-runner from source...${NC}"
-    mkdir -p "$runner_root/current"
-    if ! go build -o "$runner_root/current/adapter-runner" ./cmd/adapter-runner; then
+if [ -f adapter-runner ]; then
+    cp adapter-runner "$INSTALL_DIR/adapter-runner"
+    chmod +x "$INSTALL_DIR/adapter-runner"
+else
+    echo -e "${YELLOW}Warning: adapter-runner binary missing from release, building locally...${NC}"
+    if ! go build -o "$INSTALL_DIR/adapter-runner" ./cmd/adapter-runner; then
         echo -e "${RED}Error: failed to build adapter-runner from source.${NC}"
         exit 1
     fi
-    chmod +x "$runner_root/current/adapter-runner"
-    echo "$version" > "$runner_root/current/VERSION"
-
-    mkdir -p "$INSTALL_DIR"
-    cp "$runner_root/current/adapter-runner" "$INSTALL_DIR/adapter-runner"
-    echo -e "${GREEN}✓ adapter-runner ${version} built locally${NC}"
-}
-
-install_adapter_runner() {
-    local version="$1"
-    local url="$2"
-
-    if [ -z "$version" ]; then
-        version="unknown"
-    fi
-
-    if [ -z "$url" ]; then
-        build_adapter_runner_local "$version" "$NUPI_HOME/bin/adapter-runner"
-        return
-    fi
-
-    echo -e "${YELLOW}Downloading adapter-runner...${NC}"
-    curl -L -o adapter-runner.tar.gz "$url"
-
-    mkdir -p adapter-runner
-    tar -xzf adapter-runner.tar.gz -C adapter-runner
-
-    local runner_bin
-    runner_bin=$(find adapter-runner -type f -name 'adapter-runner*' | head -n1)
-    if [ -z "$runner_bin" ]; then
-        echo -e "${YELLOW}Warning: adapter-runner archive does not contain a binary.${NC}"
-        return
-    fi
-
-    local runner_root="$NUPI_HOME/bin/adapter-runner"
-    local version_dir="$runner_root/versions/$version"
-
-    mkdir -p "$runner_root"
-    mkdir -p "$version_dir"
-    rm -rf "$runner_root/current"
-    mkdir -p "$runner_root/current"
-
-    cp "$runner_bin" "$version_dir/adapter-runner"
-    chmod +x "$version_dir/adapter-runner"
-
-    rm -f "$INSTALL_DIR/adapter-runner"
-    cp "$version_dir/adapter-runner" "$runner_root/current/adapter-runner"
-    echo "$version" > "$runner_root/current/VERSION"
-
-    ln -sf "$runner_root/current/adapter-runner" "$INSTALL_DIR/adapter-runner"
-
-    echo -e "${GREEN}✓ adapter-runner ${version} installed${NC}"
-}
-
-install_adapter_runner "$TAG_NAME" "$RUNNER_URL"
+    chmod +x "$INSTALL_DIR/adapter-runner"
+fi
 
 echo ""
 echo -e "${GREEN}✓ Nupi installed successfully!${NC}"

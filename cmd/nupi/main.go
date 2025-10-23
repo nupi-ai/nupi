@@ -30,6 +30,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/config"
 	"github.com/nupi-ai/nupi/internal/grpcclient"
 	"github.com/nupi-ai/nupi/internal/protocol"
+	nupiversion "github.com/nupi-ai/nupi/internal/version"
 	"github.com/spf13/cobra"
 	"golang.org/x/crypto/ssh/terminal"
 	"gopkg.in/yaml.v3"
@@ -145,6 +146,8 @@ monitor multiple sessions, and attach/detach from running processes.
 
 Designed for AI coding assistants like Claude Code, Aider, and others.`,
 	}
+	rootCmd.Version = nupiversion.String()
+	rootCmd.SetVersionTemplate("{{printf \"%s\\n\" .Version}}")
 
 	// Add global --json flag
 	rootCmd.PersistentFlags().Bool("json", false, "Output in JSON format")

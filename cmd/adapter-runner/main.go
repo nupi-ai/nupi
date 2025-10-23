@@ -3,22 +3,26 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"strings"
 
 	runtimecfg "github.com/nupi-ai/nupi/internal/adapterrunner/runtime"
-)
-
-var (
-	version = "dev"
+	nupiversion "github.com/nupi-ai/nupi/internal/version"
 )
 
 func main() {
+	printVersion := flag.Bool("version", false, "Print adapter-runner version and exit")
 	slot := flag.String("slot", "", "Module slot (informational)")
 	adapter := flag.String("adapter", "", "Adapter identifier (informational)")
 	flag.Parse()
+
+	if *printVersion {
+		fmt.Println(nupiversion.String())
+		return
+	}
 
 	cfg, err := runtimecfg.LoadConfigFromEnv()
 	if err != nil {
@@ -35,7 +39,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	log.Printf("adapter-runner %s starting (%s/%s)", version, safe(cfg.Slot), safe(cfg.Adapter))
+	log.Printf("adapter-runner %s starting (%s/%s)", nupiversion.String(), safe(cfg.Slot), safe(cfg.Adapter))
 
 	proc, err := runtimecfg.Start(ctx, cfg, nil)
 	if err != nil {

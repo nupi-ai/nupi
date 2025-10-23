@@ -14,22 +14,9 @@ func TestSyncSettings(t *testing.T) {
 	base := filepath.Join(tmp, ".nupi")
 
 	m := NewManager(base)
-	if err := m.EnsureLayout(); err != nil {
-		t.Fatalf("EnsureLayout failed: %v", err)
-	}
-
-	versionDir := m.VersionRoot("v0.9.0")
-	if err := os.MkdirAll(versionDir, 0o755); err != nil {
-		t.Fatalf("failed to create version directory: %v", err)
-	}
-
-	src := m.BinaryForVersion("v0.9.0")
-	if err := os.WriteFile(src, []byte("runner"), 0o755); err != nil {
-		t.Fatalf("failed to write runner binary: %v", err)
-	}
-
-	if err := m.ActivateVersion("v0.9.0"); err != nil {
-		t.Fatalf("ActivateVersion failed: %v", err)
+	src := buildStubRunner(t, tmp, "v0.9.0")
+	if err := m.InstallFromFile(src); err != nil {
+		t.Fatalf("InstallFromFile failed: %v", err)
 	}
 
 	os.Setenv("HOME", tmp)

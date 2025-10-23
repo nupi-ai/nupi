@@ -5,7 +5,8 @@
 BINARY_DIR := bin
 APP_DIR := clients/desktop
 TAURI_BINARY_DIR := $(APP_DIR)/src-tauri/binaries
-RUNNER_VERSION := $(shell git describe --tags --always 2>/dev/null || echo dev)
+VERSION := $(shell git describe --tags --always 2>/dev/null || echo dev)
+GO_LDFLAGS := -ldflags "-X github.com/nupi-ai/nupi/internal/version.version=$(VERSION)"
 
 # Platform detection
 UNAME_S := $(shell uname -s)
@@ -44,21 +45,21 @@ all: cli daemon adapter-runner app
 cli:
 	@echo "$(YELLOW)Building nupi CLI...$(NC)"
 	@mkdir -p $(BINARY_DIR)
-	@go build -o $(BINARY_DIR)/nupi ./cmd/nupi
+	@go build $(GO_LDFLAGS) -o $(BINARY_DIR)/nupi ./cmd/nupi
 	@echo "$(GREEN)✓ CLI built: $(BINARY_DIR)/nupi$(NC)"
 
 # Build daemon binary
 daemon:
 	@echo "$(YELLOW)Building nupid daemon...$(NC)"
 	@mkdir -p $(BINARY_DIR)
-	@go build -o $(BINARY_DIR)/nupid ./cmd/nupid
+	@go build $(GO_LDFLAGS) -o $(BINARY_DIR)/nupid ./cmd/nupid
 	@echo "$(GREEN)✓ Daemon built: $(BINARY_DIR)/nupid$(NC)"
 
 # Build adapter-runner binary
 adapter-runner:
 	@echo "$(YELLOW)Building adapter-runner...$(NC)"
 	@mkdir -p $(BINARY_DIR)
-	@go build -o $(BINARY_DIR)/adapter-runner ./cmd/adapter-runner
+	@go build $(GO_LDFLAGS) -o $(BINARY_DIR)/adapter-runner ./cmd/adapter-runner
 	@echo "$(GREEN)✓ Adapter-runner built: $(BINARY_DIR)/adapter-runner$(NC)"
 
 # Build desktop app
@@ -99,22 +100,8 @@ install: cli daemon adapter-runner
 	@cp $(BINARY_DIR)/nupid $(HOME)/.nupi/bin/nupid
 	@chmod +x $(HOME)/.nupi/bin/nupi
 	@chmod +x $(HOME)/.nupi/bin/nupid
-	@runner_bin="$(HOME)/.nupi/bin/adapter-runner"; \
-	runner_store="$(HOME)/.nupi/adapter-runner"; \
-	version="$(RUNNER_VERSION)"; \
-	if [ -d "$$runner_bin" ] && [ ! -L "$$runner_bin" ]; then \
-		if [ -e "$$runner_store" ]; then rm -rf "$$runner_store"; fi; \
-		mv "$$runner_bin" "$$runner_store"; \
-	fi; \
-	if [ -L "$$runner_bin" ] || [ -f "$$runner_bin" ]; then rm -f "$$runner_bin"; fi; \
-	mkdir -p "$$runner_store/versions/$$version"; \
-	cp $(BINARY_DIR)/adapter-runner "$$runner_store/versions/$$version/adapter-runner"; \
-	chmod +x "$$runner_store/versions/$$version/adapter-runner"; \
-	rm -rf "$$runner_store/current"; \
-	mkdir -p "$$runner_store/current"; \
-	ln -sf "../versions/$$version/adapter-runner" "$$runner_store/current/adapter-runner"; \
-	echo "$$version" > "$$runner_store/current/VERSION"; \
-	ln -sf "$$runner_store/current/adapter-runner" "$$runner_bin"
+	@cp $(BINARY_DIR)/adapter-runner $(HOME)/.nupi/bin/adapter-runner
+	@chmod +x $(HOME)/.nupi/bin/adapter-runner
 	@echo "$(GREEN)✓ Nupi installed to ~/.nupi/bin/$(NC)"
 	@echo ""
 	@echo "$(YELLOW)Add to your PATH:$(NC)"
