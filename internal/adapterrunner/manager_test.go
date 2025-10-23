@@ -35,7 +35,10 @@ func TestInstallFromFile(t *testing.T) {
 	tmp := t.TempDir()
 	base := filepath.Join(tmp, ".nupi")
 
-	src := buildStubRunner(t, tmp, "1.2.3")
+	src := filepath.Join(tmp, "adapter-runner")
+	if err := os.WriteFile(src, []byte("#!/bin/sh\necho runner\n"), 0o755); err != nil {
+		t.Fatalf("failed to seed runner binary: %v", err)
+	}
 
 	m := NewManager(base)
 	if err := m.InstallFromFile(src); err != nil {
@@ -50,13 +53,6 @@ func TestInstallFromFile(t *testing.T) {
 		t.Fatalf("active binary size should be greater than zero")
 	}
 
-	version, err := m.InstalledVersion()
-	if err != nil {
-		t.Fatalf("InstalledVersion failed: %v", err)
-	}
-	if version != "1.2.3" {
-		t.Fatalf("InstalledVersion = %q; want 1.2.3", version)
-	}
 }
 
 func TestInstallFromFileEmptySource(t *testing.T) {

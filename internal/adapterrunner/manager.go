@@ -1,12 +1,10 @@
 package adapterrunner
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -15,9 +13,6 @@ import (
 )
 
 const runnerBinaryName = "adapter-runner"
-
-// ErrNotInstalled is returned when adapter-runner assets are not yet present.
-var ErrNotInstalled = errors.New("adapter-runner not installed")
 
 // Layout captures the directory layout for adapter-runner distribution.
 type Layout struct {
@@ -125,40 +120,6 @@ func (m *Manager) InstallFromFile(srcPath string) error {
 	}
 
 	return nil
-}
-
-// InstalledVersion returns the current adapter-runner version if present.
-func (m *Manager) InstalledVersion() (string, error) {
-	binary := strings.TrimSpace(m.layout.BinaryPath)
-	if binary == "" {
-		return "", ErrNotInstalled
-	}
-
-	if _, err := os.Stat(binary); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return "", ErrNotInstalled
-		}
-		return "", fmt.Errorf("stat adapter-runner: %w", err)
-	}
-
-	cmd := exec.Command(binary, "--version")
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		if stderr.Len() > 0 {
-			return "", fmt.Errorf("adapter-runner --version: %w: %s", err, strings.TrimSpace(stderr.String()))
-		}
-		return "", fmt.Errorf("adapter-runner --version: %w", err)
-	}
-
-	version := strings.TrimSpace(stdout.String())
-	if version == "" {
-		version = "unknown"
-	}
-	return version, nil
 }
 
 func determineLayout(baseDir string) Layout {

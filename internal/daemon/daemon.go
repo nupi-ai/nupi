@@ -33,7 +33,6 @@ import (
 	"github.com/nupi-ai/nupi/internal/server"
 	"github.com/nupi-ai/nupi/internal/server/runtimebridge"
 	"github.com/nupi-ai/nupi/internal/session"
-	nupiversion "github.com/nupi-ai/nupi/internal/version"
 )
 
 // Options groups dependencies required to construct a Daemon.
@@ -84,7 +83,6 @@ func New(opts Options) (*Daemon, error) {
 	if err := runnerManager.EnsureLayout(); err != nil {
 		log.Printf("[Daemon] adapter-runner layout error: %v", err)
 	}
-	ensureAdapterRunnerBinary(runnerManager)
 
 	transportCfg, err := opts.Store.GetTransportConfig(context.Background())
 	if err != nil {
@@ -274,12 +272,6 @@ func (d *Daemon) Start() error {
 	defer daemonruntime.RemovePIDFile(d.instancePaths.Lock)
 
 	d.runtimeInfo.SetStartTime(time.Now())
-	if d.runnerManager != nil {
-		syncCtx, cancelSync := context.WithTimeout(context.Background(), 2*time.Second)
-		d.syncAdapterRunnerSettings(syncCtx)
-		cancelSync()
-	}
-
 	d.ctx, d.cancel = context.WithCancel(context.Background())
 	d.eventBus.StartMetricsReporter(d.ctx, 30*time.Second, nil)
 
@@ -521,56 +513,6 @@ func validateTLSAssets(snapshot server.TransportSnapshot) error {
 		return fmt.Errorf("load tls certificate/key pair: %w", err)
 	}
 	return nil
-}
-
-func (d *Daemon) syncAdapterRunnerSettings(ctx context.Context) {
-	if d.store == nil || d.runnerManager == nil {
-		return
-	}
-
-	if err := adapterrunner.SyncSettings(ctx, d.store, d.runnerManager); err != nil {
-		log.Printf("[Daemon] adapter-runner sync failed: %v", err)
-	}
-}
-
-func ensureAdapterRunnerBinary(manager *adapterrunner.Manager) {
-	if manager == nil {
-		return
-	}
-
-	expected := nupiversion.String()
-	if installed, err := manager.InstalledVersion(); err == nil && installed == expected {
-		return
-	} else if err != nil && !errors.Is(err, adapterrunner.ErrNotInstalled) {
-		log.Printf("[Daemon] adapter-runner version check failed: %v", err)
-	}
-
-	src, err := bundledRunnerPath()
-	if err != nil {
-		log.Printf("[Daemon] adapter-runner source unavailable: %v", err)
-		return
-	}
-
-	if err := manager.InstallFromFile(src); err != nil {
-		log.Printf("[Daemon] adapter-runner installation failed: %v", err)
-	}
-}
-
-func bundledRunnerPath() (string, error) {
-	exe, err := os.Executable()
-	if err != nil {
-		return "", fmt.Errorf("resolve daemon executable: %w", err)
-	}
-
-	dir := filepath.Dir(exe)
-	candidate := filepath.Join(dir, adapterrunner.BinaryName())
-	if _, err := os.Stat(candidate); err != nil {
-		if os.IsNotExist(err) {
-			return "", fmt.Errorf("runner binary not found next to daemon (%s)", candidate)
-		}
-		return "", fmt.Errorf("stat runner binary: %w", err)
-	}
-	return candidate, nil
 }
 
 func (d *Daemon) setRunError(err error) {
