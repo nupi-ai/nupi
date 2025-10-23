@@ -1,6 +1,9 @@
 package http
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
 // ModuleRuntime captures runtime health metadata emitted by modules.Service.
 type ModuleRuntime struct {
@@ -25,6 +28,21 @@ type ModuleEntry struct {
 // ModulesOverview is returned by GET /modules.
 type ModulesOverview struct {
 	Modules []ModuleEntry `json:"modules"`
+}
+
+// ModuleLogStreamEntry represents a single item in the /modules/logs stream.
+type ModuleLogStreamEntry struct {
+	Type       string    `json:"type"`
+	Timestamp  time.Time `json:"timestamp"`
+	ModuleID   string    `json:"module_id,omitempty"`
+	Slot       string    `json:"slot,omitempty"`
+	Level      string    `json:"level,omitempty"`
+	Message    string    `json:"message,omitempty"`
+	SessionID  string    `json:"session_id,omitempty"`
+	StreamID   string    `json:"stream_id,omitempty"`
+	Text       string    `json:"text,omitempty"`
+	Confidence float64   `json:"confidence,omitempty"`
+	Final      bool      `json:"final,omitempty"`
 }
 
 // ModuleActionResult wraps an updated module entry returned by write endpoints.

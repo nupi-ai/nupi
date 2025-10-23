@@ -69,6 +69,13 @@ var allowedRoles = map[string]struct{}{
 	string(roleReadOnly): {},
 }
 
+type streamLogTestHooksKey struct{}
+
+type streamLogTestHooks struct {
+	ready   chan struct{}
+	emitted chan struct{}
+}
+
 const conversationMaxPageLimit = 500
 const defaultTTSStreamID = slots.TTSPrimary
 const voiceIssueCodeServiceUnavailable = "service_unavailable"
@@ -1015,6 +1022,7 @@ func (s *APIServer) Prepare(ctx context.Context) (*PreparedHTTPServer, error) {
 	mux.HandleFunc("/config/adapters", s.handleAdapters)
 	mux.HandleFunc("/config/adapter-bindings", s.handleAdapterBindings)
 	mux.HandleFunc("/modules", s.handleModules)
+	mux.HandleFunc("/modules/logs", s.handleModulesLogs)
 	mux.HandleFunc("/modules/register", s.handleModulesRegister)
 	mux.HandleFunc("/modules/bind", s.handleModulesBind)
 	mux.HandleFunc("/modules/start", s.handleModulesStart)
@@ -1966,6 +1974,116 @@ func (s *APIServer) handleModules(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *APIServer) handleModulesLogs(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireRole(w, r, roleAdmin, roleReadOnly); !ok {
+		return
+	}
+	if s.eventBus == nil {
+		http.Error(w, "event bus unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	slotFilter := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("slot")))
+	adapterFilter := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("adapter")))
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+
+	ctx := r.Context()
+
+	subLogs := s.eventBus.Subscribe(eventbus.TopicModulesLog)
+	defer subLogs.Close()
+	subPartial := s.eventBus.Subscribe(eventbus.TopicSpeechTranscriptPartial)
+	defer subPartial.Close()
+	subFinal := s.eventBus.Subscribe(eventbus.TopicSpeechTranscriptFinal)
+	defer subFinal.Close()
+
+	logCh := subLogs.C()
+	partialCh := subPartial.C()
+	finalCh := subFinal.C()
+	encoder := json.NewEncoder(w)
+	var hooks *streamLogTestHooks
+	if v, ok := ctx.Value(streamLogTestHooksKey{}).(*streamLogTestHooks); ok && v != nil {
+		hooks = v
+		select {
+		case hooks.ready <- struct{}{}:
+		default:
+		}
+	}
+
+	for logCh != nil || partialCh != nil || finalCh != nil {
+		select {
+		case <-ctx.Done():
+			return
+		case env, ok := <-logCh:
+			if !ok {
+				logCh = nil
+				continue
+			}
+			entry, emit := filterModuleLogEvent(env, slotFilter, adapterFilter)
+			if !emit {
+				continue
+			}
+			if err := encoder.Encode(entry); err != nil {
+				return
+			}
+			flusher.Flush()
+			if hooks != nil {
+				select {
+				case hooks.emitted <- struct{}{}:
+				default:
+				}
+			}
+		case env, ok := <-partialCh:
+			if !ok {
+				partialCh = nil
+				continue
+			}
+			entry, emit := makeTranscriptEntry(env)
+			if !emit || (slotFilter != "" && adapterFilter != "") {
+				// transcripts cannot currently be mapped to slot/adapter; when both filters
+				// are provided, skip to avoid confusion.
+				continue
+			}
+			if err := encoder.Encode(entry); err != nil {
+				return
+			}
+			flusher.Flush()
+			if hooks != nil {
+				select {
+				case hooks.emitted <- struct{}{}:
+				default:
+				}
+			}
+		case env, ok := <-finalCh:
+			if !ok {
+				finalCh = nil
+				continue
+			}
+			entry, emit := makeTranscriptEntry(env)
+			if !emit || (slotFilter != "" && adapterFilter != "") {
+				continue
+			}
+			if err := encoder.Encode(entry); err != nil {
+				return
+			}
+			flusher.Flush()
+			if hooks != nil {
+				select {
+				case hooks.emitted <- struct{}{}:
+				default:
+				}
+			}
+		}
+	}
+}
+
 func (s *APIServer) handleModulesRegister(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
@@ -2115,6 +2233,57 @@ func (s *APIServer) handleModulesRegister(w http.ResponseWriter, r *http.Request
 	if err := json.NewEncoder(w).Encode(result); err != nil {
 		log.Printf("[APIServer] failed to encode module registration result: %v", err)
 	}
+}
+
+func filterModuleLogEvent(env eventbus.Envelope, slotFilter, adapterFilter string) (apihttp.ModuleLogStreamEntry, bool) {
+	event, ok := env.Payload.(eventbus.ModuleLogEvent)
+	if !ok {
+		return apihttp.ModuleLogStreamEntry{}, false
+	}
+
+	slotValue := strings.TrimSpace(event.Fields["slot"])
+	if slotFilter != "" && strings.ToLower(slotValue) != slotFilter {
+		return apihttp.ModuleLogStreamEntry{}, false
+	}
+	if adapterFilter != "" && strings.ToLower(strings.TrimSpace(event.ModuleID)) != adapterFilter {
+		return apihttp.ModuleLogStreamEntry{}, false
+	}
+
+	timestamp := env.Timestamp
+	if timestamp.IsZero() {
+		timestamp = time.Now().UTC()
+	}
+
+	return apihttp.ModuleLogStreamEntry{
+		Type:      "log",
+		Timestamp: timestamp,
+		ModuleID:  event.ModuleID,
+		Slot:      slotValue,
+		Level:     string(event.Level),
+		Message:   event.Message,
+	}, true
+}
+
+func makeTranscriptEntry(env eventbus.Envelope) (apihttp.ModuleLogStreamEntry, bool) {
+	event, ok := env.Payload.(eventbus.SpeechTranscriptEvent)
+	if !ok {
+		return apihttp.ModuleLogStreamEntry{}, false
+	}
+
+	timestamp := env.Timestamp
+	if timestamp.IsZero() {
+		timestamp = time.Now().UTC()
+	}
+
+	return apihttp.ModuleLogStreamEntry{
+		Type:       "transcript",
+		Timestamp:  timestamp,
+		SessionID:  event.SessionID,
+		StreamID:   event.StreamID,
+		Text:       event.Text,
+		Confidence: float64(event.Confidence),
+		Final:      event.Final,
+	}, true
 }
 
 type moduleActionRequest struct {

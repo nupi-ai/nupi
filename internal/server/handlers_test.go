@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1459,6 +1460,12 @@ func newTestAPIServer(t *testing.T) (*APIServer, *session.Manager) {
 	return apiServer, sessionManager
 }
 
+type flushRecorder struct {
+	*httptest.ResponseRecorder
+}
+
+func (f *flushRecorder) Flush() {}
+
 func openTestStore(t *testing.T) *configstore.Store {
 	t.Helper()
 	store, err := configstore.Open(configstore.Options{InstanceName: config.DefaultInstance, ProfileName: config.DefaultProfile})
@@ -2137,6 +2144,219 @@ func (s *localHTTPServer) Close() {
 	defer cancel()
 	_ = s.server.Shutdown(ctx)
 	_ = s.listener.Close()
+}
+
+func TestFilterModuleLogEvent(t *testing.T) {
+	baseEnv := eventbus.Envelope{
+		Topic: eventbus.TopicModulesLog,
+		Payload: eventbus.ModuleLogEvent{
+			ModuleID: "example",
+			Message:  "hello",
+			Fields: map[string]string{
+				"slot": "stt.primary",
+			},
+		},
+		Timestamp: time.Unix(10, 0),
+	}
+
+	tests := []struct {
+		name         string
+		env          eventbus.Envelope
+		slotFilter   string
+		adapter      string
+		expectEmit   bool
+		expectSlot   string
+		expectModule string
+	}{
+		{name: "match slot", env: baseEnv, slotFilter: "stt.primary", expectEmit: true, expectSlot: "stt.primary", expectModule: "example"},
+		{name: "case insensitive slot", env: baseEnv, slotFilter: "STT.PRIMARY", expectEmit: true},
+		{name: "mismatched slot", env: baseEnv, slotFilter: "stt.secondary", expectEmit: false},
+		{name: "adapter filter", env: baseEnv, adapter: "example", expectEmit: true},
+		{name: "adapter mismatch", env: baseEnv, adapter: "other", expectEmit: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			entry, ok := filterModuleLogEvent(tc.env, strings.ToLower(tc.slotFilter), strings.ToLower(tc.adapter))
+			if ok != tc.expectEmit {
+				t.Fatalf("expected emit=%v, got %v", tc.expectEmit, ok)
+			}
+			if !ok {
+				return
+			}
+			if tc.expectSlot != "" && entry.Slot != tc.expectSlot {
+				t.Fatalf("expected slot %s, got %s", tc.expectSlot, entry.Slot)
+			}
+			if tc.expectModule != "" && entry.ModuleID != tc.expectModule {
+				t.Fatalf("expected module %s, got %s", tc.expectModule, entry.ModuleID)
+			}
+		})
+	}
+}
+
+func TestMakeTranscriptEntry(t *testing.T) {
+	env := eventbus.Envelope{
+		Topic: eventbus.TopicSpeechTranscriptFinal,
+		Payload: eventbus.SpeechTranscriptEvent{
+			SessionID:  "abc",
+			StreamID:   "mic",
+			Text:       "hello",
+			Confidence: 0.5,
+			Final:      true,
+		},
+	}
+	entry, ok := makeTranscriptEntry(env)
+	if !ok {
+		t.Fatalf("expected entry to be emitted")
+	}
+	if !entry.Final || entry.Text != "hello" || entry.SessionID != "abc" {
+		t.Fatalf("unexpected entry: %+v", entry)
+	}
+
+	env.Timestamp = time.Time{}
+	entry, ok = makeTranscriptEntry(env)
+	if !ok {
+		t.Fatalf("expected entry to be emitted")
+	}
+	if entry.Timestamp.IsZero() {
+		t.Fatalf("expected timestamp to be set")
+	}
+}
+
+func TestHandleModulesLogsFilters(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	bus := eventbus.New()
+	apiServer.SetEventBus(bus)
+
+	tests := []struct {
+		name       string
+		query      string
+		events     []eventbus.Envelope
+		expectRows int
+	}{
+		{
+			name:  "slot filter includes logs",
+			query: "slot=stt.primary",
+			events: []eventbus.Envelope{
+				{
+					Topic: eventbus.TopicModulesLog,
+					Payload: eventbus.ModuleLogEvent{
+						ModuleID: "example",
+						Message:  "hello",
+						Fields:   map[string]string{"slot": "stt.primary"},
+					},
+					Timestamp: time.Unix(1, 0),
+				},
+			},
+			expectRows: 1,
+		},
+		{
+			name:  "non matching slot drops",
+			query: "slot=stt.primary",
+			events: []eventbus.Envelope{
+				{
+					Topic: eventbus.TopicModulesLog,
+					Payload: eventbus.ModuleLogEvent{
+						ModuleID: "example",
+						Message:  "ignored",
+						Fields:   map[string]string{"slot": "stt.secondary"},
+					},
+				},
+			},
+			expectRows: 0,
+		},
+		{
+			name:  "adapter filter includes logs",
+			query: "adapter=example",
+			events: []eventbus.Envelope{
+				{
+					Topic: eventbus.TopicModulesLog,
+					Payload: eventbus.ModuleLogEvent{
+						ModuleID: "example",
+						Message:  "hello",
+					},
+				},
+			},
+			expectRows: 1,
+		},
+		{
+			name:  "both filters suppress transcripts",
+			query: "slot=stt.primary&adapter=example",
+			events: []eventbus.Envelope{
+				{
+					Topic: eventbus.TopicSpeechTranscriptFinal,
+					Payload: eventbus.SpeechTranscriptEvent{
+						SessionID:  "abc",
+						StreamID:   "mic",
+						Text:       "ignored",
+						Confidence: 0.1,
+						Final:      true,
+					},
+				},
+			},
+			expectRows: 0,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			hooks := &streamLogTestHooks{
+				ready:   make(chan struct{}, 1),
+				emitted: make(chan struct{}, len(tc.events)),
+			}
+			ctx = context.WithValue(ctx, streamLogTestHooksKey{}, hooks)
+			req := httptest.NewRequest(http.MethodGet, "/modules/logs?"+tc.query, nil).WithContext(ctx)
+			recorder := &flushRecorder{httptest.NewRecorder()}
+			var wg sync.WaitGroup
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				apiServer.handleModulesLogs(recorder, req)
+			}()
+
+			select {
+			case <-hooks.ready:
+			case <-time.After(time.Second):
+				t.Fatalf("handler did not become ready in time")
+			}
+
+			for _, ev := range tc.events {
+				bus.Publish(context.Background(), ev)
+			}
+			for i := 0; i < tc.expectRows; i++ {
+				select {
+				case <-hooks.emitted:
+				case <-time.After(time.Second):
+					t.Fatalf("timed out waiting for entry %d/%d", i+1, tc.expectRows)
+				}
+			}
+
+			cancel()
+			wg.Wait()
+			if len(hooks.emitted) != 0 {
+				t.Fatalf("unexpected additional entries emitted: %d", len(hooks.emitted))
+			}
+
+			body := strings.TrimSpace(recorder.Body.String())
+			if body == "" {
+				if tc.expectRows != 0 {
+					t.Fatalf("expected %d rows, got 0", tc.expectRows)
+				}
+				return
+			}
+			lines := strings.Split(body, "\n")
+			if len(lines) != tc.expectRows {
+				t.Fatalf("expected %d rows, got %d (%v)", tc.expectRows, len(lines), lines)
+			}
+			for _, line := range lines {
+				var entry apihttp.ModuleLogStreamEntry
+				if err := json.Unmarshal([]byte(line), &entry); err != nil {
+					t.Fatalf("failed to decode entry: %v", err)
+				}
+			}
+		})
+	}
 }
 
 type metricsExporterStub struct {

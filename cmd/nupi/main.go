@@ -37,8 +37,10 @@ import (
 )
 
 const (
-	errorMessageLimit   = 2048
-	moduleSlugMaxLength = 64
+	errorMessageLimit           = 2048
+	moduleSlugMaxLength         = 64
+	moduleLogsScannerInitialBuf = 64 * 1024
+	moduleLogsScannerMaxBuf     = 1024 * 1024
 )
 
 // Global variables for use across commands
@@ -356,6 +358,33 @@ func main() {
 	modulesInstallLocalCmd.Flags().String("slot", "", "Optional slot to bind after registration (e.g. stt.primary)")
 	modulesInstallLocalCmd.Flags().String("config", "", "Optional JSON configuration payload for slot binding")
 
+	modulesLogsCmd := &cobra.Command{
+		Use:           "logs",
+		Short:         "Stream module logs and transcripts",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE:          modulesLogs,
+	}
+	modulesLogsCmd.Long = `Stream real-time module logs and speech transcripts.
+
+Filters:
+  --slot=SLOT       Filter logs by slot (e.g. stt.primary)
+  --adapter=ID      Filter logs by adapter identifier
+
+Notes:
+  - When both --slot and --adapter are provided, transcript entries are omitted
+    because transcripts are not yet mapped to specific modules.
+  - Use --json to consume newline-delimited JSON for tooling and pipelines.
+
+Examples:
+  nupi modules logs
+  nupi modules logs --slot=stt.primary
+  nupi modules logs --adapter=adapter.stt.mock
+  nupi modules logs --json | jq .
+`
+	modulesLogsCmd.Flags().String("slot", "", "Filter logs by slot (e.g. stt.primary)")
+	modulesLogsCmd.Flags().String("adapter", "", "Filter logs by adapter identifier")
+
 	modulesListCmd := &cobra.Command{
 		Use:           "list",
 		Short:         "Show module slots, bindings and runtime status",
@@ -392,7 +421,7 @@ func main() {
 		RunE:          modulesStop,
 	}
 
-	modulesCmd.AddCommand(modulesRegisterCmd, modulesListCmd, modulesBindCmd, modulesStartCmd, modulesStopCmd)
+	modulesCmd.AddCommand(modulesRegisterCmd, modulesListCmd, modulesBindCmd, modulesStartCmd, modulesStopCmd, modulesLogsCmd)
 	modulesCmd.AddCommand(modulesInstallLocalCmd)
 
 	quickstartCmd := &cobra.Command{
@@ -1979,6 +2008,123 @@ func modulesInstallLocal(cmd *cobra.Command, _ []string) error {
 		fmt.Printf("Bound adapter %s to %s\n", adapterID, slot)
 	}
 	return nil
+}
+
+func modulesLogs(cmd *cobra.Command, _ []string) error {
+	out := newOutputFormatter(cmd)
+
+	useGRPC, _ := cmd.Flags().GetBool("grpc")
+	if useGRPC {
+		return out.Error("Modules logs over gRPC is not supported yet", errors.New("grpc not implemented"))
+	}
+
+	slot, _ := cmd.Flags().GetString("slot")
+	adapter, _ := cmd.Flags().GetString("adapter")
+	slot = strings.TrimSpace(slot)
+	adapter = strings.TrimSpace(adapter)
+
+	c, err := client.New()
+	if err != nil {
+		return out.Error("Failed to connect to daemon", err)
+	}
+	defer c.Close()
+
+	params := url.Values{}
+	if slot != "" {
+		params.Set("slot", slot)
+	}
+	if adapter != "" {
+		params.Set("adapter", adapter)
+	}
+
+	endpoint := c.BaseURL() + "/modules/logs"
+	if len(params) > 0 {
+		endpoint += "?" + params.Encode()
+	}
+
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return out.Error("Failed to create request", err)
+	}
+
+	resp, err := doRequest(c, req)
+	if err != nil {
+		return out.Error("Failed to fetch module logs", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return out.Error("Failed to fetch module logs", fmt.Errorf("%s", readErrorMessage(resp)))
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	buf := make([]byte, 0, moduleLogsScannerInitialBuf)
+	scanner.Buffer(buf, moduleLogsScannerMaxBuf)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if out.jsonMode {
+			fmt.Println(line)
+			continue
+		}
+
+		var entry apihttp.ModuleLogStreamEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			fmt.Fprintf(os.Stderr, "decode log entry failed: %v\n", err)
+			fmt.Println(line)
+			continue
+		}
+		printModuleLogEntry(entry)
+	}
+
+	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
+		if errors.Is(err, bufio.ErrTooLong) {
+			return out.Error("Module log entry exceeded 1MB limit", err)
+		}
+		return out.Error("Module log stream ended with error", err)
+	}
+
+	return nil
+}
+
+func printModuleLogEntry(entry apihttp.ModuleLogStreamEntry) {
+	ts := entry.Timestamp
+	if ts.IsZero() {
+		ts = time.Now().UTC()
+	}
+	timestamp := ts.Format(time.RFC3339)
+
+	switch entry.Type {
+	case "log":
+		level := strings.ToUpper(strings.TrimSpace(entry.Level))
+		if level == "" {
+			level = "INFO"
+		}
+		slot := strings.TrimSpace(entry.Slot)
+		moduleID := strings.TrimSpace(entry.ModuleID)
+		if slot != "" {
+			if moduleID != "" {
+				fmt.Printf("%s [%s] %s %s: %s\n", timestamp, slot, moduleID, level, entry.Message)
+			} else {
+				fmt.Printf("%s [%s] %s: %s\n", timestamp, slot, level, entry.Message)
+			}
+		} else {
+			if moduleID != "" {
+				fmt.Printf("%s %s %s: %s\n", timestamp, moduleID, level, entry.Message)
+			} else {
+				fmt.Printf("%s %s: %s\n", timestamp, level, entry.Message)
+			}
+		}
+	case "transcript":
+		stage := "partial"
+		if entry.Final {
+			stage = "final"
+		}
+		fmt.Printf("%s [transcript %s] session=%s stream=%s conf=%.2f %s\n",
+			timestamp, stage, entry.SessionID, entry.StreamID, entry.Confidence, entry.Text)
+	default:
+		fmt.Printf("%s [unknown type=%s] %s\n", timestamp, entry.Type, entry.Message)
+	}
 }
 
 func modulesBind(cmd *cobra.Command, args []string) error {
