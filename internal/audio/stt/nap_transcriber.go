@@ -15,7 +15,9 @@ import (
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -181,6 +183,9 @@ func (t *napTranscriber) Close(ctx context.Context) ([]Transcription, error) {
 
 func (t *napTranscriber) collectResponses() []Transcription {
 	var transcripts []Transcription
+	timer := time.NewTimer(50 * time.Millisecond)
+	defer timer.Stop()
+
 	for {
 		select {
 		case tr, ok := <-t.responses:
@@ -188,7 +193,11 @@ func (t *napTranscriber) collectResponses() []Transcription {
 				return transcripts
 			}
 			transcripts = append(transcripts, tr)
-		default:
+			if !timer.Stop() {
+				<-timer.C
+			}
+			timer.Reset(50 * time.Millisecond)
+		case <-timer.C:
 			return transcripts
 		}
 	}
@@ -212,12 +221,22 @@ func (t *napTranscriber) drainResponses(ctx context.Context) []Transcription {
 func (t *napTranscriber) drainError() error {
 	select {
 	case err := <-t.errCh:
-		if err != nil && !errors.Is(err, io.EOF) {
-			return fmt.Errorf("stt: receive transcript: %w", err)
+		if err == nil || errors.Is(err, io.EOF) {
+			return nil
 		}
+		if s, ok := status.FromError(err); ok {
+			switch s.Code() {
+			case codes.Canceled, codes.Unavailable:
+				return nil
+			}
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil
+		}
+		return fmt.Errorf("stt: receive transcript: %w", err)
 	default:
+		return nil
 	}
-	return nil
 }
 
 func marshalFormat(format eventbus.AudioFormat) *napv1.AudioFormat {
