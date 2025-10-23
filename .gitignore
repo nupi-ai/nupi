@@ -9,3 +9,8 @@
 
 # macOS
 .DS_Store
+
+# Test coverage
+cover.out
+coverage.html
+*.coverprofile
