@@ -37,7 +37,7 @@ func TestManagerEnsureStartsModules(t *testing.T) {
 				Slot:      string(SlotAI),
 				Status:    "active",
 				Config:    `{"api_key":"secret"}`,
-				AdapterID: strPtr("adapter.ai.primary"),
+				AdapterID: strPtr("adapter.ai"),
 			},
 		},
 	}
@@ -61,7 +61,7 @@ func TestManagerEnsureStartsModules(t *testing.T) {
 	if call.Binary != manager.runner.BinaryPath() {
 		t.Fatalf("unexpected binary path %q", call.Binary)
 	}
-	expectArgs := []string{"--slot", string(SlotAI), "--adapter", "adapter.ai.primary"}
+	expectArgs := []string{"--slot", string(SlotAI), "--adapter", "adapter.ai"}
 	if len(call.Args) != len(expectArgs) {
 		t.Fatalf("unexpected args: %v", call.Args)
 	}
@@ -136,7 +136,7 @@ func TestManagerEnsureConfigChange(t *testing.T) {
 			{
 				Slot:      string(SlotAI),
 				Status:    "active",
-				AdapterID: strPtr("adapter.ai.primary"),
+				AdapterID: strPtr("adapter.ai"),
 				Config:    `{"token":"first"}`,
 			},
 		},
@@ -214,7 +214,7 @@ spec:
 `
 
 	adapter := configstore.Adapter{
-		ID:       "adapter.ai.primary",
+		ID:       "adapter.ai",
 		Source:   "test",
 		Type:     "ai",
 		Name:     "Primary AI",
@@ -345,7 +345,7 @@ func TestManagerEnsureRestartsOnEndpointChange(t *testing.T) {
 	})
 
 	adapter := configstore.Adapter{
-		ID:     "adapter.ai.primary",
+		ID:     "adapter.ai",
 		Source: "builtin",
 		Type:   "ai",
 		Name:   "Primary AI",
@@ -423,7 +423,7 @@ spec:
   moduleType: ai
 `
 	adapter := configstore.Adapter{
-		ID:       "adapter.ai.primary",
+		ID:       "adapter.ai",
 		Source:   "builtin",
 		Type:     "ai",
 		Name:     "Primary AI",

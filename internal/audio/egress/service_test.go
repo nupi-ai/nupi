@@ -10,6 +10,7 @@ import (
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/modules"
+	"github.com/nupi-ai/nupi/internal/voice/slots"
 )
 
 func TestServicePublishesPlayback(t *testing.T) {
@@ -125,7 +126,7 @@ func TestServiceInterruptStopsPlayback(t *testing.T) {
 		WithFactory(FactoryFunc(func(context.Context, SessionParams) (Synthesizer, error) {
 			return synth, nil
 		})),
-		WithStreamID("tts.primary"),
+		WithStreamID(slots.TTS),
 	)
 	if err := svc.Start(ctx); err != nil {
 		t.Fatalf("start service: %v", err)

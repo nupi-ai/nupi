@@ -42,7 +42,7 @@ func TestLoadConfigFromEnv(t *testing.T) {
 	}
 
 	withEnv(t, "NUPI_MODULE_COMMAND", command)
-	withEnv(t, "NUPI_MODULE_SLOT", "stt.primary")
+	withEnv(t, "NUPI_MODULE_SLOT", "stt")
 	withEnv(t, "NUPI_MODULE_ADAPTER", "adapter.test")
 	withEnv(t, "NUPI_MODULE_ARGS", `["--foo","bar"]`)
 	withEnv(t, "NUPI_MODULE_HOME", filepath.Join(tempDir, "home"))

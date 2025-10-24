@@ -26,9 +26,9 @@ func TestEnsureRequiredAdapterSlotsInsertsMissing(t *testing.T) {
 
 	ctx := context.Background()
 
-	// remove ai.primary to simulate pre-migration database
+	// remove ai slot to simulate pre-migration database
 	if _, err := store.DB().ExecContext(ctx, `
-		DELETE FROM adapter_bindings WHERE instance_name = ? AND profile_name = ? AND slot = 'ai.primary'
+		DELETE FROM adapter_bindings WHERE instance_name = ? AND profile_name = ? AND slot = 'ai'
 	`, store.InstanceName(), store.ProfileName()); err != nil {
 		t.Fatalf("delete slot: %v", err)
 	}
@@ -40,13 +40,13 @@ func TestEnsureRequiredAdapterSlotsInsertsMissing(t *testing.T) {
 
 	found := false
 	for _, slot := range result.UpdatedSlots {
-		if slot == "ai.primary" {
+		if slot == "ai" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatalf("expected ai.primary to be reported as updated, got %v", result.UpdatedSlots)
+		t.Fatalf("expected ai to be reported as updated, got %v", result.UpdatedSlots)
 	}
 
 	bindings, err := store.ListAdapterBindings(ctx)
@@ -56,7 +56,7 @@ func TestEnsureRequiredAdapterSlotsInsertsMissing(t *testing.T) {
 
 	var restored bool
 	for _, binding := range bindings {
-		if binding.Slot != "ai.primary" {
+		if binding.Slot != "ai" {
 			continue
 		}
 		restored = true
@@ -68,7 +68,7 @@ func TestEnsureRequiredAdapterSlotsInsertsMissing(t *testing.T) {
 		}
 	}
 	if !restored {
-		t.Fatalf("ai.primary slot not restored")
+		t.Fatalf("ai slot not restored")
 	}
 }
 
@@ -89,7 +89,7 @@ func TestEnsureRequiredAdapterSlotsReconcilesStatus(t *testing.T) {
 
 	ctx := context.Background()
 
-	slots := []string{"stt.primary", "stt.secondary", "vad.primary"}
+	slots := []string{"stt", "tts", "vad"}
 	for _, slot := range slots {
 		if _, err := store.DB().ExecContext(ctx, `
 			UPDATE adapter_bindings

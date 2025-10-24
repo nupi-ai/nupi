@@ -77,7 +77,7 @@ type streamLogTestHooks struct {
 }
 
 const conversationMaxPageLimit = 500
-const defaultTTSStreamID = slots.TTSPrimary
+const defaultTTSStreamID = slots.TTS
 const voiceIssueCodeServiceUnavailable = "service_unavailable"
 
 const (
@@ -2525,7 +2525,7 @@ func (s *APIServer) handleAudioIngress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !readiness.CaptureEnabled {
-		diags := filterDiagnostics(mapVoiceDiagnostics(readiness.Issues), slots.STTPrimary)
+		diags := filterDiagnostics(mapVoiceDiagnostics(readiness.Issues), slots.STT)
 		message := voiceIssueSummary(diags, "voice capture unavailable")
 		writeVoiceError(w, http.StatusPreconditionFailed, message, diags, readiness)
 		return
@@ -2648,7 +2648,7 @@ func (s *APIServer) handleAudioEgress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !readiness.PlaybackEnabled {
-		diags := filterDiagnostics(mapVoiceDiagnostics(readiness.Issues), slots.TTSPrimary)
+		diags := filterDiagnostics(mapVoiceDiagnostics(readiness.Issues), slots.TTS)
 		message := voiceIssueSummary(diags, "voice playback unavailable")
 		writeVoiceError(w, http.StatusPreconditionFailed, message, diags, readiness)
 		return
@@ -2835,7 +2835,7 @@ func (s *APIServer) handleAudioIngressWS(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if !readiness.CaptureEnabled {
-		diags := filterDiagnostics(mapVoiceDiagnostics(readiness.Issues), slots.STTPrimary)
+		diags := filterDiagnostics(mapVoiceDiagnostics(readiness.Issues), slots.STT)
 		message := voiceIssueSummary(diags, "voice capture unavailable")
 		writeVoiceError(w, http.StatusPreconditionFailed, message, diags, readiness)
 		return
@@ -2974,7 +2974,7 @@ func (s *APIServer) handleAudioEgressWS(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if !readiness.PlaybackEnabled {
-		diags := filterDiagnostics(mapVoiceDiagnostics(readiness.Issues), slots.TTSPrimary)
+		diags := filterDiagnostics(mapVoiceDiagnostics(readiness.Issues), slots.TTS)
 		message := voiceIssueSummary(diags, "voice playback unavailable")
 		writeVoiceError(w, http.StatusPreconditionFailed, message, diags, readiness)
 		return
@@ -3138,10 +3138,10 @@ func (s *APIServer) voiceReadiness(ctx context.Context) (configstore.VoiceReadin
 			Issues:          nil,
 		}
 		if s.audioIngress == nil {
-			readiness.Issues = appendVoiceIssue(readiness.Issues, slots.STTPrimary, voiceIssueCodeServiceUnavailable, "audio ingress service unavailable")
+			readiness.Issues = appendVoiceIssue(readiness.Issues, slots.STT, voiceIssueCodeServiceUnavailable, "audio ingress service unavailable")
 		}
 		if s.audioEgress == nil {
-			readiness.Issues = appendVoiceIssue(readiness.Issues, slots.TTSPrimary, voiceIssueCodeServiceUnavailable, "audio egress service unavailable")
+			readiness.Issues = appendVoiceIssue(readiness.Issues, slots.TTS, voiceIssueCodeServiceUnavailable, "audio egress service unavailable")
 		}
 		return readiness, nil
 	}
@@ -3151,11 +3151,11 @@ func (s *APIServer) voiceReadiness(ctx context.Context) (configstore.VoiceReadin
 	}
 	if s.audioIngress == nil {
 		readiness.CaptureEnabled = false
-		readiness.Issues = appendVoiceIssue(readiness.Issues, slots.STTPrimary, voiceIssueCodeServiceUnavailable, "audio ingress service unavailable")
+		readiness.Issues = appendVoiceIssue(readiness.Issues, slots.STT, voiceIssueCodeServiceUnavailable, "audio ingress service unavailable")
 	}
 	if s.audioEgress == nil {
 		readiness.PlaybackEnabled = false
-		readiness.Issues = appendVoiceIssue(readiness.Issues, slots.TTSPrimary, voiceIssueCodeServiceUnavailable, "audio egress service unavailable")
+		readiness.Issues = appendVoiceIssue(readiness.Issues, slots.TTS, voiceIssueCodeServiceUnavailable, "audio egress service unavailable")
 	}
 	return readiness, nil
 }
@@ -3320,7 +3320,7 @@ func (s *APIServer) handleAudioCapabilities(w http.ResponseWriter, r *http.Reque
 				"ready":       strconv.FormatBool(readiness.CaptureEnabled),
 			}
 			if !readiness.CaptureEnabled {
-				diags := filterDiagnostics(mapVoiceDiagnostics(readiness.Issues), slots.STTPrimary)
+				diags := filterDiagnostics(mapVoiceDiagnostics(readiness.Issues), slots.STT)
 				metadata["diagnostics"] = voiceIssueSummary(diags, "voice capture unavailable")
 			}
 			resp.Capture = append(resp.Capture, audioCapabilityJSON{
@@ -3338,7 +3338,7 @@ func (s *APIServer) handleAudioCapabilities(w http.ResponseWriter, r *http.Reque
 				"ready":       strconv.FormatBool(readiness.PlaybackEnabled),
 			}
 			if !readiness.PlaybackEnabled {
-				diags := filterDiagnostics(mapVoiceDiagnostics(readiness.Issues), slots.TTSPrimary)
+				diags := filterDiagnostics(mapVoiceDiagnostics(readiness.Issues), slots.TTS)
 				metadata["diagnostics"] = voiceIssueSummary(diags, "voice playback unavailable")
 			}
 			resp.Playback = append(resp.Playback, audioCapabilityJSON{

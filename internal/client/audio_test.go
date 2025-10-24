@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/nupi-ai/nupi/internal/eventbus"
+	"github.com/nupi-ai/nupi/internal/voice/slots"
 )
 
 func TestUploadAudio(t *testing.T) {
@@ -136,7 +137,7 @@ func TestOpenAudioPlayback(t *testing.T) {
 	client := newClientWithConfig(server.URL, nil, "")
 	stream, err := client.OpenAudioPlayback(context.Background(), AudioPlaybackParams{
 		SessionID: "sess-1",
-		StreamID:  "tts.primary",
+		StreamID:  slots.TTS,
 	})
 	if err != nil {
 		t.Fatalf("open playback: %v", err)
@@ -196,7 +197,7 @@ func TestInterruptAudio(t *testing.T) {
 	client := newClientWithConfig(server.URL, nil, "token")
 	err := client.InterruptAudio(context.Background(), AudioInterruptParams{
 		SessionID: "sess-1",
-		StreamID:  "tts.primary",
+		StreamID:  slots.TTS,
 		Reason:    "test",
 		Metadata:  map[string]string{"foo": "bar"},
 	})
@@ -208,7 +209,7 @@ func TestInterruptAudio(t *testing.T) {
 	if err := json.Unmarshal(body, &payload); err != nil {
 		t.Fatalf("decode payload: %v", err)
 	}
-	if payload["session_id"] != "sess-1" || payload["stream_id"] != "tts.primary" || payload["reason"] != "test" {
+	if payload["session_id"] != "sess-1" || payload["stream_id"] != slots.TTS || payload["reason"] != "test" {
 		t.Fatalf("unexpected payload: %v", payload)
 	}
 	meta := payload["metadata"].(map[string]any)

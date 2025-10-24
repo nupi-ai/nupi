@@ -345,7 +345,7 @@ func main() {
 	  --manifest-file ./module-nupi-whisper-local-stt/module.yaml \
 	  --binary $(pwd)/module-nupi-whisper-local-stt/dist/module-nupi-whisper-local-stt \
 	  --endpoint-address 127.0.0.1:50051 \
-	  --slot stt.primary`
+	  --slot stt`
 	modulesInstallLocalCmd.Flags().String("manifest-file", "", "Path to module manifest (YAML or JSON)")
 	modulesInstallLocalCmd.Flags().String("id", "", "Override adapter identifier (defaults to manifest metadata.slug)")
 	modulesInstallLocalCmd.Flags().String("binary", "", "Path to module executable (overrides manifest entrypoint.command)")
@@ -355,7 +355,7 @@ func main() {
 	modulesInstallLocalCmd.Flags().String("endpoint-address", "", "Address for gRPC/HTTP transport")
 	modulesInstallLocalCmd.Flags().StringArray("endpoint-arg", nil, "Additional command argument (repeatable)")
 	modulesInstallLocalCmd.Flags().StringArray("endpoint-env", nil, "Environment variable KEY=VALUE passed to the module (repeatable)")
-	modulesInstallLocalCmd.Flags().String("slot", "", "Optional slot to bind after registration (e.g. stt.primary)")
+	modulesInstallLocalCmd.Flags().String("slot", "", "Optional slot to bind after registration (e.g. stt)")
 	modulesInstallLocalCmd.Flags().String("config", "", "Optional JSON configuration payload for slot binding")
 
 	modulesLogsCmd := &cobra.Command{
@@ -368,7 +368,7 @@ func main() {
 	modulesLogsCmd.Long = `Stream real-time module logs and speech transcripts.
 
 Filters:
-  --slot=SLOT       Filter logs by slot (e.g. stt.primary)
+  --slot=SLOT       Filter logs by slot (e.g. stt)
   --adapter=ID      Filter logs by adapter identifier
 
 Notes:
@@ -378,11 +378,11 @@ Notes:
 
 Examples:
   nupi modules logs
-  nupi modules logs --slot=stt.primary
+  nupi modules logs --slot=stt
   nupi modules logs --adapter=adapter.stt.mock
   nupi modules logs --json | jq .
 `
-	modulesLogsCmd.Flags().String("slot", "", "Filter logs by slot (e.g. stt.primary)")
+	modulesLogsCmd.Flags().String("slot", "", "Filter logs by slot (e.g. stt)")
 	modulesLogsCmd.Flags().String("adapter", "", "Filter logs by adapter identifier")
 
 	modulesListCmd := &cobra.Command{

@@ -34,9 +34,9 @@ const INSTANCE_NAME: &str = "default";
 const PROFILE_NAME: &str = "default";
 const MAX_AUDIO_FILE_SIZE: u64 = 500 * 1024 * 1024;
 const DEFAULT_CAPTURE_STREAM_ID: &str = "mic";
-const DEFAULT_PLAYBACK_STREAM_ID: &str = "tts.primary";
-const SLOT_STT_PRIMARY: &str = "stt.primary";
-const SLOT_TTS_PRIMARY: &str = "tts.primary";
+const DEFAULT_PLAYBACK_STREAM_ID: &str = "tts";
+const SLOT_STT: &str = "stt";
+const SLOT_TTS: &str = "tts";
 const CANCELLED_MESSAGE: &str = "Voice stream cancelled by user";
 
 #[derive(Debug)]
@@ -967,7 +967,7 @@ impl RestClient {
             let message = capabilities.message.clone().unwrap_or_else(|| {
                 primary_diagnostic_message(
                     &capabilities.diagnostics,
-                    SLOT_STT_PRIMARY,
+                    SLOT_STT,
                     "Voice capture is disabled",
                 )
             });
@@ -980,7 +980,7 @@ impl RestClient {
             let message = capabilities.message.clone().unwrap_or_else(|| {
                 primary_diagnostic_message(
                     &capabilities.diagnostics,
-                    SLOT_TTS_PRIMARY,
+                    SLOT_TTS,
                     "Voice playback is disabled",
                 )
             });
@@ -1198,7 +1198,7 @@ impl RestClient {
             let message = capabilities.message.clone().unwrap_or_else(|| {
                 primary_diagnostic_message(
                     &capabilities.diagnostics,
-                    SLOT_TTS_PRIMARY,
+                    SLOT_TTS,
                     "Voice playback is disabled",
                 )
             });

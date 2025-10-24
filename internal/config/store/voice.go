@@ -41,13 +41,13 @@ func (s *Store) VoiceReadiness(ctx context.Context) (VoiceReadiness, error) {
 		issues []VoiceIssue
 	)
 
-	sttIssues, err := s.voiceSlotIssues(ctx, slots.STTPrimary)
+	sttIssues, err := s.voiceSlotIssues(ctx, slots.STT)
 	if err != nil {
 		return VoiceReadiness{}, err
 	}
 	issues = append(issues, sttIssues...)
 
-	ttsIssues, err := s.voiceSlotIssues(ctx, slots.TTSPrimary)
+	ttsIssues, err := s.voiceSlotIssues(ctx, slots.TTS)
 	if err != nil {
 		return VoiceReadiness{}, err
 	}

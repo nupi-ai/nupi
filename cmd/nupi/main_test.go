@@ -229,7 +229,7 @@ func TestModulesInstallLocalRegistersAndCopiesBinary(t *testing.T) {
 			rec := httptest.NewRecorder()
 			resp := apihttp.ModuleActionResult{
 				Module: apihttp.ModuleEntry{
-					Slot:      "stt.primary",
+					Slot:      "stt",
 					AdapterID: &adapterID,
 				},
 			}
@@ -260,7 +260,7 @@ spec:
 	mustSetFlag(t, fixture.cmd, "binary", binaryPath)
 	mustSetFlag(t, fixture.cmd, "copy-binary", "true")
 	mustSetFlag(t, fixture.cmd, "endpoint-address", "127.0.0.1:50051")
-	mustSetFlag(t, fixture.cmd, "slot", "stt.primary")
+	mustSetFlag(t, fixture.cmd, "slot", "stt")
 
 	if err := modulesInstallLocal(fixture.cmd, nil); err != nil {
 		t.Fatalf("install-local failed: %v", err)

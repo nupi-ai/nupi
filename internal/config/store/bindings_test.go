@@ -26,7 +26,7 @@ func TestSetActiveAdapter(t *testing.T) {
 		t.Fatalf("upsert adapter: %v", err)
 	}
 
-	if err := store.SetActiveAdapter(ctx, "ai.primary", adapter.ID, map[string]any{"foo": "bar"}); err != nil {
+	if err := store.SetActiveAdapter(ctx, "ai", adapter.ID, map[string]any{"foo": "bar"}); err != nil {
 		t.Fatalf("set active adapter: %v", err)
 	}
 
@@ -37,7 +37,7 @@ func TestSetActiveAdapter(t *testing.T) {
 
 	var found bool
 	for _, b := range bindings {
-		if b.Slot == "ai.primary" {
+		if b.Slot == "ai" {
 			found = true
 			if b.AdapterID == nil || *b.AdapterID != adapter.ID {
 				t.Fatalf("expected adapter %q, got %v", adapter.ID, b.AdapterID)
@@ -45,7 +45,7 @@ func TestSetActiveAdapter(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("binding for ai.primary not found")
+		t.Fatalf("binding for ai not found")
 	}
 }
 
@@ -67,11 +67,11 @@ func TestUpdateAdapterBindingStatus(t *testing.T) {
 		t.Fatalf("upsert adapter: %v", err)
 	}
 
-	if err := store.SetActiveAdapter(ctx, "ai.primary", adapter.ID, nil); err != nil {
+	if err := store.SetActiveAdapter(ctx, "ai", adapter.ID, nil); err != nil {
 		t.Fatalf("set active adapter: %v", err)
 	}
 
-	if err := store.UpdateAdapterBindingStatus(ctx, "ai.primary", BindingStatusInactive); err != nil {
+	if err := store.UpdateAdapterBindingStatus(ctx, "ai", BindingStatusInactive); err != nil {
 		t.Fatalf("update binding status: %v", err)
 	}
 
@@ -81,7 +81,7 @@ func TestUpdateAdapterBindingStatus(t *testing.T) {
 	}
 
 	for _, binding := range bindings {
-		if binding.Slot != "ai.primary" {
+		if binding.Slot != "ai" {
 			continue
 		}
 		if binding.Status != BindingStatusInactive {
@@ -92,7 +92,7 @@ func TestUpdateAdapterBindingStatus(t *testing.T) {
 		}
 	}
 
-	if err := store.UpdateAdapterBindingStatus(ctx, "ai.primary", "invalid"); err == nil {
+	if err := store.UpdateAdapterBindingStatus(ctx, "ai", "invalid"); err == nil {
 		t.Fatalf("expected error for invalid status")
 	}
 }

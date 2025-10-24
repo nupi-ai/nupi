@@ -97,12 +97,11 @@ var schemaStatements = []string{
 }
 
 var requiredAdapterSlots = []string{
-	"stt.primary",
-	"stt.secondary",
-	"ai.primary",
-	"tts.primary",
-	"vad.primary",
-	"tunnel.primary",
+	"stt",
+	"ai",
+	"tts",
+	"vad",
+	"tunnel",
 }
 
 func applyPragmas(ctx context.Context, db *sql.DB, readOnly bool) error {

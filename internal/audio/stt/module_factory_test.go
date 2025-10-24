@@ -27,7 +27,7 @@ func TestModuleFactoryCreatesMockTranscriber(t *testing.T) {
 		t.Fatalf("ensure builtin adapters: %v", err)
 	}
 
-	if err := store.SetActiveAdapter(ctx, string(modules.SlotSTTPrimary), modules.MockSTTAdapterID, map[string]any{
+	if err := store.SetActiveAdapter(ctx, string(modules.SlotSTT), modules.MockSTTAdapterID, map[string]any{
 		"text": "factory",
 	}); err != nil {
 		t.Fatalf("activate mock adapter: %v", err)
@@ -81,7 +81,7 @@ func TestModuleFactoryReturnsErrorOnConfigParseFailure(t *testing.T) {
 	if err := modules.EnsureBuiltinAdapters(ctx, store); err != nil {
 		t.Fatalf("ensure builtin adapters: %v", err)
 	}
-	if err := store.SetActiveAdapter(ctx, string(modules.SlotSTTPrimary), modules.MockSTTAdapterID, nil); err != nil {
+	if err := store.SetActiveAdapter(ctx, string(modules.SlotSTT), modules.MockSTTAdapterID, nil); err != nil {
 		t.Fatalf("set active adapter: %v", err)
 	}
 
@@ -89,7 +89,7 @@ func TestModuleFactoryReturnsErrorOnConfigParseFailure(t *testing.T) {
         UPDATE adapter_bindings
         SET config = '{invalid'
         WHERE slot = ? AND instance_name = ? AND profile_name = ?
-    `, string(modules.SlotSTTPrimary), store.InstanceName(), store.ProfileName())
+    `, string(modules.SlotSTT), store.InstanceName(), store.ProfileName())
 	if err != nil {
 		t.Fatalf("corrupt config: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestModuleFactoryCreatesNAPTranscriber(t *testing.T) {
 		server.GracefulStop()
 	})
 
-	if err := store.SetActiveAdapter(ctx, string(modules.SlotSTTPrimary), adapterID, nil); err != nil {
+	if err := store.SetActiveAdapter(ctx, string(modules.SlotSTT), adapterID, nil); err != nil {
 		t.Fatalf("set active adapter: %v", err)
 	}
 	if err := store.UpsertModuleEndpoint(ctx, configstore.ModuleEndpoint{

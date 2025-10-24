@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/nupi-ai/nupi/internal/eventbus"
+	"github.com/nupi-ai/nupi/internal/voice/slots"
 )
 
 // AudioFormatInfo mirrors audio format metadata returned by the REST API.
@@ -180,7 +181,7 @@ func (c *Client) OpenAudioPlayback(ctx context.Context, params AudioPlaybackPara
 	}
 	streamID := strings.TrimSpace(params.StreamID)
 	if streamID == "" {
-		streamID = "tts.primary"
+		streamID = slots.TTS
 	}
 
 	values := url.Values{}

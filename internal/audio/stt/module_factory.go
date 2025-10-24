@@ -36,7 +36,7 @@ func (m moduleFactory) Create(ctx context.Context, params SessionParams) (Transc
 	)
 
 	for _, binding := range bindings {
-		if binding.Slot != string(modules.SlotSTTPrimary) && binding.Slot != string(modules.SlotSTTSecondary) {
+		if binding.Slot != string(modules.SlotSTT) {
 			continue
 		}
 		if !strings.EqualFold(binding.Status, configstore.BindingStatusActive) {

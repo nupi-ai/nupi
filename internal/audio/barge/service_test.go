@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/nupi-ai/nupi/internal/eventbus"
+	"github.com/nupi-ai/nupi/internal/voice/slots"
 )
 
 func TestCoordinatorPublishesBargeInOnVAD(t *testing.T) {
@@ -23,7 +24,7 @@ func TestCoordinatorPublishesBargeInOnVAD(t *testing.T) {
 	defer bargeSub.Close()
 
 	sessionID := "sess-1"
-	ttsStream := "tts.primary"
+	ttsStream := slots.TTS
 	vadStream := "mic"
 
 	bus.Publish(context.Background(), eventbus.Envelope{
@@ -102,7 +103,7 @@ func TestCoordinatorCooldownPreventsRapidDuplicates(t *testing.T) {
 		Topic: eventbus.TopicAudioEgressPlayback,
 		Payload: eventbus.AudioEgressPlaybackEvent{
 			SessionID: "sess-dup",
-			StreamID:  "tts.primary",
+			StreamID:  slots.TTS,
 			Sequence:  1,
 			Format: eventbus.AudioFormat{
 				Encoding:   eventbus.AudioEncodingPCM16,
@@ -135,7 +136,7 @@ func TestCoordinatorCooldownPreventsRapidDuplicates(t *testing.T) {
 		if !ok {
 			t.Fatalf("unexpected payload type %T", env.Payload)
 		}
-		if evt.StreamID != "tts.primary" {
+		if evt.StreamID != slots.TTS {
 			t.Fatalf("expected barge for tts stream, got %s", evt.StreamID)
 		}
 	case <-time.After(time.Second):
@@ -170,7 +171,7 @@ func TestCoordinatorPublishesBargeInOnClientInterrupt(t *testing.T) {
 	defer bargeSub.Close()
 
 	sessionID := "sess-client"
-	ttsStream := "tts.primary"
+	ttsStream := slots.TTS
 	bus.Publish(context.Background(), eventbus.Envelope{
 		Topic: eventbus.TopicAudioEgressPlayback,
 		Payload: eventbus.AudioEgressPlaybackEvent{
@@ -249,7 +250,7 @@ func TestCoordinatorQuietPeriodBlocksVAD(t *testing.T) {
 		Topic: eventbus.TopicAudioEgressPlayback,
 		Payload: eventbus.AudioEgressPlaybackEvent{
 			SessionID: "sess-quiet",
-			StreamID:  "tts.primary",
+			StreamID:  slots.TTS,
 			Sequence:  1,
 			Format: eventbus.AudioFormat{
 				Encoding:   eventbus.AudioEncodingPCM16,
@@ -281,7 +282,7 @@ func TestCoordinatorQuietPeriodBlocksVAD(t *testing.T) {
 		if !ok {
 			t.Fatalf("unexpected payload type %T", env.Payload)
 		}
-		if event.SessionID != "sess-quiet" || event.StreamID != "tts.primary" {
+		if event.SessionID != "sess-quiet" || event.StreamID != slots.TTS {
 			t.Fatalf("unexpected event: %+v", event)
 		}
 	case <-time.After(time.Second):
@@ -292,7 +293,7 @@ func TestCoordinatorQuietPeriodBlocksVAD(t *testing.T) {
 		Topic: eventbus.TopicAudioEgressPlayback,
 		Payload: eventbus.AudioEgressPlaybackEvent{
 			SessionID: "sess-quiet",
-			StreamID:  "tts.primary",
+			StreamID:  slots.TTS,
 			Sequence:  2,
 			Format: eventbus.AudioFormat{
 				Encoding:   eventbus.AudioEncodingPCM16,
@@ -334,8 +335,8 @@ func TestServiceMetricsBargeInTotal(t *testing.T) {
 		t.Fatalf("expected initial BargeInTotal = 0, got %d", metrics.BargeInTotal)
 	}
 
-	svc.publishBargeIn("metrics-session", "tts.primary", time.Now().UTC(), "test", 0.5, nil)
-	svc.publishBargeIn("metrics-session", "tts.primary", time.Now().UTC(), "test", 0.5, nil)
+	svc.publishBargeIn("metrics-session", slots.TTS, time.Now().UTC(), "test", 0.5, nil)
+	svc.publishBargeIn("metrics-session", slots.TTS, time.Now().UTC(), "test", 0.5, nil)
 
 	if metrics := svc.Metrics(); metrics.BargeInTotal != 2 {
 		t.Fatalf("expected BargeInTotal = 2, got %d", metrics.BargeInTotal)

@@ -25,15 +25,14 @@ import (
 type Slot string
 
 const (
-	SlotAI           Slot = "ai.primary"
-	SlotSTTPrimary   Slot = slots.STTPrimary
-	SlotSTTSecondary Slot = slots.STTSecondary
-	SlotTTS          Slot = slots.TTSPrimary
-	SlotVAD          Slot = "vad.primary"
-	SlotTunnel       Slot = "tunnel.primary"
+	SlotAI     Slot = "ai"
+	SlotSTT    Slot = slots.STT
+	SlotTTS    Slot = slots.TTS
+	SlotVAD    Slot = "vad"
+	SlotTunnel Slot = "tunnel"
 )
 
-var defaultSlots = []Slot{SlotAI, SlotSTTPrimary, SlotSTTSecondary, SlotTTS, SlotVAD, SlotTunnel}
+var defaultSlots = []Slot{SlotAI, SlotSTT, SlotTTS, SlotVAD, SlotTunnel}
 
 // Binding describes a configured adapter bound to a slot.
 type Binding struct {

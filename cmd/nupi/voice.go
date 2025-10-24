@@ -183,11 +183,11 @@ func voiceStart(cmd *cobra.Command, _ []string) error {
 		return out.Error("Failed to fetch audio capabilities", err)
 	}
 	if !caps.CaptureEnabled {
-		message := diagnosticSummary(caps.Diagnostics, slots.STTPrimary, "voice capture disabled")
+		message := diagnosticSummary(caps.Diagnostics, slots.STT, "voice capture disabled")
 		return out.Error("Voice capture unavailable", errors.New(message))
 	}
 	if !noPlayback && !caps.PlaybackEnabled {
-		message := diagnosticSummary(caps.Diagnostics, slots.TTSPrimary, "voice playback disabled")
+		message := diagnosticSummary(caps.Diagnostics, slots.TTS, "voice playback disabled")
 		return out.Error("Voice playback unavailable", errors.New(message))
 	}
 
@@ -199,7 +199,7 @@ func voiceStart(cmd *cobra.Command, _ []string) error {
 	if !noPlayback {
 		targetStream := playbackStream
 		if targetStream == "" {
-			targetStream = slots.TTSPrimary
+			targetStream = slots.TTS
 		}
 		playback, err := c.OpenAudioPlayback(ctx, client.AudioPlaybackParams{
 			SessionID: sessionID,
@@ -347,7 +347,7 @@ func voiceInterrupt(cmd *cobra.Command, defaultReason string) error {
 		reason = defaultReason
 	}
 	if streamID == "" {
-		streamID = slots.TTSPrimary
+		streamID = slots.TTS
 	}
 	metadataEntries, _ := cmd.Flags().GetStringSlice("metadata")
 	meta, err := parseMetadata(metadataEntries)
@@ -366,7 +366,7 @@ func voiceInterrupt(cmd *cobra.Command, defaultReason string) error {
 		return out.Error("Failed to fetch audio capabilities", err)
 	}
 	if !caps.PlaybackEnabled {
-		message := diagnosticSummary(caps.Diagnostics, slots.TTSPrimary, "voice playback disabled")
+		message := diagnosticSummary(caps.Diagnostics, slots.TTS, "voice playback disabled")
 		return out.Error("Voice playback unavailable", errors.New(message))
 	}
 

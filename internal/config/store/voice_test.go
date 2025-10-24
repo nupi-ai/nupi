@@ -38,9 +38,9 @@ func TestVoiceReadinessDefaults(t *testing.T) {
 	var seenSTT, seenTTS bool
 	for _, issue := range readiness.Issues {
 		switch issue.Slot {
-		case slots.STTPrimary:
+		case slots.STT:
 			seenSTT = true
-		case slots.TTSPrimary:
+		case slots.TTS:
 			seenTTS = true
 		default:
 			t.Fatalf("unexpected slot in issues: %+v", issue)
@@ -84,10 +84,10 @@ func TestVoiceReadinessActiveAdapters(t *testing.T) {
 		t.Fatalf("upsert tts adapter: %v", err)
 	}
 
-	if err := store.SetActiveAdapter(ctx, slots.STTPrimary, "adapter.stt.mock", nil); err != nil {
+	if err := store.SetActiveAdapter(ctx, slots.STT, "adapter.stt.mock", nil); err != nil {
 		t.Fatalf("activate stt: %v", err)
 	}
-	if err := store.SetActiveAdapter(ctx, slots.TTSPrimary, "adapter.tts.mock", nil); err != nil {
+	if err := store.SetActiveAdapter(ctx, slots.TTS, "adapter.tts.mock", nil); err != nil {
 		t.Fatalf("activate tts: %v", err)
 	}
 
@@ -128,10 +128,10 @@ func TestVoiceReadinessInactiveBinding(t *testing.T) {
 		t.Fatalf("upsert tts adapter: %v", err)
 	}
 
-	if err := store.SetActiveAdapter(ctx, slots.TTSPrimary, "adapter.tts.mock", nil); err != nil {
+	if err := store.SetActiveAdapter(ctx, slots.TTS, "adapter.tts.mock", nil); err != nil {
 		t.Fatalf("activate tts: %v", err)
 	}
-	if err := store.UpdateAdapterBindingStatus(ctx, slots.TTSPrimary, BindingStatusInactive); err != nil {
+	if err := store.UpdateAdapterBindingStatus(ctx, slots.TTS, BindingStatusInactive); err != nil {
 		t.Fatalf("set binding inactive: %v", err)
 	}
 
@@ -145,7 +145,7 @@ func TestVoiceReadinessInactiveBinding(t *testing.T) {
 
 	foundInactive := false
 	for _, issue := range readiness.Issues {
-		if issue.Slot == slots.TTSPrimary && issue.Code == voiceIssueAdapterInactive {
+		if issue.Slot == slots.TTS && issue.Code == voiceIssueAdapterInactive {
 			foundInactive = true
 		}
 	}

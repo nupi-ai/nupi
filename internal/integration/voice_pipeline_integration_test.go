@@ -23,6 +23,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/modules"
 	testutil "github.com/nupi-ai/nupi/internal/testutil"
+	"github.com/nupi-ai/nupi/internal/voice/slots"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/test/bufconn"
 )
@@ -38,7 +39,7 @@ func TestVoicePipelineEndToEndWithBarge(t *testing.T) {
 		t.Fatalf("ensure builtin adapters: %v", err)
 	}
 
-	if err := store.SetActiveAdapter(ctx, string(modules.SlotSTTPrimary), modules.MockSTTAdapterID, map[string]any{
+	if err := store.SetActiveAdapter(ctx, string(modules.SlotSTT), modules.MockSTTAdapterID, map[string]any{
 		"phrases": []any{"hello voice", "please respond"},
 	}); err != nil {
 		t.Fatalf("activate stt adapter: %v", err)
@@ -195,7 +196,7 @@ func TestVoicePipelineEndToEndWithBarge(t *testing.T) {
 
 	streamID := firstPlayback.StreamID
 	if streamID == "" {
-		streamID = "tts.primary"
+		streamID = slots.TTS
 	}
 
 	bus.Publish(context.Background(), eventbus.Envelope{
@@ -334,7 +335,7 @@ func TestAudioIngressToSTTGRPCPipeline(t *testing.T) {
 	if err := store.UpsertAdapter(ctx, adapter); err != nil {
 		t.Fatalf("upsert adapter: %v", err)
 	}
-	if err := store.SetActiveAdapter(ctx, string(modules.SlotSTTPrimary), adapterID, nil); err != nil {
+	if err := store.SetActiveAdapter(ctx, string(modules.SlotSTT), adapterID, nil); err != nil {
 		t.Fatalf("activate stt adapter: %v", err)
 	}
 

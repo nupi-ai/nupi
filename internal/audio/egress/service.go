@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/nupi-ai/nupi/internal/eventbus"
+	"github.com/nupi-ai/nupi/internal/voice/slots"
 )
 
 var (
@@ -25,7 +26,7 @@ const (
 	defaultRetryMax      = 5 * time.Second
 	maxPendingRequests   = 100
 
-	defaultStreamID = "tts.primary"
+	defaultStreamID = slots.TTS
 )
 
 // SpeakRequest represents a text-to-speech invocation.

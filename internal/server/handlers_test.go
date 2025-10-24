@@ -385,7 +385,7 @@ func TestHandleConfigMigrate(t *testing.T) {
 	store := apiServer.configStore
 
 	if _, err := store.DB().ExecContext(context.Background(), `
-		DELETE FROM adapter_bindings WHERE instance_name = ? AND profile_name = ? AND slot = 'tts.primary'
+		DELETE FROM adapter_bindings WHERE instance_name = ? AND profile_name = ? AND slot = 'tts'
 	`, store.InstanceName(), store.ProfileName()); err != nil {
 		t.Fatalf("delete slot: %v", err)
 	}
@@ -411,13 +411,13 @@ func TestHandleConfigMigrate(t *testing.T) {
 
 	found := false
 	for _, slot := range payload.UpdatedSlots {
-		if slot == "tts.primary" {
+		if slot == "tts" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatalf("expected tts.primary in updated slots, got %v", payload.UpdatedSlots)
+		t.Fatalf("expected tts in updated slots, got %v", payload.UpdatedSlots)
 	}
 
 	bindings, err := store.ListAdapterBindings(context.Background())
@@ -427,7 +427,7 @@ func TestHandleConfigMigrate(t *testing.T) {
 
 	var restored bool
 	for _, binding := range bindings {
-		if binding.Slot != "tts.primary" {
+		if binding.Slot != "tts" {
 			continue
 		}
 		restored = true
@@ -439,7 +439,7 @@ func TestHandleConfigMigrate(t *testing.T) {
 		}
 	}
 	if !restored {
-		t.Fatalf("expected tts.primary slot to exist after migration")
+		t.Fatalf("expected tts slot to exist after migration")
 	}
 
 	if !payload.AudioSettingsUpdated {
@@ -888,7 +888,7 @@ func TestHandleQuickstartIncludesModules(t *testing.T) {
 	if err := store.UpsertAdapter(ctx, adapter); err != nil {
 		t.Fatalf("upsert adapter: %v", err)
 	}
-	if err := store.SetActiveAdapter(ctx, "ai.primary", adapter.ID, nil); err != nil {
+	if err := store.SetActiveAdapter(ctx, "ai", adapter.ID, nil); err != nil {
 		t.Fatalf("set active adapter: %v", err)
 	}
 
@@ -916,7 +916,7 @@ func TestHandleQuickstartIncludesModules(t *testing.T) {
 
 	var found bool
 	for _, entry := range payload.Modules {
-		if entry.Slot == "ai.primary" {
+		if entry.Slot == "ai" {
 			found = true
 			if entry.AdapterID == nil || *entry.AdapterID != adapter.ID {
 				t.Fatalf("expected adapter %s, got %v", adapter.ID, entry.AdapterID)
@@ -928,7 +928,7 @@ func TestHandleQuickstartIncludesModules(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("ai.primary slot not present in modules overview")
+		t.Fatalf("ai slot not present in modules overview")
 	}
 }
 
@@ -969,7 +969,6 @@ func TestHandleQuickstartCompleteFailsWhenReferenceMissing(t *testing.T) {
 	adapters := []configstore.Adapter{
 		{ID: "adapter.ai.quick", Source: "builtin", Type: "ai", Name: "AI"},
 		{ID: "adapter.stt.custom", Source: "builtin", Type: "stt", Name: "STT"},
-		{ID: "adapter.stt.secondary", Source: "builtin", Type: "stt", Name: "STT Secondary"},
 		{ID: "adapter.tts.custom", Source: "builtin", Type: "tts", Name: "TTS"},
 		{ID: "adapter.vad.custom", Source: "builtin", Type: "vad", Name: "VAD"},
 		{ID: "adapter.tunnel.custom", Source: "builtin", Type: "tunnel", Name: "Tunnel"},
@@ -981,12 +980,11 @@ func TestHandleQuickstartCompleteFailsWhenReferenceMissing(t *testing.T) {
 	}
 
 	bindings := map[string]string{
-		"ai.primary":     "adapter.ai.quick",
-		"stt.primary":    "adapter.stt.custom",
-		"stt.secondary":  "adapter.stt.secondary",
-		"tts.primary":    "adapter.tts.custom",
-		"vad.primary":    "adapter.vad.custom",
-		"tunnel.primary": "adapter.tunnel.custom",
+		"ai":     "adapter.ai.quick",
+		"stt":    "adapter.stt.custom",
+		"tts":    "adapter.tts.custom",
+		"vad":    "adapter.vad.custom",
+		"tunnel": "adapter.tunnel.custom",
 	}
 	for slot, adapterID := range bindings {
 		if err := store.SetActiveAdapter(ctx, slot, adapterID, nil); err != nil {
@@ -1119,11 +1117,11 @@ func TestHandleModulesGet(t *testing.T) {
 	apiServer.SetModulesController(modulesService)
 
 	ctx := context.Background()
-	adapter := configstore.Adapter{ID: "adapter.ai.primary", Source: "builtin", Type: "ai", Name: "Primary AI"}
+	adapter := configstore.Adapter{ID: "adapter.ai", Source: "builtin", Type: "ai", Name: "Primary AI"}
 	if err := store.UpsertAdapter(ctx, adapter); err != nil {
 		t.Fatalf("upsert adapter: %v", err)
 	}
-	if err := store.SetActiveAdapter(ctx, "ai.primary", adapter.ID, nil); err != nil {
+	if err := store.SetActiveAdapter(ctx, "ai", adapter.ID, nil); err != nil {
 		t.Fatalf("set active adapter: %v", err)
 	}
 
@@ -1143,7 +1141,7 @@ func TestHandleModulesGet(t *testing.T) {
 
 	var found bool
 	for _, module := range payload.Modules {
-		if module.Slot == "ai.primary" {
+		if module.Slot == "ai" {
 			found = true
 			if module.AdapterID == nil || *module.AdapterID != adapter.ID {
 				t.Fatalf("expected adapter %s, got %v", adapter.ID, module.AdapterID)
@@ -1152,7 +1150,7 @@ func TestHandleModulesGet(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("expected ai.primary slot in response")
+		t.Fatalf("expected ai slot in response")
 	}
 }
 
@@ -1345,7 +1343,7 @@ func TestHandleModulesBindStartStop(t *testing.T) {
 		t.Fatalf("upsert adapter: %v", err)
 	}
 
-	bindReq := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/modules/bind", bytes.NewBufferString(`{"slot":"ai.primary","adapter_id":"adapter.ai.bind"}`)))
+	bindReq := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/modules/bind", bytes.NewBufferString(`{"slot":"ai","adapter_id":"adapter.ai.bind"}`)))
 	bindReq.Header.Set("Content-Type", "application/json")
 	bindRec := httptest.NewRecorder()
 
@@ -1365,7 +1363,7 @@ func TestHandleModulesBindStartStop(t *testing.T) {
 		t.Fatalf("expected status %s, got %s", configstore.BindingStatusActive, bindPayload.Module.Status)
 	}
 
-	startReq := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/modules/start", bytes.NewBufferString(`{"slot":"ai.primary"}`)))
+	startReq := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/modules/start", bytes.NewBufferString(`{"slot":"ai"}`)))
 	startReq.Header.Set("Content-Type", "application/json")
 	startRec := httptest.NewRecorder()
 	apiServer.handleModulesStart(startRec, startReq)
@@ -1384,7 +1382,7 @@ func TestHandleModulesBindStartStop(t *testing.T) {
 		t.Fatalf("expected runtime health after start")
 	}
 
-	stopReq := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/modules/stop", bytes.NewBufferString(`{"slot":"ai.primary"}`)))
+	stopReq := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/modules/stop", bytes.NewBufferString(`{"slot":"ai"}`)))
 	stopReq.Header.Set("Content-Type", "application/json")
 	stopRec := httptest.NewRecorder()
 	apiServer.handleModulesStop(stopRec, stopReq)
@@ -1479,12 +1477,6 @@ func openTestStore(t *testing.T) *configstore.Store {
 }
 
 func enableVoiceAdapters(t *testing.T, store *configstore.Store) {
-	enableVoiceAdaptersWithSecondary(t, store, false)
-}
-
-// enableVoiceAdaptersWithSecondary provisions the minimal voice-ready configuration for tests.
-// includeSecondary allows scenarios that assert quickstart completion with stt.secondary.
-func enableVoiceAdaptersWithSecondary(t *testing.T, store *configstore.Store, includeSecondary bool) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -1497,15 +1489,10 @@ func enableVoiceAdaptersWithSecondary(t *testing.T, store *configstore.Store, in
 			t.Fatalf("upsert adapter %s: %v", adapter.ID, err)
 		}
 	}
-	if err := store.SetActiveAdapter(ctx, slots.STTPrimary, "adapter.stt.mock", nil); err != nil {
+	if err := store.SetActiveAdapter(ctx, slots.STT, "adapter.stt.mock", nil); err != nil {
 		t.Fatalf("activate stt adapter: %v", err)
 	}
-	if includeSecondary {
-		if err := store.SetActiveAdapter(ctx, slots.STTSecondary, "adapter.stt.mock", nil); err != nil {
-			t.Fatalf("activate stt secondary: %v", err)
-		}
-	}
-	if err := store.SetActiveAdapter(ctx, slots.TTSPrimary, "adapter.tts.mock", nil); err != nil {
+	if err := store.SetActiveAdapter(ctx, slots.TTS, "adapter.tts.mock", nil); err != nil {
 		t.Fatalf("activate tts adapter: %v", err)
 	}
 }
@@ -2153,7 +2140,7 @@ func TestFilterModuleLogEvent(t *testing.T) {
 			ModuleID: "example",
 			Message:  "hello",
 			Fields: map[string]string{
-				"slot": "stt.primary",
+				"slot": "stt",
 			},
 		},
 		Timestamp: time.Unix(10, 0),
@@ -2168,9 +2155,9 @@ func TestFilterModuleLogEvent(t *testing.T) {
 		expectSlot   string
 		expectModule string
 	}{
-		{name: "match slot", env: baseEnv, slotFilter: "stt.primary", expectEmit: true, expectSlot: "stt.primary", expectModule: "example"},
-		{name: "case insensitive slot", env: baseEnv, slotFilter: "STT.PRIMARY", expectEmit: true},
-		{name: "mismatched slot", env: baseEnv, slotFilter: "stt.secondary", expectEmit: false},
+		{name: "match slot", env: baseEnv, slotFilter: "stt", expectEmit: true, expectSlot: "stt", expectModule: "example"},
+		{name: "case insensitive slot", env: baseEnv, slotFilter: "STT", expectEmit: true},
+		{name: "mismatched slot", env: baseEnv, slotFilter: "tts", expectEmit: false},
 		{name: "adapter filter", env: baseEnv, adapter: "example", expectEmit: true},
 		{name: "adapter mismatch", env: baseEnv, adapter: "other", expectEmit: false},
 	}
@@ -2236,14 +2223,14 @@ func TestHandleModulesLogsFilters(t *testing.T) {
 	}{
 		{
 			name:  "slot filter includes logs",
-			query: "slot=stt.primary",
+			query: "slot=stt",
 			events: []eventbus.Envelope{
 				{
 					Topic: eventbus.TopicModulesLog,
 					Payload: eventbus.ModuleLogEvent{
 						ModuleID: "example",
 						Message:  "hello",
-						Fields:   map[string]string{"slot": "stt.primary"},
+						Fields:   map[string]string{"slot": "stt"},
 					},
 					Timestamp: time.Unix(1, 0),
 				},
@@ -2252,14 +2239,14 @@ func TestHandleModulesLogsFilters(t *testing.T) {
 		},
 		{
 			name:  "non matching slot drops",
-			query: "slot=stt.primary",
+			query: "slot=stt",
 			events: []eventbus.Envelope{
 				{
 					Topic: eventbus.TopicModulesLog,
 					Payload: eventbus.ModuleLogEvent{
 						ModuleID: "example",
 						Message:  "ignored",
-						Fields:   map[string]string{"slot": "stt.secondary"},
+						Fields:   map[string]string{"slot": "tts"},
 					},
 				},
 			},
@@ -2281,7 +2268,7 @@ func TestHandleModulesLogsFilters(t *testing.T) {
 		},
 		{
 			name:  "both filters suppress transcripts",
-			query: "slot=stt.primary&adapter=example",
+			query: "slot=stt&adapter=example",
 			events: []eventbus.Envelope{
 				{
 					Topic: eventbus.TopicSpeechTranscriptFinal,

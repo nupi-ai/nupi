@@ -19,7 +19,7 @@ func TestServicePublishesStatusOnStart(t *testing.T) {
 			{
 				Slot:      string(SlotAI),
 				Status:    "active",
-				AdapterID: strPtr("adapter.ai.primary"),
+				AdapterID: strPtr("adapter.ai"),
 			},
 		},
 	}
@@ -53,7 +53,7 @@ func TestServicePublishesStatusOnStart(t *testing.T) {
 		if status.Status != eventbus.ModuleHealthReady {
 			t.Fatalf("expected ready status, got %s", status.Status)
 		}
-		if status.ModuleID != "adapter.ai.primary" {
+		if status.ModuleID != "adapter.ai" {
 			t.Fatalf("unexpected module id %q", status.ModuleID)
 		}
 	case <-time.After(time.Second):
@@ -65,9 +65,9 @@ func TestServicePublishesRestartOnConfigChange(t *testing.T) {
 	store := &fakeBindingSource{
 		bindings: []configstore.AdapterBinding{
 			{
-				Slot:      string(SlotSTTPrimary),
+				Slot:      string(SlotSTT),
 				Status:    "active",
-				AdapterID: strPtr("adapter.stt.primary"),
+				AdapterID: strPtr("adapter.stt"),
 				Config:    `{"threshold":0.5}`,
 			},
 		},
@@ -187,7 +187,7 @@ func TestServiceErrorCacheClearedOnRecovery(t *testing.T) {
 			{
 				Slot:      string(SlotAI),
 				Status:    "active",
-				AdapterID: strPtr("adapter.ai.primary"),
+				AdapterID: strPtr("adapter.ai"),
 			},
 		},
 	}
@@ -269,7 +269,7 @@ func TestServiceOverviewStartStop(t *testing.T) {
 
 	ctx := context.Background()
 
-	adapter := configstore.Adapter{ID: "adapter.ai.primary", Source: "builtin", Type: "ai", Name: "Primary AI"}
+	adapter := configstore.Adapter{ID: "adapter.ai", Source: "builtin", Type: "ai", Name: "Primary AI"}
 	if err := store.UpsertAdapter(ctx, adapter); err != nil {
 		t.Fatalf("upsert adapter: %v", err)
 	}

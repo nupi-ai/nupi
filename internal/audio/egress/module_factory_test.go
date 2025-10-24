@@ -8,6 +8,7 @@ import (
 
 	"github.com/nupi-ai/nupi/internal/modules"
 	testutil "github.com/nupi-ai/nupi/internal/testutil"
+	"github.com/nupi-ai/nupi/internal/voice/slots"
 )
 
 func TestModuleFactoryReturnsMockSynthesizer(t *testing.T) {
@@ -29,7 +30,7 @@ func TestModuleFactoryReturnsMockSynthesizer(t *testing.T) {
 	factory := NewModuleFactory(store)
 	synth, err := factory.Create(ctx, SessionParams{
 		SessionID: "sess",
-		StreamID:  "tts.primary",
+		StreamID:  slots.TTS,
 	})
 	if err != nil {
 		t.Fatalf("expected synthesizer, got error: %v", err)
@@ -73,7 +74,7 @@ func TestModuleFactoryReturnsErrorOnConfigParseFailure(t *testing.T) {
 	factory := NewModuleFactory(store)
 	_, err = factory.Create(ctx, SessionParams{
 		SessionID: "sess",
-		StreamID:  "tts.primary",
+		StreamID:  slots.TTS,
 	})
 	if err == nil {
 		t.Fatalf("expected error due to invalid config")
@@ -88,7 +89,7 @@ func TestModuleFactoryReturnsUnavailableWhenAdapterMissing(t *testing.T) {
 	factory := NewModuleFactory(store)
 	_, err := factory.Create(ctx, SessionParams{
 		SessionID: "sess",
-		StreamID:  "tts.primary",
+		StreamID:  slots.TTS,
 	})
 	if !errors.Is(err, ErrAdapterUnavailable) {
 		t.Fatalf("expected ErrAdapterUnavailable, got %v", err)

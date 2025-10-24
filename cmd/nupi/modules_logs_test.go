@@ -24,7 +24,7 @@ func TestModulesLogsCommand(t *testing.T) {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintln(w, `{"type":"log","timestamp":"2025-01-01T00:00:00Z","module_id":"example","slot":"stt.primary","level":"info","message":"hello"}`)
+		fmt.Fprintln(w, `{"type":"log","timestamp":"2025-01-01T00:00:00Z","module_id":"example","slot":"stt","level":"info","message":"hello"}`)
 	}))
 	srv.Listener = ln
 	srv.Start()

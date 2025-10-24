@@ -145,11 +145,11 @@ func TestModulesServiceOverview(t *testing.T) {
 	apiServer.SetModulesController(modulesSvc)
 
 	ctx := context.Background()
-	adapter := configstore.Adapter{ID: "adapter.ai.primary", Source: "builtin", Type: "ai", Name: "Primary AI"}
+	adapter := configstore.Adapter{ID: "adapter.ai", Source: "builtin", Type: "ai", Name: "Primary AI"}
 	if err := store.UpsertAdapter(ctx, adapter); err != nil {
 		t.Fatalf("upsert adapter: %v", err)
 	}
-	if err := store.SetActiveAdapter(ctx, "ai.primary", adapter.ID, nil); err != nil {
+	if err := store.SetActiveAdapter(ctx, "ai", adapter.ID, nil); err != nil {
 		t.Fatalf("set active adapter: %v", err)
 	}
 
@@ -165,13 +165,13 @@ func TestModulesServiceOverview(t *testing.T) {
 
 	var entry *apiv1.ModuleEntry
 	for _, module := range resp.GetModules() {
-		if module.GetSlot() == "ai.primary" {
+		if module.GetSlot() == "ai" {
 			entry = module
 			break
 		}
 	}
 	if entry == nil {
-		t.Fatalf("ai.primary slot not found in overview")
+		t.Fatalf("ai slot not found in overview")
 	}
 	if entry.AdapterId == nil || entry.GetAdapterId() != adapter.ID {
 		t.Fatalf("expected adapter %s, got %v", adapter.ID, entry.AdapterId)
@@ -196,7 +196,7 @@ func TestModulesServiceBindStartStop(t *testing.T) {
 	service := newModulesService(apiServer)
 
 	bindResp, err := service.BindModule(ctx, &apiv1.BindModuleRequest{
-		Slot:      "ai.primary",
+		Slot:      "ai",
 		AdapterId: adapter.ID,
 	})
 	if err != nil {
@@ -209,7 +209,7 @@ func TestModulesServiceBindStartStop(t *testing.T) {
 		t.Fatalf("expected status %s, got %s", configstore.BindingStatusActive, bindResp.GetModule().GetStatus())
 	}
 
-	startResp, err := service.StartModule(ctx, &apiv1.ModuleSlotRequest{Slot: "ai.primary"})
+	startResp, err := service.StartModule(ctx, &apiv1.ModuleSlotRequest{Slot: "ai"})
 	if err != nil {
 		t.Fatalf("StartModule error: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestModulesServiceBindStartStop(t *testing.T) {
 		t.Fatalf("expected runtime health after start")
 	}
 
-	stopResp, err := service.StopModule(ctx, &apiv1.ModuleSlotRequest{Slot: "ai.primary"})
+	stopResp, err := service.StopModule(ctx, &apiv1.ModuleSlotRequest{Slot: "ai"})
 	if err != nil {
 		t.Fatalf("StopModule error: %v", err)
 	}
@@ -243,7 +243,7 @@ func TestQuickstartServiceIncludesModules(t *testing.T) {
 	if err := store.UpsertAdapter(ctx, adapter); err != nil {
 		t.Fatalf("upsert adapter: %v", err)
 	}
-	if err := store.SetActiveAdapter(ctx, "ai.primary", adapter.ID, nil); err != nil {
+	if err := store.SetActiveAdapter(ctx, "ai", adapter.ID, nil); err != nil {
 		t.Fatalf("set active adapter: %v", err)
 	}
 
@@ -257,7 +257,7 @@ func TestQuickstartServiceIncludesModules(t *testing.T) {
 	}
 	var found bool
 	for _, entry := range resp.GetModules() {
-		if entry.GetSlot() == "ai.primary" {
+		if entry.GetSlot() == "ai" {
 			found = true
 			if entry.GetAdapterId() != adapter.ID {
 				t.Fatalf("expected adapter %s, got %s", adapter.ID, entry.GetAdapterId())
@@ -266,7 +266,7 @@ func TestQuickstartServiceIncludesModules(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("ai.primary slot not present in quickstart modules")
+		t.Fatalf("ai slot not present in quickstart modules")
 	}
 	if got := resp.GetMissingReferenceAdapters(); !reflect.DeepEqual(got, modules.RequiredReferenceAdapters) {
 		t.Fatalf("expected missing reference adapters %v, got %v", modules.RequiredReferenceAdapters, got)
@@ -297,7 +297,6 @@ func TestQuickstartServiceUpdateFailsWhenReferenceMissing(t *testing.T) {
 		{ID: "adapter.ai.qs", Source: "builtin", Type: "ai", Name: "AI"},
 		{ID: "adapter.stt.custom", Source: "builtin", Type: "stt", Name: "STT"},
 		{ID: "adapter.tts.custom", Source: "builtin", Type: "tts", Name: "TTS"},
-		{ID: "adapter.stt.secondary", Source: "builtin", Type: "stt", Name: "STT Secondary"},
 		{ID: "adapter.vad.custom", Source: "builtin", Type: "vad", Name: "VAD"},
 		{ID: "adapter.tunnel.custom", Source: "builtin", Type: "tunnel", Name: "Tunnel"},
 	}
@@ -308,12 +307,11 @@ func TestQuickstartServiceUpdateFailsWhenReferenceMissing(t *testing.T) {
 	}
 
 	bindings := map[string]string{
-		string(modules.SlotAI):           "adapter.ai.qs",
-		string(modules.SlotSTTPrimary):   "adapter.stt.custom",
-		string(modules.SlotSTTSecondary): "adapter.stt.secondary",
-		string(modules.SlotTTS):          "adapter.tts.custom",
-		string(modules.SlotVAD):          "adapter.vad.custom",
-		string(modules.SlotTunnel):       "adapter.tunnel.custom",
+		string(modules.SlotAI):     "adapter.ai.qs",
+		string(modules.SlotSTT):    "adapter.stt.custom",
+		string(modules.SlotTTS):    "adapter.tts.custom",
+		string(modules.SlotVAD):    "adapter.vad.custom",
+		string(modules.SlotTunnel): "adapter.tunnel.custom",
 	}
 	for slot, adapterID := range bindings {
 		if err := store.SetActiveAdapter(ctx, slot, adapterID, nil); err != nil {

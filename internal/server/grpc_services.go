@@ -174,7 +174,7 @@ func (a *audioService) StreamAudioIn(stream apiv1.AudioService_StreamAudioInServ
 				return status.Errorf(codes.Internal, "voice readiness: %v", err)
 			}
 			if !readiness.CaptureEnabled {
-				diags := filterDiagnostics(mapVoiceDiagnostics(readiness.Issues), slots.STTPrimary)
+				diags := filterDiagnostics(mapVoiceDiagnostics(readiness.Issues), slots.STT)
 				message := voiceIssueSummary(diags, "voice capture unavailable")
 				return status.Error(codes.FailedPrecondition, message)
 			}
@@ -267,7 +267,7 @@ func (a *audioService) StreamAudioOut(req *apiv1.StreamAudioOutRequest, srv apiv
 		return status.Errorf(codes.Internal, "voice readiness: %v", err)
 	}
 	if !readiness.PlaybackEnabled {
-		diags := filterDiagnostics(mapVoiceDiagnostics(readiness.Issues), slots.TTSPrimary)
+		diags := filterDiagnostics(mapVoiceDiagnostics(readiness.Issues), slots.TTS)
 		message := voiceIssueSummary(diags, "voice playback unavailable")
 		return status.Error(codes.FailedPrecondition, message)
 	}
@@ -356,7 +356,7 @@ func (a *audioService) InterruptTTS(ctx context.Context, req *apiv1.InterruptTTS
 		return nil, status.Errorf(codes.Internal, "voice readiness: %v", err)
 	}
 	if !readiness.PlaybackEnabled {
-		diags := filterDiagnostics(mapVoiceDiagnostics(readiness.Issues), slots.TTSPrimary)
+		diags := filterDiagnostics(mapVoiceDiagnostics(readiness.Issues), slots.TTS)
 		message := voiceIssueSummary(diags, "voice playback unavailable")
 		return nil, status.Error(codes.FailedPrecondition, message)
 	}
@@ -398,7 +398,7 @@ func (a *audioService) GetAudioCapabilities(ctx context.Context, req *apiv1.GetA
 			"ready":       strconv.FormatBool(readiness.CaptureEnabled),
 		}
 		if !readiness.CaptureEnabled {
-			diags := filterDiagnostics(diagnostics, slots.STTPrimary)
+			diags := filterDiagnostics(diagnostics, slots.STT)
 			meta["diagnostics"] = voiceIssueSummary(diags, "voice capture unavailable")
 		}
 		resp.Capture = append(resp.Capture, &apiv1.AudioCapability{
@@ -414,7 +414,7 @@ func (a *audioService) GetAudioCapabilities(ctx context.Context, req *apiv1.GetA
 			"ready":       strconv.FormatBool(readiness.PlaybackEnabled),
 		}
 		if !readiness.PlaybackEnabled {
-			diags := filterDiagnostics(diagnostics, slots.TTSPrimary)
+			diags := filterDiagnostics(diagnostics, slots.TTS)
 			meta["diagnostics"] = voiceIssueSummary(diags, "voice playback unavailable")
 		}
 		resp.Playback = append(resp.Playback, &apiv1.AudioCapability{
