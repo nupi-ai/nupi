@@ -18,7 +18,6 @@ type InstancePaths struct {
 	Socket      string // Unix socket path
 	Lock        string // Daemon lock file path
 	Logs        string // Logs directory
-	ProfilesDir string // Profiles directory
 	TempDir     string // Temporary files directory
 	RunDir      string // Runtime assets directory
 	BinDir      string // Shared binaries directory (~/.nupi/bin)
@@ -42,7 +41,6 @@ func GetInstancePaths(instanceName string) InstancePaths {
 		Socket:      filepath.Join(instanceDir, "nupi.sock"),
 		Lock:        filepath.Join(instanceDir, "daemon.lock"),
 		Logs:        filepath.Join(instanceDir, "logs"),
-		ProfilesDir: filepath.Join(instanceDir, "profiles"),
 		TempDir:     filepath.Join(instanceDir, "tmp"),
 		RunDir:      filepath.Join(instanceDir, "run"),
 		BinDir:      binDir,
@@ -50,16 +48,13 @@ func GetInstancePaths(instanceName string) InstancePaths {
 	}
 }
 
-// ProfilePaths contains directories associated with a specific profile.
+// ProfilePaths contains metadata associated with a specific profile.
 type ProfilePaths struct {
 	Instance InstancePaths // Parent instance paths
 	Name     string        // Profile name
-	Home     string        // Profile root directory
-	State    string        // Stateful data (prompts, caches, etc.)
-	Cache    string        // Cache directory specific to the profile
 }
 
-// GetProfilePaths returns the directory layout for a given instance/profile combination.
+// GetProfilePaths returns metadata for a given instance/profile combination.
 func GetProfilePaths(instanceName, profileName string) ProfilePaths {
 	if instanceName == "" {
 		instanceName = DefaultInstance
@@ -69,14 +64,10 @@ func GetProfilePaths(instanceName, profileName string) ProfilePaths {
 	}
 
 	instance := GetInstancePaths(instanceName)
-	profileHome := filepath.Join(instance.ProfilesDir, profileName)
 
 	return ProfilePaths{
 		Instance: instance,
 		Name:     profileName,
-		Home:     profileHome,
-		State:    filepath.Join(profileHome, "state"),
-		Cache:    filepath.Join(profileHome, "cache"),
 	}
 }
 
@@ -110,7 +101,6 @@ func EnsureInstanceDirs(instanceName string) (InstancePaths, error) {
 	dirs := []string{
 		paths.Home,
 		paths.Logs,
-		paths.ProfilesDir,
 		paths.TempDir,
 		paths.RunDir,
 		paths.BinDir,
@@ -125,24 +115,12 @@ func EnsureInstanceDirs(instanceName string) (InstancePaths, error) {
 	return paths, nil
 }
 
-// EnsureProfileDirs creates the directory structure for the given profile.
+// EnsureProfileDirs ensures that the parent instance directories exist for the given profile.
 func EnsureProfileDirs(instanceName, profileName string) (ProfilePaths, error) {
 	profilePaths := GetProfilePaths(instanceName, profileName)
 
 	if _, err := EnsureInstanceDirs(instanceName); err != nil {
 		return profilePaths, err
-	}
-
-	dirs := []string{
-		profilePaths.Home,
-		profilePaths.State,
-		profilePaths.Cache,
-	}
-
-	for _, dir := range dirs {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return profilePaths, err
-		}
 	}
 
 	return profilePaths, nil
