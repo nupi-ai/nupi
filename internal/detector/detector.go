@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/nupi-ai/nupi/internal/pluginmanifest"
 )
 
 // ToolDetectedEvent is emitted when a tool is detected.
@@ -236,35 +238,55 @@ func (d *ToolDetector) runParallelDetection(plugins map[string]*JSPlugin, output
 }
 
 func (d *ToolDetector) loadAllPlugins() {
-	files, err := filepath.Glob(filepath.Join(d.pluginDir, "*.js"))
+	manifests, err := pluginmanifest.Discover(d.pluginDir)
 	if err != nil {
-		log.Printf("[Detector] Failed to list all plugins: %v", err)
+		log.Printf("[Detector] Failed to discover plugins: %v", err)
 		return
 	}
 
-	for _, file := range files {
-		filename := filepath.Base(file)
-		if _, exists := d.plugins[filename]; exists {
+	for _, manifest := range manifests {
+		if manifest.Kind != pluginmanifest.KindDetector {
 			continue
 		}
 
-		plugin, err := LoadPlugin(file)
+		mainPath, err := manifest.MainPath()
 		if err != nil {
-			log.Printf("[Detector] Failed to load plugin %s: %v", filename, err)
+			log.Printf("[Detector] Failed to evaluate manifest %s: %v", manifest.Dir, err)
 			continue
 		}
-		d.plugins[filename] = plugin
+
+		relPath, err := manifest.RelativeMainPath(d.pluginDir)
+		if err != nil {
+			relPath = mainPath
+		}
+
+		if _, exists := d.plugins[relPath]; exists {
+			continue
+		}
+
+		plugin, err := LoadPlugin(mainPath)
+		if err != nil {
+			log.Printf("[Detector] Failed to load plugin %s: %v", relPath, err)
+			continue
+		}
+		d.plugins[relPath] = plugin
 	}
 
 	log.Printf("[Detector] Loaded %d plugins total", len(d.plugins))
 }
 
 func (d *ToolDetector) getTotalPluginCount() int {
-	files, err := filepath.Glob(filepath.Join(d.pluginDir, "*.js"))
+	manifests, err := pluginmanifest.Discover(d.pluginDir)
 	if err != nil {
 		return 0
 	}
-	return len(files)
+	count := 0
+	for _, manifest := range manifests {
+		if manifest.Kind == pluginmanifest.KindDetector {
+			count++
+		}
+	}
+	return count
 }
 
 // StopDetection stops the detection process and closes the event channel.

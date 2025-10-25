@@ -5,22 +5,25 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strings"
+
+	"github.com/nupi-ai/nupi/internal/pluginmanifest"
 )
 
-// IndexGenerator creates index.json from plugin files.
+// IndexGenerator creates index.json from detector plugin manifests.
 type IndexGenerator struct {
 	pluginDir string
+	manifests []*pluginmanifest.Manifest
 }
 
 // NewIndexGenerator creates a new index generator.
-func NewIndexGenerator(pluginDir string) *IndexGenerator {
+func NewIndexGenerator(pluginDir string, manifests []*pluginmanifest.Manifest) *IndexGenerator {
 	return &IndexGenerator{
 		pluginDir: pluginDir,
+		manifests: manifests,
 	}
 }
 
-// Generate scans all .js files and creates index.json.
+// Generate scans detector manifests and creates index.json.
 func (g *IndexGenerator) Generate() error {
 	indexPath := filepath.Join(g.pluginDir, "index.json")
 	log.Printf("[IndexGenerator] Generating index at: %s", indexPath)
@@ -29,39 +32,48 @@ func (g *IndexGenerator) Generate() error {
 		return fmt.Errorf("failed to create plugin directory: %w", err)
 	}
 
-	files, err := filepath.Glob(filepath.Join(g.pluginDir, "*.js"))
-	if err != nil {
-		return fmt.Errorf("failed to scan plugins: %w", err)
+	manifests := g.manifests
+	if manifests == nil {
+		var err error
+		manifests, err = pluginmanifest.Discover(g.pluginDir)
+		if err != nil {
+			return err
+		}
 	}
 
 	index := make(PluginIndex)
 	successCount := 0
 
-	for _, file := range files {
-		if strings.HasSuffix(file, "index.json") {
+	for _, manifest := range manifests {
+		if manifest.Kind != pluginmanifest.KindDetector {
 			continue
 		}
 
-		filename := filepath.Base(file)
-		log.Printf("[IndexGenerator] Processing plugin: %s", filename)
-
-		plugin, err := LoadPlugin(file)
+		mainPath, err := manifest.MainPath()
 		if err != nil {
-			log.Printf("[IndexGenerator] Warning: failed to load %s: %v", filename, err)
+			log.Printf("[IndexGenerator] Warning: skip detector %s: %v", manifest.Dir, err)
 			continue
+		}
+
+		plugin, err := LoadPlugin(mainPath)
+		if err != nil {
+			log.Printf("[IndexGenerator] Warning: failed to load %s: %v", mainPath, err)
+			continue
+		}
+
+		relativePath, err := manifest.RelativeMainPath(g.pluginDir)
+		if err != nil {
+			log.Printf("[IndexGenerator] Warning: relative path error for %s: %v", mainPath, err)
+			relativePath = mainPath
 		}
 
 		for _, cmd := range plugin.Commands {
-			if existing, exists := index[cmd]; exists {
-				index[cmd] = append(existing, filename)
-			} else {
-				index[cmd] = []string{filename}
-			}
+			index[cmd] = append(index[cmd], relativePath)
 		}
 
 		successCount++
-		log.Printf("[IndexGenerator] Plugin %s registered with %d commands: %v",
-			filename, len(plugin.Commands), plugin.Commands)
+		log.Printf("[IndexGenerator] Detector %s registered with %d commands: %v",
+			relativePath, len(plugin.Commands), plugin.Commands)
 	}
 
 	if err := SaveIndex(indexPath, index); err != nil {
@@ -74,22 +86,43 @@ func (g *IndexGenerator) Generate() error {
 	return nil
 }
 
-// ListPlugins returns information about all plugins.
+// ListPlugins returns information about all detector plugins.
 func (g *IndexGenerator) ListPlugins() ([]map[string]interface{}, error) {
-	files, err := filepath.Glob(filepath.Join(g.pluginDir, "*.js"))
-	if err != nil {
-		return nil, err
+	manifests := g.manifests
+	if manifests == nil {
+		var err error
+		manifests, err = pluginmanifest.Discover(g.pluginDir)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	var plugins []map[string]interface{}
 
-	for _, file := range files {
-		filename := filepath.Base(file)
+	for _, manifest := range manifests {
+		if manifest.Kind != pluginmanifest.KindDetector {
+			continue
+		}
 
-		plugin, err := LoadPlugin(file)
+		mainPath, err := manifest.MainPath()
 		if err != nil {
 			plugins = append(plugins, map[string]interface{}{
-				"file":     filename,
+				"file":     manifest.Dir,
+				"error":    err.Error(),
+				"commands": []string{},
+			})
+			continue
+		}
+
+		rel, err := manifest.RelativeMainPath(g.pluginDir)
+		if err != nil {
+			rel = mainPath
+		}
+
+		plugin, err := LoadPlugin(mainPath)
+		if err != nil {
+			plugins = append(plugins, map[string]interface{}{
+				"file":     rel,
 				"error":    err.Error(),
 				"commands": []string{},
 			})
@@ -98,7 +131,7 @@ func (g *IndexGenerator) ListPlugins() ([]map[string]interface{}, error) {
 
 		plugins = append(plugins, map[string]interface{}{
 			"name":     plugin.Name,
-			"file":     filename,
+			"file":     rel,
 			"commands": plugin.Commands,
 		})
 	}

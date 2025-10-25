@@ -2,6 +2,7 @@ package contentpipeline
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,10 +12,27 @@ import (
 	"github.com/nupi-ai/nupi/internal/plugins"
 )
 
-func writePlugin(t *testing.T, dir, name, body string) {
+func writeCleanerPlugin(t *testing.T, root, catalog, slug, script string) {
 	t.Helper()
-	if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
-		t.Fatalf("write plugin: %v", err)
+	dir := filepath.Join(root, "plugins", catalog, slug)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir plugin dir: %v", err)
+	}
+	manifest := fmt.Sprintf(`apiVersion: nap.nupi.ai/v1alpha1
+kind: PipelineCleanerManifest
+metadata:
+  name: %s
+  slug: %s
+  catalog: %s
+  version: 0.0.1
+spec:
+  main: main.js
+`, slug, slug, catalog)
+	if err := os.WriteFile(filepath.Join(dir, "plugin.yaml"), []byte(manifest), 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.js"), []byte(script), 0o644); err != nil {
+		t.Fatalf("write script: %v", err)
 	}
 }
 
@@ -32,12 +50,9 @@ func newPluginService(t *testing.T, baseDir string) *plugins.Service {
 
 func TestContentPipelineTransformsOutput(t *testing.T) {
 	tmp := t.TempDir()
-	pipelineDir := filepath.Join(tmp, "pipeline")
-	if err := os.MkdirAll(pipelineDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	const catalog = "test.catalog"
 
-	writePlugin(t, pipelineDir, "tool-x.js", `module.exports = {
+	writeCleanerPlugin(t, tmp, catalog, "pipeline-tool-x", `module.exports = {
         name: "default",
         commands: ["tool-x"],
         transform: function(input) {
@@ -104,12 +119,9 @@ func TestContentPipelineTransformsOutput(t *testing.T) {
 
 func TestContentPipelineEmitsErrors(t *testing.T) {
 	tmp := t.TempDir()
-	pipelineDir := filepath.Join(tmp, "pipeline")
-	if err := os.MkdirAll(pipelineDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	const catalog = "test.catalog"
 
-	writePlugin(t, pipelineDir, "tool-err.js", `module.exports = {
+	writeCleanerPlugin(t, tmp, catalog, "pipeline-tool-err", `module.exports = {
         name: "tool-err",
         commands: ["tool-err"],
         transform: function(input) {

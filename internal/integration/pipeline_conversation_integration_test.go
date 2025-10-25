@@ -2,6 +2,7 @@ package integration
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -15,12 +16,9 @@ import (
 
 func TestPipelineToConversationIntegration(t *testing.T) {
 	tmp := t.TempDir()
-	pipelineDir := filepath.Join(tmp, "pipeline")
-	if err := os.MkdirAll(pipelineDir, 0o755); err != nil {
-		t.Fatalf("mkdir pipeline dir: %v", err)
-	}
+	const catalog = "test.catalog"
 
-	writePipelinePlugin(t, pipelineDir, "default.js", `module.exports = {
+	writePipelinePlugin(t, tmp, catalog, "pipeline-default", `module.exports = {
         name: "default",
         transform: function(input) {
             return { text: input.text.toUpperCase(), annotations: { cleaned: "true" } };
@@ -80,10 +78,27 @@ func TestPipelineToConversationIntegration(t *testing.T) {
 	}
 }
 
-func writePipelinePlugin(t *testing.T, dir, name, body string) {
+func writePipelinePlugin(t *testing.T, root, catalog, slug, body string) {
 	t.Helper()
-	if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
-		t.Fatalf("write pipeline plugin: %v", err)
+	plDir := filepath.Join(root, "plugins", catalog, slug)
+	if err := os.MkdirAll(plDir, 0o755); err != nil {
+		t.Fatalf("mkdir plugin dir: %v", err)
+	}
+	manifest := fmt.Sprintf(`apiVersion: nap.nupi.ai/v1alpha1
+kind: PipelineCleanerManifest
+metadata:
+  name: %s
+  slug: %s
+  catalog: %s
+  version: 0.0.1
+spec:
+  main: main.js
+`, slug, slug, catalog)
+	if err := os.WriteFile(filepath.Join(plDir, "plugin.yaml"), []byte(manifest), 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(plDir, "main.js"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write script: %v", err)
 	}
 }
 

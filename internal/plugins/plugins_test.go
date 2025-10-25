@@ -3,6 +3,7 @@ package plugins
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -63,28 +64,45 @@ func TestLoadPipelinePluginErrors(t *testing.T) {
 	}
 }
 
+func writeCleanerPlugin(t *testing.T, root, catalog, slug, script string) {
+	t.Helper()
+	dir := filepath.Join(root, "plugins", catalog, slug)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir plugin dir: %v", err)
+	}
+	manifest := fmt.Sprintf(`apiVersion: nap.nupi.ai/v1alpha1
+kind: PipelineCleanerManifest
+metadata:
+  name: %s
+  slug: %s
+  catalog: %s
+  version: 0.1.0
+spec:
+  main: main.js
+`, slug, slug, catalog)
+	if err := os.WriteFile(filepath.Join(dir, "plugin.yaml"), []byte(manifest), 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.js"), []byte(script), 0o644); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+}
+
 func TestServiceLoadPipelinePluginsBuildsIndex(t *testing.T) {
 	root := t.TempDir()
+	const catalog = "test.catalog"
+
 	pipelineDir := filepath.Join(root, "pipeline")
 	if err := os.MkdirAll(pipelineDir, 0o755); err != nil {
 		t.Fatalf("mkdir pipeline: %v", err)
 	}
 
-	validScript := `
-module.exports = {
+	writeCleanerPlugin(t, root, catalog, "default-cleaner", `module.exports = {
   name: "default",
   commands: ["alias"],
   transform: function(input) { return input; }
-};
-`
-	otherScript := `module.exports = { name: "skip", transform: "oops" };`
-
-	if err := os.WriteFile(filepath.Join(pipelineDir, "default.js"), []byte(validScript), 0o644); err != nil {
-		t.Fatalf("write default plugin: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(pipelineDir, "skip.js"), []byte(otherScript), 0o644); err != nil {
-		t.Fatalf("write skip plugin: %v", err)
-	}
+};`)
+	writeCleanerPlugin(t, root, catalog, "skip-cleaner", `module.exports = { name: "skip", transform: "oops" };`)
 
 	svc := NewService(root)
 	if err := svc.LoadPipelinePlugins(); err != nil {
@@ -107,8 +125,9 @@ module.exports = {
 	if err := json.Unmarshal(indexData, &manifest); err != nil {
 		t.Fatalf("unmarshal index: %v", err)
 	}
-	if manifest["alias"] != "default.js" {
-		t.Fatalf("expected alias -> default.js, got %+v", manifest)
+	expectedRel := filepath.Join("test.catalog", "default-cleaner", "main.js")
+	if manifest["alias"] != expectedRel {
+		t.Fatalf("expected alias -> %s, got %+v", expectedRel, manifest)
 	}
 	if _, exists := manifest["skip"]; exists {
 		t.Fatalf("unexpected skip entry in manifest: %+v", manifest)
@@ -138,19 +157,11 @@ func TestServiceSyncEmbeddedUsesExtractor(t *testing.T) {
 
 func TestServiceStartInitialisesPipeline(t *testing.T) {
 	root := t.TempDir()
-	pipelineDir := filepath.Join(root, "pipeline")
-	if err := os.MkdirAll(pipelineDir, 0o755); err != nil {
-		t.Fatalf("mkdir pipeline: %v", err)
-	}
-	defaultScript := `
-module.exports = {
+	const catalog = "test.catalog"
+	writeCleanerPlugin(t, root, catalog, "default-cleaner", `module.exports = {
   name: "default",
   transform: function(input) { return input; }
-};
-`
-	if err := os.WriteFile(filepath.Join(pipelineDir, "default.js"), []byte(defaultScript), 0o644); err != nil {
-		t.Fatalf("write default plugin: %v", err)
-	}
+};`)
 
 	var extractorCalled bool
 	svc := NewService(root, WithExtractor(func(target string) error {

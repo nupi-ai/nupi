@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/nupi-ai/nupi/internal/detector"
+	"github.com/nupi-ai/nupi/internal/pluginmanifest"
 )
 
 // Service manages plugin assets and metadata for the daemon.
@@ -62,30 +63,40 @@ func (s *Service) PipelineDir() string {
 
 // LoadPipelinePlugins rebuilds the in-memory cleaner registry.
 func (s *Service) LoadPipelinePlugins() error {
-	entries, err := os.ReadDir(s.pipelineDir)
+	manifests, err := pluginmanifest.Discover(s.pluginDir)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
 		return err
 	}
+	return s.loadPipelinePlugins(manifests)
+}
 
+func (s *Service) loadPipelinePlugins(manifests []*pluginmanifest.Manifest) error {
 	index := make(map[string]*PipelinePlugin)
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".js" {
+	for _, manifest := range manifests {
+		if manifest.Kind != pluginmanifest.KindPipelineCleaner {
 			continue
 		}
-		path := filepath.Join(s.pipelineDir, entry.Name())
-		plugin, err := LoadPipelinePlugin(path)
+
+		mainPath, err := manifest.MainPath()
 		if err != nil {
-			log.Printf("[Plugins] skip pipeline plugin %s: %v", path, err)
+			log.Printf("[Plugins] skip pipeline cleaner %s: %v", manifest.Dir, err)
 			continue
+		}
+
+		plugin, err := LoadPipelinePlugin(mainPath)
+		if err != nil {
+			log.Printf("[Plugins] skip pipeline cleaner %s: %v", mainPath, err)
+			continue
+		}
+
+		if plugin.Name == "" && strings.TrimSpace(manifest.Metadata.Name) != "" {
+			plugin.Name = manifest.Metadata.Name
 		}
 
 		keys := []string{plugin.Name}
 		keys = append(keys, plugin.Commands...)
 		if len(keys) == 0 {
-			keys = append(keys, strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name())))
+			keys = append(keys, filepath.Base(manifest.Dir))
 		}
 
 		for _, key := range keys {
@@ -133,7 +144,11 @@ func (s *Service) writePipelineIndex(index map[string]*PipelinePlugin) error {
 		if plugin == nil {
 			continue
 		}
-		manifest[key] = filepath.Base(plugin.FilePath)
+		rel, err := filepath.Rel(s.pluginDir, plugin.FilePath)
+		if err != nil {
+			rel = plugin.FilePath
+		}
+		manifest[key] = rel
 	}
 
 	data, err := json.MarshalIndent(manifest, "", "  ")
@@ -160,12 +175,16 @@ func (s *Service) SyncEmbedded() error {
 
 // GenerateIndex rebuilds the plugin detection index.
 func (s *Service) GenerateIndex() error {
-	generator := detector.NewIndexGenerator(s.pluginDir)
+	manifests, err := pluginmanifest.Discover(s.pluginDir)
+	if err != nil {
+		return err
+	}
+
+	generator := detector.NewIndexGenerator(s.pluginDir, manifests)
 	if err := generator.Generate(); err != nil {
 		return err
 	}
 
-	log.Printf("[Plugins] Plugin index generated successfully")
 	return nil
 }
 
@@ -178,11 +197,22 @@ func (s *Service) Start(ctx context.Context) error {
 		return err
 	}
 
-	if err := s.LoadPipelinePlugins(); err != nil {
+	manifests, err := pluginmanifest.Discover(s.pluginDir)
+	if err != nil {
+		return err
+	}
+
+	if err := s.loadPipelinePlugins(manifests); err != nil {
 		log.Printf("[Plugins] pipeline load error: %v", err)
 	}
 
-	return s.GenerateIndex()
+	generator := detector.NewIndexGenerator(s.pluginDir, manifests)
+	if err := generator.Generate(); err != nil {
+		return err
+	}
+
+	log.Printf("[Plugins] Plugin index generated successfully")
+	return nil
 }
 
 // Shutdown is a no-op for plugin management.

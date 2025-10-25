@@ -1,0 +1,9 @@
+apiVersion: nap.nupi.ai/v1alpha1
+kind: DetectorManifest
+metadata:
+  name: Claude Code Detector
+  slug: io.nupi.detector.claude
+  description: Detects the Claude Code REPL sessions.
+  version: 0.1.0
+spec:
+  main: main.js

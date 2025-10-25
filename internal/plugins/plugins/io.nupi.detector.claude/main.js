@@ -1,7 +1,7 @@
 // Claude Code detection plugin
 module.exports = {
     name: "Claude Code",
-    icon: "claude.svg",  // Icon filename in the icons/ directory
+    icon: "icon.svg",
 
     // Command that launches Claude Code
     commands: ["claude"],

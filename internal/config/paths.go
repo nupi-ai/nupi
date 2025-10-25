@@ -18,10 +18,12 @@ type InstancePaths struct {
 	Socket      string // Unix socket path
 	Lock        string // Daemon lock file path
 	Logs        string // Logs directory
+	PluginsDir  string // Plugins directory (modules, detectors, pipeline cleaners)
 	TempDir     string // Temporary files directory
 	RunDir      string // Runtime assets directory
 	BinDir      string // Shared binaries directory (~/.nupi/bin)
 	RunnerRoot  string // Adapter-runner root directory
+	PipelineDir string // Pipeline cache/output directory (indexes)
 }
 
 // GetInstancePaths returns all paths for a given instance.
@@ -41,10 +43,12 @@ func GetInstancePaths(instanceName string) InstancePaths {
 		Socket:      filepath.Join(instanceDir, "nupi.sock"),
 		Lock:        filepath.Join(instanceDir, "daemon.lock"),
 		Logs:        filepath.Join(instanceDir, "logs"),
+		PluginsDir:  filepath.Join(instanceDir, "plugins"),
 		TempDir:     filepath.Join(instanceDir, "tmp"),
 		RunDir:      filepath.Join(instanceDir, "run"),
 		BinDir:      binDir,
 		RunnerRoot:  filepath.Join(binDir, "adapter-runner"),
+		PipelineDir: filepath.Join(instanceDir, "pipeline"),
 	}
 }
 
@@ -101,9 +105,11 @@ func EnsureInstanceDirs(instanceName string) (InstancePaths, error) {
 	dirs := []string{
 		paths.Home,
 		paths.Logs,
+		paths.PluginsDir,
 		paths.TempDir,
 		paths.RunDir,
 		paths.BinDir,
+		paths.PipelineDir,
 	}
 
 	for _, dir := range dirs {
