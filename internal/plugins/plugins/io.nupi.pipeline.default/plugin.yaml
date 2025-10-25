@@ -1,9 +1,0 @@
-apiVersion: nap.nupi.ai/v1alpha1
-kind: PipelineCleanerManifest
-metadata:
-  name: Default Cleaner
-  slug: io.nupi.pipeline.default
-  description: Pass-through cleaner used when no specialised plugin is registered.
-  version: 0.1.0
-spec:
-  main: main.js

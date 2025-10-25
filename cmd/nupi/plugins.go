@@ -21,7 +21,7 @@ var pluginsCmd = &cobra.Command{
 var pluginsRebuildCmd = &cobra.Command{
 	Use:   "rebuild",
 	Short: "Rebuild the detector index",
-	Long:  `Scans detector plugin packages in the plugin directory and rebuilds the index.json file.`,
+	Long:  `Scans detector plugin packages in the plugin directory and rebuilds the detectors_index.json file.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		pluginDir := getPluginDir()
 		fmt.Printf("Rebuilding plugin index in: %s\n", pluginDir)
@@ -131,7 +131,7 @@ var pluginsInfoCmd = &cobra.Command{
 		if selected == nil {
 			return fmt.Errorf("plugin %q not found", target)
 		}
-		if selected.Kind != pluginmanifest.KindDetector {
+		if selected.Type != pluginmanifest.PluginTypeDetector {
 			return fmt.Errorf("plugin %q is not a detector", target)
 		}
 
@@ -155,7 +155,7 @@ var pluginsInfoCmd = &cobra.Command{
 			fmt.Printf("Slug: %s\n", selected.Metadata.Slug)
 		}
 		fmt.Printf("Version: %s\n", selected.Metadata.Version)
-		fmt.Printf("Kind: %s\n", selected.Kind)
+		fmt.Printf("Type: %s\n", selected.Type)
 		fmt.Printf("Entry: %s\n", relMain)
 		if selected.Metadata.Description != "" {
 			fmt.Printf("Description: %s\n", selected.Metadata.Description)
@@ -179,7 +179,11 @@ func getPluginDir() string {
 	}
 
 	// Default to home directory
-	homeDir, _ := os.UserHomeDir()
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to determine home directory: %v\n", err)
+		os.Exit(1)
+	}
 	return filepath.Join(homeDir, ".nupi", "plugins")
 }
 

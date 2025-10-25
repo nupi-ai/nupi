@@ -9,7 +9,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/pluginmanifest"
 )
 
-// IndexGenerator creates index.json from detector plugin manifests.
+// IndexGenerator creates detectors_index.json from detector plugin manifests.
 type IndexGenerator struct {
 	pluginDir string
 	manifests []*pluginmanifest.Manifest
@@ -23,9 +23,9 @@ func NewIndexGenerator(pluginDir string, manifests []*pluginmanifest.Manifest) *
 	}
 }
 
-// Generate scans detector manifests and creates index.json.
+// Generate scans detector manifests and creates detectors_index.json.
 func (g *IndexGenerator) Generate() error {
-	indexPath := filepath.Join(g.pluginDir, "index.json")
+	indexPath := filepath.Join(g.pluginDir, "detectors_index.json")
 	log.Printf("[IndexGenerator] Generating index at: %s", indexPath)
 
 	if err := os.MkdirAll(g.pluginDir, 0o755); err != nil {
@@ -45,7 +45,7 @@ func (g *IndexGenerator) Generate() error {
 	successCount := 0
 
 	for _, manifest := range manifests {
-		if manifest.Kind != pluginmanifest.KindDetector {
+		if manifest.Type != pluginmanifest.PluginTypeDetector {
 			continue
 		}
 
@@ -100,7 +100,7 @@ func (g *IndexGenerator) ListPlugins() ([]map[string]interface{}, error) {
 	var plugins []map[string]interface{}
 
 	for _, manifest := range manifests {
-		if manifest.Kind != pluginmanifest.KindDetector {
+		if manifest.Type != pluginmanifest.PluginTypeDetector {
 			continue
 		}
 

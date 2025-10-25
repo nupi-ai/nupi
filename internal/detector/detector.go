@@ -31,10 +31,11 @@ type ToolDetector struct {
 	pluginDir string
 	indexPath string
 
-	index      PluginIndex
-	plugins    map[string]*JSPlugin
-	candidates []string
-	buffer     *RingBuffer
+	index            PluginIndex
+	plugins          map[string]*JSPlugin
+	candidates       []string
+	buffer           *RingBuffer
+	allPluginsLoaded bool
 
 	detectedTool string
 	detectedIcon string
@@ -52,7 +53,7 @@ func NewToolDetector(sessionID, pluginDir string) *ToolDetector {
 	return &ToolDetector{
 		sessionID: sessionID,
 		pluginDir: pluginDir,
-		indexPath: filepath.Join(pluginDir, "index.json"),
+		indexPath: filepath.Join(pluginDir, "detectors_index.json"),
 		plugins:   make(map[string]*JSPlugin),
 		buffer:    NewRingBuffer(),
 		eventChan: make(chan ToolDetectedEvent, 1),
@@ -169,7 +170,7 @@ func (d *ToolDetector) OnOutput(data []byte) {
 		}
 	}
 
-	if allFalse && len(d.candidates) > 0 && len(d.plugins) < d.getTotalPluginCount() {
+	if allFalse && len(d.candidates) > 0 && !d.allPluginsLoaded {
 		log.Printf("[Detector] All candidates returned false, trying ALL plugins as fallback")
 		d.loadAllPlugins()
 
@@ -245,7 +246,7 @@ func (d *ToolDetector) loadAllPlugins() {
 	}
 
 	for _, manifest := range manifests {
-		if manifest.Kind != pluginmanifest.KindDetector {
+		if manifest.Type != pluginmanifest.PluginTypeDetector {
 			continue
 		}
 
@@ -272,21 +273,8 @@ func (d *ToolDetector) loadAllPlugins() {
 		d.plugins[relPath] = plugin
 	}
 
+	d.allPluginsLoaded = true
 	log.Printf("[Detector] Loaded %d plugins total", len(d.plugins))
-}
-
-func (d *ToolDetector) getTotalPluginCount() int {
-	manifests, err := pluginmanifest.Discover(d.pluginDir)
-	if err != nil {
-		return 0
-	}
-	count := 0
-	for _, manifest := range manifests {
-		if manifest.Kind == pluginmanifest.KindDetector {
-			count++
-		}
-	}
-	return count
 }
 
 // StopDetection stops the detection process and closes the event channel.

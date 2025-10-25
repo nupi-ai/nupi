@@ -17,48 +17,22 @@ import (
 // Service manages plugin assets and metadata for the daemon.
 type Service struct {
 	pluginDir   string
-	pipelineDir string
 	pipelineIdx map[string]*PipelinePlugin
 	pipelineMu  sync.RWMutex
-	extract     func(string) error
-}
-
-// Option configures optional behaviour on the Service.
-type Option func(*Service)
-
-// WithExtractor overrides the function used to materialise embedded plugins.
-func WithExtractor(extractor func(string) error) Option {
-	return func(s *Service) {
-		s.extract = extractor
-	}
 }
 
 // NewService constructs a plugin service rooted in the given instance directory.
-func NewService(instanceDir string, opts ...Option) *Service {
+func NewService(instanceDir string) *Service {
 	pluginDir := filepath.Join(instanceDir, "plugins")
-	pipelineDir := filepath.Join(instanceDir, "pipeline")
-	svc := &Service{
+	return &Service{
 		pluginDir:   pluginDir,
-		pipelineDir: pipelineDir,
 		pipelineIdx: make(map[string]*PipelinePlugin),
-		extract:     ExtractEmbedded,
 	}
-
-	for _, opt := range opts {
-		opt(svc)
-	}
-
-	return svc
 }
 
 // PluginDir returns the directory where plugins are stored.
 func (s *Service) PluginDir() string {
 	return s.pluginDir
-}
-
-// PipelineDir returns the directory containing JS cleaners.
-func (s *Service) PipelineDir() string {
-	return s.pipelineDir
 }
 
 // LoadPipelinePlugins rebuilds the in-memory cleaner registry.
@@ -73,7 +47,7 @@ func (s *Service) LoadPipelinePlugins() error {
 func (s *Service) loadPipelinePlugins(manifests []*pluginmanifest.Manifest) error {
 	index := make(map[string]*PipelinePlugin)
 	for _, manifest := range manifests {
-		if manifest.Kind != pluginmanifest.KindPipelineCleaner {
+		if manifest.Type != pluginmanifest.PluginTypePipelineCleaner {
 			continue
 		}
 
@@ -156,21 +130,15 @@ func (s *Service) writePipelineIndex(index map[string]*PipelinePlugin) error {
 		return fmt.Errorf("pipeline index marshal: %w", err)
 	}
 
-	path := filepath.Join(s.pipelineDir, "index.json")
+	path := filepath.Join(s.pluginDir, "pipeline_cleaners_index.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("pipeline index ensure dir: %w", err)
+	}
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		return fmt.Errorf("pipeline index write: %w", err)
 	}
+
 	return nil
-}
-
-// SyncEmbedded updates the embedded plugin set on disk.
-func (s *Service) SyncEmbedded() error {
-	if s.extract == nil {
-		return fmt.Errorf("plugin extractor is not configured")
-	}
-
-	log.Printf("[Plugins] Updating embedded plugins...")
-	return s.extract(s.pluginDir)
 }
 
 // GenerateIndex rebuilds the plugin detection index.
@@ -190,11 +158,8 @@ func (s *Service) GenerateIndex() error {
 
 // Start implements runtime.Service to integrate with the daemon lifecycle.
 func (s *Service) Start(ctx context.Context) error {
-	if err := os.MkdirAll(s.pipelineDir, 0o755); err != nil {
-		return fmt.Errorf("plugin service: ensure pipeline dir: %w", err)
-	}
-	if err := s.SyncEmbedded(); err != nil {
-		return err
+	if err := os.MkdirAll(s.pluginDir, 0o755); err != nil {
+		return fmt.Errorf("ensure plugin dir: %w", err)
 	}
 
 	manifests, err := pluginmanifest.Discover(s.pluginDir)

@@ -177,7 +177,7 @@ func (p *JSPlugin) GetInfo() string {
 	return string(data)
 }
 
-// PluginIndex represents the auto-generated index.json.
+// PluginIndex represents the auto-generated detectors_index.json.
 type PluginIndex map[string][]string
 
 // LoadIndex loads the plugin index from file.

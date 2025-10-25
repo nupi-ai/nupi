@@ -71,7 +71,8 @@ func writeCleanerPlugin(t *testing.T, root, catalog, slug, script string) {
 		t.Fatalf("mkdir plugin dir: %v", err)
 	}
 	manifest := fmt.Sprintf(`apiVersion: nap.nupi.ai/v1alpha1
-kind: PipelineCleanerManifest
+kind: Plugin
+type: pipeline-cleaner
 metadata:
   name: %s
   slug: %s
@@ -91,11 +92,6 @@ spec:
 func TestServiceLoadPipelinePluginsBuildsIndex(t *testing.T) {
 	root := t.TempDir()
 	const catalog = "test.catalog"
-
-	pipelineDir := filepath.Join(root, "pipeline")
-	if err := os.MkdirAll(pipelineDir, 0o755); err != nil {
-		t.Fatalf("mkdir pipeline: %v", err)
-	}
 
 	writeCleanerPlugin(t, root, catalog, "default-cleaner", `module.exports = {
   name: "default",
@@ -117,7 +113,7 @@ func TestServiceLoadPipelinePluginsBuildsIndex(t *testing.T) {
 		t.Fatalf("expected fallback default plugin, got %+v ok=%v", plugin, ok)
 	}
 
-	indexData, err := os.ReadFile(filepath.Join(pipelineDir, "index.json"))
+	indexData, err := os.ReadFile(filepath.Join(root, "plugins", "pipeline_cleaners_index.json"))
 	if err != nil {
 		t.Fatalf("read index: %v", err)
 	}
@@ -134,27 +130,6 @@ func TestServiceLoadPipelinePluginsBuildsIndex(t *testing.T) {
 	}
 }
 
-func TestServiceSyncEmbeddedUsesExtractor(t *testing.T) {
-	root := t.TempDir()
-	var called bool
-	var received string
-	svc := NewService(root, WithExtractor(func(target string) error {
-		called = true
-		received = target
-		return nil
-	}))
-
-	if err := svc.SyncEmbedded(); err != nil {
-		t.Fatalf("SyncEmbedded: %v", err)
-	}
-	if !called {
-		t.Fatalf("expected custom extractor to be called")
-	}
-	if received != filepath.Join(root, "plugins") {
-		t.Fatalf("unexpected extractor target %s", received)
-	}
-}
-
 func TestServiceStartInitialisesPipeline(t *testing.T) {
 	root := t.TempDir()
 	const catalog = "test.catalog"
@@ -163,17 +138,10 @@ func TestServiceStartInitialisesPipeline(t *testing.T) {
   transform: function(input) { return input; }
 };`)
 
-	var extractorCalled bool
-	svc := NewService(root, WithExtractor(func(target string) error {
-		extractorCalled = true
-		return nil
-	}))
+	svc := NewService(root)
 
 	if err := svc.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
-	}
-	if !extractorCalled {
-		t.Fatalf("expected extractor call during Start")
 	}
 	if _, ok := svc.PipelinePluginFor("something"); !ok {
 		t.Fatalf("expected fallback default plugin to be available")

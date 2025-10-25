@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -12,73 +13,99 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Kind describes the type of plugin represented by the manifest.
 type Kind string
+type PluginType string
 
 const (
-	// KindModule identifies process-based adapters executed via adapter-runner.
-	KindModule Kind = "ModuleManifest"
-	// KindDetector identifies tool-detector plugins executed in-process.
-	KindDetector Kind = "DetectorManifest"
-	// KindPipelineCleaner identifies content-pipeline transformers executed in-process.
-	KindPipelineCleaner Kind = "PipelineCleanerManifest"
+	KindPlugin Kind = "Plugin"
+
+	PluginTypeAdapter         PluginType = "adapter"
+	PluginTypeDetector        PluginType = "detector"
+	PluginTypePipelineCleaner PluginType = "pipeline-cleaner"
 
 	manifestYAML = "plugin.yaml"
 	manifestYML  = "plugin.yml"
 	manifestJSON = "plugin.json"
+
+	fallbackCatalog = "others"
 )
 
-// Metadata captures common descriptive fields shared across plugin types.
 type Metadata struct {
-    Name        string `yaml:"name"`
-    Slug        string `yaml:"slug"`
-    Catalog     string `yaml:"catalog"`
-    Description string `yaml:"description"`
-    Version     string `yaml:"version"`
+	Name        string `yaml:"name"`
+	Slug        string `yaml:"slug"`
+	Catalog     string `yaml:"catalog"`
+	Description string `yaml:"description"`
+	Version     string `yaml:"version"`
 }
 
-// DetectorSpec defines runtime settings for detector plugins.
 type DetectorSpec struct {
 	Main string `yaml:"main"`
 }
 
-// PipelineCleanerSpec defines runtime settings for cleaner plugins.
 type PipelineCleanerSpec struct {
 	Main string `yaml:"main"`
 }
 
-// Manifest represents a parsed plugin manifest residing within a directory.
+type AdapterSpec struct {
+	ModuleType string            `yaml:"moduleType"`
+	Mode       string            `yaml:"mode"`
+	Entrypoint AdapterEntrypoint `yaml:"entrypoint"`
+	Assets     AdapterAssets     `yaml:"assets"`
+	Telemetry  AdapterTelemetry  `yaml:"telemetry"`
+}
+
+type AdapterEntrypoint struct {
+	Command    string   `yaml:"command"`
+	Args       []string `yaml:"args"`
+	Transport  string   `yaml:"transport"`
+	ListenEnv  string   `yaml:"listenEnv"`
+	WorkingDir string   `yaml:"workingDir"`
+}
+
+type AdapterAssets struct {
+	Models AdapterModelAssets `yaml:"models"`
+}
+
+type AdapterModelAssets struct {
+	CacheDirEnv string `yaml:"cacheDirEnv"`
+}
+
+type AdapterTelemetry struct {
+	Stdout *bool `yaml:"stdout"`
+	Stderr *bool `yaml:"stderr"`
+}
+
 type Manifest struct {
 	Dir        string
 	File       string
 	Raw        string
 	APIVersion string
 	Kind       Kind
+	Type       PluginType
 	Metadata   Metadata
 
+	Adapter         *AdapterSpec
 	Detector        *DetectorSpec
 	PipelineCleaner *PipelineCleanerSpec
 }
 
-// MainPath returns the absolute path to the primary script for manifests that define one.
 func (m *Manifest) MainPath() (string, error) {
-	switch m.Kind {
-	case KindDetector:
+	switch m.Type {
+	case PluginTypeDetector:
 		if m.Detector == nil {
 			return "", fmt.Errorf("detector manifest missing spec")
 		}
 		return filepath.Join(m.Dir, m.Detector.Main), nil
-	case KindPipelineCleaner:
+	case PluginTypePipelineCleaner:
 		if m.PipelineCleaner == nil {
 			return "", fmt.Errorf("pipeline cleaner manifest missing spec")
 		}
 		return filepath.Join(m.Dir, m.PipelineCleaner.Main), nil
 	default:
-		return "", fmt.Errorf("manifest kind %s does not define a main script", m.Kind)
+		return "", fmt.Errorf("plugin type %s does not define a main script", m.Type)
 	}
 }
 
-// RelativeMainPath returns the relative path of the primary script from the provided root.
 func (m *Manifest) RelativeMainPath(root string) (string, error) {
 	mainPath, err := m.MainPath()
 	if err != nil {
@@ -91,7 +118,6 @@ func (m *Manifest) RelativeMainPath(root string) (string, error) {
 	return rel, nil
 }
 
-// Discover scans the provided directory for plugin manifests.
 func Discover(root string) ([]*Manifest, error) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
@@ -102,35 +128,15 @@ func Discover(root string) ([]*Manifest, error) {
 	}
 
 	var manifests []*Manifest
-	appendManifest := func(dir string, manifest *Manifest) {
-		rel, err := filepath.Rel(root, dir)
-		if err != nil {
-			rel = filepath.Base(dir)
-		}
-		parts := strings.Split(rel, string(os.PathSeparator))
-		if manifest.Metadata.Slug == "" {
-			manifest.Metadata.Slug = filepath.Base(dir)
-		}
-		if manifest.Metadata.Catalog == "" && len(parts) >= 2 {
-			manifest.Metadata.Catalog = parts[0]
-		}
-		manifests = append(manifests, manifest)
-	}
 
-	for _, entry := range entries {
-		if !entry.IsDir() {
+	for _, catalogEntry := range entries {
+		if !catalogEntry.IsDir() {
 			continue
 		}
-		catalogDir := filepath.Join(root, entry.Name())
+		catalogName := catalogEntry.Name()
+		catalogDir := filepath.Join(root, catalogName)
 
-		if manifest, err := LoadFromDir(catalogDir); err == nil {
-			appendManifest(catalogDir, manifest)
-			continue
-		} else if !errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("load manifest in %s: %w", catalogDir, err)
-		}
-
-		subEntries, err := os.ReadDir(catalogDir)
+		slugEntries, err := os.ReadDir(catalogDir)
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				continue
@@ -138,11 +144,12 @@ func Discover(root string) ([]*Manifest, error) {
 			return nil, fmt.Errorf("read catalog dir %s: %w", catalogDir, err)
 		}
 
-		for _, sub := range subEntries {
-			if !sub.IsDir() {
+		for _, slugEntry := range slugEntries {
+			if !slugEntry.IsDir() {
 				continue
 			}
-			slugDir := filepath.Join(catalogDir, sub.Name())
+			slugDir := filepath.Join(catalogDir, slugEntry.Name())
+
 			manifest, err := LoadFromDir(slugDir)
 			if errors.Is(err, fs.ErrNotExist) {
 				continue
@@ -150,7 +157,20 @@ func Discover(root string) ([]*Manifest, error) {
 			if err != nil {
 				return nil, fmt.Errorf("load manifest in %s: %w", slugDir, err)
 			}
-			appendManifest(slugDir, manifest)
+
+			if manifest.Metadata.Catalog == "" {
+				manifest.Metadata.Catalog = fallbackCatalog
+				log.Printf("[PluginManifest] directory %s missing catalog metadata, using fallback %q", slugDir, fallbackCatalog)
+			} else if trimmed := strings.TrimSpace(catalogName); trimmed != "" && manifest.Metadata.Catalog != trimmed {
+				log.Printf("[PluginManifest] directory %s catalog mismatch: manifest=%q dir=%q", slugDir, manifest.Metadata.Catalog, trimmed)
+			}
+
+			if manifest.Metadata.Slug == "" {
+				log.Printf("[PluginManifest] skipping %s: slug metadata is required", slugDir)
+				continue
+			}
+
+			manifests = append(manifests, manifest)
 		}
 	}
 
@@ -160,11 +180,10 @@ func Discover(root string) ([]*Manifest, error) {
 	return manifests, nil
 }
 
-// LoadFromDir attempts to load a plugin manifest from the provided directory.
 func LoadFromDir(dir string) (*Manifest, error) {
-    file, err := locateManifestFile(dir)
-    if err != nil {
-        return nil, err
+	file, err := locateManifestFile(dir)
+	if err != nil {
+		return nil, err
 	}
 
 	data, err := os.ReadFile(file)
@@ -175,6 +194,7 @@ func LoadFromDir(dir string) (*Manifest, error) {
 	var doc struct {
 		APIVersion string    `yaml:"apiVersion"`
 		Kind       string    `yaml:"kind"`
+		Type       string    `yaml:"type"`
 		Metadata   Metadata  `yaml:"metadata"`
 		Spec       yaml.Node `yaml:"spec"`
 	}
@@ -183,27 +203,51 @@ func LoadFromDir(dir string) (*Manifest, error) {
 		return nil, fmt.Errorf("parse manifest %s: %w", file, err)
 	}
 
-	kind := Kind(strings.TrimSpace(doc.Kind))
+	rawKind := strings.TrimSpace(doc.Kind)
+	if rawKind == "" {
+		rawKind = string(KindPlugin)
+	}
+
+	kind := Kind(rawKind)
+	if kind != KindPlugin {
+		return nil, fmt.Errorf("unsupported manifest kind %q in %s", rawKind, file)
+	}
+
+	pluginType := PluginType(strings.TrimSpace(doc.Type))
+	if pluginType == "" {
+		return nil, fmt.Errorf("manifest %s missing type", file)
+	}
+	switch pluginType {
+	case PluginTypeAdapter, PluginTypeDetector, PluginTypePipelineCleaner:
+	default:
+		return nil, fmt.Errorf("unsupported plugin type %q in %s", pluginType, file)
+	}
+
 	manifest := &Manifest{
 		Dir:        dir,
 		File:       file,
 		Raw:        string(data),
 		APIVersion: strings.TrimSpace(doc.APIVersion),
 		Kind:       kind,
+		Type:       pluginType,
 		Metadata:   doc.Metadata,
 	}
 
-    if manifest.Metadata.Slug == "" {
-        manifest.Metadata.Slug = filepath.Base(dir)
-    }
+	manifest.Metadata.Catalog = strings.TrimSpace(manifest.Metadata.Catalog)
+	manifest.Metadata.Slug = strings.TrimSpace(manifest.Metadata.Slug)
 
-    switch kind {
-    case KindModule:
-        // No additional parsing required at this stage.
-	case KindDetector:
-		if doc.Spec.IsZero() {
-			return nil, fmt.Errorf("detector manifest %s missing spec", file)
+	if doc.Spec.IsZero() {
+		return manifest, nil
+	}
+
+	switch pluginType {
+	case PluginTypeAdapter:
+		var spec AdapterSpec
+		if err := doc.Spec.Decode(&spec); err != nil {
+			return nil, fmt.Errorf("decode adapter spec %s: %w", file, err)
 		}
+		manifest.Adapter = &spec
+	case PluginTypeDetector:
 		var spec DetectorSpec
 		if err := doc.Spec.Decode(&spec); err != nil {
 			return nil, fmt.Errorf("decode detector spec %s: %w", file, err)
@@ -212,10 +256,7 @@ func LoadFromDir(dir string) (*Manifest, error) {
 			spec.Main = "main.js"
 		}
 		manifest.Detector = &spec
-	case KindPipelineCleaner:
-		if doc.Spec.IsZero() {
-			return nil, fmt.Errorf("pipeline cleaner manifest %s missing spec", file)
-		}
+	case PluginTypePipelineCleaner:
 		var spec PipelineCleanerSpec
 		if err := doc.Spec.Decode(&spec); err != nil {
 			return nil, fmt.Errorf("decode pipeline cleaner spec %s: %w", file, err)
@@ -225,7 +266,7 @@ func LoadFromDir(dir string) (*Manifest, error) {
 		}
 		manifest.PipelineCleaner = &spec
 	default:
-		return nil, fmt.Errorf("unsupported manifest kind %q in %s", doc.Kind, file)
+		return nil, fmt.Errorf("unsupported plugin type %q in %s", pluginType, file)
 	}
 
 	return manifest, nil

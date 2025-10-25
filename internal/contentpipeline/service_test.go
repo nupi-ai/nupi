@@ -19,7 +19,8 @@ func writeCleanerPlugin(t *testing.T, root, catalog, slug, script string) {
 		t.Fatalf("mkdir plugin dir: %v", err)
 	}
 	manifest := fmt.Sprintf(`apiVersion: nap.nupi.ai/v1alpha1
-kind: PipelineCleanerManifest
+kind: Plugin
+type: pipeline-cleaner
 metadata:
   name: %s
   slug: %s
@@ -38,10 +39,7 @@ spec:
 
 func newPluginService(t *testing.T, baseDir string) *plugins.Service {
 	t.Helper()
-	svc := plugins.NewService(baseDir, plugins.WithExtractor(func(string) error { return nil }))
-	if err := os.MkdirAll(svc.PipelineDir(), 0o755); err != nil {
-		t.Fatalf("mkdir pipeline: %v", err)
-	}
+	svc := plugins.NewService(baseDir)
 	if err := svc.LoadPipelinePlugins(); err != nil {
 		t.Fatalf("load pipeline plugins: %v", err)
 	}
