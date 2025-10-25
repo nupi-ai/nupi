@@ -195,8 +195,9 @@ func TestManagerStartModuleConfiguresEnvironment(t *testing.T) {
 	})
 
 	manifestYAML := `
-apiVersion: nupi.ai/v1
-kind: Module
+apiVersion: nap.nupi.ai/v1alpha1
+kind: Plugin
+type: adapter
 metadata:
   name: Sample Module
   slug: Example Module
@@ -415,8 +416,9 @@ func TestManagerEnsureRestartsOnManifestChange(t *testing.T) {
 	})
 
 	manifestV1 := `
-apiVersion: nupi.ai/v1
-kind: Module
+apiVersion: nap.nupi.ai/v1alpha1
+kind: Plugin
+type: adapter
 metadata:
   name: Primary AI
 spec:
@@ -452,8 +454,9 @@ spec:
 	}
 
 	manifestV2 := `
-apiVersion: nupi.ai/v1
-kind: Module
+apiVersion: nap.nupi.ai/v1alpha1
+kind: Plugin
+type: adapter
 metadata:
   name: Primary AI
   version: v2

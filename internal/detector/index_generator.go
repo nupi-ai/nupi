@@ -45,7 +45,7 @@ func (g *IndexGenerator) Generate() error {
 	successCount := 0
 
 	for _, manifest := range manifests {
-		if manifest.Type != pluginmanifest.PluginTypeDetector {
+		if manifest.Type != pluginmanifest.PluginTypeToolDetector {
 			continue
 		}
 
@@ -100,7 +100,7 @@ func (g *IndexGenerator) ListPlugins() ([]map[string]interface{}, error) {
 	var plugins []map[string]interface{}
 
 	for _, manifest := range manifests {
-		if manifest.Type != pluginmanifest.PluginTypeDetector {
+		if manifest.Type != pluginmanifest.PluginTypeToolDetector {
 			continue
 		}
 

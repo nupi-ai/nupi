@@ -18,6 +18,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/config"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
+	"github.com/nupi-ai/nupi/internal/pluginmanifest"
 	"github.com/nupi-ai/nupi/internal/voice/slots"
 )
 
@@ -102,7 +103,7 @@ type moduleInstance struct {
 type bindingPlan struct {
 	binding     Binding
 	adapter     configstore.Adapter
-	manifest    *ModuleManifest
+	manifest    *pluginmanifest.Manifest
 	endpoint    configstore.ModuleEndpoint
 	fingerprint string
 }
@@ -366,7 +367,7 @@ func (m *Manager) startModule(ctx context.Context, plan bindingPlan) (*moduleIns
 		cleanupHome = createdHome
 		env = append(env, "NUPI_MODULE_HOME="+moduleHome)
 		if manifestRaw != "" {
-			manifestPath := filepath.Join(moduleHome, "module.yaml")
+			manifestPath := filepath.Join(moduleHome, "plugin.yaml")
 			if err := os.WriteFile(manifestPath, []byte(manifestRaw), 0o644); err != nil {
 				return nil, fmt.Errorf("modules: write manifest for %s: %w", binding.AdapterID, err)
 			}
@@ -384,8 +385,8 @@ func (m *Manager) startModule(ctx context.Context, plan bindingPlan) (*moduleIns
 			cleanupDataDir = true
 		}
 		env = append(env, "NUPI_MODULE_DATA_DIR="+dataDir)
-		if manifest != nil {
-			cacheEnv := strings.TrimSpace(manifest.Spec.Assets.Models.CacheDirEnv)
+		if manifest != nil && manifest.Adapter != nil {
+			cacheEnv := strings.TrimSpace(manifest.Adapter.Assets.Models.CacheDirEnv)
 			if cacheEnv != "" {
 				env = append(env, fmt.Sprintf("%s=%s", cacheEnv, dataDir))
 			}
@@ -398,8 +399,8 @@ func (m *Manager) startModule(ctx context.Context, plan bindingPlan) (*moduleIns
 	if endpoint.Address != "" {
 		env = append(env, "NUPI_MODULE_ENDPOINT="+endpoint.Address)
 		listenEnv := "NUPI_ADAPTER_LISTEN_ADDR"
-		if manifest != nil {
-			if v := strings.TrimSpace(manifest.Spec.Entrypoint.ListenEnv); v != "" {
+		if manifest != nil && manifest.Adapter != nil {
+			if v := strings.TrimSpace(manifest.Adapter.Entrypoint.ListenEnv); v != "" {
 				listenEnv = v
 			}
 		}
@@ -430,8 +431,8 @@ func (m *Manager) startModule(ctx context.Context, plan bindingPlan) (*moduleIns
 	var stdoutLogger, stderrLogger *moduleLogWriter
 
 	// Default telemetry to enabled when manifest metadata is missing for easier debugging.
-	telemetryStdout := manifest == nil || manifest.Spec.Telemetry.Stdout == nil || *manifest.Spec.Telemetry.Stdout
-	telemetryStderr := manifest == nil || manifest.Spec.Telemetry.Stderr == nil || *manifest.Spec.Telemetry.Stderr
+	telemetryStdout := manifest == nil || manifest.Adapter == nil || manifest.Adapter.Telemetry.Stdout == nil || *manifest.Adapter.Telemetry.Stdout
+	telemetryStderr := manifest == nil || manifest.Adapter == nil || manifest.Adapter.Telemetry.Stderr == nil || *manifest.Adapter.Telemetry.Stderr
 	if m.bus != nil {
 		if telemetryStdout {
 			stdoutLogger = newModuleLogWriter(m.bus, binding.AdapterID, binding.Slot, eventbus.LogLevelInfo)
@@ -468,7 +469,7 @@ func (m *Manager) startModule(ctx context.Context, plan bindingPlan) (*moduleIns
 	}, nil
 }
 
-func (m *Manager) lookupAdapter(ctx context.Context, adapterID string) (configstore.Adapter, *ModuleManifest, error) {
+func (m *Manager) lookupAdapter(ctx context.Context, adapterID string) (configstore.Adapter, *pluginmanifest.Manifest, error) {
 	if m.adapterSource == nil {
 		return configstore.Adapter{}, nil, errAdapterDetailsUnavailable
 	}
@@ -483,9 +484,15 @@ func (m *Manager) lookupAdapter(ctx context.Context, adapterID string) (configst
 	if strings.TrimSpace(adapter.Manifest) == "" {
 		return adapter, nil, nil
 	}
-	manifest, err := ParseModuleManifest(adapter.Manifest)
+	manifest, err := pluginmanifest.Parse([]byte(adapter.Manifest))
 	if err != nil {
 		return adapter, nil, fmt.Errorf("modules: parse manifest for %s: %w", adapterID, err)
+	}
+	if manifest.Type != pluginmanifest.PluginTypeAdapter {
+		return adapter, nil, fmt.Errorf("modules: manifest for %s must have type adapter", adapterID)
+	}
+	if manifest.Adapter == nil {
+		return adapter, nil, fmt.Errorf("modules: manifest for %s missing adapter spec", adapterID)
 	}
 	return adapter, manifest, nil
 }
@@ -592,7 +599,7 @@ func computePlanFingerprint(binding Binding, manifest string, endpoint configsto
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-func sanitizeModuleSlug(manifest *ModuleManifest, fallback string) string {
+func sanitizeModuleSlug(manifest *pluginmanifest.Manifest, fallback string) string {
 	if manifest != nil {
 		if slug := strings.TrimSpace(manifest.Metadata.Slug); slug != "" {
 			if sanitized := sanitizeIdentifier(slug); sanitized != "" {

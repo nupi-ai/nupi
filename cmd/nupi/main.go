@@ -29,6 +29,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/client"
 	"github.com/nupi-ai/nupi/internal/config"
 	"github.com/nupi-ai/nupi/internal/grpcclient"
+	"github.com/nupi-ai/nupi/internal/pluginmanifest"
 	"github.com/nupi-ai/nupi/internal/protocol"
 	nupiversion "github.com/nupi-ai/nupi/internal/version"
 	"github.com/spf13/cobra"
@@ -342,7 +343,7 @@ func main() {
 	}
 	modulesInstallLocalCmd.Example = `  # Install a local Whisper STT module
 	nupi modules install-local \
-	  --manifest-file ./module-nupi-whisper-local-stt/module.yaml \
+	  --manifest-file ./module-nupi-whisper-local-stt/plugin.yaml \
 	  --binary $(pwd)/module-nupi-whisper-local-stt/dist/module-nupi-whisper-local-stt \
 	  --endpoint-address 127.0.0.1:50051 \
 	  --slot stt`
@@ -1414,32 +1415,22 @@ func modulesRegisterHTTP(out *OutputFormatter, payload apihttp.ModuleRegistratio
 	return result.Adapter, nil
 }
 
-type moduleManifestSpec struct {
-	Metadata struct {
-		Name string `yaml:"name"`
-		Slug string `yaml:"slug"`
-	} `yaml:"metadata"`
-	Spec struct {
-		ModuleType string `yaml:"moduleType"`
-		Entrypoint struct {
-			Command   string   `yaml:"command"`
-			Args      []string `yaml:"args"`
-			Transport string   `yaml:"transport"`
-			ListenEnv string   `yaml:"listenEnv"`
-		} `yaml:"entrypoint"`
-	} `yaml:"spec"`
-}
-
-func loadModuleManifestFile(path string) (moduleManifestSpec, string, error) {
-	var spec moduleManifestSpec
+func loadAdapterManifestFile(path string) (*pluginmanifest.Manifest, string, error) {
 	content, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
-		return spec, "", err
+		return nil, "", err
 	}
-	if err := yaml.Unmarshal(content, &spec); err != nil {
-		return spec, "", fmt.Errorf("parse manifest: %w", err)
+	manifest, err := pluginmanifest.Parse(content)
+	if err != nil {
+		return nil, "", fmt.Errorf("parse manifest: %w", err)
 	}
-	return spec, string(content), nil
+	if manifest.Type != pluginmanifest.PluginTypeAdapter {
+		return nil, "", fmt.Errorf("manifest type must be %q", pluginmanifest.PluginTypeAdapter)
+	}
+	if manifest.Adapter == nil {
+		return nil, "", fmt.Errorf("adapter manifest missing spec")
+	}
+	return manifest, string(content), nil
 }
 
 func parseManifest(manifestRaw string) (json.RawMessage, error) {
@@ -1775,7 +1766,7 @@ func modulesInstallLocal(cmd *cobra.Command, _ []string) error {
 	}
 	manifestDir := filepath.Dir(absManifestPath)
 
-	spec, manifestRaw, err := loadModuleManifestFile(manifestPath)
+	manifest, manifestRaw, err := loadAdapterManifestFile(manifestPath)
 	if err != nil {
 		return out.Error("Failed to read manifest", err)
 	}
@@ -1788,19 +1779,23 @@ func modulesInstallLocal(cmd *cobra.Command, _ []string) error {
 	adapterIDFlag, _ := cmd.Flags().GetString("id")
 	adapterID := strings.TrimSpace(adapterIDFlag)
 	if adapterID == "" {
-		adapterID = strings.TrimSpace(spec.Metadata.Slug)
+		adapterID = strings.TrimSpace(manifest.Metadata.Slug)
 	}
 	if adapterID == "" {
 		return out.Error("Adapter identifier required", errors.New("manifest metadata.slug missing; use --id"))
 	}
 
-	moduleType := strings.TrimSpace(spec.Spec.ModuleType)
+	moduleType := ""
+	if manifest.Adapter != nil {
+		moduleType = strings.TrimSpace(manifest.Adapter.ModuleType)
+	}
 	if moduleType == "" {
 		return out.Error("Module type missing in manifest", errors.New("manifest spec.moduleType empty"))
 	}
 	if _, ok := allowedModuleTypes[moduleType]; !ok {
 		return out.Error(fmt.Sprintf("unsupported module type %q", moduleType), errors.New("invalid module type"))
 	}
+	adapterName := strings.TrimSpace(manifest.Metadata.Name)
 	copyBinary, _ := cmd.Flags().GetBool("copy-binary")
 	buildFlag, _ := cmd.Flags().GetBool("build")
 	moduleDirFlag, _ := cmd.Flags().GetString("module-dir")
@@ -1867,7 +1862,10 @@ func modulesInstallLocal(cmd *cobra.Command, _ []string) error {
 		}
 		command = binaryFlag
 	} else {
-		command = strings.TrimSpace(spec.Spec.Entrypoint.Command)
+		if manifest.Adapter == nil {
+			return out.Error("Manifest missing adapter spec", errors.New("adapter spec absent"))
+		}
+		command = strings.TrimSpace(manifest.Adapter.Entrypoint.Command)
 		if command != "" {
 			command = config.ExpandPath(command)
 			if !filepath.IsAbs(command) && strings.Contains(command, string(os.PathSeparator)) {
@@ -1882,7 +1880,14 @@ func modulesInstallLocal(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	args := append([]string(nil), spec.Spec.Entrypoint.Args...)
+	if command == "" {
+		return out.Error("Manifest missing entrypoint command", errors.New("spec.entrypoint.command empty"))
+	}
+
+	args := []string{}
+	if manifest.Adapter != nil {
+		args = append(args, manifest.Adapter.Entrypoint.Args...)
+	}
 	extraArgs, _ := cmd.Flags().GetStringArray("endpoint-arg")
 	if len(extraArgs) > 0 {
 		args = append(args, extraArgs...)
@@ -1894,7 +1899,10 @@ func modulesInstallLocal(cmd *cobra.Command, _ []string) error {
 		return out.Error("Invalid --endpoint-env value", err)
 	}
 
-	transport := strings.TrimSpace(spec.Spec.Entrypoint.Transport)
+	transport := ""
+	if manifest.Adapter != nil {
+		transport = strings.TrimSpace(manifest.Adapter.Entrypoint.Transport)
+	}
 	if transport == "" {
 		transport = "process"
 	}
@@ -1952,8 +1960,6 @@ func modulesInstallLocal(cmd *cobra.Command, _ []string) error {
 		}
 		command = destPath
 	}
-
-	adapterName := strings.TrimSpace(spec.Metadata.Name)
 
 	payload := apihttp.ModuleRegistrationRequest{
 		AdapterID: adapterID,

@@ -246,7 +246,7 @@ func (d *ToolDetector) loadAllPlugins() {
 	}
 
 	for _, manifest := range manifests {
-		if manifest.Type != pluginmanifest.PluginTypeDetector {
+		if manifest.Type != pluginmanifest.PluginTypeToolDetector {
 			continue
 		}
 

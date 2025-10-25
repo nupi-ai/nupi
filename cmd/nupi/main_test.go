@@ -163,9 +163,10 @@ func maxJSONDepthInternal(value interface{}, depth int) int {
 	return max
 }
 
-func TestLoadModuleManifestFile(t *testing.T) {
+func TestLoadAdapterManifestFile(t *testing.T) {
 	manifest := `apiVersion: nap.nupi.ai/v1alpha1
-kind: ModuleManifest
+kind: Plugin
+type: adapter
 metadata:
   name: Local STT
   slug: local-stt
@@ -178,26 +179,26 @@ spec:
 `
 
 	tmpDir := t.TempDir()
-	tmpFile := filepath.Join(tmpDir, "module.yaml")
+	tmpFile := filepath.Join(tmpDir, "plugin.yaml")
 	if err := os.WriteFile(tmpFile, []byte(manifest), 0o644); err != nil {
 		t.Fatalf("write manifest: %v", err)
 	}
 
-	spec, raw, err := loadModuleManifestFile(tmpFile)
+	parsed, raw, err := loadAdapterManifestFile(tmpFile)
 	if err != nil {
 		t.Fatalf("load manifest: %v", err)
 	}
-	if spec.Metadata.Slug != "local-stt" {
-		t.Fatalf("unexpected slug %q", spec.Metadata.Slug)
+	if parsed.Metadata.Slug != "local-stt" {
+		t.Fatalf("unexpected slug %q", parsed.Metadata.Slug)
 	}
-	if spec.Spec.ModuleType != "stt" {
-		t.Fatalf("unexpected module type %q", spec.Spec.ModuleType)
+	if parsed.Adapter == nil || parsed.Adapter.ModuleType != "stt" {
+		t.Fatalf("unexpected module type")
 	}
-	if spec.Spec.Entrypoint.Command != "./module" {
-		t.Fatalf("unexpected command %q", spec.Spec.Entrypoint.Command)
+	if parsed.Adapter.Entrypoint.Command != "./module" {
+		t.Fatalf("unexpected command %q", parsed.Adapter.Entrypoint.Command)
 	}
-	if len(spec.Spec.Entrypoint.Args) != 2 {
-		t.Fatalf("unexpected args %#v", spec.Spec.Entrypoint.Args)
+	if len(parsed.Adapter.Entrypoint.Args) != 2 {
+		t.Fatalf("unexpected args %#v", parsed.Adapter.Entrypoint.Args)
 	}
 	if strings.TrimSpace(raw) == "" {
 		t.Fatalf("expected raw manifest contents to be returned")
@@ -240,7 +241,8 @@ func TestModulesInstallLocalRegistersAndCopiesBinary(t *testing.T) {
 		},
 	}
 	fixture := setupInstallLocalTest(t, `apiVersion: nap.nupi.ai/v1alpha1
-kind: ModuleManifest
+kind: Plugin
+type: adapter
 metadata:
   name: Local STT
   slug: local-stt
@@ -320,7 +322,8 @@ func main() { fmt.Println("ok") }
 		},
 	}
 	fixture := setupInstallLocalTest(t, `apiVersion: nap.nupi.ai/v1alpha1
-kind: ModuleManifest
+kind: Plugin
+type: adapter
 metadata:
   name: Local STT
   slug: local-stt
@@ -481,7 +484,7 @@ func setupInstallLocalTest(t *testing.T, manifest string, baseURL string, handle
 	setHTTPMockTransport(t, handlers)
 	t.Setenv("NUPI_BASE_URL", baseURL)
 
-	manifestPath := filepath.Join(t.TempDir(), "module.yaml")
+	manifestPath := filepath.Join(t.TempDir(), "plugin.yaml")
 	if err := os.WriteFile(manifestPath, []byte(manifest), 0o644); err != nil {
 		t.Fatalf("write manifest: %v", err)
 	}

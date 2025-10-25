@@ -20,7 +20,7 @@ const (
 	KindPlugin Kind = "Plugin"
 
 	PluginTypeAdapter         PluginType = "adapter"
-	PluginTypeDetector        PluginType = "detector"
+	PluginTypeToolDetector    PluginType = "tool-detector"
 	PluginTypePipelineCleaner PluginType = "pipeline-cleaner"
 
 	manifestYAML = "plugin.yaml"
@@ -89,9 +89,14 @@ type Manifest struct {
 	PipelineCleaner *PipelineCleanerSpec
 }
 
+// Parse decodes a manifest from the provided raw bytes without requiring a backing directory.
+func Parse(data []byte) (*Manifest, error) {
+	return decodeManifest(data, "", "")
+}
+
 func (m *Manifest) MainPath() (string, error) {
 	switch m.Type {
-	case PluginTypeDetector:
+	case PluginTypeToolDetector:
 		if m.Detector == nil {
 			return "", fmt.Errorf("detector manifest missing spec")
 		}
@@ -191,6 +196,10 @@ func LoadFromDir(dir string) (*Manifest, error) {
 		return nil, fmt.Errorf("read manifest %s: %w", file, err)
 	}
 
+	return decodeManifest(data, dir, file)
+}
+
+func decodeManifest(data []byte, dir, file string) (*Manifest, error) {
 	var doc struct {
 		APIVersion string    `yaml:"apiVersion"`
 		Kind       string    `yaml:"kind"`
@@ -218,7 +227,7 @@ func LoadFromDir(dir string) (*Manifest, error) {
 		return nil, fmt.Errorf("manifest %s missing type", file)
 	}
 	switch pluginType {
-	case PluginTypeAdapter, PluginTypeDetector, PluginTypePipelineCleaner:
+	case PluginTypeAdapter, PluginTypeToolDetector, PluginTypePipelineCleaner:
 	default:
 		return nil, fmt.Errorf("unsupported plugin type %q in %s", pluginType, file)
 	}
@@ -247,7 +256,7 @@ func LoadFromDir(dir string) (*Manifest, error) {
 			return nil, fmt.Errorf("decode adapter spec %s: %w", file, err)
 		}
 		manifest.Adapter = &spec
-	case PluginTypeDetector:
+	case PluginTypeToolDetector:
 		var spec DetectorSpec
 		if err := doc.Spec.Decode(&spec); err != nil {
 			return nil, fmt.Errorf("decode detector spec %s: %w", file, err)

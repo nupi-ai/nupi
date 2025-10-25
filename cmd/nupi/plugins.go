@@ -131,8 +131,8 @@ var pluginsInfoCmd = &cobra.Command{
 		if selected == nil {
 			return fmt.Errorf("plugin %q not found", target)
 		}
-		if selected.Type != pluginmanifest.PluginTypeDetector {
-			return fmt.Errorf("plugin %q is not a detector", target)
+		if selected.Type != pluginmanifest.PluginTypeToolDetector {
+			return fmt.Errorf("plugin %q is not a tool-detector", target)
 		}
 
 		mainPath, err := selected.MainPath()
