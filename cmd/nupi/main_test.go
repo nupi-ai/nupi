@@ -44,7 +44,7 @@ apiVersion: v1
 metadata:
   name: test
 spec:
-  moduleType: stt
+  slot: stt
 `
 	raw, err := parseManifest(input)
 	if err != nil {
@@ -59,8 +59,8 @@ spec:
 		t.Fatalf("expected apiVersion to be preserved, got %v", data["apiVersion"])
 	}
 	spec, ok := data["spec"].(map[string]interface{})
-	if !ok || spec["moduleType"] != "stt" {
-		t.Fatalf("expected spec.moduleType=stt, got %v", data["spec"])
+	if !ok || spec["slot"] != "stt" {
+		t.Fatalf("expected spec.slot=stt, got %v", data["spec"])
 	}
 }
 
@@ -171,9 +171,9 @@ metadata:
   name: Local STT
   slug: local-stt
 spec:
-  moduleType: stt
+  slot: stt
   entrypoint:
-    command: ./module
+    command: ./adapter
     args: ["--foo", "bar"]
     transport: grpc
 `
@@ -191,10 +191,10 @@ spec:
 	if parsed.Metadata.Slug != "local-stt" {
 		t.Fatalf("unexpected slug %q", parsed.Metadata.Slug)
 	}
-	if parsed.Adapter == nil || parsed.Adapter.ModuleType != "stt" {
-		t.Fatalf("unexpected module type")
+	if parsed.Adapter == nil || parsed.Adapter.Slot != "stt" {
+		t.Fatalf("unexpected adapter slot")
 	}
-	if parsed.Adapter.Entrypoint.Command != "./module" {
+	if parsed.Adapter.Entrypoint.Command != "./adapter" {
 		t.Fatalf("unexpected command %q", parsed.Adapter.Entrypoint.Command)
 	}
 	if len(parsed.Adapter.Entrypoint.Args) != 2 {
@@ -205,10 +205,10 @@ spec:
 	}
 }
 
-func TestModulesInstallLocalRegistersAndCopiesBinary(t *testing.T) {
-	var registerPayload apihttp.ModuleRegistrationRequest
+func TestAdaptersInstallLocalRegistersAndCopiesBinary(t *testing.T) {
+	var registerPayload apihttp.AdapterRegistrationRequest
 	handlers := map[string]httpHandlerFunc{
-		"/modules/register": func(r *http.Request) *http.Response {
+		"/adapters/register": func(r *http.Request) *http.Response {
 			if r.Method != http.MethodPost {
 				t.Fatalf("unexpected method %s", r.Method)
 			}
@@ -216,20 +216,20 @@ func TestModulesInstallLocalRegistersAndCopiesBinary(t *testing.T) {
 				t.Fatalf("decode register payload: %v", err)
 			}
 			rec := httptest.NewRecorder()
-			resp := apihttp.ModuleRegistrationResult{Adapter: apihttp.ModuleAdapter{ID: registerPayload.AdapterID, Type: registerPayload.Type, Name: registerPayload.Name}}
+			resp := apihttp.AdapterRegistrationResult{Adapter: apihttp.AdapterDescriptor{ID: registerPayload.AdapterID, Type: registerPayload.Type, Name: registerPayload.Name}}
 			if err := json.NewEncoder(rec).Encode(resp); err != nil {
 				t.Fatalf("encode register response: %v", err)
 			}
 			return rec.Result()
 		},
-		"/modules/bind": func(r *http.Request) *http.Response {
+		"/adapters/bind": func(r *http.Request) *http.Response {
 			if r.Method != http.MethodPost {
 				t.Fatalf("unexpected method %s", r.Method)
 			}
 			adapterID := registerPayload.AdapterID
 			rec := httptest.NewRecorder()
-			resp := apihttp.ModuleActionResult{
-				Module: apihttp.ModuleEntry{
+			resp := apihttp.AdapterActionResult{
+				Adapter: apihttp.AdapterEntry{
 					Slot:      "stt",
 					AdapterID: &adapterID,
 				},
@@ -247,14 +247,14 @@ metadata:
   name: Local STT
   slug: local-stt
 spec:
-  moduleType: stt
+  slot: stt
   entrypoint:
-    command: ./module
+    command: ./adapter
     args: ["--variant", "base"]
     transport: grpc
-`, "http://modules.test", handlers)
+`, "http://adapters.test", handlers)
 
-	binaryPath := filepath.Join(t.TempDir(), "module-bin")
+	binaryPath := filepath.Join(t.TempDir(), "adapter-bin")
 	if err := os.WriteFile(binaryPath, []byte("binary"), 0o755); err != nil {
 		t.Fatalf("write binary: %v", err)
 	}
@@ -264,7 +264,7 @@ spec:
 	mustSetFlag(t, fixture.cmd, "endpoint-address", "127.0.0.1:50051")
 	mustSetFlag(t, fixture.cmd, "slot", "stt")
 
-	if err := modulesInstallLocal(fixture.cmd, nil); err != nil {
+	if err := adaptersInstallLocal(fixture.cmd, nil); err != nil {
 		t.Fatalf("install-local failed: %v", err)
 	}
 
@@ -272,7 +272,7 @@ spec:
 	if err != nil {
 		t.Fatalf("ensure instance dirs: %v", err)
 	}
-	expectedDir := filepath.Join(paths.Home, "plugins", sanitizeModuleSlug(registerPayload.AdapterID), "bin")
+	expectedDir := filepath.Join(paths.Home, "plugins", sanitizeAdapterSlug(registerPayload.AdapterID), "bin")
 	expectedFile := filepath.Join(expectedDir, filepath.Base(binaryPath))
 	if _, err := os.Stat(expectedFile); err != nil {
 		t.Fatalf("expected binary at %s: %v", expectedFile, err)
@@ -282,15 +282,15 @@ spec:
 	}
 }
 
-func TestModulesInstallLocalBuildsModule(t *testing.T) {
-	moduleDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(moduleDir, "go.mod"), []byte(`module example.com/localmodule
+func TestAdaptersInstallLocalBuildsBinary(t *testing.T) {
+	sourceDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(sourceDir, "go.mod"), []byte(`module example.com/localadapter
 
 go 1.21
 `), 0o644); err != nil {
 		t.Fatalf("write go.mod: %v", err)
 	}
-	adapterDir := filepath.Join(moduleDir, "cmd", "adapter")
+	adapterDir := filepath.Join(sourceDir, "cmd", "adapter")
 	if err := os.MkdirAll(adapterDir, 0o755); err != nil {
 		t.Fatalf("create adapter dir: %v", err)
 	}
@@ -304,9 +304,9 @@ func main() { fmt.Println("ok") }
 		t.Fatalf("write main.go: %v", err)
 	}
 
-	var registerPayload apihttp.ModuleRegistrationRequest
+	var registerPayload apihttp.AdapterRegistrationRequest
 	handlers := map[string]httpHandlerFunc{
-		"/modules/register": func(r *http.Request) *http.Response {
+		"/adapters/register": func(r *http.Request) *http.Response {
 			if r.Method != http.MethodPost {
 				t.Fatalf("unexpected method %s", r.Method)
 			}
@@ -314,7 +314,7 @@ func main() { fmt.Println("ok") }
 				t.Fatalf("decode register payload: %v", err)
 			}
 			rec := httptest.NewRecorder()
-			resp := apihttp.ModuleRegistrationResult{Adapter: apihttp.ModuleAdapter{ID: registerPayload.AdapterID, Type: registerPayload.Type, Name: registerPayload.Name}}
+			resp := apihttp.AdapterRegistrationResult{Adapter: apihttp.AdapterDescriptor{ID: registerPayload.AdapterID, Type: registerPayload.Type, Name: registerPayload.Name}}
 			if err := json.NewEncoder(rec).Encode(resp); err != nil {
 				t.Fatalf("encode register response: %v", err)
 			}
@@ -328,21 +328,21 @@ metadata:
   name: Local STT
   slug: local-stt
 spec:
-  moduleType: stt
+  slot: stt
   entrypoint:
-    command: ./module
+    command: ./adapter
     transport: grpc
-`, "http://modules.test", handlers)
+`, "http://adapters.test", handlers)
 
 	mustSetFlag(t, fixture.cmd, "build", "true")
-	mustSetFlag(t, fixture.cmd, "module-dir", moduleDir)
+	mustSetFlag(t, fixture.cmd, "adapter-dir", sourceDir)
 	mustSetFlag(t, fixture.cmd, "endpoint-address", "127.0.0.1:50051")
 
-	if err := modulesInstallLocal(fixture.cmd, nil); err != nil {
+	if err := adaptersInstallLocal(fixture.cmd, nil); err != nil {
 		t.Fatalf("install-local build failed: %v", err)
 	}
 
-	expectedBinary := filepath.Join(moduleDir, "dist", "local-stt")
+	expectedBinary := filepath.Join(sourceDir, "dist", "local-stt")
 	if _, err := os.Stat(expectedBinary); err != nil {
 		t.Fatalf("expected built binary at %s: %v", expectedBinary, err)
 	}
@@ -351,19 +351,19 @@ spec:
 	}
 }
 
-func TestSanitizeModuleSlug(t *testing.T) {
+func TestSanitizeAdapterSlug(t *testing.T) {
 	cases := map[string]string{
 		"Local STT":         "local-stt",
 		"UPPER_case--Slug":  "upper_case--slug",
 		"   spaced slug   ": "spaced-slug",
 		"../dangerous/path": "dangerous-path",
-		"@@@":               "module",
+		"@@@":               "adapter",
 		"slug-with-extremely-long-name-that-should-be-trimmed-because-it-exceeds-sixty-four-characters": "slug-with-extremely-long-name-that-should-be-trimmed-because-it-",
 	}
 
 	for input, expected := range cases {
-		if actual := sanitizeModuleSlug(input); actual != expected {
-			t.Fatalf("sanitizeModuleSlug(%q) = %q, expected %q", input, actual, expected)
+		if actual := sanitizeAdapterSlug(input); actual != expected {
+			t.Fatalf("sanitizeAdapterSlug(%q) = %q, expected %q", input, actual, expected)
 		}
 	}
 }
@@ -501,7 +501,7 @@ func newInstallLocalCommand() *cobra.Command {
 	cmd.Flags().String("binary", "", "")
 	cmd.Flags().Bool("copy-binary", false, "")
 	cmd.Flags().Bool("build", false, "")
-	cmd.Flags().String("module-dir", "", "")
+	cmd.Flags().String("adapter-dir", "", "")
 	cmd.Flags().String("endpoint-address", "", "")
 	cmd.Flags().StringArray("endpoint-arg", nil, "")
 	cmd.Flags().StringArray("endpoint-env", nil, "")

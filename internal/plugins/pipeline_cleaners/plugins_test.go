@@ -1,13 +1,15 @@
-package plugins
+package pipelinecleaners_test
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/nupi-ai/nupi/internal/plugins"
+	pipelinecleaners "github.com/nupi-ai/nupi/internal/plugins/pipeline_cleaners"
 )
 
 func TestLoadPipelinePluginSuccess(t *testing.T) {
@@ -24,7 +26,7 @@ module.exports = {
 		t.Fatalf("write plugin: %v", err)
 	}
 
-	plugin, err := LoadPipelinePlugin(path)
+	plugin, err := pipelinecleaners.LoadPipelinePlugin(path)
 	if err != nil {
 		t.Fatalf("LoadPipelinePlugin returned error: %v", err)
 	}
@@ -50,7 +52,7 @@ func TestLoadPipelinePluginErrors(t *testing.T) {
 	if err := os.WriteFile(path, []byte(noTransform), 0o644); err != nil {
 		t.Fatalf("write plugin: %v", err)
 	}
-	if _, err := LoadPipelinePlugin(path); err == nil {
+	if _, err := pipelinecleaners.LoadPipelinePlugin(path); err == nil {
 		t.Fatalf("expected error for missing transform")
 	}
 
@@ -59,7 +61,7 @@ func TestLoadPipelinePluginErrors(t *testing.T) {
 	if err := os.WriteFile(path, []byte(badTransform), 0o644); err != nil {
 		t.Fatalf("write plugin: %v", err)
 	}
-	if _, err := LoadPipelinePlugin(path); err == nil {
+	if _, err := pipelinecleaners.LoadPipelinePlugin(path); err == nil {
 		t.Fatalf("expected error for non-function transform")
 	}
 }
@@ -100,7 +102,7 @@ func TestServiceLoadPipelinePluginsBuildsIndex(t *testing.T) {
 };`)
 	writeCleanerPlugin(t, root, catalog, "skip-cleaner", `module.exports = { name: "skip", transform: "oops" };`)
 
-	svc := NewService(root)
+	svc := plugins.NewService(root)
 	if err := svc.LoadPipelinePlugins(); err != nil {
 		t.Fatalf("LoadPipelinePlugins: %v", err)
 	}
@@ -113,21 +115,6 @@ func TestServiceLoadPipelinePluginsBuildsIndex(t *testing.T) {
 		t.Fatalf("expected fallback default plugin, got %+v ok=%v", plugin, ok)
 	}
 
-	indexData, err := os.ReadFile(filepath.Join(root, "plugins", "pipeline_cleaners_index.json"))
-	if err != nil {
-		t.Fatalf("read index: %v", err)
-	}
-	var manifest map[string]string
-	if err := json.Unmarshal(indexData, &manifest); err != nil {
-		t.Fatalf("unmarshal index: %v", err)
-	}
-	expectedRel := filepath.Join("test.catalog", "default-cleaner", "main.js")
-	if manifest["alias"] != expectedRel {
-		t.Fatalf("expected alias -> %s, got %+v", expectedRel, manifest)
-	}
-	if _, exists := manifest["skip"]; exists {
-		t.Fatalf("unexpected skip entry in manifest: %+v", manifest)
-	}
 }
 
 func TestServiceStartInitialisesPipeline(t *testing.T) {
@@ -138,7 +125,7 @@ func TestServiceStartInitialisesPipeline(t *testing.T) {
   transform: function(input) { return input; }
 };`)
 
-	svc := NewService(root)
+	svc := plugins.NewService(root)
 
 	if err := svc.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)

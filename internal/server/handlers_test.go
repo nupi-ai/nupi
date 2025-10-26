@@ -35,8 +35,8 @@ import (
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/contentpipeline"
 	"github.com/nupi-ai/nupi/internal/eventbus"
-	"github.com/nupi-ai/nupi/internal/modules"
 	"github.com/nupi-ai/nupi/internal/observability"
+	adapters "github.com/nupi-ai/nupi/internal/plugins/adapters"
 	"github.com/nupi-ai/nupi/internal/pty"
 	"github.com/nupi-ai/nupi/internal/session"
 	"github.com/nupi-ai/nupi/internal/voice/slots"
@@ -848,7 +848,7 @@ func TestHTTPAuthNotRequiredOnLoopback(t *testing.T) {
 
 func TestHandleQuickstartGet(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
-	apiServer.SetModulesController(newTestModulesService(t, apiServer.configStore))
+	apiServer.SetAdaptersController(newTestAdaptersService(t, apiServer.configStore))
 
 	req := withAdmin(apiServer, httptest.NewRequest(http.MethodGet, "/config/quickstart", nil))
 	rec := httptest.NewRecorder()
@@ -871,17 +871,17 @@ func TestHandleQuickstartGet(t *testing.T) {
 		t.Fatalf("expected pending slots to be populated for required bindings")
 	}
 
-	if !reflect.DeepEqual(payload.MissingReferenceAdapters, modules.RequiredReferenceAdapters) {
-		t.Fatalf("expected missing reference adapters %v, got %v", modules.RequiredReferenceAdapters, payload.MissingReferenceAdapters)
+	if !reflect.DeepEqual(payload.MissingReferenceAdapters, adapters.RequiredReferenceAdapters) {
+		t.Fatalf("expected missing reference adapters %v, got %v", adapters.RequiredReferenceAdapters, payload.MissingReferenceAdapters)
 	}
 }
 
-func TestHandleQuickstartIncludesModules(t *testing.T) {
+func TestHandleQuickstartIncludesAdapters(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
 	store := apiServer.configStore
 
-	modulesSvc := newTestModulesService(t, store)
-	apiServer.SetModulesController(modulesSvc)
+	adaptersSvc := newTestAdaptersService(t, store)
+	apiServer.SetAdaptersController(adaptersSvc)
 
 	ctx := context.Background()
 	adapter := configstore.Adapter{ID: "adapter.ai.quickstart", Source: "builtin", Type: "ai", Name: "Quickstart AI"}
@@ -906,33 +906,33 @@ func TestHandleQuickstartIncludesModules(t *testing.T) {
 		t.Fatalf("invalid JSON response: %v", err)
 	}
 
-	if len(payload.Modules) == 0 {
-		t.Fatalf("expected modules list in quickstart response")
+	if len(payload.Adapters) == 0 {
+		t.Fatalf("expected adapters list in quickstart response")
 	}
 
-	if !reflect.DeepEqual(payload.MissingReferenceAdapters, modules.RequiredReferenceAdapters) {
-		t.Fatalf("expected missing reference adapters %v, got %v", modules.RequiredReferenceAdapters, payload.MissingReferenceAdapters)
+	if !reflect.DeepEqual(payload.MissingReferenceAdapters, adapters.RequiredReferenceAdapters) {
+		t.Fatalf("expected missing reference adapters %v, got %v", adapters.RequiredReferenceAdapters, payload.MissingReferenceAdapters)
 	}
 
 	var found bool
-	for _, entry := range payload.Modules {
+	for _, entry := range payload.Adapters {
 		if entry.Slot == "ai" {
 			found = true
 			if entry.AdapterID == nil || *entry.AdapterID != adapter.ID {
 				t.Fatalf("expected adapter %s, got %v", adapter.ID, entry.AdapterID)
 			}
 			if strings.TrimSpace(entry.Status) == "" {
-				t.Fatalf("expected status for module entry %+v", entry)
+				t.Fatalf("expected status for adapter entry %+v", entry)
 			}
 			break
 		}
 	}
 	if !found {
-		t.Fatalf("ai slot not present in modules overview")
+		t.Fatalf("ai slot not present in adapters overview")
 	}
 }
 
-func TestHandleQuickstartWithoutModulesService(t *testing.T) {
+func TestHandleQuickstartWithoutAdaptersService(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
 
 	req := withAdmin(apiServer, httptest.NewRequest(http.MethodGet, "/config/quickstart", nil))
@@ -941,13 +941,13 @@ func TestHandleQuickstartWithoutModulesService(t *testing.T) {
 	apiServer.handleQuickstart(rec, req)
 
 	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected status %d when modules service unavailable, got %d", http.StatusServiceUnavailable, rec.Code)
+		t.Fatalf("expected status %d when adapter service unavailable, got %d", http.StatusServiceUnavailable, rec.Code)
 	}
 }
 
 func TestHandleQuickstartCompleteValidation(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
-	apiServer.SetModulesController(newTestModulesService(t, apiServer.configStore))
+	apiServer.SetAdaptersController(newTestAdaptersService(t, apiServer.configStore))
 
 	req := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/config/quickstart", bytes.NewBufferString(`{"complete":true}`)))
 	req.Header.Set("Content-Type", "application/json")
@@ -963,7 +963,7 @@ func TestHandleQuickstartCompleteValidation(t *testing.T) {
 func TestHandleQuickstartCompleteFailsWhenReferenceMissing(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
 	store := apiServer.configStore
-	apiServer.SetModulesController(newTestModulesService(t, store))
+	apiServer.SetAdaptersController(newTestAdaptersService(t, store))
 
 	ctx := context.Background()
 	adapters := []configstore.Adapter{
@@ -1110,11 +1110,11 @@ func TestIsPublicAuthEndpointExcludesMetrics(t *testing.T) {
 	}
 }
 
-func TestHandleModulesGet(t *testing.T) {
+func TestHandleAdaptersGet(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
 	store := openTestStore(t)
-	modulesService := newTestModulesService(t, store)
-	apiServer.SetModulesController(modulesService)
+	adaptersService := newTestAdaptersService(t, store)
+	apiServer.SetAdaptersController(adaptersService)
 
 	ctx := context.Background()
 	adapter := configstore.Adapter{ID: "adapter.ai", Source: "builtin", Type: "ai", Name: "Primary AI"}
@@ -1125,26 +1125,26 @@ func TestHandleModulesGet(t *testing.T) {
 		t.Fatalf("set active adapter: %v", err)
 	}
 
-	req := withAdmin(apiServer, httptest.NewRequest(http.MethodGet, "/modules", nil))
+	req := withAdmin(apiServer, httptest.NewRequest(http.MethodGet, "/adapters", nil))
 	rec := httptest.NewRecorder()
 
-	apiServer.handleModules(rec, req)
+	apiServer.handleAdapters(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
 	}
 
-	var payload apihttp.ModulesOverview
+	var payload apihttp.AdaptersOverview
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("invalid JSON response: %v", err)
 	}
 
 	var found bool
-	for _, module := range payload.Modules {
-		if module.Slot == "ai" {
+	for _, entry := range payload.Adapters {
+		if entry.Slot == "ai" {
 			found = true
-			if module.AdapterID == nil || *module.AdapterID != adapter.ID {
-				t.Fatalf("expected adapter %s, got %v", adapter.ID, module.AdapterID)
+			if entry.AdapterID == nil || *entry.AdapterID != adapter.ID {
+				t.Fatalf("expected adapter %s, got %v", adapter.ID, entry.AdapterID)
 			}
 			break
 		}
@@ -1154,24 +1154,24 @@ func TestHandleModulesGet(t *testing.T) {
 	}
 }
 
-func TestHandleModulesRegister(t *testing.T) {
+func TestHandleAdaptersRegister(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
 	store := openTestStore(t)
-	modulesService := newTestModulesService(t, store)
-	apiServer.SetModulesController(modulesService)
+	adaptersService := newTestAdaptersService(t, store)
+	apiServer.SetAdaptersController(adaptersService)
 
 	payload := `{"adapter_id":"nupi-whisper-local-stt","type":"stt","name":"Nupi Whisper Local STT","source":"external","version":"0.1.0","endpoint":{"transport":"grpc","address":"127.0.0.1:55555"}}`
-	req := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/modules/register", bytes.NewBufferString(payload)))
+	req := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/adapters/register", bytes.NewBufferString(payload)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	apiServer.handleModulesRegister(rec, req)
+	apiServer.handleAdaptersRegister(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
 	}
 
-	var resp apihttp.ModuleRegistrationResult
+	var resp apihttp.AdapterRegistrationResult
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("invalid response: %v", err)
 	}
@@ -1188,9 +1188,9 @@ func TestHandleModulesRegister(t *testing.T) {
 		t.Fatalf("expected adapter to be registered")
 	}
 
-	endpoint, err := store.GetModuleEndpoint(ctx, resp.Adapter.ID)
+	endpoint, err := store.GetAdapterEndpoint(ctx, resp.Adapter.ID)
 	if err != nil {
-		t.Fatalf("fetch module endpoint: %v", err)
+		t.Fatalf("fetch adapter endpoint: %v", err)
 	}
 	if endpoint.Transport != "grpc" {
 		t.Fatalf("unexpected transport %q", endpoint.Transport)
@@ -1200,27 +1200,27 @@ func TestHandleModulesRegister(t *testing.T) {
 	}
 }
 
-func TestHandleModulesRegisterAllowsGrpcCommand(t *testing.T) {
+func TestHandleAdaptersRegisterAllowsGrpcCommand(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
 	store := openTestStore(t)
-	modulesService := newTestModulesService(t, store)
-	apiServer.SetModulesController(modulesService)
+	adaptersService := newTestAdaptersService(t, store)
+	apiServer.SetAdaptersController(adaptersService)
 
-	payload := `{"adapter_id":"nupi-whisper-local-stt","type":"stt","endpoint":{"transport":"grpc","address":"127.0.0.1:50051","command":"/opt/modules/whisper","args":["--variant","base"],"env":{"FOO":"bar"}}}`
-	req := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/modules/register", bytes.NewBufferString(payload)))
+	payload := `{"adapter_id":"nupi-whisper-local-stt","type":"stt","endpoint":{"transport":"grpc","address":"127.0.0.1:50051","command":"/opt/adapters/whisper","args":["--variant","base"],"env":{"FOO":"bar"}}}`
+	req := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/adapters/register", bytes.NewBufferString(payload)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	apiServer.handleModulesRegister(rec, req)
+	apiServer.handleAdaptersRegister(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected status %d, got %d", http.StatusOK, rec.Code)
 	}
 
 	ctx := context.Background()
-	endpoint, err := store.GetModuleEndpoint(ctx, "nupi-whisper-local-stt")
+	endpoint, err := store.GetAdapterEndpoint(ctx, "nupi-whisper-local-stt")
 	if err != nil {
-		t.Fatalf("fetch module endpoint: %v", err)
+		t.Fatalf("fetch adapter endpoint: %v", err)
 	}
 	if endpoint.Transport != "grpc" {
 		t.Fatalf("unexpected transport %q", endpoint.Transport)
@@ -1228,7 +1228,7 @@ func TestHandleModulesRegisterAllowsGrpcCommand(t *testing.T) {
 	if endpoint.Address != "127.0.0.1:50051" {
 		t.Fatalf("unexpected address %q", endpoint.Address)
 	}
-	if endpoint.Command != "/opt/modules/whisper" {
+	if endpoint.Command != "/opt/adapters/whisper" {
 		t.Fatalf("unexpected command %q", endpoint.Command)
 	}
 	if len(endpoint.Args) != 2 || endpoint.Args[0] != "--variant" || endpoint.Args[1] != "base" {
@@ -1239,103 +1239,103 @@ func TestHandleModulesRegisterAllowsGrpcCommand(t *testing.T) {
 	}
 }
 
-func TestHandleModulesRegisterRequiresAdapterID(t *testing.T) {
+func TestHandleAdaptersRegisterRequiresAdapterID(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
-	req := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/modules/register", bytes.NewBufferString(`{"type":"stt"}`)))
+	req := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/adapters/register", bytes.NewBufferString(`{"type":"stt"}`)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	apiServer.handleModulesRegister(rec, req)
+	apiServer.handleAdaptersRegister(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", rec.Code)
 	}
 }
 
-func TestHandleModulesRegisterRejectsInvalidType(t *testing.T) {
+func TestHandleAdaptersRegisterRejectsInvalidType(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
-	req := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/modules/register", bytes.NewBufferString(`{"adapter_id":"test","type":"invalid"}`)))
+	req := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/adapters/register", bytes.NewBufferString(`{"adapter_id":"test","type":"invalid"}`)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	apiServer.handleModulesRegister(rec, req)
+	apiServer.handleAdaptersRegister(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", rec.Code)
 	}
 }
 
-func TestHandleModulesRegisterRejectsInvalidTransport(t *testing.T) {
+func TestHandleAdaptersRegisterRejectsInvalidTransport(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
-	req := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/modules/register", bytes.NewBufferString(`{"adapter_id":"test","type":"stt","endpoint":{"transport":"smtp"}}`)))
+	req := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/adapters/register", bytes.NewBufferString(`{"adapter_id":"test","type":"stt","endpoint":{"transport":"smtp"}}`)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	apiServer.handleModulesRegister(rec, req)
+	apiServer.handleAdaptersRegister(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", rec.Code)
 	}
 }
 
-func TestHandleModulesRegisterRejectsLargeManifest(t *testing.T) {
+func TestHandleAdaptersRegisterRejectsLargeManifest(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
 	largeManifest := strings.Repeat("a", maxAdapterManifestBytes+1)
-	req := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/modules/register", bytes.NewBufferString(fmt.Sprintf(`{"adapter_id":"test","manifest":"%s"}`, largeManifest))))
+	req := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/adapters/register", bytes.NewBufferString(fmt.Sprintf(`{"adapter_id":"test","manifest":"%s"}`, largeManifest))))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	apiServer.handleModulesRegister(rec, req)
+	apiServer.handleAdaptersRegister(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", rec.Code)
 	}
 }
 
-func TestHandleModulesRegisterRequiresEndpointAddressForGRPC(t *testing.T) {
+func TestHandleAdaptersRegisterRequiresEndpointAddressForGRPC(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
-	req := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/modules/register", bytes.NewBufferString(`{"adapter_id":"test","type":"stt","endpoint":{"transport":"grpc"}}`)))
+	req := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/adapters/register", bytes.NewBufferString(`{"adapter_id":"test","type":"stt","endpoint":{"transport":"grpc"}}`)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	apiServer.handleModulesRegister(rec, req)
+	apiServer.handleAdaptersRegister(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", rec.Code)
 	}
 }
 
-func TestHandleModulesRegisterRequiresEndpointCommandForProcess(t *testing.T) {
+func TestHandleAdaptersRegisterRequiresEndpointCommandForProcess(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
-	req := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/modules/register", bytes.NewBufferString(`{"adapter_id":"test","type":"ai","endpoint":{"transport":"process"}}`)))
+	req := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/adapters/register", bytes.NewBufferString(`{"adapter_id":"test","type":"ai","endpoint":{"transport":"process"}}`)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	apiServer.handleModulesRegister(rec, req)
+	apiServer.handleAdaptersRegister(rec, req)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", rec.Code)
 	}
 }
 
-func TestHandleModulesRegisterRequiresAdminRole(t *testing.T) {
+func TestHandleAdaptersRegisterRequiresAdminRole(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
-	req := withReadOnly(apiServer, httptest.NewRequest(http.MethodPost, "/modules/register", bytes.NewBufferString(`{"adapter_id":"test"}`)))
+	req := withReadOnly(apiServer, httptest.NewRequest(http.MethodPost, "/adapters/register", bytes.NewBufferString(`{"adapter_id":"test"}`)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
-	apiServer.handleModulesRegister(rec, req)
+	apiServer.handleAdaptersRegister(rec, req)
 
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d", rec.Code)
 	}
 }
 
-func TestHandleModulesBindStartStop(t *testing.T) {
+func TestHandleAdaptersBindStartStop(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
 	store := openTestStore(t)
-	modulesService := newTestModulesService(t, store)
-	apiServer.SetModulesController(modulesService)
+	adaptersService := newTestAdaptersService(t, store)
+	apiServer.SetAdaptersController(adaptersService)
 
 	ctx := context.Background()
 	adapter := configstore.Adapter{ID: "adapter.ai.bind", Source: "builtin", Type: "ai", Name: "Bind AI"}
@@ -1343,62 +1343,62 @@ func TestHandleModulesBindStartStop(t *testing.T) {
 		t.Fatalf("upsert adapter: %v", err)
 	}
 
-	bindReq := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/modules/bind", bytes.NewBufferString(`{"slot":"ai","adapter_id":"adapter.ai.bind"}`)))
+	bindReq := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/adapters/bind", bytes.NewBufferString(`{"slot":"ai","adapter_id":"adapter.ai.bind"}`)))
 	bindReq.Header.Set("Content-Type", "application/json")
 	bindRec := httptest.NewRecorder()
 
-	apiServer.handleModulesBind(bindRec, bindReq)
+	apiServer.handleAdaptersBind(bindRec, bindReq)
 	if bindRec.Code != http.StatusOK {
 		t.Fatalf("bind expected status %d, got %d", http.StatusOK, bindRec.Code)
 	}
 
-	var bindPayload apihttp.ModuleActionResult
+	var bindPayload apihttp.AdapterActionResult
 	if err := json.Unmarshal(bindRec.Body.Bytes(), &bindPayload); err != nil {
 		t.Fatalf("invalid bind response: %v", err)
 	}
-	if bindPayload.Module.AdapterID == nil || *bindPayload.Module.AdapterID != adapter.ID {
-		t.Fatalf("bind response adapter mismatch: %v", bindPayload.Module.AdapterID)
+	if bindPayload.Adapter.AdapterID == nil || *bindPayload.Adapter.AdapterID != adapter.ID {
+		t.Fatalf("bind response adapter mismatch: %v", bindPayload.Adapter.AdapterID)
 	}
-	if bindPayload.Module.Status != configstore.BindingStatusActive {
-		t.Fatalf("expected status %s, got %s", configstore.BindingStatusActive, bindPayload.Module.Status)
+	if bindPayload.Adapter.Status != configstore.BindingStatusActive {
+		t.Fatalf("expected status %s, got %s", configstore.BindingStatusActive, bindPayload.Adapter.Status)
 	}
 
-	startReq := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/modules/start", bytes.NewBufferString(`{"slot":"ai"}`)))
+	startReq := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/adapters/start", bytes.NewBufferString(`{"slot":"ai"}`)))
 	startReq.Header.Set("Content-Type", "application/json")
 	startRec := httptest.NewRecorder()
-	apiServer.handleModulesStart(startRec, startReq)
+	apiServer.handleAdaptersStart(startRec, startReq)
 	if startRec.Code != http.StatusOK {
 		t.Fatalf("start expected status %d, got %d", http.StatusOK, startRec.Code)
 	}
 
-	var startPayload apihttp.ModuleActionResult
+	var startPayload apihttp.AdapterActionResult
 	if err := json.Unmarshal(startRec.Body.Bytes(), &startPayload); err != nil {
 		t.Fatalf("invalid start response: %v", err)
 	}
-	if startPayload.Module.Status != configstore.BindingStatusActive {
-		t.Fatalf("expected active status after start, got %s", startPayload.Module.Status)
+	if startPayload.Adapter.Status != configstore.BindingStatusActive {
+		t.Fatalf("expected active status after start, got %s", startPayload.Adapter.Status)
 	}
-	if startPayload.Module.Runtime == nil || startPayload.Module.Runtime.Health == "" {
+	if startPayload.Adapter.Runtime == nil || startPayload.Adapter.Runtime.Health == "" {
 		t.Fatalf("expected runtime health after start")
 	}
 
-	stopReq := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/modules/stop", bytes.NewBufferString(`{"slot":"ai"}`)))
+	stopReq := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/adapters/stop", bytes.NewBufferString(`{"slot":"ai"}`)))
 	stopReq.Header.Set("Content-Type", "application/json")
 	stopRec := httptest.NewRecorder()
-	apiServer.handleModulesStop(stopRec, stopReq)
+	apiServer.handleAdaptersStop(stopRec, stopReq)
 	if stopRec.Code != http.StatusOK {
 		t.Fatalf("stop expected status %d, got %d", http.StatusOK, stopRec.Code)
 	}
 
-	var stopPayload apihttp.ModuleActionResult
+	var stopPayload apihttp.AdapterActionResult
 	if err := json.Unmarshal(stopRec.Body.Bytes(), &stopPayload); err != nil {
 		t.Fatalf("invalid stop response: %v", err)
 	}
-	if stopPayload.Module.Status != configstore.BindingStatusInactive {
-		t.Fatalf("expected inactive status after stop, got %s", stopPayload.Module.Status)
+	if stopPayload.Adapter.Status != configstore.BindingStatusInactive {
+		t.Fatalf("expected inactive status after stop, got %s", stopPayload.Adapter.Status)
 	}
-	if stopPayload.Module.Runtime == nil || !strings.EqualFold(stopPayload.Module.Runtime.Health, string(eventbus.ModuleHealthStopped)) {
-		t.Fatalf("expected runtime health 'stopped', got %+v", stopPayload.Module.Runtime)
+	if stopPayload.Adapter.Runtime == nil || !strings.EqualFold(stopPayload.Adapter.Runtime.Health, string(eventbus.AdapterHealthStopped)) {
+		t.Fatalf("expected runtime health 'stopped', got %+v", stopPayload.Adapter.Runtime)
 	}
 }
 
@@ -1497,28 +1497,28 @@ func enableVoiceAdapters(t *testing.T, store *configstore.Store) {
 	}
 }
 
-func newTestModulesService(t *testing.T, store *configstore.Store) *modules.Service {
+func newTestAdaptersService(t *testing.T, store *configstore.Store) *adapters.Service {
 	t.Helper()
-	manager := modules.NewManager(modules.ManagerOptions{
+	manager := adapters.NewManager(adapters.ManagerOptions{
 		Store:    store,
 		Runner:   adapterrunner.NewManager(t.TempDir()),
-		Launcher: testModuleLauncher{},
+		Launcher: testAdapterLauncher{},
 	})
 	bus := eventbus.New()
-	return modules.NewService(manager, store, bus, modules.WithEnsureInterval(0))
+	return adapters.NewService(manager, store, bus, adapters.WithEnsureInterval(0))
 }
 
-type testModuleLauncher struct{}
+type testAdapterLauncher struct{}
 
-func (testModuleLauncher) Launch(context.Context, string, []string, []string, io.Writer, io.Writer) (modules.ProcessHandle, error) {
-	return testModuleHandle{}, nil
+func (testAdapterLauncher) Launch(context.Context, string, []string, []string, io.Writer, io.Writer) (adapters.ProcessHandle, error) {
+	return testAdapterHandle{}, nil
 }
 
-type testModuleHandle struct{}
+type testAdapterHandle struct{}
 
-func (testModuleHandle) Stop(context.Context) error { return nil }
+func (testAdapterHandle) Stop(context.Context) error { return nil }
 
-func (testModuleHandle) PID() int { return 12345 }
+func (testAdapterHandle) PID() int { return 12345 }
 
 func TestHandleAudioIngressStreamsData(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
@@ -2133,12 +2133,12 @@ func (s *localHTTPServer) Close() {
 	_ = s.listener.Close()
 }
 
-func TestFilterModuleLogEvent(t *testing.T) {
+func TestFilterAdapterLogEvent(t *testing.T) {
 	baseEnv := eventbus.Envelope{
-		Topic: eventbus.TopicModulesLog,
-		Payload: eventbus.ModuleLogEvent{
-			ModuleID: "example",
-			Message:  "hello",
+		Topic: eventbus.TopicAdaptersLog,
+		Payload: eventbus.AdapterLogEvent{
+			AdapterID: "example",
+			Message:   "hello",
 			Fields: map[string]string{
 				"slot": "stt",
 			},
@@ -2147,15 +2147,15 @@ func TestFilterModuleLogEvent(t *testing.T) {
 	}
 
 	tests := []struct {
-		name         string
-		env          eventbus.Envelope
-		slotFilter   string
-		adapter      string
-		expectEmit   bool
-		expectSlot   string
-		expectModule string
+		name          string
+		env           eventbus.Envelope
+		slotFilter    string
+		adapter       string
+		expectEmit    bool
+		expectSlot    string
+		expectAdapter string
 	}{
-		{name: "match slot", env: baseEnv, slotFilter: "stt", expectEmit: true, expectSlot: "stt", expectModule: "example"},
+		{name: "match slot", env: baseEnv, slotFilter: "stt", expectEmit: true, expectSlot: "stt", expectAdapter: "example"},
 		{name: "case insensitive slot", env: baseEnv, slotFilter: "STT", expectEmit: true},
 		{name: "mismatched slot", env: baseEnv, slotFilter: "tts", expectEmit: false},
 		{name: "adapter filter", env: baseEnv, adapter: "example", expectEmit: true},
@@ -2164,7 +2164,7 @@ func TestFilterModuleLogEvent(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			entry, ok := filterModuleLogEvent(tc.env, strings.ToLower(tc.slotFilter), strings.ToLower(tc.adapter))
+			entry, ok := filterAdapterLogEvent(tc.env, strings.ToLower(tc.slotFilter), strings.ToLower(tc.adapter))
 			if ok != tc.expectEmit {
 				t.Fatalf("expected emit=%v, got %v", tc.expectEmit, ok)
 			}
@@ -2174,8 +2174,8 @@ func TestFilterModuleLogEvent(t *testing.T) {
 			if tc.expectSlot != "" && entry.Slot != tc.expectSlot {
 				t.Fatalf("expected slot %s, got %s", tc.expectSlot, entry.Slot)
 			}
-			if tc.expectModule != "" && entry.ModuleID != tc.expectModule {
-				t.Fatalf("expected module %s, got %s", tc.expectModule, entry.ModuleID)
+			if tc.expectAdapter != "" && entry.AdapterID != tc.expectAdapter {
+				t.Fatalf("expected adapter %s, got %s", tc.expectAdapter, entry.AdapterID)
 			}
 		})
 	}
@@ -2210,7 +2210,7 @@ func TestMakeTranscriptEntry(t *testing.T) {
 	}
 }
 
-func TestHandleModulesLogsFilters(t *testing.T) {
+func TestHandleAdaptersLogsFilters(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
 	bus := eventbus.New()
 	apiServer.SetEventBus(bus)
@@ -2226,11 +2226,11 @@ func TestHandleModulesLogsFilters(t *testing.T) {
 			query: "slot=stt",
 			events: []eventbus.Envelope{
 				{
-					Topic: eventbus.TopicModulesLog,
-					Payload: eventbus.ModuleLogEvent{
-						ModuleID: "example",
-						Message:  "hello",
-						Fields:   map[string]string{"slot": "stt"},
+					Topic: eventbus.TopicAdaptersLog,
+					Payload: eventbus.AdapterLogEvent{
+						AdapterID: "example",
+						Message:   "hello",
+						Fields:    map[string]string{"slot": "stt"},
 					},
 					Timestamp: time.Unix(1, 0),
 				},
@@ -2242,11 +2242,11 @@ func TestHandleModulesLogsFilters(t *testing.T) {
 			query: "slot=stt",
 			events: []eventbus.Envelope{
 				{
-					Topic: eventbus.TopicModulesLog,
-					Payload: eventbus.ModuleLogEvent{
-						ModuleID: "example",
-						Message:  "ignored",
-						Fields:   map[string]string{"slot": "tts"},
+					Topic: eventbus.TopicAdaptersLog,
+					Payload: eventbus.AdapterLogEvent{
+						AdapterID: "example",
+						Message:   "ignored",
+						Fields:    map[string]string{"slot": "tts"},
 					},
 				},
 			},
@@ -2257,10 +2257,10 @@ func TestHandleModulesLogsFilters(t *testing.T) {
 			query: "adapter=example",
 			events: []eventbus.Envelope{
 				{
-					Topic: eventbus.TopicModulesLog,
-					Payload: eventbus.ModuleLogEvent{
-						ModuleID: "example",
-						Message:  "hello",
+					Topic: eventbus.TopicAdaptersLog,
+					Payload: eventbus.AdapterLogEvent{
+						AdapterID: "example",
+						Message:   "hello",
 					},
 				},
 			},
@@ -2293,13 +2293,13 @@ func TestHandleModulesLogsFilters(t *testing.T) {
 				emitted: make(chan struct{}, len(tc.events)),
 			}
 			ctx = context.WithValue(ctx, streamLogTestHooksKey{}, hooks)
-			req := httptest.NewRequest(http.MethodGet, "/modules/logs?"+tc.query, nil).WithContext(ctx)
+			req := httptest.NewRequest(http.MethodGet, "/adapters/logs?"+tc.query, nil).WithContext(ctx)
 			recorder := &flushRecorder{httptest.NewRecorder()}
 			var wg sync.WaitGroup
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				apiServer.handleModulesLogs(recorder, req)
+				apiServer.handleAdaptersLogs(recorder, req)
 			}()
 
 			select {
@@ -2337,7 +2337,7 @@ func TestHandleModulesLogsFilters(t *testing.T) {
 				t.Fatalf("expected %d rows, got %d (%v)", tc.expectRows, len(lines), lines)
 			}
 			for _, line := range lines {
-				var entry apihttp.ModuleLogStreamEntry
+				var entry apihttp.AdapterLogStreamEntry
 				if err := json.Unmarshal([]byte(line), &entry); err != nil {
 					t.Fatalf("failed to decode entry: %v", err)
 				}

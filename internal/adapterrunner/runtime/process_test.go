@@ -31,10 +31,10 @@ func TestHelperProcess(t *testing.T) {
 
 func TestStartAndWait(t *testing.T) {
 	cfg := Config{
-		Command:       os.Args[0],
-		Args:          []string{"-test.run=TestHelperProcess"},
-		ModuleHome:    t.TempDir(),
-		ModuleDataDir: filepath.Join(t.TempDir(), "data"),
+		Command:        os.Args[0],
+		Args:           []string{"-test.run=TestHelperProcess"},
+		AdapterHome:    t.TempDir(),
+		AdapterDataDir: filepath.Join(t.TempDir(), "data"),
 		RawEnvironment: append(os.Environ(),
 			"GO_WANT_HELPER_PROCESS=1",
 			"ADAPTER_RUNNER_TEST_STDOUT=hello stdout\n",
@@ -68,10 +68,10 @@ func TestStartAndWait(t *testing.T) {
 
 func TestTerminateGraceful(t *testing.T) {
 	cfg := Config{
-		Command:       os.Args[0],
-		Args:          []string{"-test.run=TestHelperProcess"},
-		ModuleHome:    t.TempDir(),
-		ModuleDataDir: filepath.Join(t.TempDir(), "data"),
+		Command:        os.Args[0],
+		Args:           []string{"-test.run=TestHelperProcess"},
+		AdapterHome:    t.TempDir(),
+		AdapterDataDir: filepath.Join(t.TempDir(), "data"),
 		RawEnvironment: append(os.Environ(),
 			"GO_WANT_HELPER_PROCESS=1",
 			"ADAPTER_RUNNER_TEST_SLEEP=1",

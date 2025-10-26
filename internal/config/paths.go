@@ -18,7 +18,7 @@ type InstancePaths struct {
 	Socket      string // Unix socket path
 	Lock        string // Daemon lock file path
 	Logs        string // Logs directory
-	PluginsDir  string // Plugins directory (modules, detectors, pipeline cleaners)
+	PluginsDir  string // Plugins directory (adapters, detectors, pipeline cleaners)
 	TempDir     string // Temporary files directory
 	RunDir      string // Runtime assets directory
 	BinDir      string // Shared binaries directory (~/.nupi/bin)

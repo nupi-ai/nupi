@@ -22,14 +22,14 @@ import (
 )
 
 type Client struct {
-	conn       *grpc.ClientConn
-	daemon     apiv1.DaemonServiceClient
-	config     apiv1.ConfigServiceClient
-	adapters   apiv1.AdaptersServiceClient
-	quickstart apiv1.QuickstartServiceClient
-	modules    apiv1.ModulesServiceClient
-	audio      apiv1.AudioServiceClient
-	token      string
+	conn           *grpc.ClientConn
+	daemon         apiv1.DaemonServiceClient
+	config         apiv1.ConfigServiceClient
+	adapters       apiv1.AdaptersServiceClient
+	quickstart     apiv1.QuickstartServiceClient
+	adapterRuntime apiv1.AdapterRuntimeServiceClient
+	audio          apiv1.AudioServiceClient
+	token          string
 }
 
 func New() (*Client, error) {
@@ -135,14 +135,14 @@ func dial(address string, tlsConfig *tls.Config, token string) (*Client, error) 
 	}
 
 	return &Client{
-		conn:       conn,
-		daemon:     apiv1.NewDaemonServiceClient(conn),
-		config:     apiv1.NewConfigServiceClient(conn),
-		adapters:   apiv1.NewAdaptersServiceClient(conn),
-		quickstart: apiv1.NewQuickstartServiceClient(conn),
-		modules:    apiv1.NewModulesServiceClient(conn),
-		audio:      apiv1.NewAudioServiceClient(conn),
-		token:      strings.TrimSpace(token),
+		conn:           conn,
+		daemon:         apiv1.NewDaemonServiceClient(conn),
+		config:         apiv1.NewConfigServiceClient(conn),
+		adapters:       apiv1.NewAdaptersServiceClient(conn),
+		quickstart:     apiv1.NewQuickstartServiceClient(conn),
+		adapterRuntime: apiv1.NewAdapterRuntimeServiceClient(conn),
+		audio:          apiv1.NewAudioServiceClient(conn),
+		token:          strings.TrimSpace(token),
 	}, nil
 }
 
@@ -199,24 +199,24 @@ func (c *Client) UpdateQuickstart(ctx context.Context, req *apiv1.UpdateQuicksta
 	return c.quickstart.Update(ctx, req)
 }
 
-func (c *Client) ModulesOverview(ctx context.Context) (*apiv1.ModulesOverviewResponse, error) {
+func (c *Client) AdaptersOverview(ctx context.Context) (*apiv1.AdaptersOverviewResponse, error) {
 	ctx = c.attachToken(ctx)
-	return c.modules.Overview(ctx, &emptypb.Empty{})
+	return c.adapterRuntime.Overview(ctx, &emptypb.Empty{})
 }
 
-func (c *Client) BindModule(ctx context.Context, req *apiv1.BindModuleRequest) (*apiv1.ModuleActionResponse, error) {
+func (c *Client) BindAdapter(ctx context.Context, req *apiv1.BindAdapterRequest) (*apiv1.AdapterActionResponse, error) {
 	ctx = c.attachToken(ctx)
-	return c.modules.BindModule(ctx, req)
+	return c.adapterRuntime.BindAdapter(ctx, req)
 }
 
-func (c *Client) StartModule(ctx context.Context, slot string) (*apiv1.ModuleActionResponse, error) {
+func (c *Client) StartAdapter(ctx context.Context, slot string) (*apiv1.AdapterActionResponse, error) {
 	ctx = c.attachToken(ctx)
-	return c.modules.StartModule(ctx, &apiv1.ModuleSlotRequest{Slot: slot})
+	return c.adapterRuntime.StartAdapter(ctx, &apiv1.AdapterSlotRequest{Slot: slot})
 }
 
-func (c *Client) StopModule(ctx context.Context, slot string) (*apiv1.ModuleActionResponse, error) {
+func (c *Client) StopAdapter(ctx context.Context, slot string) (*apiv1.AdapterActionResponse, error) {
 	ctx = c.attachToken(ctx)
-	return c.modules.StopModule(ctx, &apiv1.ModuleSlotRequest{Slot: slot})
+	return c.adapterRuntime.StopAdapter(ctx, &apiv1.AdapterSlotRequest{Slot: slot})
 }
 
 func (c *Client) StreamAudioIn(ctx context.Context) (apiv1.AudioService_StreamAudioInClient, error) {

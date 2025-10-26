@@ -21,7 +21,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/contentpipeline"
 	"github.com/nupi-ai/nupi/internal/conversation"
 	"github.com/nupi-ai/nupi/internal/eventbus"
-	"github.com/nupi-ai/nupi/internal/modules"
+	adapters "github.com/nupi-ai/nupi/internal/plugins/adapters"
 	testutil "github.com/nupi-ai/nupi/internal/testutil"
 	"github.com/nupi-ai/nupi/internal/voice/slots"
 	"google.golang.org/grpc"
@@ -35,23 +35,23 @@ func TestVoicePipelineEndToEndWithBarge(t *testing.T) {
 	store, cleanup := testutil.OpenStore(t)
 	defer cleanup()
 
-	if err := modules.EnsureBuiltinAdapters(ctx, store); err != nil {
+	if err := adapters.EnsureBuiltinAdapters(ctx, store); err != nil {
 		t.Fatalf("ensure builtin adapters: %v", err)
 	}
 
-	if err := store.SetActiveAdapter(ctx, string(modules.SlotSTT), modules.MockSTTAdapterID, map[string]any{
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotSTT), adapters.MockSTTAdapterID, map[string]any{
 		"phrases": []any{"hello voice", "please respond"},
 	}); err != nil {
 		t.Fatalf("activate stt adapter: %v", err)
 	}
 
-	if err := store.SetActiveAdapter(ctx, string(modules.SlotTTS), modules.MockTTSAdapterID, map[string]any{
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotTTS), adapters.MockTTSAdapterID, map[string]any{
 		"duration_ms": 600,
 	}); err != nil {
 		t.Fatalf("activate tts adapter: %v", err)
 	}
 
-	if err := store.SetActiveAdapter(ctx, string(modules.SlotVAD), modules.MockVADAdapterID, map[string]any{
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotVAD), adapters.MockVADAdapterID, map[string]any{
 		"threshold":  0.2,
 		"min_frames": 2,
 	}); err != nil {
@@ -60,11 +60,11 @@ func TestVoicePipelineEndToEndWithBarge(t *testing.T) {
 
 	ingressSvc := ingress.New(bus)
 	sttSvc := stt.New(bus,
-		stt.WithFactory(stt.NewModuleFactory(store)),
+		stt.WithFactory(stt.NewAdapterFactory(store)),
 		stt.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
 	)
 	vadSvc := vad.New(bus,
-		vad.WithFactory(vad.NewModuleFactory(store)),
+		vad.WithFactory(vad.NewAdapterFactory(store)),
 		vad.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
 	)
 	bargeSvc := barge.New(bus,
@@ -73,7 +73,7 @@ func TestVoicePipelineEndToEndWithBarge(t *testing.T) {
 		barge.WithQuietPeriod(0),
 	)
 
-	ttsFactory := egress.NewModuleFactory(store)
+	ttsFactory := egress.NewAdapterFactory(store)
 	streamingFactory := egress.FactoryFunc(func(ctx context.Context, params egress.SessionParams) (egress.Synthesizer, error) {
 		synth, err := ttsFactory.Create(ctx, params)
 		if err != nil {
@@ -320,7 +320,7 @@ func TestAudioIngressToSTTGRPCPipeline(t *testing.T) {
 	store, cleanup := testutil.OpenStore(t)
 	defer cleanup()
 
-	if err := modules.EnsureBuiltinAdapters(ctx, store); err != nil {
+	if err := adapters.EnsureBuiltinAdapters(ctx, store); err != nil {
 		t.Fatalf("ensure builtin adapters: %v", err)
 	}
 
@@ -335,7 +335,7 @@ func TestAudioIngressToSTTGRPCPipeline(t *testing.T) {
 	if err := store.UpsertAdapter(ctx, adapter); err != nil {
 		t.Fatalf("upsert adapter: %v", err)
 	}
-	if err := store.SetActiveAdapter(ctx, string(modules.SlotSTT), adapterID, nil); err != nil {
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotSTT), adapterID, nil); err != nil {
 		t.Fatalf("activate stt adapter: %v", err)
 	}
 
@@ -356,18 +356,18 @@ func TestAudioIngressToSTTGRPCPipeline(t *testing.T) {
 		return lis.DialContext(ctx)
 	}
 
-	if err := store.UpsertModuleEndpoint(ctx, configstore.ModuleEndpoint{
+	if err := store.UpsertAdapterEndpoint(ctx, configstore.AdapterEndpoint{
 		AdapterID: adapterID,
 		Transport: "grpc",
 		Address:   "bufconn",
 	}); err != nil {
-		t.Fatalf("register module endpoint: %v", err)
+		t.Fatalf("register adapter endpoint: %v", err)
 	}
 
 	ingressSvc := ingress.New(bus)
 	sttSvc := stt.New(
 		bus,
-		stt.WithFactory(stt.NewModuleFactory(store)),
+		stt.WithFactory(stt.NewAdapterFactory(store)),
 		stt.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
 	)
 	pipelineSvc := contentpipeline.NewService(bus, nil)

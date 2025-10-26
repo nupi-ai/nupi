@@ -566,17 +566,17 @@ func (x *ClearAdapterBindingRequest) GetSlot() string {
 	return ""
 }
 
-// QuickstartStatusResponse summarizes progress and module state for the quickstart wizard.
+// QuickstartStatusResponse summarizes progress and adapter state for the quickstart wizard.
 type QuickstartStatusResponse struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
 
-	Completed                bool           `protobuf:"varint,1,opt,name=completed,proto3" json:"completed,omitempty"`
-	CompletedAt              string         `protobuf:"bytes,2,opt,name=completed_at,json=completedAt,proto3" json:"completed_at,omitempty"`
-	PendingSlots             []string       `protobuf:"bytes,3,rep,name=pending_slots,json=pendingSlots,proto3" json:"pending_slots,omitempty"`
-	Modules                  []*ModuleEntry `protobuf:"bytes,4,rep,name=modules,proto3" json:"modules,omitempty"`
-	MissingReferenceAdapters []string       `protobuf:"bytes,5,rep,name=missing_reference_adapters,json=missingReferenceAdapters,proto3" json:"missing_reference_adapters,omitempty"`
+	Completed                bool            `protobuf:"varint,1,opt,name=completed,proto3" json:"completed,omitempty"`
+	CompletedAt              string          `protobuf:"bytes,2,opt,name=completed_at,json=completedAt,proto3" json:"completed_at,omitempty"`
+	PendingSlots             []string        `protobuf:"bytes,3,rep,name=pending_slots,json=pendingSlots,proto3" json:"pending_slots,omitempty"`
+	Adapters                 []*AdapterEntry `protobuf:"bytes,4,rep,name=adapters,proto3" json:"adapters,omitempty"`
+	MissingReferenceAdapters []string        `protobuf:"bytes,5,rep,name=missing_reference_adapters,json=missingReferenceAdapters,proto3" json:"missing_reference_adapters,omitempty"`
 }
 
 func (x *QuickstartStatusResponse) Reset() {
@@ -632,9 +632,9 @@ func (x *QuickstartStatusResponse) GetPendingSlots() []string {
 	return nil
 }
 
-func (x *QuickstartStatusResponse) GetModules() []*ModuleEntry {
+func (x *QuickstartStatusResponse) GetAdapters() []*AdapterEntry {
 	if x != nil {
-		return x.Modules
+		return x.Adapters
 	}
 	return nil
 }
@@ -940,7 +940,7 @@ var file_api_grpc_v1_config_proto_goTypes = []interface{}{
 	(*QuickstartStatusResponse)(nil),     // 8: nupi.api.v1.QuickstartStatusResponse
 	(*QuickstartBinding)(nil),            // 9: nupi.api.v1.QuickstartBinding
 	(*UpdateQuickstartRequest)(nil),      // 10: nupi.api.v1.UpdateQuickstartRequest
-	(*ModuleEntry)(nil),                  // 11: nupi.api.v1.ModuleEntry
+	(*AdapterEntry)(nil),                 // 11: nupi.api.v1.AdapterEntry
 	(*wrapperspb.BoolValue)(nil),         // 12: google.protobuf.BoolValue
 	(*emptypb.Empty)(nil),                // 13: google.protobuf.Empty
 }
@@ -948,7 +948,7 @@ var file_api_grpc_v1_config_proto_depIdxs = []int32{
 	0,  // 0: nupi.api.v1.UpdateTransportConfigRequest.config:type_name -> nupi.api.v1.TransportConfig
 	2,  // 1: nupi.api.v1.ListAdaptersResponse.adapters:type_name -> nupi.api.v1.Adapter
 	4,  // 2: nupi.api.v1.ListAdapterBindingsResponse.bindings:type_name -> nupi.api.v1.AdapterBinding
-	11, // 3: nupi.api.v1.QuickstartStatusResponse.modules:type_name -> nupi.api.v1.ModuleEntry
+	11, // 3: nupi.api.v1.QuickstartStatusResponse.adapters:type_name -> nupi.api.v1.AdapterEntry
 	9,  // 4: nupi.api.v1.UpdateQuickstartRequest.bindings:type_name -> nupi.api.v1.QuickstartBinding
 	12, // 5: nupi.api.v1.UpdateQuickstartRequest.complete:type_name -> google.protobuf.BoolValue
 	13, // 6: nupi.api.v1.ConfigService.GetTransportConfig:input_type -> google.protobuf.Empty

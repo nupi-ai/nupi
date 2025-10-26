@@ -16,8 +16,8 @@ const (
 	TopicPipelineError           Topic = "pipeline.error"
 	TopicConversationPrompt      Topic = "conversation.prompt"
 	TopicConversationReply       Topic = "conversation.reply"
-	TopicModulesStatus           Topic = "modules.status"
-	TopicModulesLog              Topic = "modules.log"
+	TopicAdaptersStatus          Topic = "adapters.status"
+	TopicAdaptersLog             Topic = "adapters.log"
 	TopicAudioIngressRaw         Topic = "audio.ingress.raw"
 	TopicAudioIngressSegment     Topic = "audio.ingress.segment"
 	TopicAudioEgressPlayback     Topic = "audio.egress.playback"
@@ -37,7 +37,7 @@ const (
 	SourceContentPipeline Source = "content_pipeline"
 	SourceConversation    Source = "conversation"
 	SourcePluginService   Source = "plugin_service"
-	SourceModulesService  Source = "modules_service"
+	SourceAdaptersService Source = "adapters_service"
 	SourceAdapterRunner   Source = "adapter_runner"
 	SourceAudioIngress    Source = "audio_ingress"
 	SourceAudioEgress     Source = "audio_egress"
@@ -265,28 +265,28 @@ type ConversationSpeakEvent struct {
 	Metadata  map[string]string
 }
 
-// ModuleHealth indicates current module state.
-type ModuleHealth string
+// AdapterHealth indicates current adapter state.
+type AdapterHealth string
 
 const (
-	ModuleHealthStarting ModuleHealth = "starting"
-	ModuleHealthReady    ModuleHealth = "ready"
-	ModuleHealthDegraded ModuleHealth = "degraded"
-	ModuleHealthStopped  ModuleHealth = "stopped"
-	ModuleHealthError    ModuleHealth = "error"
+	AdapterHealthStarting AdapterHealth = "starting"
+	AdapterHealthReady    AdapterHealth = "ready"
+	AdapterHealthDegraded AdapterHealth = "degraded"
+	AdapterHealthStopped  AdapterHealth = "stopped"
+	AdapterHealthError    AdapterHealth = "error"
 )
 
-// ModuleStatusEvent informs about lifecycle status of adapter-runner modules.
-type ModuleStatusEvent struct {
-	ModuleID  string
+// AdapterStatusEvent informs about lifecycle status of adapter-runner adapters.
+type AdapterStatusEvent struct {
+	AdapterID string
 	Slot      string
-	Status    ModuleHealth
+	Status    AdapterHealth
 	Message   string
 	StartedAt time.Time
 	Extra     map[string]string
 }
 
-// LogLevel indicates severity for module log messages.
+// LogLevel indicates severity for adapter log messages.
 type LogLevel string
 
 const (
@@ -296,9 +296,9 @@ const (
 	LogLevelError LogLevel = "error"
 )
 
-// ModuleLogEvent carries structured log entries from modules.
-type ModuleLogEvent struct {
-	ModuleID  string
+// AdapterLogEvent carries structured log entries from adapters.
+type AdapterLogEvent struct {
+	AdapterID string
 	Level     LogLevel
 	Message   string
 	Fields    map[string]string

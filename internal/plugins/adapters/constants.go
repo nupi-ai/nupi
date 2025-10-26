@@ -1,4 +1,4 @@
-package modules
+package adapters
 
 // Built-in adapter identifiers used by quickstart and tests.
 const (

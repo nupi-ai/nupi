@@ -74,7 +74,7 @@ var schemaStatements = []string{
 		FOREIGN KEY (instance_name, profile_name) REFERENCES profiles(instance_name, name) ON DELETE CASCADE,
 		FOREIGN KEY (adapter_id) REFERENCES adapters(id)
 	)`,
-	`CREATE TABLE IF NOT EXISTS module_endpoints (
+	`CREATE TABLE IF NOT EXISTS adapter_endpoints (
 		adapter_id TEXT PRIMARY KEY,
 		transport TEXT NOT NULL DEFAULT 'process' CHECK (transport IN ('process', 'grpc', 'http')),
 		address TEXT NOT NULL DEFAULT '',

@@ -1,4 +1,4 @@
-package modules
+package adapters
 
 import (
 	"bytes"
@@ -12,27 +12,27 @@ import (
 
 const maxLogLineLength = 2048
 
-// moduleLogWriter publishes module stdout/stderr lines on the event bus.
-type moduleLogWriter struct {
-	bus      *eventbus.Bus
-	moduleID string
-	slot     Slot
-	level    eventbus.LogLevel
+// adapterLogWriter publishes adapter stdout/stderr lines on the event bus.
+type adapterLogWriter struct {
+	bus       *eventbus.Bus
+	adapterID string
+	slot      Slot
+	level     eventbus.LogLevel
 
 	mu  sync.Mutex
 	buf bytes.Buffer
 }
 
-func newModuleLogWriter(bus *eventbus.Bus, moduleID string, slot Slot, level eventbus.LogLevel) *moduleLogWriter {
-	return &moduleLogWriter{
-		bus:      bus,
-		moduleID: moduleID,
-		slot:     slot,
-		level:    level,
+func newAdapterLogWriter(bus *eventbus.Bus, adapterID string, slot Slot, level eventbus.LogLevel) *adapterLogWriter {
+	return &adapterLogWriter{
+		bus:       bus,
+		adapterID: adapterID,
+		slot:      slot,
+		level:     level,
 	}
 }
 
-func (w *moduleLogWriter) Write(p []byte) (int, error) {
+func (w *adapterLogWriter) Write(p []byte) (int, error) {
 	if w.bus == nil {
 		return len(p), nil
 	}
@@ -67,7 +67,7 @@ func (w *moduleLogWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (w *moduleLogWriter) Close() {
+func (w *adapterLogWriter) Close() {
 	if w.bus == nil {
 		return
 	}
@@ -79,7 +79,7 @@ func (w *moduleLogWriter) Close() {
 	}
 }
 
-func (w *moduleLogWriter) publish(message string) {
+func (w *adapterLogWriter) publish(message string) {
 	if strings.TrimSpace(message) == "" {
 		return
 	}
@@ -90,15 +90,15 @@ func (w *moduleLogWriter) publish(message string) {
 	if truncated {
 		fields["truncated"] = "true"
 	}
-	event := eventbus.ModuleLogEvent{
-		ModuleID:  w.moduleID,
+	event := eventbus.AdapterLogEvent{
+		AdapterID: w.adapterID,
 		Level:     w.level,
 		Message:   truncatedMessage,
 		Timestamp: time.Now().UTC(),
 		Fields:    fields,
 	}
 	w.bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicModulesLog,
+		Topic:   eventbus.TopicAdaptersLog,
 		Source:  eventbus.SourceAdapterRunner,
 		Payload: event,
 	})

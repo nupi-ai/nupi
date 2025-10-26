@@ -7,9 +7,11 @@
     "core:default",
     "core:window:allow-set-fullscreen",
     "core:window:allow-set-simple-fullscreen",
-    "opener:default",
     "shell:allow-spawn",
     "shell:allow-kill",
-    "shell:default"
+    "shell:default",
+    "dialog:default",
+    "dialog:allow-open",
+    "dialog:allow-save"
   ]
 }

@@ -22,17 +22,17 @@ func newMockSynthesizer(params SessionParams) (Synthesizer, error) {
 	}
 	return &mockSynthesizer{
 		sampleRate: sampleRate,
-		frequency: floatConfig(cfg, "frequency", defaultMockFrequency),
-		duration:  durationConfig(cfg, "duration_ms", defaultMockDuration),
-		metadata:  mapConfig(cfg, "metadata"),
+		frequency:  floatConfig(cfg, "frequency", defaultMockFrequency),
+		duration:   durationConfig(cfg, "duration_ms", defaultMockDuration),
+		metadata:   mapConfig(cfg, "metadata"),
 	}, nil
 }
 
 type mockSynthesizer struct {
 	sampleRate int
-	frequency float64
-	duration  time.Duration
-	metadata  map[string]string
+	frequency  float64
+	duration   time.Duration
+	metadata   map[string]string
 }
 
 func (m *mockSynthesizer) Speak(ctx context.Context, req SpeakRequest) ([]SynthesisChunk, error) {

@@ -1,4 +1,4 @@
-package pluginmanifest
+package manifest
 
 import (
 	"errors"
@@ -47,7 +47,7 @@ type PipelineCleanerSpec struct {
 }
 
 type AdapterSpec struct {
-	ModuleType string            `yaml:"moduleType"`
+	Slot       string            `yaml:"slot"`
 	Mode       string            `yaml:"mode"`
 	Entrypoint AdapterEntrypoint `yaml:"entrypoint"`
 	Assets     AdapterAssets     `yaml:"assets"`

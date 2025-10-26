@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-var allowedModuleTransports = map[string]struct{}{
+var allowedAdapterTransports = map[string]struct{}{
 	"process": {},
 	"grpc":    {},
 	"http":    {},
@@ -20,30 +20,30 @@ func sanitizeTransport(value string) (string, error) {
 	if value == "" {
 		value = "process"
 	}
-	if _, ok := allowedModuleTransports[value]; !ok {
-		return "", fmt.Errorf("config: invalid module transport %q", value)
+	if _, ok := allowedAdapterTransports[value]; !ok {
+		return "", fmt.Errorf("config: invalid adapter transport %q", value)
 	}
 	return value, nil
 }
 
-// ListModuleEndpoints returns stored module endpoint definitions.
-func (s *Store) ListModuleEndpoints(ctx context.Context) ([]ModuleEndpoint, error) {
+// ListAdapterEndpoints returns stored adapter endpoint definitions.
+func (s *Store) ListAdapterEndpoints(ctx context.Context) ([]AdapterEndpoint, error) {
 	rows, err := s.db.QueryContext(ctx, `
         SELECT adapter_id, transport, address, command, args, env, created_at, updated_at
-        FROM module_endpoints
+        FROM adapter_endpoints
         ORDER BY adapter_id
     `)
 	if err != nil {
-		return nil, fmt.Errorf("config: list module endpoints: %w", err)
+		return nil, fmt.Errorf("config: list adapter endpoints: %w", err)
 	}
 	defer rows.Close()
 
-	var endpoints []ModuleEndpoint
+	var endpoints []AdapterEndpoint
 	for rows.Next() {
 		var (
 			argsRaw sql.NullString
 			envRaw  sql.NullString
-			endp    ModuleEndpoint
+			endp    AdapterEndpoint
 		)
 		if err := rows.Scan(
 			&endp.AdapterID,
@@ -55,17 +55,17 @@ func (s *Store) ListModuleEndpoints(ctx context.Context) ([]ModuleEndpoint, erro
 			&endp.CreatedAt,
 			&endp.UpdatedAt,
 		); err != nil {
-			return nil, fmt.Errorf("config: scan module endpoint: %w", err)
+			return nil, fmt.Errorf("config: scan adapter endpoint: %w", err)
 		}
 
 		args, err := decodeStringSlice(argsRaw)
 		if err != nil {
-			return nil, fmt.Errorf("config: decode module endpoint args for %s: %w", endp.AdapterID, err)
+			return nil, fmt.Errorf("config: decode adapter endpoint args for %s: %w", endp.AdapterID, err)
 		}
 		endp.Args = args
 		env, err := decodeStringMap(envRaw)
 		if err != nil {
-			return nil, fmt.Errorf("config: decode module endpoint env for %s: %w", endp.AdapterID, err)
+			return nil, fmt.Errorf("config: decode adapter endpoint env for %s: %w", endp.AdapterID, err)
 		}
 		endp.Env = env
 
@@ -73,25 +73,25 @@ func (s *Store) ListModuleEndpoints(ctx context.Context) ([]ModuleEndpoint, erro
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("config: iterate module endpoints: %w", err)
+		return nil, fmt.Errorf("config: iterate adapter endpoints: %w", err)
 	}
 
 	return endpoints, nil
 }
 
-// GetModuleEndpoint retrieves the endpoint definition for a given adapter.
-func (s *Store) GetModuleEndpoint(ctx context.Context, adapterID string) (ModuleEndpoint, error) {
+// GetAdapterEndpoint retrieves the endpoint definition for a given adapter.
+func (s *Store) GetAdapterEndpoint(ctx context.Context, adapterID string) (AdapterEndpoint, error) {
 	adapterID = strings.TrimSpace(adapterID)
 	row := s.db.QueryRowContext(ctx, `
         SELECT adapter_id, transport, address, command, args, env, created_at, updated_at
-        FROM module_endpoints
+        FROM adapter_endpoints
         WHERE adapter_id = ?
     `, adapterID)
 
 	var (
 		argsRaw sql.NullString
 		envRaw  sql.NullString
-		endp    ModuleEndpoint
+		endp    AdapterEndpoint
 	)
 
 	if err := row.Scan(
@@ -105,33 +105,33 @@ func (s *Store) GetModuleEndpoint(ctx context.Context, adapterID string) (Module
 		&endp.UpdatedAt,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return ModuleEndpoint{}, NotFoundError{Entity: "module_endpoint", Key: adapterID}
+			return AdapterEndpoint{}, NotFoundError{Entity: "adapter_endpoint", Key: adapterID}
 		}
-		return ModuleEndpoint{}, fmt.Errorf("config: get module endpoint %q: %w", adapterID, err)
+		return AdapterEndpoint{}, fmt.Errorf("config: get adapter endpoint %q: %w", adapterID, err)
 	}
 
 	args, err := decodeStringSlice(argsRaw)
 	if err != nil {
-		return ModuleEndpoint{}, fmt.Errorf("config: decode module endpoint args for %s: %w", adapterID, err)
+		return AdapterEndpoint{}, fmt.Errorf("config: decode adapter endpoint args for %s: %w", adapterID, err)
 	}
 	endp.Args = args
 	env, err := decodeStringMap(envRaw)
 	if err != nil {
-		return ModuleEndpoint{}, fmt.Errorf("config: decode module endpoint env for %s: %w", adapterID, err)
+		return AdapterEndpoint{}, fmt.Errorf("config: decode adapter endpoint env for %s: %w", adapterID, err)
 	}
 	endp.Env = env
 	return endp, nil
 }
 
-// UpsertModuleEndpoint inserts or updates an endpoint definition for the adapter.
-func (s *Store) UpsertModuleEndpoint(ctx context.Context, endpoint ModuleEndpoint) error {
+// UpsertAdapterEndpoint inserts or updates an endpoint definition for the adapter.
+func (s *Store) UpsertAdapterEndpoint(ctx context.Context, endpoint AdapterEndpoint) error {
 	if s.readOnly {
-		return fmt.Errorf("config: upsert module endpoint: store opened read-only")
+		return fmt.Errorf("config: upsert adapter endpoint: store opened read-only")
 	}
 
 	adapterID := strings.TrimSpace(endpoint.AdapterID)
 	if adapterID == "" {
-		return fmt.Errorf("config: upsert module endpoint: adapter id required")
+		return fmt.Errorf("config: upsert adapter endpoint: adapter id required")
 	}
 
 	trans, err := sanitizeTransport(endpoint.Transport)
@@ -141,17 +141,17 @@ func (s *Store) UpsertModuleEndpoint(ctx context.Context, endpoint ModuleEndpoin
 
 	argsPayload, err := encodeStringSlice(endpoint.Args)
 	if err != nil {
-		return fmt.Errorf("config: marshal module args: %w", err)
+		return fmt.Errorf("config: marshal adapter args: %w", err)
 	}
 
 	envPayload, err := encodeStringMap(endpoint.Env)
 	if err != nil {
-		return fmt.Errorf("config: marshal module env: %w", err)
+		return fmt.Errorf("config: marshal adapter env: %w", err)
 	}
 
 	return s.withTx(ctx, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
-            INSERT INTO module_endpoints (adapter_id, transport, address, command, args, env, created_at, updated_at)
+            INSERT INTO adapter_endpoints (adapter_id, transport, address, command, args, env, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             ON CONFLICT(adapter_id) DO UPDATE SET
                 transport = excluded.transport,
@@ -169,29 +169,29 @@ func (s *Store) UpsertModuleEndpoint(ctx context.Context, endpoint ModuleEndpoin
 			envPayload,
 		)
 		if err != nil {
-			return fmt.Errorf("config: upsert module endpoint %q: %w", adapterID, err)
+			return fmt.Errorf("config: upsert adapter endpoint %q: %w", adapterID, err)
 		}
 		return nil
 	})
 }
 
-// RemoveModuleEndpoint deletes the endpoint definition for the adapter.
-func (s *Store) RemoveModuleEndpoint(ctx context.Context, adapterID string) error {
+// RemoveAdapterEndpoint deletes the endpoint definition for the adapter.
+func (s *Store) RemoveAdapterEndpoint(ctx context.Context, adapterID string) error {
 	if s.readOnly {
-		return fmt.Errorf("config: remove module endpoint: store opened read-only")
+		return fmt.Errorf("config: remove adapter endpoint: store opened read-only")
 	}
 
 	adapterID = strings.TrimSpace(adapterID)
 	if adapterID == "" {
-		return fmt.Errorf("config: remove module endpoint: adapter id required")
+		return fmt.Errorf("config: remove adapter endpoint: adapter id required")
 	}
 
 	_, err := s.db.ExecContext(ctx, `
-        DELETE FROM module_endpoints
+        DELETE FROM adapter_endpoints
         WHERE adapter_id = ?
     `, adapterID)
 	if err != nil {
-		return fmt.Errorf("config: delete module endpoint %q: %w", adapterID, err)
+		return fmt.Errorf("config: delete adapter endpoint %q: %w", adapterID, err)
 	}
 	return nil
 }

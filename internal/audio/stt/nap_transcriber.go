@@ -32,13 +32,13 @@ type napTranscriber struct {
 	wg        sync.WaitGroup
 }
 
-func newNAPTranscriber(ctx context.Context, params SessionParams, endpoint configstore.ModuleEndpoint) (Transcriber, error) {
+func newNAPTranscriber(ctx context.Context, params SessionParams, endpoint configstore.AdapterEndpoint) (Transcriber, error) {
 	if endpoint.Transport != "grpc" {
 		return nil, fmt.Errorf("stt: unsupported transport %q for adapter %s", endpoint.Transport, endpoint.AdapterID)
 	}
 	address := strings.TrimSpace(endpoint.Address)
 	if address == "" {
-		return nil, fmt.Errorf("stt: module %s missing gRPC address", endpoint.AdapterID)
+		return nil, fmt.Errorf("stt: adapter %s missing gRPC address", endpoint.AdapterID)
 	}
 
 	dialOpts := []grpc.DialOption{

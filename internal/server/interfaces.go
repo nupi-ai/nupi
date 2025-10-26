@@ -5,7 +5,7 @@ import (
 	"errors"
 
 	"github.com/nupi-ai/nupi/internal/eventbus"
-	"github.com/nupi-ai/nupi/internal/modules"
+	"github.com/nupi-ai/nupi/internal/plugins/adapters"
 )
 
 // ErrAudioStreamExists signals that an audio ingress stream already exists for the given identifiers.
@@ -29,9 +29,9 @@ type AudioPlaybackController interface {
 	Interrupt(sessionID, streamID, reason string, metadata map[string]string)
 }
 
-// ModulesController exposes module lifecycle operations required by the API.
-type ModulesController interface {
-	Overview(ctx context.Context) ([]modules.BindingStatus, error)
-	StartSlot(ctx context.Context, slot modules.Slot) (*modules.BindingStatus, error)
-	StopSlot(ctx context.Context, slot modules.Slot) (*modules.BindingStatus, error)
+// AdaptersController exposes adapter lifecycle operations required by the API.
+type AdaptersController interface {
+	Overview(ctx context.Context) ([]adapters.BindingStatus, error)
+	StartSlot(ctx context.Context, slot adapters.Slot) (*adapters.BindingStatus, error)
+	StopSlot(ctx context.Context, slot adapters.Slot) (*adapters.BindingStatus, error)
 }

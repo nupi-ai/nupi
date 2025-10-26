@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func TestModuleEndpointCRUD(t *testing.T) {
+func TestAdapterEndpointCRUD(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "config.db")
 
@@ -27,7 +27,7 @@ func TestModuleEndpointCRUD(t *testing.T) {
 		t.Fatalf("upsert adapter: %v", err)
 	}
 
-	endpoint := ModuleEndpoint{
+	endpoint := AdapterEndpoint{
 		AdapterID: adapter.ID,
 		Transport: "grpc",
 		Address:   "unix:///tmp/nupi.sock",
@@ -39,13 +39,13 @@ func TestModuleEndpointCRUD(t *testing.T) {
 		},
 	}
 
-	if err := store.UpsertModuleEndpoint(ctx, endpoint); err != nil {
-		t.Fatalf("upsert module endpoint: %v", err)
+	if err := store.UpsertAdapterEndpoint(ctx, endpoint); err != nil {
+		t.Fatalf("upsert adapter endpoint: %v", err)
 	}
 
-	got, err := store.GetModuleEndpoint(ctx, adapter.ID)
+	got, err := store.GetAdapterEndpoint(ctx, adapter.ID)
 	if err != nil {
-		t.Fatalf("get module endpoint: %v", err)
+		t.Fatalf("get adapter endpoint: %v", err)
 	}
 
 	if got.AdapterID != endpoint.AdapterID {
@@ -68,16 +68,16 @@ func TestModuleEndpointCRUD(t *testing.T) {
 	}
 
 	endpoint.Command = "/opt/adapter-runner"
-	endpoint.Args = []string{"--config", "/etc/nupi/module.json"}
+	endpoint.Args = []string{"--config", "/etc/nupi/adapter.json"}
 	endpoint.Env = map[string]string{"API_KEY": "other"}
 
-	if err := store.UpsertModuleEndpoint(ctx, endpoint); err != nil {
-		t.Fatalf("update module endpoint: %v", err)
+	if err := store.UpsertAdapterEndpoint(ctx, endpoint); err != nil {
+		t.Fatalf("update adapter endpoint: %v", err)
 	}
 
-	list, err := store.ListModuleEndpoints(ctx)
+	list, err := store.ListAdapterEndpoints(ctx)
 	if err != nil {
-		t.Fatalf("list module endpoints: %v", err)
+		t.Fatalf("list adapter endpoints: %v", err)
 	}
 
 	if len(list) != 1 {
@@ -94,16 +94,16 @@ func TestModuleEndpointCRUD(t *testing.T) {
 		t.Fatalf("expected updated env %v, got %v", endpoint.Env, list[0].Env)
 	}
 
-	if err := store.RemoveModuleEndpoint(ctx, endpoint.AdapterID); err != nil {
-		t.Fatalf("remove module endpoint: %v", err)
+	if err := store.RemoveAdapterEndpoint(ctx, endpoint.AdapterID); err != nil {
+		t.Fatalf("remove adapter endpoint: %v", err)
 	}
 
-	if _, err := store.GetModuleEndpoint(ctx, endpoint.AdapterID); !IsNotFound(err) {
+	if _, err := store.GetAdapterEndpoint(ctx, endpoint.AdapterID); !IsNotFound(err) {
 		t.Fatalf("expected not found after removal, got %v", err)
 	}
 }
 
-func TestWatchDetectsModuleEndpointChanges(t *testing.T) {
+func TestWatchDetectsAdapterEndpointChanges(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "config.db")
 
@@ -129,12 +129,12 @@ func TestWatchDetectsModuleEndpointChanges(t *testing.T) {
 		t.Fatalf("start watch: %v", err)
 	}
 
-	if err := store.UpsertModuleEndpoint(ctx, ModuleEndpoint{
+	if err := store.UpsertAdapterEndpoint(ctx, AdapterEndpoint{
 		AdapterID: adapter.ID,
 		Transport: "grpc",
 		Address:   "127.0.0.1:9000",
 	}); err != nil {
-		t.Fatalf("upsert module endpoint: %v", err)
+		t.Fatalf("upsert adapter endpoint: %v", err)
 	}
 
 	deadline := time.After(3 * time.Second)
@@ -144,16 +144,16 @@ func TestWatchDetectsModuleEndpointChanges(t *testing.T) {
 			if !ok {
 				t.Fatal("watch channel closed unexpectedly")
 			}
-			if ev.ModuleEndpointsChanged {
+			if ev.AdapterEndpointsChanged {
 				return
 			}
 		case <-deadline:
-			t.Fatalf("timeout waiting for module endpoint change event")
+			t.Fatalf("timeout waiting for adapter endpoint change event")
 		}
 	}
 }
 
-func TestModuleEndpointRejectsInvalidTransport(t *testing.T) {
+func TestAdapterEndpointRejectsInvalidTransport(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "config.db")
 
@@ -171,7 +171,7 @@ func TestModuleEndpointRejectsInvalidTransport(t *testing.T) {
 		t.Fatalf("upsert adapter: %v", err)
 	}
 
-	err = store.UpsertModuleEndpoint(ctx, ModuleEndpoint{
+	err = store.UpsertAdapterEndpoint(ctx, AdapterEndpoint{
 		AdapterID: adapter.ID,
 		Transport: "tcp",
 	})

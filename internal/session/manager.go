@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/nupi-ai/nupi/internal/detector"
 	"github.com/nupi-ai/nupi/internal/eventbus"
+	tooldetectors "github.com/nupi-ai/nupi/internal/plugins/tool_detectors"
 	"github.com/nupi-ai/nupi/internal/pty"
 	"github.com/nupi-ai/nupi/internal/recording"
 )
@@ -40,9 +40,9 @@ type Session struct {
 	StartTime        time.Time
 	Status           Status
 	PTY              *pty.Wrapper
-	Detector         *detector.ToolDetector // Tool detection
-	Inspect          bool                   // Whether inspection mode is enabled
-	RecordingEnabled bool                   // Whether asciicast recording is enabled
+	Detector         *tooldetectors.ToolDetector // Tool detection
+	Inspect          bool                        // Whether inspection mode is enabled
+	RecordingEnabled bool                        // Whether asciicast recording is enabled
 
 	inspectFile       *os.File               // File for raw output logging
 	asciicastRecorder *pty.AsciicastRecorder // Asciicast recorder for session replay
@@ -119,7 +119,11 @@ type Manager struct {
 // NewManager creates a new session manager
 func NewManager() *Manager {
 	// Default plugin directory
-	homeDir, _ := os.UserHomeDir()
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		log.Printf("[Manager] Failed to determine home directory: %v", err)
+		homeDir = ""
+	}
 	pluginDir := filepath.Join(homeDir, ".nupi", "plugins")
 
 	// Initialize recording store
@@ -238,7 +242,7 @@ func (m *Manager) CreateSession(opts pty.StartOptions, inspect bool) (*Session, 
 
 	// Set up tool detection
 	if m.pluginDir != "" {
-		toolDetector := detector.NewToolDetector(sessionID, m.pluginDir)
+		toolDetector := tooldetectors.NewToolDetector(sessionID, m.pluginDir)
 		if err := toolDetector.Initialize(); err != nil {
 			log.Printf("[Manager] Failed to initialize detector: %v", err)
 		} else {
@@ -523,7 +527,7 @@ func (m *Manager) CleanupStopped(olderThan time.Duration) int {
 
 // detectorSink implements pty.OutputSink for tool detection
 type detectorSink struct {
-	detector *detector.ToolDetector
+	detector *tooldetectors.ToolDetector
 }
 
 func (d *detectorSink) Write(data []byte) error {
@@ -570,7 +574,7 @@ func (s *eventBusSink) NotifyEvent(eventType string, exitCode int) {
 }
 
 // monitorDetection monitors tool detection events
-func (m *Manager) monitorDetection(session *Session, toolDetector *detector.ToolDetector) {
+func (m *Manager) monitorDetection(session *Session, toolDetector *tooldetectors.ToolDetector) {
 	eventChan := toolDetector.EventChannel()
 
 	// Wait for tool detection event (no timeout)

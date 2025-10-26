@@ -15,7 +15,7 @@ import (
 
 func main() {
 	printVersion := flag.Bool("version", false, "Print adapter-runner version and exit")
-	slot := flag.String("slot", "", "Module slot (informational)")
+	slot := flag.String("slot", "", "Adapter slot (informational)")
 	adapter := flag.String("adapter", "", "Adapter identifier (informational)")
 	flag.Parse()
 
@@ -43,7 +43,7 @@ func main() {
 
 	proc, err := runtimecfg.Start(ctx, cfg, nil)
 	if err != nil {
-		log.Fatalf("adapter-runner: failed to start module: %v", err)
+		log.Fatalf("adapter-runner: failed to start adapter: %v", err)
 	}
 
 	errCh := make(chan error, 1)
@@ -60,13 +60,13 @@ func main() {
 		case err := <-errCh:
 			exitCode := runtimecfg.ExitCode(err)
 			if err != nil {
-				log.Printf("adapter-runner: module exited: %v (code=%d)", err, exitCode)
+				log.Printf("adapter-runner: adapter exited: %v (code=%d)", err, exitCode)
 			} else {
-				log.Printf("adapter-runner: module exited successfully")
+				log.Printf("adapter-runner: adapter exited successfully")
 			}
 			os.Exit(exitCode)
 		case sig := <-sigCh:
-			log.Printf("adapter-runner: received signal %s, forwarding to module (pid=%d)", sig, proc.Pid())
+			log.Printf("adapter-runner: received signal %s, forwarding to adapter (pid=%d)", sig, proc.Pid())
 			if err := proc.Terminate(sig, cfg.GracePeriod); err != nil {
 				log.Printf("adapter-runner: graceful termination failed: %v", err)
 			}

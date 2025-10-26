@@ -11,7 +11,7 @@ import (
 
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
-	"github.com/nupi-ai/nupi/internal/modules"
+	"github.com/nupi-ai/nupi/internal/plugins/adapters"
 )
 
 func TestVADServiceEmitsDetections(t *testing.T) {
@@ -24,17 +24,17 @@ func TestVADServiceEmitsDetections(t *testing.T) {
 	}
 	t.Cleanup(func() { store.Close() })
 
-	if err := modules.EnsureBuiltinAdapters(ctx, store); err != nil {
+	if err := adapters.EnsureBuiltinAdapters(ctx, store); err != nil {
 		t.Fatalf("ensure adapters: %v", err)
 	}
-	if err := store.SetActiveAdapter(ctx, string(modules.SlotVAD), modules.MockVADAdapterID, map[string]any{
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotVAD), adapters.MockVADAdapterID, map[string]any{
 		"threshold":  0.01,
 		"min_frames": 1,
 	}); err != nil {
 		t.Fatalf("activate vad adapter: %v", err)
 	}
 
-	svc := New(bus, WithFactory(NewModuleFactory(store)), WithRetryDelays(10*time.Millisecond, 50*time.Millisecond))
+	svc := New(bus, WithFactory(NewAdapterFactory(store)), WithRetryDelays(10*time.Millisecond, 50*time.Millisecond))
 	if err := svc.Start(ctx); err != nil {
 		t.Fatalf("start service: %v", err)
 	}
@@ -96,11 +96,11 @@ func TestVADServiceBuffersUntilAdapterAvailable(t *testing.T) {
 	}
 	t.Cleanup(func() { store.Close() })
 
-	if err := modules.EnsureBuiltinAdapters(ctx, store); err != nil {
+	if err := adapters.EnsureBuiltinAdapters(ctx, store); err != nil {
 		t.Fatalf("ensure adapters: %v", err)
 	}
 
-	svc := New(bus, WithFactory(NewModuleFactory(store)), WithRetryDelays(10*time.Millisecond, 50*time.Millisecond))
+	svc := New(bus, WithFactory(NewAdapterFactory(store)), WithRetryDelays(10*time.Millisecond, 50*time.Millisecond))
 	if err := svc.Start(ctx); err != nil {
 		t.Fatalf("start service: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestVADServiceBuffersUntilAdapterAvailable(t *testing.T) {
 	case <-time.After(30 * time.Millisecond):
 	}
 
-	if err := store.SetActiveAdapter(ctx, string(modules.SlotVAD), modules.MockVADAdapterID, map[string]any{
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotVAD), adapters.MockVADAdapterID, map[string]any{
 		"threshold":  0.01,
 		"min_frames": 1,
 	}); err != nil {

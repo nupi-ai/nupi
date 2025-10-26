@@ -6,20 +6,20 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nupi-ai/nupi/internal/modules"
+	"github.com/nupi-ai/nupi/internal/plugins/adapters"
 	testutil "github.com/nupi-ai/nupi/internal/testutil"
 	"github.com/nupi-ai/nupi/internal/voice/slots"
 )
 
-func TestModuleFactoryReturnsMockSynthesizer(t *testing.T) {
+func TestAdapterFactoryReturnsMockSynthesizer(t *testing.T) {
 	ctx := context.Background()
 	store, cleanup := testutil.OpenStore(t)
 	defer cleanup()
 
-	if err := modules.EnsureBuiltinAdapters(ctx, store); err != nil {
+	if err := adapters.EnsureBuiltinAdapters(ctx, store); err != nil {
 		t.Fatalf("ensure builtin adapters: %v", err)
 	}
-	if err := store.SetActiveAdapter(ctx, string(modules.SlotTTS), modules.MockTTSAdapterID, map[string]any{
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotTTS), adapters.MockTTSAdapterID, map[string]any{
 		"frequency":   880.0,
 		"duration_ms": 250,
 		"metadata":    map[string]any{"voice": "test"},
@@ -27,7 +27,7 @@ func TestModuleFactoryReturnsMockSynthesizer(t *testing.T) {
 		t.Fatalf("set active adapter: %v", err)
 	}
 
-	factory := NewModuleFactory(store)
+	factory := NewAdapterFactory(store)
 	synth, err := factory.Create(ctx, SessionParams{
 		SessionID: "sess",
 		StreamID:  slots.TTS,
@@ -50,15 +50,15 @@ func TestModuleFactoryReturnsMockSynthesizer(t *testing.T) {
 	}
 }
 
-func TestModuleFactoryReturnsErrorOnConfigParseFailure(t *testing.T) {
+func TestAdapterFactoryReturnsErrorOnConfigParseFailure(t *testing.T) {
 	ctx := context.Background()
 	store, cleanup := testutil.OpenStore(t)
 	defer cleanup()
 
-	if err := modules.EnsureBuiltinAdapters(ctx, store); err != nil {
+	if err := adapters.EnsureBuiltinAdapters(ctx, store); err != nil {
 		t.Fatalf("ensure builtin adapters: %v", err)
 	}
-	if err := store.SetActiveAdapter(ctx, string(modules.SlotTTS), modules.MockTTSAdapterID, nil); err != nil {
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotTTS), adapters.MockTTSAdapterID, nil); err != nil {
 		t.Fatalf("set active adapter: %v", err)
 	}
 
@@ -66,12 +66,12 @@ func TestModuleFactoryReturnsErrorOnConfigParseFailure(t *testing.T) {
         UPDATE adapter_bindings
         SET config = '{invalid'
         WHERE slot = ? AND instance_name = ? AND profile_name = ?
-    `, string(modules.SlotTTS), store.InstanceName(), store.ProfileName())
+    `, string(adapters.SlotTTS), store.InstanceName(), store.ProfileName())
 	if err != nil {
 		t.Fatalf("corrupt config: %v", err)
 	}
 
-	factory := NewModuleFactory(store)
+	factory := NewAdapterFactory(store)
 	_, err = factory.Create(ctx, SessionParams{
 		SessionID: "sess",
 		StreamID:  slots.TTS,
@@ -81,12 +81,12 @@ func TestModuleFactoryReturnsErrorOnConfigParseFailure(t *testing.T) {
 	}
 }
 
-func TestModuleFactoryReturnsUnavailableWhenAdapterMissing(t *testing.T) {
+func TestAdapterFactoryReturnsUnavailableWhenAdapterMissing(t *testing.T) {
 	ctx := context.Background()
 	store, cleanup := testutil.OpenStore(t)
 	defer cleanup()
 
-	factory := NewModuleFactory(store)
+	factory := NewAdapterFactory(store)
 	_, err := factory.Create(ctx, SessionParams{
 		SessionID: "sess",
 		StreamID:  slots.TTS,

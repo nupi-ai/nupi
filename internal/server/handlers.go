@@ -28,7 +28,7 @@ import (
 	apihttp "github.com/nupi-ai/nupi/internal/api/http"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
-	"github.com/nupi-ai/nupi/internal/modules"
+	adapters "github.com/nupi-ai/nupi/internal/plugins/adapters"
 	"github.com/nupi-ai/nupi/internal/protocol"
 	"github.com/nupi-ai/nupi/internal/pty"
 	"github.com/nupi-ai/nupi/internal/session"
@@ -113,7 +113,7 @@ var allowedAdapterTypes = map[string]struct{}{
 	"tool-cleaner": {},
 }
 
-var allowedModuleTransports = map[string]struct{}{
+var allowedAdapterTransports = map[string]struct{}{
 	"grpc":    {},
 	"http":    {},
 	"process": {},
@@ -163,7 +163,7 @@ type APIServer struct {
 	runtime        RuntimeInfoProvider
 	wsServer       *Server
 	conversation   ConversationStore
-	modules        ModulesController
+	adapters       AdaptersController
 	audioIngress   AudioCaptureProvider
 	audioEgress    AudioPlaybackController
 	eventBus       *eventbus.Bus
@@ -228,11 +228,11 @@ type transportRequest struct {
 }
 
 type quickstartStatusResponse struct {
-	Completed                bool                  `json:"completed"`
-	CompletedAt              string                `json:"completed_at,omitempty"`
-	PendingSlots             []string              `json:"pending_slots"`
-	Modules                  []apihttp.ModuleEntry `json:"modules,omitempty"`
-	MissingReferenceAdapters []string              `json:"missing_reference_adapters,omitempty"`
+	Completed                bool                   `json:"completed"`
+	CompletedAt              string                 `json:"completed_at,omitempty"`
+	PendingSlots             []string               `json:"pending_slots"`
+	Adapters                 []apihttp.AdapterEntry `json:"adapters,omitempty"`
+	MissingReferenceAdapters []string               `json:"missing_reference_adapters,omitempty"`
 }
 
 type quickstartBinding struct {
@@ -299,9 +299,9 @@ func (s *APIServer) SetConversationStore(store ConversationStore) {
 	s.conversation = store
 }
 
-// SetModulesController wires the modules controller used by HTTP handlers.
-func (s *APIServer) SetModulesController(controller ModulesController) {
-	s.modules = controller
+// SetAdaptersController wires the adapter controller used by HTTP handlers.
+func (s *APIServer) SetAdaptersController(controller AdaptersController) {
+	s.adapters = controller
 }
 
 // SetAudioIngress wires the audio ingress handler used by streaming endpoints.
@@ -1019,14 +1019,14 @@ func (s *APIServer) Prepare(ctx context.Context) (*PreparedHTTPServer, error) {
 	mux.HandleFunc("/recordings/", s.handleRecordingFile)
 	mux.HandleFunc("/config/transport", s.handleTransportConfig)
 	mux.HandleFunc("/config/migrate", s.handleConfigMigrate)
-	mux.HandleFunc("/config/adapters", s.handleAdapters)
-	mux.HandleFunc("/config/adapter-bindings", s.handleAdapterBindings)
-	mux.HandleFunc("/modules", s.handleModules)
-	mux.HandleFunc("/modules/logs", s.handleModulesLogs)
-	mux.HandleFunc("/modules/register", s.handleModulesRegister)
-	mux.HandleFunc("/modules/bind", s.handleModulesBind)
-	mux.HandleFunc("/modules/start", s.handleModulesStart)
-	mux.HandleFunc("/modules/stop", s.handleModulesStop)
+	mux.HandleFunc("/config/adapters", s.handleConfigAdapters)
+	mux.HandleFunc("/config/adapter-bindings", s.handleConfigAdapterBindings)
+	mux.HandleFunc("/adapters", s.handleAdapters)
+	mux.HandleFunc("/adapters/logs", s.handleAdaptersLogs)
+	mux.HandleFunc("/adapters/register", s.handleAdaptersRegister)
+	mux.HandleFunc("/adapters/bind", s.handleAdaptersBind)
+	mux.HandleFunc("/adapters/start", s.handleAdaptersStart)
+	mux.HandleFunc("/adapters/stop", s.handleAdaptersStop)
 	mux.HandleFunc("/daemon/status", s.handleDaemonStatus)
 	mux.HandleFunc("/daemon/shutdown", s.handleDaemonShutdown)
 	mux.HandleFunc("/config/quickstart", s.handleQuickstart)
@@ -1836,19 +1836,19 @@ func (s *APIServer) handleTransportUpdate(w http.ResponseWriter, r *http.Request
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *APIServer) handleAdapters(w http.ResponseWriter, r *http.Request) {
+func (s *APIServer) handleConfigAdapters(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodOptions:
 		w.WriteHeader(http.StatusNoContent)
 		return
 	case http.MethodGet:
-		s.handleAdaptersGet(w, r)
+		s.handleConfigAdaptersGet(w, r)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
-func (s *APIServer) handleAdaptersGet(w http.ResponseWriter, r *http.Request) {
+func (s *APIServer) handleConfigAdaptersGet(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireRole(w, r, roleAdmin, roleReadOnly); !ok {
 		return
 	}
@@ -1867,19 +1867,19 @@ func (s *APIServer) handleAdaptersGet(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{"adapters": adapters})
 }
 
-func (s *APIServer) handleAdapterBindings(w http.ResponseWriter, r *http.Request) {
+func (s *APIServer) handleConfigAdapterBindings(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodOptions:
 		w.WriteHeader(http.StatusNoContent)
 		return
 	case http.MethodGet:
-		s.handleAdapterBindingsGet(w, r)
+		s.handleConfigAdapterBindingsGet(w, r)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
-func (s *APIServer) handleAdapterBindingsGet(w http.ResponseWriter, r *http.Request) {
+func (s *APIServer) handleConfigAdapterBindingsGet(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireRole(w, r, roleAdmin, roleReadOnly); !ok {
 		return
 	}
@@ -1963,18 +1963,18 @@ func (s *APIServer) handleConfigMigrate(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
-func (s *APIServer) handleModules(w http.ResponseWriter, r *http.Request) {
+func (s *APIServer) handleAdapters(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodOptions:
 		w.WriteHeader(http.StatusNoContent)
 	case http.MethodGet:
-		s.handleModulesGet(w, r)
+		s.handleAdaptersGet(w, r)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
 }
 
-func (s *APIServer) handleModulesLogs(w http.ResponseWriter, r *http.Request) {
+func (s *APIServer) handleAdaptersLogs(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireRole(w, r, roleAdmin, roleReadOnly); !ok {
 		return
 	}
@@ -1997,7 +1997,7 @@ func (s *APIServer) handleModulesLogs(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	subLogs := s.eventBus.Subscribe(eventbus.TopicModulesLog)
+	subLogs := s.eventBus.Subscribe(eventbus.TopicAdaptersLog)
 	defer subLogs.Close()
 	subPartial := s.eventBus.Subscribe(eventbus.TopicSpeechTranscriptPartial)
 	defer subPartial.Close()
@@ -2026,7 +2026,7 @@ func (s *APIServer) handleModulesLogs(w http.ResponseWriter, r *http.Request) {
 				logCh = nil
 				continue
 			}
-			entry, emit := filterModuleLogEvent(env, slotFilter, adapterFilter)
+			entry, emit := filterAdapterLogEvent(env, slotFilter, adapterFilter)
 			if !emit {
 				continue
 			}
@@ -2084,7 +2084,7 @@ func (s *APIServer) handleModulesLogs(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *APIServer) handleModulesRegister(w http.ResponseWriter, r *http.Request) {
+func (s *APIServer) handleAdaptersRegister(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -2101,7 +2101,7 @@ func (s *APIServer) handleModulesRegister(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	var payload apihttp.ModuleRegistrationRequest
+	var payload apihttp.AdapterRegistrationRequest
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		http.Error(w, fmt.Sprintf("invalid JSON payload: %v", err), http.StatusBadRequest)
 		return
@@ -2169,7 +2169,7 @@ func (s *APIServer) handleModulesRegister(w http.ResponseWriter, r *http.Request
 				return
 			}
 		} else {
-			if _, ok := allowedModuleTransports[transport]; !ok {
+			if _, ok := allowedAdapterTransports[transport]; !ok {
 				http.Error(w, fmt.Sprintf("invalid transport: %s (expected: grpc, http, process)", transport), http.StatusBadRequest)
 				return
 			}
@@ -2199,7 +2199,7 @@ func (s *APIServer) handleModulesRegister(w http.ResponseWriter, r *http.Request
 				}
 			}
 
-			endpoint := configstore.ModuleEndpoint{
+			endpoint := configstore.AdapterEndpoint{
 				AdapterID: adapterID,
 				Transport: transport,
 				Address:   address,
@@ -2211,15 +2211,15 @@ func (s *APIServer) handleModulesRegister(w http.ResponseWriter, r *http.Request
 			if len(payload.Endpoint.Env) > 0 {
 				endpoint.Env = cloneStringMap(payload.Endpoint.Env)
 			}
-			if err := s.configStore.UpsertModuleEndpoint(r.Context(), endpoint); err != nil {
-				http.Error(w, fmt.Sprintf("register module endpoint failed: %v", err), http.StatusInternalServerError)
+			if err := s.configStore.UpsertAdapterEndpoint(r.Context(), endpoint); err != nil {
+				http.Error(w, fmt.Sprintf("register adapter endpoint failed: %v", err), http.StatusInternalServerError)
 				return
 			}
 		}
 	}
 
-	result := apihttp.ModuleRegistrationResult{
-		Adapter: apihttp.ModuleAdapter{
+	result := apihttp.AdapterRegistrationResult{
+		Adapter: apihttp.AdapterDescriptor{
 			ID:       adapter.ID,
 			Source:   adapter.Source,
 			Version:  adapter.Version,
@@ -2231,22 +2231,22 @@ func (s *APIServer) handleModulesRegister(w http.ResponseWriter, r *http.Request
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(result); err != nil {
-		log.Printf("[APIServer] failed to encode module registration result: %v", err)
+		log.Printf("[APIServer] failed to encode adapter registration result: %v", err)
 	}
 }
 
-func filterModuleLogEvent(env eventbus.Envelope, slotFilter, adapterFilter string) (apihttp.ModuleLogStreamEntry, bool) {
-	event, ok := env.Payload.(eventbus.ModuleLogEvent)
+func filterAdapterLogEvent(env eventbus.Envelope, slotFilter, adapterFilter string) (apihttp.AdapterLogStreamEntry, bool) {
+	event, ok := env.Payload.(eventbus.AdapterLogEvent)
 	if !ok {
-		return apihttp.ModuleLogStreamEntry{}, false
+		return apihttp.AdapterLogStreamEntry{}, false
 	}
 
 	slotValue := strings.TrimSpace(event.Fields["slot"])
 	if slotFilter != "" && strings.ToLower(slotValue) != slotFilter {
-		return apihttp.ModuleLogStreamEntry{}, false
+		return apihttp.AdapterLogStreamEntry{}, false
 	}
-	if adapterFilter != "" && strings.ToLower(strings.TrimSpace(event.ModuleID)) != adapterFilter {
-		return apihttp.ModuleLogStreamEntry{}, false
+	if adapterFilter != "" && strings.ToLower(strings.TrimSpace(event.AdapterID)) != adapterFilter {
+		return apihttp.AdapterLogStreamEntry{}, false
 	}
 
 	timestamp := env.Timestamp
@@ -2254,20 +2254,20 @@ func filterModuleLogEvent(env eventbus.Envelope, slotFilter, adapterFilter strin
 		timestamp = time.Now().UTC()
 	}
 
-	return apihttp.ModuleLogStreamEntry{
+	return apihttp.AdapterLogStreamEntry{
 		Type:      "log",
 		Timestamp: timestamp,
-		ModuleID:  event.ModuleID,
+		AdapterID: event.AdapterID,
 		Slot:      slotValue,
 		Level:     string(event.Level),
 		Message:   event.Message,
 	}, true
 }
 
-func makeTranscriptEntry(env eventbus.Envelope) (apihttp.ModuleLogStreamEntry, bool) {
+func makeTranscriptEntry(env eventbus.Envelope) (apihttp.AdapterLogStreamEntry, bool) {
 	event, ok := env.Payload.(eventbus.SpeechTranscriptEvent)
 	if !ok {
-		return apihttp.ModuleLogStreamEntry{}, false
+		return apihttp.AdapterLogStreamEntry{}, false
 	}
 
 	timestamp := env.Timestamp
@@ -2275,7 +2275,7 @@ func makeTranscriptEntry(env eventbus.Envelope) (apihttp.ModuleLogStreamEntry, b
 		timestamp = time.Now().UTC()
 	}
 
-	return apihttp.ModuleLogStreamEntry{
+	return apihttp.AdapterLogStreamEntry{
 		Type:       "transcript",
 		Timestamp:  timestamp,
 		SessionID:  event.SessionID,
@@ -2286,7 +2286,7 @@ func makeTranscriptEntry(env eventbus.Envelope) (apihttp.ModuleLogStreamEntry, b
 	}, true
 }
 
-type moduleActionRequest struct {
+type adapterActionRequest struct {
 	Slot      string          `json:"slot"`
 	AdapterID string          `json:"adapter_id,omitempty"`
 	Config    json.RawMessage `json:"config,omitempty"`
@@ -2298,31 +2298,31 @@ type configMigrationResponse struct {
 	AudioSettingsUpdated bool     `json:"audio_settings_updated"`
 }
 
-func (s *APIServer) handleModulesGet(w http.ResponseWriter, r *http.Request) {
+func (s *APIServer) handleAdaptersGet(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireRole(w, r, roleAdmin, roleReadOnly); !ok {
 		return
 	}
-	if s.modules == nil {
-		http.Error(w, "modules service unavailable", http.StatusServiceUnavailable)
+	if s.adapters == nil {
+		http.Error(w, "adapter service unavailable", http.StatusServiceUnavailable)
 		return
 	}
 
-	overview, err := s.modules.Overview(r.Context())
+	overview, err := s.adapters.Overview(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	modulesOut := make([]apihttp.ModuleEntry, 0, len(overview))
+	adaptersOut := make([]apihttp.AdapterEntry, 0, len(overview))
 	for _, status := range overview {
-		modulesOut = append(modulesOut, bindingStatusToResponse(status))
+		adaptersOut = append(adaptersOut, bindingStatusToResponse(status))
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(apihttp.ModulesOverview{Modules: modulesOut})
+	json.NewEncoder(w).Encode(apihttp.AdaptersOverview{Adapters: adaptersOut})
 }
 
-func (s *APIServer) handleModulesBind(w http.ResponseWriter, r *http.Request) {
+func (s *APIServer) handleAdaptersBind(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -2338,12 +2338,12 @@ func (s *APIServer) handleModulesBind(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "configuration store not available", http.StatusServiceUnavailable)
 		return
 	}
-	if s.modules == nil {
-		http.Error(w, "modules service unavailable", http.StatusServiceUnavailable)
+	if s.adapters == nil {
+		http.Error(w, "adapter service unavailable", http.StatusServiceUnavailable)
 		return
 	}
 
-	var payload moduleActionRequest
+	var payload adapterActionRequest
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		http.Error(w, fmt.Sprintf("invalid JSON payload: %v", err), http.StatusBadRequest)
 		return
@@ -2375,18 +2375,18 @@ func (s *APIServer) handleModulesBind(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	status, err := s.modules.StartSlot(r.Context(), modules.Slot(slot))
+	status, err := s.adapters.StartSlot(r.Context(), adapters.Slot(slot))
 	if err != nil {
-		http.Error(w, fmt.Sprintf("start module failed: %v", err), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("start adapter failed: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	response := apihttp.ModuleActionResult{Module: bindingStatusToResponse(*status)}
+	response := apihttp.AdapterActionResult{Adapter: bindingStatusToResponse(*status)}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 }
 
-func (s *APIServer) handleModulesStart(w http.ResponseWriter, r *http.Request) {
+func (s *APIServer) handleAdaptersStart(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -2398,12 +2398,12 @@ func (s *APIServer) handleModulesStart(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireRole(w, r, roleAdmin); !ok {
 		return
 	}
-	if s.modules == nil {
-		http.Error(w, "modules service unavailable", http.StatusServiceUnavailable)
+	if s.adapters == nil {
+		http.Error(w, "adapter service unavailable", http.StatusServiceUnavailable)
 		return
 	}
 
-	var payload moduleActionRequest
+	var payload adapterActionRequest
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		http.Error(w, fmt.Sprintf("invalid JSON payload: %v", err), http.StatusBadRequest)
 		return
@@ -2413,18 +2413,18 @@ func (s *APIServer) handleModulesStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	status, err := s.modules.StartSlot(r.Context(), modules.Slot(payload.Slot))
+	status, err := s.adapters.StartSlot(r.Context(), adapters.Slot(payload.Slot))
 	if err != nil {
-		http.Error(w, fmt.Sprintf("start module failed: %v", err), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("start adapter failed: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	response := apihttp.ModuleActionResult{Module: bindingStatusToResponse(*status)}
+	response := apihttp.AdapterActionResult{Adapter: bindingStatusToResponse(*status)}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 }
 
-func (s *APIServer) handleModulesStop(w http.ResponseWriter, r *http.Request) {
+func (s *APIServer) handleAdaptersStop(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -2436,12 +2436,12 @@ func (s *APIServer) handleModulesStop(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireRole(w, r, roleAdmin); !ok {
 		return
 	}
-	if s.modules == nil {
-		http.Error(w, "modules service unavailable", http.StatusServiceUnavailable)
+	if s.adapters == nil {
+		http.Error(w, "adapter service unavailable", http.StatusServiceUnavailable)
 		return
 	}
 
-	var payload moduleActionRequest
+	var payload adapterActionRequest
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		http.Error(w, fmt.Sprintf("invalid JSON payload: %v", err), http.StatusBadRequest)
 		return
@@ -2451,13 +2451,13 @@ func (s *APIServer) handleModulesStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	status, err := s.modules.StopSlot(r.Context(), modules.Slot(payload.Slot))
+	status, err := s.adapters.StopSlot(r.Context(), adapters.Slot(payload.Slot))
 	if err != nil {
-		http.Error(w, fmt.Sprintf("stop module failed: %v", err), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("stop adapter failed: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	response := apihttp.ModuleActionResult{Module: bindingStatusToResponse(*status)}
+	response := apihttp.AdapterActionResult{Adapter: bindingStatusToResponse(*status)}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 }
@@ -3428,8 +3428,8 @@ func (s *APIServer) handleAudioInterrupt(w http.ResponseWriter, r *http.Request)
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func bindingStatusToResponse(status modules.BindingStatus) apihttp.ModuleEntry {
-	resp := apihttp.ModuleEntry{
+func bindingStatusToResponse(status adapters.BindingStatus) apihttp.AdapterEntry {
+	resp := apihttp.AdapterEntry{
 		Slot:      string(status.Slot),
 		Status:    status.Status,
 		Config:    status.Config,
@@ -3442,8 +3442,8 @@ func bindingStatusToResponse(status modules.BindingStatus) apihttp.ModuleEntry {
 		}
 	}
 	if status.Runtime != nil {
-		runtime := apihttp.ModuleRuntime{
-			ModuleID:  status.Runtime.ModuleID,
+		runtime := apihttp.AdapterRuntime{
+			AdapterID: status.Runtime.AdapterID,
 			Health:    string(status.Runtime.Health),
 			Message:   status.Runtime.Message,
 			UpdatedAt: status.Runtime.UpdatedAt.UTC().Format(time.RFC3339),
@@ -4090,19 +4090,19 @@ func (s *APIServer) handleQuickstartGet(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	moduleStatuses, err := s.quickstartModuleStatuses(r.Context())
+	adapterStatuses, err := s.quickstartAdapterStatuses(r.Context())
 	if err != nil {
-		if errors.Is(err, errModulesServiceUnavailable) {
+		if errors.Is(err, errAdaptersServiceUnavailable) {
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		} else {
-			http.Error(w, fmt.Sprintf("modules overview failed: %v", err), http.StatusInternalServerError)
+			http.Error(w, fmt.Sprintf("adapters overview failed: %v", err), http.StatusInternalServerError)
 		}
 		return
 	}
 
-	moduleEntries := make([]apihttp.ModuleEntry, 0, len(moduleStatuses))
-	for _, status := range moduleStatuses {
-		moduleEntries = append(moduleEntries, bindingStatusToResponse(status))
+	adapterEntries := make([]apihttp.AdapterEntry, 0, len(adapterStatuses))
+	for _, status := range adapterStatuses {
+		adapterEntries = append(adapterEntries, bindingStatusToResponse(status))
 	}
 
 	missingRefs, err := s.missingReferenceAdapters(r.Context())
@@ -4114,7 +4114,7 @@ func (s *APIServer) handleQuickstartGet(w http.ResponseWriter, r *http.Request) 
 	resp := quickstartStatusResponse{
 		Completed:                completed,
 		PendingSlots:             pending,
-		Modules:                  moduleEntries,
+		Adapters:                 adapterEntries,
 		MissingReferenceAdapters: missingRefs,
 	}
 
@@ -4200,25 +4200,25 @@ func (s *APIServer) handleQuickstartPost(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	moduleStatuses, err := s.quickstartModuleStatuses(ctx)
+	adapterStatuses, err := s.quickstartAdapterStatuses(ctx)
 	if err != nil {
-		if errors.Is(err, errModulesServiceUnavailable) {
+		if errors.Is(err, errAdaptersServiceUnavailable) {
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		} else {
-			http.Error(w, fmt.Sprintf("modules overview failed: %v", err), http.StatusInternalServerError)
+			http.Error(w, fmt.Sprintf("adapters overview failed: %v", err), http.StatusInternalServerError)
 		}
 		return
 	}
 
-	moduleEntries := make([]apihttp.ModuleEntry, 0, len(moduleStatuses))
-	for _, status := range moduleStatuses {
-		moduleEntries = append(moduleEntries, bindingStatusToResponse(status))
+	adapterEntries := make([]apihttp.AdapterEntry, 0, len(adapterStatuses))
+	for _, status := range adapterStatuses {
+		adapterEntries = append(adapterEntries, bindingStatusToResponse(status))
 	}
 
 	resp := quickstartStatusResponse{
 		Completed:                completed,
 		PendingSlots:             pending,
-		Modules:                  moduleEntries,
+		Adapters:                 adapterEntries,
 		MissingReferenceAdapters: missingRefs,
 	}
 
@@ -4230,13 +4230,13 @@ func (s *APIServer) handleQuickstartPost(w http.ResponseWriter, r *http.Request)
 	json.NewEncoder(w).Encode(resp)
 }
 
-var errModulesServiceUnavailable = errors.New("modules service unavailable")
+var errAdaptersServiceUnavailable = errors.New("adapter service unavailable")
 
-func (s *APIServer) quickstartModuleStatuses(ctx context.Context) ([]modules.BindingStatus, error) {
-	if s.modules == nil {
-		return nil, errModulesServiceUnavailable
+func (s *APIServer) quickstartAdapterStatuses(ctx context.Context) ([]adapters.BindingStatus, error) {
+	if s.adapters == nil {
+		return nil, errAdaptersServiceUnavailable
 	}
-	statuses, err := s.modules.Overview(ctx)
+	statuses, err := s.adapters.Overview(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -4247,8 +4247,8 @@ func (s *APIServer) missingReferenceAdapters(ctx context.Context) ([]string, err
 	if s.configStore == nil {
 		return nil, nil
 	}
-	missing := make([]string, 0, len(modules.RequiredReferenceAdapters))
-	for _, id := range modules.RequiredReferenceAdapters {
+	missing := make([]string, 0, len(adapters.RequiredReferenceAdapters))
+	for _, id := range adapters.RequiredReferenceAdapters {
 		exists, err := s.configStore.AdapterExists(ctx, id)
 		if err != nil {
 			return nil, err

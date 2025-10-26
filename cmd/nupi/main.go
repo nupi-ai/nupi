@@ -29,7 +29,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/client"
 	"github.com/nupi-ai/nupi/internal/config"
 	"github.com/nupi-ai/nupi/internal/grpcclient"
-	"github.com/nupi-ai/nupi/internal/pluginmanifest"
+	manifestpkg "github.com/nupi-ai/nupi/internal/plugins/manifest"
 	"github.com/nupi-ai/nupi/internal/protocol"
 	nupiversion "github.com/nupi-ai/nupi/internal/version"
 	"github.com/spf13/cobra"
@@ -38,10 +38,10 @@ import (
 )
 
 const (
-	errorMessageLimit           = 2048
-	moduleSlugMaxLength         = 64
-	moduleLogsScannerInitialBuf = 64 * 1024
-	moduleLogsScannerMaxBuf     = 1024 * 1024
+	errorMessageLimit            = 2048
+	adapterSlugMaxLength         = 64
+	adapterLogsScannerInitialBuf = 64 * 1024
+	adapterLogsScannerMaxBuf     = 1024 * 1024
 )
 
 // Global variables for use across commands
@@ -51,7 +51,7 @@ var (
 )
 
 var (
-	allowedModuleTypes = map[string]struct{}{
+	allowedAdapterSlots = map[string]struct{}{
 		"stt":          {},
 		"tts":          {},
 		"ai":           {},
@@ -156,7 +156,11 @@ Designed for AI coding assistants like Claude Code, Aider, and others.`,
 	rootCmd.PersistentFlags().Bool("json", false, "Output in JSON format")
 
 	// Set default instance directory
-	homeDir, _ := os.UserHomeDir()
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to determine home directory: %v\n", err)
+		os.Exit(1)
+	}
 	instanceDir = filepath.Join(homeDir, ".nupi", "instances", "default")
 }
 
@@ -282,7 +286,7 @@ func main() {
 
 	configMigrateCmd := &cobra.Command{
 		Use:           "migrate",
-		Short:         "Repair configuration defaults (required module slots)",
+		Short:         "Repair configuration defaults (required adapter slots)",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE:          configMigrate,
@@ -290,23 +294,23 @@ func main() {
 
 	configCmd.AddCommand(configTransportCmd, configMigrateCmd)
 
-	modulesCmd := &cobra.Command{
-		Use:           "modules",
-		Short:         "Inspect and control module bindings",
+	adaptersCmd := &cobra.Command{
+		Use:           "adapters",
+		Short:         "Inspect and control adapter bindings",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	modulesCmd.PersistentFlags().Bool("grpc", false, "Use gRPC transport for module operations")
+	adaptersCmd.PersistentFlags().Bool("grpc", false, "Use gRPC transport for adapter operations")
 
-	modulesRegisterCmd := &cobra.Command{
+	adaptersRegisterCmd := &cobra.Command{
 		Use:           "register",
-		Short:         "Register or update a module adapter",
+		Short:         "Register or update an adapter",
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		RunE:          modulesRegister,
+		RunE:          adaptersRegister,
 	}
-	modulesRegisterCmd.Example = `  # Register gRPC-based STT module
-  nupi modules register \
+	adaptersRegisterCmd.Example = `  # Register gRPC-based STT adapter
+  nupi adapters register \
     --id nupi-whisper-local-stt \
     --type stt \
     --name "Nupi Whisper Local STT" \
@@ -314,59 +318,59 @@ func main() {
     --endpoint-transport grpc \
     --endpoint-address 127.0.0.1:50051
 
-  # Register process-based AI module
-  nupi modules register \
+  # Register process-based AI adapter
+  nupi adapters register \
     --id custom-ai \
     --type ai \
     --endpoint-transport process \
     --endpoint-command /path/to/binary \
     --endpoint-arg "--config" \
-    --endpoint-arg "/etc/module.json"`
-	modulesRegisterCmd.Flags().String("id", "", "Adapter identifier (slug)")
-	modulesRegisterCmd.Flags().String("type", "", "Adapter type (stt/tts/ai/vad/...)")
-	modulesRegisterCmd.Flags().String("name", "", "Human readable adapter name")
-	modulesRegisterCmd.Flags().String("source", "external", "Adapter source/provider")
-	modulesRegisterCmd.Flags().String("version", "", "Adapter version")
-	modulesRegisterCmd.Flags().String("manifest", "", "Optional manifest JSON payload")
-	modulesRegisterCmd.Flags().String("endpoint-transport", "grpc", "Module endpoint transport (process|grpc|http)")
-	modulesRegisterCmd.Flags().String("endpoint-address", "", "Module endpoint address (for grpc/http transports)")
-	modulesRegisterCmd.Flags().String("endpoint-command", "", "Command to launch module (process transport)")
-	modulesRegisterCmd.Flags().StringArray("endpoint-arg", nil, "Argument for module command (repeatable)")
-	modulesRegisterCmd.Flags().StringArray("endpoint-env", nil, "Environment variable KEY=VALUE for module command (repeatable)")
+    --endpoint-arg "/etc/adapter.json"`
+	adaptersRegisterCmd.Flags().String("id", "", "Adapter identifier (slug)")
+	adaptersRegisterCmd.Flags().String("type", "", "Adapter type (stt/tts/ai/vad/...)")
+	adaptersRegisterCmd.Flags().String("name", "", "Human readable adapter name")
+	adaptersRegisterCmd.Flags().String("source", "external", "Adapter source/provider")
+	adaptersRegisterCmd.Flags().String("version", "", "Adapter version")
+	adaptersRegisterCmd.Flags().String("manifest", "", "Optional manifest JSON payload")
+	adaptersRegisterCmd.Flags().String("endpoint-transport", "grpc", "Adapter endpoint transport (process|grpc|http)")
+	adaptersRegisterCmd.Flags().String("endpoint-address", "", "Adapter endpoint address (for grpc/http transports)")
+	adaptersRegisterCmd.Flags().String("endpoint-command", "", "Command to launch adapter (process transport)")
+	adaptersRegisterCmd.Flags().StringArray("endpoint-arg", nil, "Argument for adapter command (repeatable)")
+	adaptersRegisterCmd.Flags().StringArray("endpoint-env", nil, "Environment variable KEY=VALUE for adapter command (repeatable)")
 
-	modulesInstallLocalCmd := &cobra.Command{
+	adaptersInstallLocalCmd := &cobra.Command{
 		Use:           "install-local",
-		Short:         "Register a module from local manifest and binary",
+		Short:         "Register an adapter from local manifest and binary",
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		RunE:          modulesInstallLocal,
+		RunE:          adaptersInstallLocal,
 	}
-	modulesInstallLocalCmd.Example = `  # Install a local Whisper STT module
-	nupi modules install-local \
-	  --manifest-file ./module-nupi-whisper-local-stt/plugin.yaml \
-	  --binary $(pwd)/module-nupi-whisper-local-stt/dist/module-nupi-whisper-local-stt \
+	adaptersInstallLocalCmd.Example = `  # Install a local Whisper STT adapter
+	nupi adapters install-local \
+	  --manifest-file ./adapter-nupi-whisper-local-stt/plugin.yaml \
+	  --binary $(pwd)/adapter-nupi-whisper-local-stt/dist/adapter-nupi-whisper-local-stt \
 	  --endpoint-address 127.0.0.1:50051 \
 	  --slot stt`
-	modulesInstallLocalCmd.Flags().String("manifest-file", "", "Path to module manifest (YAML or JSON)")
-	modulesInstallLocalCmd.Flags().String("id", "", "Override adapter identifier (defaults to manifest metadata.slug)")
-	modulesInstallLocalCmd.Flags().String("binary", "", "Path to module executable (overrides manifest entrypoint.command)")
-	modulesInstallLocalCmd.Flags().Bool("copy-binary", false, "Copy module binary into the instance plugin directory")
-	modulesInstallLocalCmd.Flags().Bool("build", false, "Build the module from sources before registration")
-	modulesInstallLocalCmd.Flags().String("module-dir", "", "Module source directory (required with --build)")
-	modulesInstallLocalCmd.Flags().String("endpoint-address", "", "Address for gRPC/HTTP transport")
-	modulesInstallLocalCmd.Flags().StringArray("endpoint-arg", nil, "Additional command argument (repeatable)")
-	modulesInstallLocalCmd.Flags().StringArray("endpoint-env", nil, "Environment variable KEY=VALUE passed to the module (repeatable)")
-	modulesInstallLocalCmd.Flags().String("slot", "", "Optional slot to bind after registration (e.g. stt)")
-	modulesInstallLocalCmd.Flags().String("config", "", "Optional JSON configuration payload for slot binding")
+	adaptersInstallLocalCmd.Flags().String("manifest-file", "", "Path to adapter manifest (YAML or JSON)")
+	adaptersInstallLocalCmd.Flags().String("id", "", "Override adapter identifier (defaults to manifest metadata.slug)")
+	adaptersInstallLocalCmd.Flags().String("binary", "", "Path to adapter executable (overrides manifest entrypoint.command)")
+	adaptersInstallLocalCmd.Flags().Bool("copy-binary", false, "Copy adapter binary into the instance plugin directory")
+	adaptersInstallLocalCmd.Flags().Bool("build", false, "Build the adapter from sources before registration")
+	adaptersInstallLocalCmd.Flags().String("adapter-dir", "", "Adapter source directory (required with --build)")
+	adaptersInstallLocalCmd.Flags().String("endpoint-address", "", "Address for gRPC/HTTP transport")
+	adaptersInstallLocalCmd.Flags().StringArray("endpoint-arg", nil, "Additional command argument (repeatable)")
+	adaptersInstallLocalCmd.Flags().StringArray("endpoint-env", nil, "Environment variable KEY=VALUE passed to the adapter (repeatable)")
+	adaptersInstallLocalCmd.Flags().String("slot", "", "Optional slot to bind after registration (e.g. stt)")
+	adaptersInstallLocalCmd.Flags().String("config", "", "Optional JSON configuration payload for slot binding")
 
-	modulesLogsCmd := &cobra.Command{
+	adaptersLogsCmd := &cobra.Command{
 		Use:           "logs",
-		Short:         "Stream module logs and transcripts",
+		Short:         "Stream adapter logs and transcripts",
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		RunE:          modulesLogs,
+		RunE:          adaptersLogs,
 	}
-	modulesLogsCmd.Long = `Stream real-time module logs and speech transcripts.
+	adaptersLogsCmd.Long = `Stream real-time adapter logs and speech transcripts.
 
 Filters:
   --slot=SLOT       Filter logs by slot (e.g. stt)
@@ -374,56 +378,56 @@ Filters:
 
 Notes:
   - When both --slot and --adapter are provided, transcript entries are omitted
-    because transcripts are not yet mapped to specific modules.
+    because transcripts are not yet mapped to specific adapters.
   - Use --json to consume newline-delimited JSON for tooling and pipelines.
 
 Examples:
-  nupi modules logs
-  nupi modules logs --slot=stt
-  nupi modules logs --adapter=adapter.stt.mock
-  nupi modules logs --json | jq .
+  nupi adapters logs
+  nupi adapters logs --slot=stt
+  nupi adapters logs --adapter=adapter.stt.mock
+  nupi adapters logs --json | jq .
 `
-	modulesLogsCmd.Flags().String("slot", "", "Filter logs by slot (e.g. stt)")
-	modulesLogsCmd.Flags().String("adapter", "", "Filter logs by adapter identifier")
+	adaptersLogsCmd.Flags().String("slot", "", "Filter logs by slot (e.g. stt)")
+	adaptersLogsCmd.Flags().String("adapter", "", "Filter logs by adapter identifier")
 
-	modulesListCmd := &cobra.Command{
+	adaptersListCmd := &cobra.Command{
 		Use:           "list",
-		Short:         "Show module slots, bindings and runtime status",
+		Short:         "Show adapter slots, bindings and runtime status",
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		RunE:          modulesList,
+		RunE:          adaptersList,
 	}
 
-	modulesBindCmd := &cobra.Command{
+	adaptersBindCmd := &cobra.Command{
 		Use:           "bind <slot> <adapter>",
 		Short:         "Bind an adapter to a slot (optionally with config) and start it",
 		Args:          cobra.ExactArgs(2),
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		RunE:          modulesBind,
+		RunE:          adaptersBind,
 	}
-	modulesBindCmd.Flags().String("config", "", "JSON configuration payload sent to the adapter binding")
+	adaptersBindCmd.Flags().String("config", "", "JSON configuration payload sent to the adapter binding")
 
-	modulesStartCmd := &cobra.Command{
+	adaptersStartCmd := &cobra.Command{
 		Use:           "start <slot>",
-		Short:         "Start the module process for the given slot",
+		Short:         "Start the adapter process for the given slot",
 		Args:          cobra.ExactArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		RunE:          modulesStart,
+		RunE:          adaptersStart,
 	}
 
-	modulesStopCmd := &cobra.Command{
+	adaptersStopCmd := &cobra.Command{
 		Use:           "stop <slot>",
-		Short:         "Stop the module process for the given slot (binding is kept)",
+		Short:         "Stop the adapter process for the given slot (binding is kept)",
 		Args:          cobra.ExactArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		RunE:          modulesStop,
+		RunE:          adaptersStop,
 	}
 
-	modulesCmd.AddCommand(modulesRegisterCmd, modulesListCmd, modulesBindCmd, modulesStartCmd, modulesStopCmd, modulesLogsCmd)
-	modulesCmd.AddCommand(modulesInstallLocalCmd)
+	adaptersCmd.AddCommand(adaptersRegisterCmd, adaptersListCmd, adaptersBindCmd, adaptersStartCmd, adaptersStopCmd, adaptersLogsCmd)
+	adaptersCmd.AddCommand(adaptersInstallLocalCmd)
 
 	quickstartCmd := &cobra.Command{
 		Use:           "quickstart",
@@ -551,7 +555,7 @@ Examples:
 	pairRootCmd.AddCommand(pairClaimCmd)
 
 	voiceCmd := newVoiceCommand()
-	rootCmd.AddCommand(runCmd, listCmd, attachCmd, killCmd, loginCmd, inspectCmd, daemonCmd, configCmd, modulesCmd, quickstartCmd, voiceCmd, pairRootCmd)
+	rootCmd.AddCommand(runCmd, listCmd, attachCmd, killCmd, loginCmd, inspectCmd, daemonCmd, configCmd, adaptersCmd, quickstartCmd, voiceCmd, pairRootCmd)
 
 	// Execute
 	if err := rootCmd.Execute(); err != nil {
@@ -1218,11 +1222,11 @@ type transportConfigResponse struct {
 }
 
 type quickstartStatusPayload struct {
-	Completed                bool                  `json:"completed"`
-	CompletedAt              string                `json:"completed_at,omitempty"`
-	PendingSlots             []string              `json:"pending_slots"`
-	Modules                  []apihttp.ModuleEntry `json:"modules,omitempty"`
-	MissingReferenceAdapters []string              `json:"missing_reference_adapters,omitempty"`
+	Completed                bool                   `json:"completed"`
+	CompletedAt              string                 `json:"completed_at,omitempty"`
+	PendingSlots             []string               `json:"pending_slots"`
+	Adapters                 []apihttp.AdapterEntry `json:"adapters,omitempty"`
+	MissingReferenceAdapters []string               `json:"missing_reference_adapters,omitempty"`
 }
 
 type quickstartBindingRequest struct {
@@ -1230,7 +1234,7 @@ type quickstartBindingRequest struct {
 	AdapterID string `json:"adapter_id"`
 }
 
-type moduleActionRequestPayload struct {
+type adapterActionRequestPayload struct {
 	Slot      string          `json:"slot"`
 	AdapterID string          `json:"adapter_id,omitempty"`
 	Config    json.RawMessage `json:"config,omitempty"`
@@ -1358,74 +1362,74 @@ func runConfigMigration(c *client.Client) (apihttp.ConfigMigrationResult, error)
 	return payload, nil
 }
 
-func fetchModulesOverview(c *client.Client) (apihttp.ModulesOverview, error) {
-	req, err := http.NewRequest(http.MethodGet, c.BaseURL()+"/modules", nil)
+func fetchAdaptersOverview(c *client.Client) (apihttp.AdaptersOverview, error) {
+	req, err := http.NewRequest(http.MethodGet, c.BaseURL()+"/adapters", nil)
 	if err != nil {
-		return apihttp.ModulesOverview{}, err
+		return apihttp.AdaptersOverview{}, err
 	}
 	resp, err := doRequest(c, req)
 	if err != nil {
-		return apihttp.ModulesOverview{}, err
+		return apihttp.AdaptersOverview{}, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return apihttp.ModulesOverview{}, errors.New(readErrorMessage(resp))
+		return apihttp.AdaptersOverview{}, errors.New(readErrorMessage(resp))
 	}
 
-	var payload apihttp.ModulesOverview
+	var payload apihttp.AdaptersOverview
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return apihttp.ModulesOverview{}, err
+		return apihttp.AdaptersOverview{}, err
 	}
 	return payload, nil
 }
 
-func modulesRegisterHTTP(out *OutputFormatter, payload apihttp.ModuleRegistrationRequest) (apihttp.ModuleAdapter, error) {
+func adaptersRegisterHTTP(out *OutputFormatter, payload apihttp.AdapterRegistrationRequest) (apihttp.AdapterDescriptor, error) {
 	c, err := client.New()
 	if err != nil {
-		return apihttp.ModuleAdapter{}, out.Error("Failed to initialise client", err)
+		return apihttp.AdapterDescriptor{}, out.Error("Failed to initialise client", err)
 	}
 	defer c.Close()
 
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return apihttp.ModuleAdapter{}, err
+		return apihttp.AdapterDescriptor{}, err
 	}
 
-	req, err := http.NewRequest(http.MethodPost, c.BaseURL()+"/modules/register", bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, c.BaseURL()+"/adapters/register", bytes.NewReader(body))
 	if err != nil {
-		return apihttp.ModuleAdapter{}, err
+		return apihttp.AdapterDescriptor{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := doRequest(c, req)
 	if err != nil {
-		return apihttp.ModuleAdapter{}, err
+		return apihttp.AdapterDescriptor{}, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return apihttp.ModuleAdapter{}, errors.New(readErrorMessage(resp))
+		return apihttp.AdapterDescriptor{}, errors.New(readErrorMessage(resp))
 	}
 
-	var result apihttp.ModuleRegistrationResult
+	var result apihttp.AdapterRegistrationResult
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return apihttp.ModuleAdapter{}, err
+		return apihttp.AdapterDescriptor{}, err
 	}
 	return result.Adapter, nil
 }
 
-func loadAdapterManifestFile(path string) (*pluginmanifest.Manifest, string, error) {
+func loadAdapterManifestFile(path string) (*manifestpkg.Manifest, string, error) {
 	content, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return nil, "", err
 	}
-	manifest, err := pluginmanifest.Parse(content)
+	manifest, err := manifestpkg.Parse(content)
 	if err != nil {
 		return nil, "", fmt.Errorf("parse manifest: %w", err)
 	}
-	if manifest.Type != pluginmanifest.PluginTypeAdapter {
-		return nil, "", fmt.Errorf("manifest type must be %q", pluginmanifest.PluginTypeAdapter)
+	if manifest.Type != manifestpkg.PluginTypeAdapter {
+		return nil, "", fmt.Errorf("manifest type must be %q", manifestpkg.PluginTypeAdapter)
 	}
 	if manifest.Adapter == nil {
 		return nil, "", fmt.Errorf("adapter manifest missing spec")
@@ -1521,33 +1525,33 @@ func parseKeyValuePairs(values []string) (map[string]string, error) {
 	return out, nil
 }
 
-func postModuleAction(c *client.Client, endpoint string, payload moduleActionRequestPayload) (apihttp.ModuleEntry, error) {
+func postAdapterAction(c *client.Client, endpoint string, payload adapterActionRequestPayload) (apihttp.AdapterEntry, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return apihttp.ModuleEntry{}, err
+		return apihttp.AdapterEntry{}, err
 	}
 
 	req, err := http.NewRequest(http.MethodPost, c.BaseURL()+endpoint, bytes.NewReader(body))
 	if err != nil {
-		return apihttp.ModuleEntry{}, err
+		return apihttp.AdapterEntry{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := doRequest(c, req)
 	if err != nil {
-		return apihttp.ModuleEntry{}, err
+		return apihttp.AdapterEntry{}, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return apihttp.ModuleEntry{}, errors.New(readErrorMessage(resp))
+		return apihttp.AdapterEntry{}, errors.New(readErrorMessage(resp))
 	}
 
-	var actionResp apihttp.ModuleActionResult
+	var actionResp apihttp.AdapterActionResult
 	if err := json.NewDecoder(resp.Body).Decode(&actionResp); err != nil {
-		return apihttp.ModuleEntry{}, err
+		return apihttp.AdapterEntry{}, err
 	}
-	return actionResp.Module, nil
+	return actionResp.Adapter, nil
 }
 
 func fetchAdapters(c *client.Client) ([]adapterInfo, error) {
@@ -1628,17 +1632,17 @@ func resolveAdapterChoice(input string, ordered []adapterInfo, all []adapterInfo
 	return "", false
 }
 
-func modulesList(cmd *cobra.Command, _ []string) error {
+func adaptersList(cmd *cobra.Command, _ []string) error {
 	out := newOutputFormatter(cmd)
 
 	useGRPC, _ := cmd.Flags().GetBool("grpc")
 	if useGRPC {
-		return modulesListGRPC(out)
+		return adaptersListGRPC(out)
 	}
-	return modulesListHTTP(out)
+	return adaptersListHTTP(out)
 }
 
-func modulesRegister(cmd *cobra.Command, _ []string) error {
+func adaptersRegister(cmd *cobra.Command, _ []string) error {
 	out := newOutputFormatter(cmd)
 
 	adapterID, _ := cmd.Flags().GetString("id")
@@ -1650,7 +1654,7 @@ func modulesRegister(cmd *cobra.Command, _ []string) error {
 	adapterType, _ := cmd.Flags().GetString("type")
 	adapterType = strings.TrimSpace(adapterType)
 	if adapterType != "" {
-		if _, ok := allowedModuleTypes[adapterType]; !ok {
+		if _, ok := allowedAdapterSlots[adapterType]; !ok {
 			return out.Error(fmt.Sprintf("invalid type %q (expected: stt, tts, ai, vad, tunnel, detector, tool-cleaner)", adapterType), errors.New("invalid adapter type"))
 		}
 	}
@@ -1682,7 +1686,7 @@ func modulesRegister(cmd *cobra.Command, _ []string) error {
 		return out.Error("Invalid --endpoint-env value", err)
 	}
 
-	var endpoint *apihttp.ModuleEndpointConfig
+	var endpoint *apihttp.AdapterEndpointConfig
 	if transportOpt != "" || addressOpt != "" || commandOpt != "" || len(argsOpt) > 0 || len(endpointEnv) > 0 {
 		if transportOpt == "" {
 			return out.Error("--endpoint-transport required when endpoint flags are specified", errors.New("missing transport"))
@@ -1711,7 +1715,7 @@ func modulesRegister(cmd *cobra.Command, _ []string) error {
 			}
 		}
 
-		endpoint = &apihttp.ModuleEndpointConfig{
+		endpoint = &apihttp.AdapterEndpointConfig{
 			Transport: transportOpt,
 			Address:   addressOpt,
 			Command:   commandOpt,
@@ -1722,10 +1726,10 @@ func modulesRegister(cmd *cobra.Command, _ []string) error {
 
 	useGRPC, _ := cmd.Flags().GetBool("grpc")
 	if useGRPC {
-		return out.Error("Modules register over gRPC is not supported yet", errors.New("grpc not implemented"))
+		return out.Error("Adapters register over gRPC is not supported yet", errors.New("grpc not implemented"))
 	}
 
-	payload := apihttp.ModuleRegistrationRequest{
+	payload := apihttp.AdapterRegistrationRequest{
 		AdapterID: adapterID,
 		Source:    source,
 		Version:   version,
@@ -1735,13 +1739,13 @@ func modulesRegister(cmd *cobra.Command, _ []string) error {
 		Endpoint:  endpoint,
 	}
 
-	adapter, err := modulesRegisterHTTP(out, payload)
+	adapter, err := adaptersRegisterHTTP(out, payload)
 	if err != nil {
 		return err
 	}
 
 	if out.jsonMode {
-		return out.Print(apihttp.ModuleRegistrationResult{Adapter: adapter})
+		return out.Print(apihttp.AdapterRegistrationResult{Adapter: adapter})
 	}
 
 	fmt.Printf("Registered adapter %s", adapter.ID)
@@ -1752,7 +1756,7 @@ func modulesRegister(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-func modulesInstallLocal(cmd *cobra.Command, _ []string) error {
+func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 	out := newOutputFormatter(cmd)
 
 	manifestPath, _ := cmd.Flags().GetString("manifest-file")
@@ -1785,28 +1789,28 @@ func modulesInstallLocal(cmd *cobra.Command, _ []string) error {
 		return out.Error("Adapter identifier required", errors.New("manifest metadata.slug missing; use --id"))
 	}
 
-	moduleType := ""
+	slotType := ""
 	if manifest.Adapter != nil {
-		moduleType = strings.TrimSpace(manifest.Adapter.ModuleType)
+		slotType = strings.TrimSpace(manifest.Adapter.Slot)
 	}
-	if moduleType == "" {
-		return out.Error("Module type missing in manifest", errors.New("manifest spec.moduleType empty"))
+	if slotType == "" {
+		return out.Error("Adapter slot missing in manifest", errors.New("manifest spec.slot empty"))
 	}
-	if _, ok := allowedModuleTypes[moduleType]; !ok {
-		return out.Error(fmt.Sprintf("unsupported module type %q", moduleType), errors.New("invalid module type"))
+	if _, ok := allowedAdapterSlots[slotType]; !ok {
+		return out.Error(fmt.Sprintf("unsupported adapter slot %q", slotType), errors.New("invalid adapter slot"))
 	}
 	adapterName := strings.TrimSpace(manifest.Metadata.Name)
 	copyBinary, _ := cmd.Flags().GetBool("copy-binary")
 	buildFlag, _ := cmd.Flags().GetBool("build")
-	moduleDirFlag, _ := cmd.Flags().GetString("module-dir")
-	moduleDir := strings.TrimSpace(moduleDirFlag)
-	if moduleDir != "" {
-		moduleDir = config.ExpandPath(moduleDir)
-		absDir, err := filepath.Abs(moduleDir)
+	sourceDirFlag, _ := cmd.Flags().GetString("adapter-dir")
+	sourceDir := strings.TrimSpace(sourceDirFlag)
+	if sourceDir != "" {
+		sourceDir = config.ExpandPath(sourceDir)
+		absDir, err := filepath.Abs(sourceDir)
 		if err != nil {
-			return out.Error("Failed to resolve module directory", err)
+			return out.Error("Failed to resolve adapter directory", err)
 		}
-		moduleDir = absDir
+		sourceDir = absDir
 	}
 
 	binaryFlag, _ := cmd.Flags().GetString("binary")
@@ -1814,7 +1818,7 @@ func modulesInstallLocal(cmd *cobra.Command, _ []string) error {
 	if binaryFlag != "" {
 		binaryFlag = config.ExpandPath(binaryFlag)
 		if !filepath.IsAbs(binaryFlag) {
-			baseDir := moduleDir
+			baseDir := sourceDir
 			if baseDir == "" {
 				baseDir = manifestDir
 			}
@@ -1830,15 +1834,15 @@ func modulesInstallLocal(cmd *cobra.Command, _ []string) error {
 	if buildFlag && binaryFlag != "" {
 		return out.Error("Cannot combine --build with --binary", errors.New("conflicting binary options"))
 	}
-	if buildFlag && moduleDir == "" {
-		return out.Error("--module-dir is required when --build is set", errors.New("missing module directory"))
+	if buildFlag && sourceDir == "" {
+		return out.Error("--adapter-dir is required when --build is set", errors.New("missing adapter directory"))
 	}
 
-	slug := sanitizeModuleSlug(adapterID)
+	slug := sanitizeAdapterSlug(adapterID)
 
 	var command string
 	if buildFlag {
-		outputDir := filepath.Join(moduleDir, "dist")
+		outputDir := filepath.Join(sourceDir, "dist")
 		if err := os.MkdirAll(outputDir, 0o755); err != nil {
 			return out.Error("Failed to create dist directory", err)
 		}
@@ -1846,19 +1850,19 @@ func modulesInstallLocal(cmd *cobra.Command, _ []string) error {
 		buildCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		buildCmd := exec.CommandContext(buildCtx, "go", "build", "-o", outputPath, "./cmd/adapter")
-		buildCmd.Dir = moduleDir
+		buildCmd.Dir = sourceDir
 		buildCmd.Env = os.Environ()
 		if output, err := buildCmd.CombinedOutput(); err != nil {
 			buildErr := err
 			if trimmed := strings.TrimSpace(string(output)); trimmed != "" {
 				buildErr = fmt.Errorf("%w: %s", err, trimmed)
 			}
-			return out.Error("Failed to build module", buildErr)
+			return out.Error("Failed to build adapter", buildErr)
 		}
 		command = outputPath
 	} else if binaryFlag != "" {
 		if _, err := os.Stat(binaryFlag); err != nil {
-			return out.Error(fmt.Sprintf("module binary not found: %s", binaryFlag), err)
+			return out.Error(fmt.Sprintf("adapter binary not found: %s", binaryFlag), err)
 		}
 		command = binaryFlag
 	} else {
@@ -1869,7 +1873,7 @@ func modulesInstallLocal(cmd *cobra.Command, _ []string) error {
 		if command != "" {
 			command = config.ExpandPath(command)
 			if !filepath.IsAbs(command) && strings.Contains(command, string(os.PathSeparator)) {
-				baseDir := moduleDir
+				baseDir := sourceDir
 				if baseDir == "" {
 					baseDir = manifestDir
 				}
@@ -1928,13 +1932,13 @@ func modulesInstallLocal(cmd *cobra.Command, _ []string) error {
 
 	if copyBinary {
 		if command == "" {
-			return out.Error("--binary or --build required when --copy-binary is set", errors.New("missing module binary"))
+			return out.Error("--binary or --build required when --copy-binary is set", errors.New("missing adapter binary"))
 		}
 		srcPath := command
 		if !filepath.IsAbs(srcPath) {
 			absSrc, err := filepath.Abs(srcPath)
 			if err != nil {
-				return out.Error("Failed to resolve module binary", err)
+				return out.Error("Failed to resolve adapter binary", err)
 			}
 			srcPath = absSrc
 		}
@@ -1942,34 +1946,34 @@ func modulesInstallLocal(cmd *cobra.Command, _ []string) error {
 		if err != nil {
 			return out.Error("Failed to prepare instance directories", err)
 		}
-		moduleHome := filepath.Join(paths.Home, "plugins", slug)
-		binDir := filepath.Join(moduleHome, "bin")
+		adapterHome := filepath.Join(paths.Home, "plugins", slug)
+		binDir := filepath.Join(adapterHome, "bin")
 		if err := os.MkdirAll(binDir, 0o755); err != nil {
-			return out.Error("Failed to create module bin directory", err)
+			return out.Error("Failed to create adapter bin directory", err)
 		}
 		destName := filepath.Base(srcPath)
 		if destName == "" {
 			destName = slug
 		}
 		destPath := filepath.Join(binDir, destName)
-		if rel, err := filepath.Rel(moduleHome, destPath); err != nil || strings.HasPrefix(rel, "..") || strings.HasPrefix(filepath.ToSlash(rel), "../") {
-			return out.Error("Resolved destination escapes module directory", errors.New("invalid destination path"))
+		if rel, err := filepath.Rel(adapterHome, destPath); err != nil || strings.HasPrefix(rel, "..") || strings.HasPrefix(filepath.ToSlash(rel), "../") {
+			return out.Error("Resolved destination escapes adapter directory", errors.New("invalid destination path"))
 		}
 		if err := copyFile(srcPath, destPath, 0o755); err != nil {
-			return out.Error("Failed to copy module binary", err)
+			return out.Error("Failed to copy adapter binary", err)
 		}
 		command = destPath
 	}
 
-	payload := apihttp.ModuleRegistrationRequest{
+	payload := apihttp.AdapterRegistrationRequest{
 		AdapterID: adapterID,
 		Source:    "local",
-		Type:      moduleType,
+		Type:      slotType,
 		Name:      adapterName,
 		Manifest:  manifestJSON,
 	}
 
-	payload.Endpoint = &apihttp.ModuleEndpointConfig{
+	payload.Endpoint = &apihttp.AdapterEndpointConfig{
 		Transport: transport,
 		Address:   address,
 		Command:   command,
@@ -1977,13 +1981,13 @@ func modulesInstallLocal(cmd *cobra.Command, _ []string) error {
 		Env:       endpointEnv,
 	}
 
-	adapter, err := modulesRegisterHTTP(out, payload)
+	adapter, err := adaptersRegisterHTTP(out, payload)
 	if err != nil {
 		return err
 	}
 
 	if out.jsonMode {
-		if err := out.Print(apihttp.ModuleRegistrationResult{Adapter: adapter}); err != nil {
+		if err := out.Print(apihttp.AdapterRegistrationResult{Adapter: adapter}); err != nil {
 			return err
 		}
 	} else {
@@ -2006,7 +2010,7 @@ func modulesInstallLocal(cmd *cobra.Command, _ []string) error {
 		bindConfig = json.RawMessage(configRaw)
 	}
 
-	if err := modulesBindHTTP(out, slot, adapterID, bindConfig); err != nil {
+	if err := adaptersBindHTTP(out, slot, adapterID, bindConfig); err != nil {
 		return err
 	}
 
@@ -2016,12 +2020,12 @@ func modulesInstallLocal(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-func modulesLogs(cmd *cobra.Command, _ []string) error {
+func adaptersLogs(cmd *cobra.Command, _ []string) error {
 	out := newOutputFormatter(cmd)
 
 	useGRPC, _ := cmd.Flags().GetBool("grpc")
 	if useGRPC {
-		return out.Error("Modules logs over gRPC is not supported yet", errors.New("grpc not implemented"))
+		return out.Error("Adapters logs over gRPC is not supported yet", errors.New("grpc not implemented"))
 	}
 
 	slot, _ := cmd.Flags().GetString("slot")
@@ -2043,7 +2047,7 @@ func modulesLogs(cmd *cobra.Command, _ []string) error {
 		params.Set("adapter", adapter)
 	}
 
-	endpoint := c.BaseURL() + "/modules/logs"
+	endpoint := c.BaseURL() + "/adapters/logs"
 	if len(params) > 0 {
 		endpoint += "?" + params.Encode()
 	}
@@ -2055,17 +2059,17 @@ func modulesLogs(cmd *cobra.Command, _ []string) error {
 
 	resp, err := doRequest(c, req)
 	if err != nil {
-		return out.Error("Failed to fetch module logs", err)
+		return out.Error("Failed to fetch adapter logs", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return out.Error("Failed to fetch module logs", fmt.Errorf("%s", readErrorMessage(resp)))
+		return out.Error("Failed to fetch adapter logs", fmt.Errorf("%s", readErrorMessage(resp)))
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
-	buf := make([]byte, 0, moduleLogsScannerInitialBuf)
-	scanner.Buffer(buf, moduleLogsScannerMaxBuf)
+	buf := make([]byte, 0, adapterLogsScannerInitialBuf)
+	scanner.Buffer(buf, adapterLogsScannerMaxBuf)
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -2074,26 +2078,26 @@ func modulesLogs(cmd *cobra.Command, _ []string) error {
 			continue
 		}
 
-		var entry apihttp.ModuleLogStreamEntry
+		var entry apihttp.AdapterLogStreamEntry
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
 			fmt.Fprintf(os.Stderr, "decode log entry failed: %v\n", err)
 			fmt.Println(line)
 			continue
 		}
-		printModuleLogEntry(entry)
+		printAdapterLogEntry(entry)
 	}
 
 	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
 		if errors.Is(err, bufio.ErrTooLong) {
-			return out.Error("Module log entry exceeded 1MB limit", err)
+			return out.Error("Adapter log entry exceeded 1MB limit", err)
 		}
-		return out.Error("Module log stream ended with error", err)
+		return out.Error("Adapter log stream ended with error", err)
 	}
 
 	return nil
 }
 
-func printModuleLogEntry(entry apihttp.ModuleLogStreamEntry) {
+func printAdapterLogEntry(entry apihttp.AdapterLogStreamEntry) {
 	ts := entry.Timestamp
 	if ts.IsZero() {
 		ts = time.Now().UTC()
@@ -2107,16 +2111,16 @@ func printModuleLogEntry(entry apihttp.ModuleLogStreamEntry) {
 			level = "INFO"
 		}
 		slot := strings.TrimSpace(entry.Slot)
-		moduleID := strings.TrimSpace(entry.ModuleID)
+		entryAdapterID := strings.TrimSpace(entry.AdapterID)
 		if slot != "" {
-			if moduleID != "" {
-				fmt.Printf("%s [%s] %s %s: %s\n", timestamp, slot, moduleID, level, entry.Message)
+			if entryAdapterID != "" {
+				fmt.Printf("%s [%s] %s %s: %s\n", timestamp, slot, entryAdapterID, level, entry.Message)
 			} else {
 				fmt.Printf("%s [%s] %s: %s\n", timestamp, slot, level, entry.Message)
 			}
 		} else {
-			if moduleID != "" {
-				fmt.Printf("%s %s %s: %s\n", timestamp, moduleID, level, entry.Message)
+			if entryAdapterID != "" {
+				fmt.Printf("%s %s %s: %s\n", timestamp, entryAdapterID, level, entry.Message)
 			} else {
 				fmt.Printf("%s %s: %s\n", timestamp, level, entry.Message)
 			}
@@ -2133,7 +2137,7 @@ func printModuleLogEntry(entry apihttp.ModuleLogStreamEntry) {
 	}
 }
 
-func modulesBind(cmd *cobra.Command, args []string) error {
+func adaptersBind(cmd *cobra.Command, args []string) error {
 	out := newOutputFormatter(cmd)
 
 	slot := strings.TrimSpace(args[0])
@@ -2157,12 +2161,12 @@ func modulesBind(cmd *cobra.Command, args []string) error {
 
 	useGRPC, _ := cmd.Flags().GetBool("grpc")
 	if useGRPC {
-		return modulesBindGRPC(out, slot, adapter, string(raw))
+		return adaptersBindGRPC(out, slot, adapter, string(raw))
 	}
-	return modulesBindHTTP(out, slot, adapter, raw)
+	return adaptersBindHTTP(out, slot, adapter, raw)
 }
 
-func modulesStart(cmd *cobra.Command, args []string) error {
+func adaptersStart(cmd *cobra.Command, args []string) error {
 	out := newOutputFormatter(cmd)
 
 	slot := strings.TrimSpace(args[0])
@@ -2172,12 +2176,12 @@ func modulesStart(cmd *cobra.Command, args []string) error {
 
 	useGRPC, _ := cmd.Flags().GetBool("grpc")
 	if useGRPC {
-		return modulesStartGRPC(out, slot)
+		return adaptersStartGRPC(out, slot)
 	}
-	return modulesStartHTTP(out, slot)
+	return adaptersStartHTTP(out, slot)
 }
 
-func modulesStop(cmd *cobra.Command, args []string) error {
+func adaptersStop(cmd *cobra.Command, args []string) error {
 	out := newOutputFormatter(cmd)
 
 	slot := strings.TrimSpace(args[0])
@@ -2187,38 +2191,38 @@ func modulesStop(cmd *cobra.Command, args []string) error {
 
 	useGRPC, _ := cmd.Flags().GetBool("grpc")
 	if useGRPC {
-		return modulesStopGRPC(out, slot)
+		return adaptersStopGRPC(out, slot)
 	}
-	return modulesStopHTTP(out, slot)
+	return adaptersStopHTTP(out, slot)
 }
 
-func modulesListHTTP(out *OutputFormatter) error {
+func adaptersListHTTP(out *OutputFormatter) error {
 	c, err := client.New()
 	if err != nil {
 		return out.Error("Failed to initialise client", err)
 	}
 	defer c.Close()
 
-	overview, err := fetchModulesOverview(c)
+	overview, err := fetchAdaptersOverview(c)
 	if err != nil {
-		return out.Error("Failed to fetch modules overview", err)
+		return out.Error("Failed to fetch adapters overview", err)
 	}
 
 	if out.jsonMode {
 		return out.Print(overview)
 	}
 
-	if len(overview.Modules) == 0 {
-		fmt.Println("No module slots found.")
+	if len(overview.Adapters) == 0 {
+		fmt.Println("No adapter slots found.")
 		return nil
 	}
 
-	printModuleTable(overview.Modules)
-	printModuleRuntimeMessages(overview.Modules)
+	printAdapterTable(overview.Adapters)
+	printAdapterRuntimeMessages(overview.Adapters)
 	return nil
 }
 
-func modulesListGRPC(out *OutputFormatter) error {
+func adaptersListGRPC(out *OutputFormatter) error {
 	gc, err := grpcclient.New()
 	if err != nil {
 		return out.Error("Failed to connect to daemon via gRPC", err)
@@ -2228,51 +2232,51 @@ func modulesListGRPC(out *OutputFormatter) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	resp, err := gc.ModulesOverview(ctx)
+	resp, err := gc.AdaptersOverview(ctx)
 	if err != nil {
-		return out.Error("Failed to fetch modules overview via gRPC", err)
+		return out.Error("Failed to fetch adapters overview via gRPC", err)
 	}
 
-	overview := modulesOverviewFromProto(resp)
+	overview := adaptersOverviewFromProto(resp)
 	if out.jsonMode {
 		return out.Print(overview)
 	}
 
-	if len(overview.Modules) == 0 {
-		fmt.Println("No module slots found.")
+	if len(overview.Adapters) == 0 {
+		fmt.Println("No adapter slots found.")
 		return nil
 	}
 
-	printModuleTable(overview.Modules)
-	printModuleRuntimeMessages(overview.Modules)
+	printAdapterTable(overview.Adapters)
+	printAdapterRuntimeMessages(overview.Adapters)
 	return nil
 }
 
-func modulesBindHTTP(out *OutputFormatter, slot, adapter string, raw json.RawMessage) error {
+func adaptersBindHTTP(out *OutputFormatter, slot, adapter string, raw json.RawMessage) error {
 	c, err := client.New()
 	if err != nil {
 		return out.Error("Failed to initialise client", err)
 	}
 	defer c.Close()
 
-	entry, err := postModuleAction(c, "/modules/bind", moduleActionRequestPayload{
+	entry, err := postAdapterAction(c, "/adapters/bind", adapterActionRequestPayload{
 		Slot:      slot,
 		AdapterID: adapter,
 		Config:    raw,
 	})
 	if err != nil {
-		return out.Error("Failed to bind module", err)
+		return out.Error("Failed to bind adapter", err)
 	}
 
 	if out.jsonMode {
-		return out.Print(apihttp.ModuleActionResult{Module: entry})
+		return out.Print(apihttp.AdapterActionResult{Adapter: entry})
 	}
 
-	printModuleSummary("Bound", entry)
+	printAdapterSummary("Bound", entry)
 	return nil
 }
 
-func modulesBindGRPC(out *OutputFormatter, slot, adapter, cfg string) error {
+func adaptersBindGRPC(out *OutputFormatter, slot, adapter, cfg string) error {
 	gc, err := grpcclient.New()
 	if err != nil {
 		return out.Error("Failed to connect to daemon via gRPC", err)
@@ -2282,47 +2286,47 @@ func modulesBindGRPC(out *OutputFormatter, slot, adapter, cfg string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	req := &apiv1.BindModuleRequest{
+	req := &apiv1.BindAdapterRequest{
 		Slot:       slot,
 		AdapterId:  adapter,
 		ConfigJson: strings.TrimSpace(cfg),
 	}
 
-	resp, err := gc.BindModule(ctx, req)
+	resp, err := gc.BindAdapter(ctx, req)
 	if err != nil {
-		return out.Error("Failed to bind module via gRPC", err)
+		return out.Error("Failed to bind adapter via gRPC", err)
 	}
 
-	entry := moduleEntryFromProto(resp.GetModule())
+	entry := adapterEntryFromProto(resp.GetAdapter())
 	if out.jsonMode {
-		return out.Print(apihttp.ModuleActionResult{Module: entry})
+		return out.Print(apihttp.AdapterActionResult{Adapter: entry})
 	}
 
-	printModuleSummary("Bound", entry)
+	printAdapterSummary("Bound", entry)
 	return nil
 }
 
-func modulesStartHTTP(out *OutputFormatter, slot string) error {
+func adaptersStartHTTP(out *OutputFormatter, slot string) error {
 	c, err := client.New()
 	if err != nil {
 		return out.Error("Failed to initialise client", err)
 	}
 	defer c.Close()
 
-	entry, err := postModuleAction(c, "/modules/start", moduleActionRequestPayload{Slot: slot})
+	entry, err := postAdapterAction(c, "/adapters/start", adapterActionRequestPayload{Slot: slot})
 	if err != nil {
-		return out.Error("Failed to start module", err)
+		return out.Error("Failed to start adapter", err)
 	}
 
 	if out.jsonMode {
-		return out.Print(apihttp.ModuleActionResult{Module: entry})
+		return out.Print(apihttp.AdapterActionResult{Adapter: entry})
 	}
 
-	printModuleSummary("Started", entry)
+	printAdapterSummary("Started", entry)
 	return nil
 }
 
-func modulesStartGRPC(out *OutputFormatter, slot string) error {
+func adaptersStartGRPC(out *OutputFormatter, slot string) error {
 	gc, err := grpcclient.New()
 	if err != nil {
 		return out.Error("Failed to connect to daemon via gRPC", err)
@@ -2332,41 +2336,41 @@ func modulesStartGRPC(out *OutputFormatter, slot string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	resp, err := gc.StartModule(ctx, slot)
+	resp, err := gc.StartAdapter(ctx, slot)
 	if err != nil {
-		return out.Error("Failed to start module via gRPC", err)
+		return out.Error("Failed to start adapter via gRPC", err)
 	}
 
-	entry := moduleEntryFromProto(resp.GetModule())
+	entry := adapterEntryFromProto(resp.GetAdapter())
 	if out.jsonMode {
-		return out.Print(apihttp.ModuleActionResult{Module: entry})
+		return out.Print(apihttp.AdapterActionResult{Adapter: entry})
 	}
 
-	printModuleSummary("Started", entry)
+	printAdapterSummary("Started", entry)
 	return nil
 }
 
-func modulesStopHTTP(out *OutputFormatter, slot string) error {
+func adaptersStopHTTP(out *OutputFormatter, slot string) error {
 	c, err := client.New()
 	if err != nil {
 		return out.Error("Failed to initialise client", err)
 	}
 	defer c.Close()
 
-	entry, err := postModuleAction(c, "/modules/stop", moduleActionRequestPayload{Slot: slot})
+	entry, err := postAdapterAction(c, "/adapters/stop", adapterActionRequestPayload{Slot: slot})
 	if err != nil {
-		return out.Error("Failed to stop module", err)
+		return out.Error("Failed to stop adapter", err)
 	}
 
 	if out.jsonMode {
-		return out.Print(apihttp.ModuleActionResult{Module: entry})
+		return out.Print(apihttp.AdapterActionResult{Adapter: entry})
 	}
 
-	printModuleSummary("Stopped", entry)
+	printAdapterSummary("Stopped", entry)
 	return nil
 }
 
-func modulesStopGRPC(out *OutputFormatter, slot string) error {
+func adaptersStopGRPC(out *OutputFormatter, slot string) error {
 	gc, err := grpcclient.New()
 	if err != nil {
 		return out.Error("Failed to connect to daemon via gRPC", err)
@@ -2376,38 +2380,38 @@ func modulesStopGRPC(out *OutputFormatter, slot string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	resp, err := gc.StopModule(ctx, slot)
+	resp, err := gc.StopAdapter(ctx, slot)
 	if err != nil {
-		return out.Error("Failed to stop module via gRPC", err)
+		return out.Error("Failed to stop adapter via gRPC", err)
 	}
 
-	entry := moduleEntryFromProto(resp.GetModule())
+	entry := adapterEntryFromProto(resp.GetAdapter())
 	if out.jsonMode {
-		return out.Print(apihttp.ModuleActionResult{Module: entry})
+		return out.Print(apihttp.AdapterActionResult{Adapter: entry})
 	}
 
-	printModuleSummary("Stopped", entry)
+	printAdapterSummary("Stopped", entry)
 	return nil
 }
 
-func modulesOverviewFromProto(resp *apiv1.ModulesOverviewResponse) apihttp.ModulesOverview {
+func adaptersOverviewFromProto(resp *apiv1.AdaptersOverviewResponse) apihttp.AdaptersOverview {
 	if resp == nil {
-		return apihttp.ModulesOverview{}
+		return apihttp.AdaptersOverview{}
 	}
-	out := apihttp.ModulesOverview{
-		Modules: make([]apihttp.ModuleEntry, 0, len(resp.GetModules())),
+	out := apihttp.AdaptersOverview{
+		Adapters: make([]apihttp.AdapterEntry, 0, len(resp.GetAdapters())),
 	}
-	for _, entry := range resp.GetModules() {
-		out.Modules = append(out.Modules, moduleEntryFromProto(entry))
+	for _, entry := range resp.GetAdapters() {
+		out.Adapters = append(out.Adapters, adapterEntryFromProto(entry))
 	}
 	return out
 }
 
-func moduleEntryFromProto(entry *apiv1.ModuleEntry) apihttp.ModuleEntry {
+func adapterEntryFromProto(entry *apiv1.AdapterEntry) apihttp.AdapterEntry {
 	if entry == nil {
-		return apihttp.ModuleEntry{}
+		return apihttp.AdapterEntry{}
 	}
-	out := apihttp.ModuleEntry{
+	out := apihttp.AdapterEntry{
 		Slot:      entry.GetSlot(),
 		Status:    entry.GetStatus(),
 		Config:    entry.GetConfigJson(),
@@ -2420,11 +2424,11 @@ func moduleEntryFromProto(entry *apiv1.ModuleEntry) apihttp.ModuleEntry {
 		}
 	}
 	if rt := entry.GetRuntime(); rt != nil {
-		runtime := apihttp.ModuleRuntime{
-			ModuleID: rt.GetModuleId(),
-			Health:   rt.GetHealth(),
-			Message:  rt.GetMessage(),
-			Extra:    rt.GetExtra(),
+		runtime := apihttp.AdapterRuntime{
+			AdapterID: rt.GetAdapterId(),
+			Health:    rt.GetHealth(),
+			Message:   rt.GetMessage(),
+			Extra:     rt.GetExtra(),
 		}
 		if updated := rt.GetUpdatedAt(); updated != nil {
 			runtime.UpdatedAt = updated.AsTime().UTC().Format(time.RFC3339)
@@ -2438,37 +2442,37 @@ func moduleEntryFromProto(entry *apiv1.ModuleEntry) apihttp.ModuleEntry {
 	return out
 }
 
-func moduleAdapterLabel(entry apihttp.ModuleEntry) string {
+func adapterLabel(entry apihttp.AdapterEntry) string {
 	if entry.AdapterID == nil || strings.TrimSpace(*entry.AdapterID) == "" {
 		return "-"
 	}
 	return *entry.AdapterID
 }
 
-func moduleHealthLabel(entry apihttp.ModuleEntry) string {
+func adapterHealthLabel(entry apihttp.AdapterEntry) string {
 	if entry.Runtime == nil || strings.TrimSpace(entry.Runtime.Health) == "" {
 		return "-"
 	}
 	health := entry.Runtime.Health
-	if strings.TrimSpace(entry.Runtime.ModuleID) != "" {
-		health = fmt.Sprintf("%s (%s)", health, entry.Runtime.ModuleID)
+	if strings.TrimSpace(entry.Runtime.AdapterID) != "" {
+		health = fmt.Sprintf("%s (%s)", health, entry.Runtime.AdapterID)
 	}
 	return health
 }
 
-func sortedModules(entries []apihttp.ModuleEntry) []apihttp.ModuleEntry {
+func sortedAdapters(entries []apihttp.AdapterEntry) []apihttp.AdapterEntry {
 	if len(entries) == 0 {
 		return nil
 	}
-	sorted := append([]apihttp.ModuleEntry(nil), entries...)
+	sorted := append([]apihttp.AdapterEntry(nil), entries...)
 	sort.Slice(sorted, func(i, j int) bool {
 		return strings.Compare(sorted[i].Slot, sorted[j].Slot) < 0
 	})
 	return sorted
 }
 
-func printModuleTable(entries []apihttp.ModuleEntry) {
-	sorted := sortedModules(entries)
+func printAdapterTable(entries []apihttp.AdapterEntry) {
+	sorted := sortedAdapters(entries)
 	if len(sorted) == 0 {
 		return
 	}
@@ -2478,27 +2482,27 @@ func printModuleTable(entries []apihttp.ModuleEntry) {
 	for _, entry := range sorted {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
 			entry.Slot,
-			moduleAdapterLabel(entry),
+			adapterLabel(entry),
 			entry.Status,
-			moduleHealthLabel(entry),
+			adapterHealthLabel(entry),
 			entry.UpdatedAt,
 		)
 	}
 	w.Flush()
 }
 
-func printModuleRuntimeMessages(entries []apihttp.ModuleEntry) {
-	for _, entry := range sortedModules(entries) {
+func printAdapterRuntimeMessages(entries []apihttp.AdapterEntry) {
+	for _, entry := range sortedAdapters(entries) {
 		if entry.Runtime != nil && strings.TrimSpace(entry.Runtime.Message) != "" {
 			fmt.Printf("%s: %s\n", entry.Slot, entry.Runtime.Message)
 		}
 	}
 }
 
-func printModuleSummary(action string, entry apihttp.ModuleEntry) {
-	fmt.Printf("%s slot %s -> %s (status: %s)\n", action, entry.Slot, moduleAdapterLabel(entry), entry.Status)
+func printAdapterSummary(action string, entry apihttp.AdapterEntry) {
+	fmt.Printf("%s slot %s -> %s (status: %s)\n", action, entry.Slot, adapterLabel(entry), entry.Status)
 	if entry.Runtime != nil {
-		fmt.Printf("  Health: %s\n", moduleHealthLabel(entry))
+		fmt.Printf("  Health: %s\n", adapterHealthLabel(entry))
 		if entry.Runtime.Message != "" {
 			fmt.Printf("  Message: %s\n", entry.Runtime.Message)
 		}
@@ -2526,10 +2530,10 @@ func quickstartInit(cmd *cobra.Command, args []string) error {
 		return out.Error("Failed to fetch quickstart status", err)
 	}
 
-	if len(status.Modules) > 0 {
-		fmt.Println("Current module status:")
-		printModuleTable(status.Modules)
-		printModuleRuntimeMessages(status.Modules)
+	if len(status.Adapters) > 0 {
+		fmt.Println("Current adapter status:")
+		printAdapterTable(status.Adapters)
+		printAdapterRuntimeMessages(status.Adapters)
 		fmt.Println()
 	}
 
@@ -2653,10 +2657,10 @@ func quickstartInit(cmd *cobra.Command, args []string) error {
 		fmt.Println("No pending slots remaining.")
 	}
 
-	if len(result.Modules) > 0 {
-		fmt.Println("\nUpdated module status:")
-		printModuleTable(result.Modules)
-		printModuleRuntimeMessages(result.Modules)
+	if len(result.Adapters) > 0 {
+		fmt.Println("\nUpdated adapter status:")
+		printAdapterTable(result.Adapters)
+		printAdapterRuntimeMessages(result.Adapters)
 	}
 
 	printMissingReferenceAdapters(result.MissingReferenceAdapters, true)
@@ -2699,12 +2703,12 @@ func quickstartStatus(cmd *cobra.Command, args []string) error {
 		printMissingReferenceAdapters(payload.MissingReferenceAdapters, true)
 	}
 
-	if len(payload.Modules) == 0 {
-		fmt.Println("Modules: none reported")
+	if len(payload.Adapters) == 0 {
+		fmt.Println("Adapters: none reported")
 	} else {
-		fmt.Println("\nModules:")
-		printModuleTable(payload.Modules)
-		printModuleRuntimeMessages(payload.Modules)
+		fmt.Println("\nAdapters:")
+		printAdapterTable(payload.Adapters)
+		printAdapterRuntimeMessages(payload.Adapters)
 	}
 
 	return nil
@@ -2799,12 +2803,12 @@ func quickstartComplete(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	if len(status.Modules) == 0 {
-		fmt.Println("Modules: none reported")
+	if len(status.Adapters) == 0 {
+		fmt.Println("Adapters: none reported")
 	} else {
-		fmt.Println("\nModules:")
-		printModuleTable(status.Modules)
-		printModuleRuntimeMessages(status.Modules)
+		fmt.Println("\nAdapters:")
+		printAdapterTable(status.Adapters)
+		printAdapterRuntimeMessages(status.Adapters)
 	}
 
 	return nil
@@ -3401,7 +3405,7 @@ func pairClaim(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func sanitizeModuleSlug(value string) string {
+func sanitizeAdapterSlug(value string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
 	var b strings.Builder
 	for _, r := range value {
@@ -3416,10 +3420,10 @@ func sanitizeModuleSlug(value string) string {
 	}
 	res := strings.Trim(b.String(), "-_")
 	if res == "" {
-		return "module"
+		return "adapter"
 	}
-	if len(res) > moduleSlugMaxLength {
-		return res[:moduleSlugMaxLength]
+	if len(res) > adapterSlugMaxLength {
+		return res[:adapterSlugMaxLength]
 	}
 	return res
 }

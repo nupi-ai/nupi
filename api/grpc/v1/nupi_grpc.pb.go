@@ -311,200 +311,200 @@ var SessionsService_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
-	ModulesService_Overview_FullMethodName    = "/nupi.api.v1.ModulesService/Overview"
-	ModulesService_BindModule_FullMethodName  = "/nupi.api.v1.ModulesService/BindModule"
-	ModulesService_StartModule_FullMethodName = "/nupi.api.v1.ModulesService/StartModule"
-	ModulesService_StopModule_FullMethodName  = "/nupi.api.v1.ModulesService/StopModule"
+	AdapterRuntimeService_Overview_FullMethodName     = "/nupi.api.v1.AdapterRuntimeService/Overview"
+	AdapterRuntimeService_BindAdapter_FullMethodName  = "/nupi.api.v1.AdapterRuntimeService/BindAdapter"
+	AdapterRuntimeService_StartAdapter_FullMethodName = "/nupi.api.v1.AdapterRuntimeService/StartAdapter"
+	AdapterRuntimeService_StopAdapter_FullMethodName  = "/nupi.api.v1.AdapterRuntimeService/StopAdapter"
 )
 
-// ModulesServiceClient is the client API for ModulesService service.
+// AdapterRuntimeServiceClient is the client API for AdapterRuntimeService service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
-type ModulesServiceClient interface {
-	Overview(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*ModulesOverviewResponse, error)
-	BindModule(ctx context.Context, in *BindModuleRequest, opts ...grpc.CallOption) (*ModuleActionResponse, error)
-	StartModule(ctx context.Context, in *ModuleSlotRequest, opts ...grpc.CallOption) (*ModuleActionResponse, error)
-	StopModule(ctx context.Context, in *ModuleSlotRequest, opts ...grpc.CallOption) (*ModuleActionResponse, error)
+type AdapterRuntimeServiceClient interface {
+	Overview(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*AdaptersOverviewResponse, error)
+	BindAdapter(ctx context.Context, in *BindAdapterRequest, opts ...grpc.CallOption) (*AdapterActionResponse, error)
+	StartAdapter(ctx context.Context, in *AdapterSlotRequest, opts ...grpc.CallOption) (*AdapterActionResponse, error)
+	StopAdapter(ctx context.Context, in *AdapterSlotRequest, opts ...grpc.CallOption) (*AdapterActionResponse, error)
 }
 
-type modulesServiceClient struct {
+type adapterRuntimeServiceClient struct {
 	cc grpc.ClientConnInterface
 }
 
-func NewModulesServiceClient(cc grpc.ClientConnInterface) ModulesServiceClient {
-	return &modulesServiceClient{cc}
+func NewAdapterRuntimeServiceClient(cc grpc.ClientConnInterface) AdapterRuntimeServiceClient {
+	return &adapterRuntimeServiceClient{cc}
 }
 
-func (c *modulesServiceClient) Overview(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*ModulesOverviewResponse, error) {
-	out := new(ModulesOverviewResponse)
-	err := c.cc.Invoke(ctx, ModulesService_Overview_FullMethodName, in, out, opts...)
+func (c *adapterRuntimeServiceClient) Overview(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*AdaptersOverviewResponse, error) {
+	out := new(AdaptersOverviewResponse)
+	err := c.cc.Invoke(ctx, AdapterRuntimeService_Overview_FullMethodName, in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *modulesServiceClient) BindModule(ctx context.Context, in *BindModuleRequest, opts ...grpc.CallOption) (*ModuleActionResponse, error) {
-	out := new(ModuleActionResponse)
-	err := c.cc.Invoke(ctx, ModulesService_BindModule_FullMethodName, in, out, opts...)
+func (c *adapterRuntimeServiceClient) BindAdapter(ctx context.Context, in *BindAdapterRequest, opts ...grpc.CallOption) (*AdapterActionResponse, error) {
+	out := new(AdapterActionResponse)
+	err := c.cc.Invoke(ctx, AdapterRuntimeService_BindAdapter_FullMethodName, in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *modulesServiceClient) StartModule(ctx context.Context, in *ModuleSlotRequest, opts ...grpc.CallOption) (*ModuleActionResponse, error) {
-	out := new(ModuleActionResponse)
-	err := c.cc.Invoke(ctx, ModulesService_StartModule_FullMethodName, in, out, opts...)
+func (c *adapterRuntimeServiceClient) StartAdapter(ctx context.Context, in *AdapterSlotRequest, opts ...grpc.CallOption) (*AdapterActionResponse, error) {
+	out := new(AdapterActionResponse)
+	err := c.cc.Invoke(ctx, AdapterRuntimeService_StartAdapter_FullMethodName, in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *modulesServiceClient) StopModule(ctx context.Context, in *ModuleSlotRequest, opts ...grpc.CallOption) (*ModuleActionResponse, error) {
-	out := new(ModuleActionResponse)
-	err := c.cc.Invoke(ctx, ModulesService_StopModule_FullMethodName, in, out, opts...)
+func (c *adapterRuntimeServiceClient) StopAdapter(ctx context.Context, in *AdapterSlotRequest, opts ...grpc.CallOption) (*AdapterActionResponse, error) {
+	out := new(AdapterActionResponse)
+	err := c.cc.Invoke(ctx, AdapterRuntimeService_StopAdapter_FullMethodName, in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-// ModulesServiceServer is the server API for ModulesService service.
-// All implementations must embed UnimplementedModulesServiceServer
+// AdapterRuntimeServiceServer is the server API for AdapterRuntimeService service.
+// All implementations must embed UnimplementedAdapterRuntimeServiceServer
 // for forward compatibility
-type ModulesServiceServer interface {
-	Overview(context.Context, *emptypb.Empty) (*ModulesOverviewResponse, error)
-	BindModule(context.Context, *BindModuleRequest) (*ModuleActionResponse, error)
-	StartModule(context.Context, *ModuleSlotRequest) (*ModuleActionResponse, error)
-	StopModule(context.Context, *ModuleSlotRequest) (*ModuleActionResponse, error)
-	mustEmbedUnimplementedModulesServiceServer()
+type AdapterRuntimeServiceServer interface {
+	Overview(context.Context, *emptypb.Empty) (*AdaptersOverviewResponse, error)
+	BindAdapter(context.Context, *BindAdapterRequest) (*AdapterActionResponse, error)
+	StartAdapter(context.Context, *AdapterSlotRequest) (*AdapterActionResponse, error)
+	StopAdapter(context.Context, *AdapterSlotRequest) (*AdapterActionResponse, error)
+	mustEmbedUnimplementedAdapterRuntimeServiceServer()
 }
 
-// UnimplementedModulesServiceServer must be embedded to have forward compatible implementations.
-type UnimplementedModulesServiceServer struct {
+// UnimplementedAdapterRuntimeServiceServer must be embedded to have forward compatible implementations.
+type UnimplementedAdapterRuntimeServiceServer struct {
 }
 
-func (UnimplementedModulesServiceServer) Overview(context.Context, *emptypb.Empty) (*ModulesOverviewResponse, error) {
+func (UnimplementedAdapterRuntimeServiceServer) Overview(context.Context, *emptypb.Empty) (*AdaptersOverviewResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Overview not implemented")
 }
-func (UnimplementedModulesServiceServer) BindModule(context.Context, *BindModuleRequest) (*ModuleActionResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method BindModule not implemented")
+func (UnimplementedAdapterRuntimeServiceServer) BindAdapter(context.Context, *BindAdapterRequest) (*AdapterActionResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method BindAdapter not implemented")
 }
-func (UnimplementedModulesServiceServer) StartModule(context.Context, *ModuleSlotRequest) (*ModuleActionResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method StartModule not implemented")
+func (UnimplementedAdapterRuntimeServiceServer) StartAdapter(context.Context, *AdapterSlotRequest) (*AdapterActionResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method StartAdapter not implemented")
 }
-func (UnimplementedModulesServiceServer) StopModule(context.Context, *ModuleSlotRequest) (*ModuleActionResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method StopModule not implemented")
+func (UnimplementedAdapterRuntimeServiceServer) StopAdapter(context.Context, *AdapterSlotRequest) (*AdapterActionResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method StopAdapter not implemented")
 }
-func (UnimplementedModulesServiceServer) mustEmbedUnimplementedModulesServiceServer() {}
+func (UnimplementedAdapterRuntimeServiceServer) mustEmbedUnimplementedAdapterRuntimeServiceServer() {}
 
-// UnsafeModulesServiceServer may be embedded to opt out of forward compatibility for this service.
-// Use of this interface is not recommended, as added methods to ModulesServiceServer will
+// UnsafeAdapterRuntimeServiceServer may be embedded to opt out of forward compatibility for this service.
+// Use of this interface is not recommended, as added methods to AdapterRuntimeServiceServer will
 // result in compilation errors.
-type UnsafeModulesServiceServer interface {
-	mustEmbedUnimplementedModulesServiceServer()
+type UnsafeAdapterRuntimeServiceServer interface {
+	mustEmbedUnimplementedAdapterRuntimeServiceServer()
 }
 
-func RegisterModulesServiceServer(s grpc.ServiceRegistrar, srv ModulesServiceServer) {
-	s.RegisterService(&ModulesService_ServiceDesc, srv)
+func RegisterAdapterRuntimeServiceServer(s grpc.ServiceRegistrar, srv AdapterRuntimeServiceServer) {
+	s.RegisterService(&AdapterRuntimeService_ServiceDesc, srv)
 }
 
-func _ModulesService_Overview_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _AdapterRuntimeService_Overview_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(emptypb.Empty)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(ModulesServiceServer).Overview(ctx, in)
+		return srv.(AdapterRuntimeServiceServer).Overview(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: ModulesService_Overview_FullMethodName,
+		FullMethod: AdapterRuntimeService_Overview_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(ModulesServiceServer).Overview(ctx, req.(*emptypb.Empty))
+		return srv.(AdapterRuntimeServiceServer).Overview(ctx, req.(*emptypb.Empty))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _ModulesService_BindModule_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(BindModuleRequest)
+func _AdapterRuntimeService_BindAdapter_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BindAdapterRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(ModulesServiceServer).BindModule(ctx, in)
+		return srv.(AdapterRuntimeServiceServer).BindAdapter(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: ModulesService_BindModule_FullMethodName,
+		FullMethod: AdapterRuntimeService_BindAdapter_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(ModulesServiceServer).BindModule(ctx, req.(*BindModuleRequest))
+		return srv.(AdapterRuntimeServiceServer).BindAdapter(ctx, req.(*BindAdapterRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _ModulesService_StartModule_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ModuleSlotRequest)
+func _AdapterRuntimeService_StartAdapter_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AdapterSlotRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(ModulesServiceServer).StartModule(ctx, in)
+		return srv.(AdapterRuntimeServiceServer).StartAdapter(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: ModulesService_StartModule_FullMethodName,
+		FullMethod: AdapterRuntimeService_StartAdapter_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(ModulesServiceServer).StartModule(ctx, req.(*ModuleSlotRequest))
+		return srv.(AdapterRuntimeServiceServer).StartAdapter(ctx, req.(*AdapterSlotRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _ModulesService_StopModule_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ModuleSlotRequest)
+func _AdapterRuntimeService_StopAdapter_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AdapterSlotRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(ModulesServiceServer).StopModule(ctx, in)
+		return srv.(AdapterRuntimeServiceServer).StopAdapter(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: ModulesService_StopModule_FullMethodName,
+		FullMethod: AdapterRuntimeService_StopAdapter_FullMethodName,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(ModulesServiceServer).StopModule(ctx, req.(*ModuleSlotRequest))
+		return srv.(AdapterRuntimeServiceServer).StopAdapter(ctx, req.(*AdapterSlotRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-// ModulesService_ServiceDesc is the grpc.ServiceDesc for ModulesService service.
+// AdapterRuntimeService_ServiceDesc is the grpc.ServiceDesc for AdapterRuntimeService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
-var ModulesService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "nupi.api.v1.ModulesService",
-	HandlerType: (*ModulesServiceServer)(nil),
+var AdapterRuntimeService_ServiceDesc = grpc.ServiceDesc{
+	ServiceName: "nupi.api.v1.AdapterRuntimeService",
+	HandlerType: (*AdapterRuntimeServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
 			MethodName: "Overview",
-			Handler:    _ModulesService_Overview_Handler,
+			Handler:    _AdapterRuntimeService_Overview_Handler,
 		},
 		{
-			MethodName: "BindModule",
-			Handler:    _ModulesService_BindModule_Handler,
+			MethodName: "BindAdapter",
+			Handler:    _AdapterRuntimeService_BindAdapter_Handler,
 		},
 		{
-			MethodName: "StartModule",
-			Handler:    _ModulesService_StartModule_Handler,
+			MethodName: "StartAdapter",
+			Handler:    _AdapterRuntimeService_StartAdapter_Handler,
 		},
 		{
-			MethodName: "StopModule",
-			Handler:    _ModulesService_StopModule_Handler,
+			MethodName: "StopAdapter",
+			Handler:    _AdapterRuntimeService_StopAdapter_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

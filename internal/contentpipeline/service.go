@@ -13,7 +13,7 @@ import (
 
 	"github.com/dop251/goja"
 	"github.com/nupi-ai/nupi/internal/eventbus"
-	"github.com/nupi-ai/nupi/internal/plugins"
+	pipelinecleaners "github.com/nupi-ai/nupi/internal/plugins/pipeline_cleaners"
 )
 
 // Service transforms session output through optional pipeline plugins and
@@ -37,7 +37,7 @@ type Service struct {
 
 // PipelineProvider exposes access to pipeline plugins.
 type PipelineProvider interface {
-	PipelinePluginFor(name string) (*plugins.PipelinePlugin, bool)
+	PipelinePluginFor(name string) (*pipelinecleaners.PipelinePlugin, bool)
 }
 
 // Option configures optional behaviour on the Service.
@@ -393,7 +393,7 @@ func (s *Service) toolID(sessionID string) (string, bool) {
 	return "", false
 }
 
-func (s *Service) selectPlugin(tool string) (*plugins.PipelinePlugin, bool) {
+func (s *Service) selectPlugin(tool string) (*pipelinecleaners.PipelinePlugin, bool) {
 	if s.pluginsSvc == nil {
 		return nil, false
 	}
@@ -403,7 +403,7 @@ func (s *Service) selectPlugin(tool string) (*plugins.PipelinePlugin, bool) {
 	return s.pluginsSvc.PipelinePluginFor("default")
 }
 
-func (s *Service) runPlugin(plugin *plugins.PipelinePlugin, text string, annotations map[string]string) (string, map[string]string, error) {
+func (s *Service) runPlugin(plugin *pipelinecleaners.PipelinePlugin, text string, annotations map[string]string) (string, map[string]string, error) {
 	if plugin == nil {
 		return text, nil, nil
 	}

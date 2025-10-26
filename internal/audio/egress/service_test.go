@@ -9,7 +9,7 @@ import (
 
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
-	"github.com/nupi-ai/nupi/internal/modules"
+	"github.com/nupi-ai/nupi/internal/plugins/adapters"
 	"github.com/nupi-ai/nupi/internal/voice/slots"
 )
 
@@ -23,15 +23,15 @@ func TestServicePublishesPlayback(t *testing.T) {
 	}
 	t.Cleanup(func() { store.Close() })
 
-	if err := modules.EnsureBuiltinAdapters(ctx, store); err != nil {
+	if err := adapters.EnsureBuiltinAdapters(ctx, store); err != nil {
 		t.Fatalf("ensure adapters: %v", err)
 	}
-	if err := store.SetActiveAdapter(ctx, string(modules.SlotTTS), modules.MockTTSAdapterID, nil); err != nil {
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotTTS), adapters.MockTTSAdapterID, nil); err != nil {
 		t.Fatalf("set active adapter: %v", err)
 	}
 
 	svc := New(bus,
-		WithFactory(NewModuleFactory(store)),
+		WithFactory(NewAdapterFactory(store)),
 		WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
 	)
 	if err := svc.Start(ctx); err != nil {
@@ -75,12 +75,12 @@ func TestServiceBuffersUntilAdapterAvailable(t *testing.T) {
 	}
 	t.Cleanup(func() { store.Close() })
 
-	if err := modules.EnsureBuiltinAdapters(ctx, store); err != nil {
+	if err := adapters.EnsureBuiltinAdapters(ctx, store); err != nil {
 		t.Fatalf("ensure adapters: %v", err)
 	}
 
 	svc := New(bus,
-		WithFactory(NewModuleFactory(store)),
+		WithFactory(NewAdapterFactory(store)),
 		WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
 	)
 	if err := svc.Start(ctx); err != nil {
@@ -107,7 +107,7 @@ func TestServiceBuffersUntilAdapterAvailable(t *testing.T) {
 	case <-time.After(30 * time.Millisecond):
 	}
 
-	if err := store.SetActiveAdapter(ctx, string(modules.SlotTTS), modules.MockTTSAdapterID, nil); err != nil {
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotTTS), adapters.MockTTSAdapterID, nil); err != nil {
 		t.Fatalf("activate adapter: %v", err)
 	}
 

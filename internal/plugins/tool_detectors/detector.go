@@ -1,4 +1,4 @@
-package detector
+package tooldetectors
 
 import (
 	"fmt"
@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nupi-ai/nupi/internal/pluginmanifest"
+	"github.com/nupi-ai/nupi/internal/plugins/manifest"
 )
 
 // ToolDetectedEvent is emitted when a tool is detected.
@@ -239,24 +239,24 @@ func (d *ToolDetector) runParallelDetection(plugins map[string]*JSPlugin, output
 }
 
 func (d *ToolDetector) loadAllPlugins() {
-	manifests, err := pluginmanifest.Discover(d.pluginDir)
+	manifests, err := manifest.Discover(d.pluginDir)
 	if err != nil {
 		log.Printf("[Detector] Failed to discover plugins: %v", err)
 		return
 	}
 
-	for _, manifest := range manifests {
-		if manifest.Type != pluginmanifest.PluginTypeToolDetector {
+	for _, mf := range manifests {
+		if mf.Type != manifest.PluginTypeToolDetector {
 			continue
 		}
 
-		mainPath, err := manifest.MainPath()
+		mainPath, err := mf.MainPath()
 		if err != nil {
-			log.Printf("[Detector] Failed to evaluate manifest %s: %v", manifest.Dir, err)
+			log.Printf("[Detector] Failed to evaluate manifest %s: %v", mf.Dir, err)
 			continue
 		}
 
-		relPath, err := manifest.RelativeMainPath(d.pluginDir)
+		relPath, err := mf.RelativeMainPath(d.pluginDir)
 		if err != nil {
 			relPath = mainPath
 		}

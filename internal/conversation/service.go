@@ -34,7 +34,7 @@ func WithDetachTTL(ttl time.Duration) Option {
 	}
 }
 
-// Service maintains conversation context and emits prompts for AI modules.
+// Service maintains conversation context and emits prompts for AI adapters.
 type Service struct {
 	bus *eventbus.Bus
 

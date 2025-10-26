@@ -15,7 +15,7 @@ import (
 	apiv1 "github.com/nupi-ai/nupi/internal/api/grpc/v1"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
-	"github.com/nupi-ai/nupi/internal/modules"
+	"github.com/nupi-ai/nupi/internal/plugins/adapters"
 	"github.com/nupi-ai/nupi/internal/protocol"
 	"github.com/nupi-ai/nupi/internal/voice/slots"
 	"google.golang.org/grpc"
@@ -88,13 +88,13 @@ func newQuickstartService(api *APIServer) *quickstartService {
 	return &quickstartService{api: api}
 }
 
-type modulesService struct {
-	apiv1.UnimplementedModulesServiceServer
+type adapterRuntimeService struct {
+	apiv1.UnimplementedAdapterRuntimeServiceServer
 	api *APIServer
 }
 
-func newModulesService(api *APIServer) *modulesService {
-	return &modulesService{api: api}
+func newAdapterRuntimeService(api *APIServer) *adapterRuntimeService {
+	return &adapterRuntimeService{api: api}
 }
 
 type audioService struct {
@@ -599,7 +599,7 @@ func RegisterGRPCServices(api *APIServer, registrar grpc.ServiceRegistrar) {
 	apiv1.RegisterConfigServiceServer(registrar, newConfigService(api))
 	apiv1.RegisterAdaptersServiceServer(registrar, newAdaptersService(api))
 	apiv1.RegisterQuickstartServiceServer(registrar, newQuickstartService(api))
-	apiv1.RegisterModulesServiceServer(registrar, newModulesService(api))
+	apiv1.RegisterAdapterRuntimeServiceServer(registrar, newAdapterRuntimeService(api))
 	if api.audioIngress != nil {
 		apiv1.RegisterAudioServiceServer(registrar, newAudioService(api))
 	}
@@ -959,17 +959,17 @@ func (q *quickstartService) fetchStatus(ctx context.Context) (*apiv1.QuickstartS
 		resp.CompletedAt = completedAt.UTC().Format(time.RFC3339)
 	}
 
-	moduleStatuses, modulesErr := q.api.quickstartModuleStatuses(ctx)
-	if modulesErr != nil {
-		if errors.Is(modulesErr, errModulesServiceUnavailable) {
-			return nil, status.Error(codes.Unavailable, modulesErr.Error())
+	adapterStatuses, adaptersErr := q.api.quickstartAdapterStatuses(ctx)
+	if adaptersErr != nil {
+		if errors.Is(adaptersErr, errAdaptersServiceUnavailable) {
+			return nil, status.Error(codes.Unavailable, adaptersErr.Error())
 		}
-		return nil, status.Errorf(codes.Internal, "modules overview: %v", modulesErr)
+		return nil, status.Errorf(codes.Internal, "adapter overview: %v", adaptersErr)
 	}
-	if len(moduleStatuses) > 0 {
-		resp.Modules = make([]*apiv1.ModuleEntry, 0, len(moduleStatuses))
-		for _, status := range moduleStatuses {
-			resp.Modules = append(resp.Modules, bindingStatusToProto(status))
+	if len(adapterStatuses) > 0 {
+		resp.Adapters = make([]*apiv1.AdapterEntry, 0, len(adapterStatuses))
+		for _, status := range adapterStatuses {
+			resp.Adapters = append(resp.Adapters, bindingStatusToProto(status))
 		}
 	}
 	missingRefs, err := q.api.missingReferenceAdapters(ctx)
@@ -982,37 +982,37 @@ func (q *quickstartService) fetchStatus(ctx context.Context) (*apiv1.QuickstartS
 	return resp, nil
 }
 
-func (m *modulesService) Overview(ctx context.Context, _ *emptypb.Empty) (*apiv1.ModulesOverviewResponse, error) {
+func (m *adapterRuntimeService) Overview(ctx context.Context, _ *emptypb.Empty) (*apiv1.AdaptersOverviewResponse, error) {
 	if _, err := m.api.requireRoleGRPC(ctx, roleAdmin, roleReadOnly); err != nil {
 		return nil, err
 	}
-	if m.api.modules == nil {
-		return nil, status.Error(codes.Unavailable, "modules service unavailable")
+	if m.api.adapters == nil {
+		return nil, status.Error(codes.Unavailable, "adapter service unavailable")
 	}
 
-	overview, err := m.api.modules.Overview(ctx)
+	overview, err := m.api.adapters.Overview(ctx)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "modules overview: %v", err)
+		return nil, status.Errorf(codes.Internal, "adapter overview: %v", err)
 	}
 
-	resp := &apiv1.ModulesOverviewResponse{
-		Modules: make([]*apiv1.ModuleEntry, 0, len(overview)),
+	resp := &apiv1.AdaptersOverviewResponse{
+		Adapters: make([]*apiv1.AdapterEntry, 0, len(overview)),
 	}
 	for _, entry := range overview {
-		resp.Modules = append(resp.Modules, bindingStatusToProto(entry))
+		resp.Adapters = append(resp.Adapters, bindingStatusToProto(entry))
 	}
 	return resp, nil
 }
 
-func (m *modulesService) BindModule(ctx context.Context, req *apiv1.BindModuleRequest) (*apiv1.ModuleActionResponse, error) {
+func (m *adapterRuntimeService) BindAdapter(ctx context.Context, req *apiv1.BindAdapterRequest) (*apiv1.AdapterActionResponse, error) {
 	if _, err := m.api.requireRoleGRPC(ctx, roleAdmin); err != nil {
 		return nil, err
 	}
 	if m.api.configStore == nil {
 		return nil, status.Error(codes.Unavailable, "configuration store unavailable")
 	}
-	if m.api.modules == nil {
-		return nil, status.Error(codes.Unavailable, "modules service unavailable")
+	if m.api.adapters == nil {
+		return nil, status.Error(codes.Unavailable, "adapter service unavailable")
 	}
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "request is required")
@@ -1042,20 +1042,20 @@ func (m *modulesService) BindModule(ctx context.Context, req *apiv1.BindModuleRe
 		}
 	}
 
-	statusEntry, err := m.api.modules.StartSlot(ctx, modules.Slot(slot))
+	statusEntry, err := m.api.adapters.StartSlot(ctx, adapters.Slot(slot))
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "start module: %v", err)
+		return nil, status.Errorf(codes.Internal, "start adapter: %v", err)
 	}
 
-	return &apiv1.ModuleActionResponse{Module: bindingStatusToProto(*statusEntry)}, nil
+	return &apiv1.AdapterActionResponse{Adapter: bindingStatusToProto(*statusEntry)}, nil
 }
 
-func (m *modulesService) StartModule(ctx context.Context, req *apiv1.ModuleSlotRequest) (*apiv1.ModuleActionResponse, error) {
+func (m *adapterRuntimeService) StartAdapter(ctx context.Context, req *apiv1.AdapterSlotRequest) (*apiv1.AdapterActionResponse, error) {
 	if _, err := m.api.requireRoleGRPC(ctx, roleAdmin); err != nil {
 		return nil, err
 	}
-	if m.api.modules == nil {
-		return nil, status.Error(codes.Unavailable, "modules service unavailable")
+	if m.api.adapters == nil {
+		return nil, status.Error(codes.Unavailable, "adapter service unavailable")
 	}
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "request is required")
@@ -1065,20 +1065,20 @@ func (m *modulesService) StartModule(ctx context.Context, req *apiv1.ModuleSlotR
 		return nil, status.Error(codes.InvalidArgument, "slot is required")
 	}
 
-	statusEntry, err := m.api.modules.StartSlot(ctx, modules.Slot(slot))
+	statusEntry, err := m.api.adapters.StartSlot(ctx, adapters.Slot(slot))
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "start module: %v", err)
+		return nil, status.Errorf(codes.Internal, "start adapter: %v", err)
 	}
 
-	return &apiv1.ModuleActionResponse{Module: bindingStatusToProto(*statusEntry)}, nil
+	return &apiv1.AdapterActionResponse{Adapter: bindingStatusToProto(*statusEntry)}, nil
 }
 
-func (m *modulesService) StopModule(ctx context.Context, req *apiv1.ModuleSlotRequest) (*apiv1.ModuleActionResponse, error) {
+func (m *adapterRuntimeService) StopAdapter(ctx context.Context, req *apiv1.AdapterSlotRequest) (*apiv1.AdapterActionResponse, error) {
 	if _, err := m.api.requireRoleGRPC(ctx, roleAdmin); err != nil {
 		return nil, err
 	}
-	if m.api.modules == nil {
-		return nil, status.Error(codes.Unavailable, "modules service unavailable")
+	if m.api.adapters == nil {
+		return nil, status.Error(codes.Unavailable, "adapter service unavailable")
 	}
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "request is required")
@@ -1088,16 +1088,16 @@ func (m *modulesService) StopModule(ctx context.Context, req *apiv1.ModuleSlotRe
 		return nil, status.Error(codes.InvalidArgument, "slot is required")
 	}
 
-	statusEntry, err := m.api.modules.StopSlot(ctx, modules.Slot(slot))
+	statusEntry, err := m.api.adapters.StopSlot(ctx, adapters.Slot(slot))
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "stop module: %v", err)
+		return nil, status.Errorf(codes.Internal, "stop adapter: %v", err)
 	}
 
-	return &apiv1.ModuleActionResponse{Module: bindingStatusToProto(*statusEntry)}, nil
+	return &apiv1.AdapterActionResponse{Adapter: bindingStatusToProto(*statusEntry)}, nil
 }
 
-func bindingStatusToProto(status modules.BindingStatus) *apiv1.ModuleEntry {
-	entry := &apiv1.ModuleEntry{
+func bindingStatusToProto(status adapters.BindingStatus) *apiv1.AdapterEntry {
+	entry := &apiv1.AdapterEntry{
 		Slot:       string(status.Slot),
 		Status:     status.Status,
 		ConfigJson: status.Config,
@@ -1114,15 +1114,15 @@ func bindingStatusToProto(status modules.BindingStatus) *apiv1.ModuleEntry {
 	return entry
 }
 
-func runtimeStatusToProto(rt *modules.RuntimeStatus) *apiv1.ModuleRuntime {
+func runtimeStatusToProto(rt *adapters.RuntimeStatus) *apiv1.AdapterRuntime {
 	if rt == nil {
 		return nil
 	}
-	result := &apiv1.ModuleRuntime{
-		ModuleId: rt.ModuleID,
-		Health:   string(rt.Health),
-		Message:  rt.Message,
-		Extra:    map[string]string{},
+	result := &apiv1.AdapterRuntime{
+		AdapterId: rt.AdapterID,
+		Health:    string(rt.Health),
+		Message:   rt.Message,
+		Extra:     map[string]string{},
 	}
 	if rt.Extra != nil {
 		for k, v := range rt.Extra {

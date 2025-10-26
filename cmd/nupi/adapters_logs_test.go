@@ -14,17 +14,17 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func TestModulesLogsCommand(t *testing.T) {
+func TestAdaptersLogsCommand(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Skipf("network not permitted: %v", err)
 	}
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/modules/logs" {
+		if r.URL.Path != "/adapters/logs" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintln(w, `{"type":"log","timestamp":"2025-01-01T00:00:00Z","module_id":"example","slot":"stt","level":"info","message":"hello"}`)
+		fmt.Fprintln(w, `{"type":"log","timestamp":"2025-01-01T00:00:00Z","adapter_id":"example","slot":"stt","level":"info","message":"hello"}`)
 	}))
 	srv.Listener = ln
 	srv.Start()
@@ -44,8 +44,8 @@ func TestModulesLogsCommand(t *testing.T) {
 	cmd.Flags().String("adapter", "", "")
 
 	output := captureOutput(func() {
-		if err := modulesLogs(cmd, nil); err != nil {
-			t.Fatalf("modulesLogs returned error: %v", err)
+		if err := adaptersLogs(cmd, nil); err != nil {
+			t.Fatalf("adaptersLogs returned error: %v", err)
 		}
 	})
 

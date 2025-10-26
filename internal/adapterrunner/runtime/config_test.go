@@ -33,7 +33,7 @@ func TestLoadConfigFromEnv(t *testing.T) {
 		t.Skip("shell script helper not supported on Windows")
 	}
 	tempDir := t.TempDir()
-	command := filepath.Join(tempDir, "bin", "module")
+	command := filepath.Join(tempDir, "bin", "adapter")
 	if err := os.MkdirAll(filepath.Dir(command), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -41,13 +41,13 @@ func TestLoadConfigFromEnv(t *testing.T) {
 		t.Fatalf("write command: %v", err)
 	}
 
-	withEnv(t, "NUPI_MODULE_COMMAND", command)
-	withEnv(t, "NUPI_MODULE_SLOT", "stt")
-	withEnv(t, "NUPI_MODULE_ADAPTER", "adapter.test")
-	withEnv(t, "NUPI_MODULE_ARGS", `["--foo","bar"]`)
-	withEnv(t, "NUPI_MODULE_HOME", filepath.Join(tempDir, "home"))
-	withEnv(t, "NUPI_MODULE_DATA_DIR", "cache")
-	withEnv(t, "NUPI_MODULE_SHUTDOWN_GRACE", "5s")
+	withEnv(t, "NUPI_ADAPTER_COMMAND", command)
+	withEnv(t, "NUPI_ADAPTER_SLOT", "stt")
+	withEnv(t, "NUPI_ADAPTER_ID", "adapter.test")
+	withEnv(t, "NUPI_ADAPTER_ARGS", `["--foo","bar"]`)
+	withEnv(t, "NUPI_ADAPTER_HOME", filepath.Join(tempDir, "home"))
+	withEnv(t, "NUPI_ADAPTER_DATA_DIR", "cache")
+	withEnv(t, "NUPI_ADAPTER_SHUTDOWN_GRACE", "5s")
 
 	cfg, err := LoadConfigFromEnv()
 	if err != nil {
@@ -63,8 +63,8 @@ func TestLoadConfigFromEnv(t *testing.T) {
 	if len(cfg.Args) != 2 || cfg.Args[0] != "--foo" || cfg.Args[1] != "bar" {
 		t.Fatalf("unexpected args: %#v", cfg.Args)
 	}
-	if !strings.HasSuffix(cfg.ModuleDataDir, "cache") {
-		t.Fatalf("expected data dir resolved, got %s", cfg.ModuleDataDir)
+	if !strings.HasSuffix(cfg.AdapterDataDir, "cache") {
+		t.Fatalf("expected data dir resolved, got %s", cfg.AdapterDataDir)
 	}
 	if cfg.GracePeriod != 5*time.Second {
 		t.Fatalf("expected grace period 5s, got %s", cfg.GracePeriod)
@@ -73,7 +73,7 @@ func TestLoadConfigFromEnv(t *testing.T) {
 
 func TestLoadConfigFromEnvMissingCommand(t *testing.T) {
 	_, err := LoadConfigFromEnv()
-	if err == nil || !strings.Contains(err.Error(), "NUPI_MODULE_COMMAND") {
+	if err == nil || !strings.Contains(err.Error(), "NUPI_ADAPTER_COMMAND") {
 		t.Fatalf("expected missing command error, got %v", err)
 	}
 }

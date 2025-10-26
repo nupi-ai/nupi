@@ -1,4 +1,4 @@
-package modules
+package adapters
 
 import (
 	"context"
@@ -14,7 +14,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/eventbus"
 )
 
-// Service orchestrates adapter modules and publishes status updates on the event bus.
+// Service orchestrates adapters and publishes status updates on the event bus.
 type Service struct {
 	manager *Manager
 	store   *configstore.Store
@@ -27,7 +27,7 @@ type Service struct {
 	wg     sync.WaitGroup
 
 	mu       sync.Mutex
-	state    map[Slot]moduleState
+	state    map[Slot]adapterState
 	errMu    sync.Mutex
 	lastErr  string
 	statusMu sync.RWMutex
@@ -56,27 +56,27 @@ func WithEnsureInterval(d time.Duration) ServiceOption {
 }
 
 var (
-	// ErrManagerNotConfigured indicates the service is missing the modules manager dependency.
-	ErrManagerNotConfigured = errors.New("modules: manager is required")
+	// ErrManagerNotConfigured indicates the service is missing the adapters manager dependency.
+	ErrManagerNotConfigured = errors.New("adapters: manager is required")
 	// ErrEventBusNotConfigured indicates an event bus must be provided.
-	ErrEventBusNotConfigured = errors.New("modules: event bus is required")
+	ErrEventBusNotConfigured = errors.New("adapters: event bus is required")
 )
 
-type moduleState struct {
+type adapterState struct {
 	adapter     string
 	fingerprint string
 	startedAt   time.Time
 }
 
 type runtimeStatus struct {
-	event    eventbus.ModuleStatusEvent
+	event    eventbus.AdapterStatusEvent
 	recorded time.Time
 }
 
-// RuntimeStatus describes the last known runtime state of a module process.
+// RuntimeStatus describes the last known runtime state of a adapter process.
 type RuntimeStatus struct {
-	ModuleID  string
-	Health    eventbus.ModuleHealth
+	AdapterID string
+	Health    eventbus.AdapterHealth
 	Message   string
 	StartedAt *time.Time
 	UpdatedAt time.Time
@@ -93,7 +93,7 @@ type BindingStatus struct {
 	Runtime   *RuntimeStatus
 }
 
-// NewService constructs a modules service responsible for driving module processes.
+// NewService constructs a adapters service responsible for driving adapter processes.
 func NewService(manager *Manager, store *configstore.Store, bus *eventbus.Bus, opts ...ServiceOption) *Service {
 	svc := &Service{
 		manager:        manager,
@@ -101,7 +101,7 @@ func NewService(manager *Manager, store *configstore.Store, bus *eventbus.Bus, o
 		bus:            bus,
 		watchInterval:  time.Second,
 		ensureInterval: 15 * time.Second,
-		state:          make(map[Slot]moduleState),
+		state:          make(map[Slot]adapterState),
 		statuses:       make(map[Slot]runtimeStatus),
 	}
 	for _, opt := range opts {
@@ -110,7 +110,7 @@ func NewService(manager *Manager, store *configstore.Store, bus *eventbus.Bus, o
 	return svc
 }
 
-// Start launches watchers that keep module processes in sync with configuration.
+// Start launches watchers that keep adapter processes in sync with configuration.
 func (s *Service) Start(ctx context.Context) error {
 	if s.manager == nil {
 		return ErrManagerNotConfigured
@@ -128,7 +128,7 @@ func (s *Service) Start(ctx context.Context) error {
 
 	if s.store != nil {
 		if err := s.startWatcher(runCtx); err != nil {
-			return fmt.Errorf("modules: start config watcher: %w", err)
+			return fmt.Errorf("adapters: start config watcher: %w", err)
 		}
 	}
 
@@ -156,7 +156,7 @@ func (s *Service) startWatcher(ctx context.Context) error {
 				if !ok {
 					return
 				}
-				if ev.AdaptersChanged || ev.AdapterBindingsChanged || ev.ModuleEndpointsChanged {
+				if ev.AdaptersChanged || ev.AdapterBindingsChanged || ev.AdapterEndpointsChanged {
 					s.reconcile(ctx)
 				}
 			}
@@ -208,20 +208,20 @@ func (s *Service) updateState(ctx context.Context, running []Binding) {
 		runningBySlot[binding.Slot] = binding
 	}
 
-	current := make(map[Slot]moduleState, len(s.state))
+	current := make(map[Slot]adapterState, len(s.state))
 	for slot, state := range s.state {
 		current[slot] = state
 	}
 
-	// Emit stop events for modules that disappeared or will be restarted.
+	// Emit stop events for adapters that disappeared or will be restarted.
 	for slot, state := range current {
 		binding, ok := runningBySlot[slot]
 		if !ok {
-			s.publishStatus(ctx, eventbus.ModuleStatusEvent{
-				ModuleID: state.adapter,
-				Slot:     string(slot),
-				Status:   eventbus.ModuleHealthStopped,
-				Message:  "module stopped",
+			s.publishStatus(ctx, eventbus.AdapterStatusEvent{
+				AdapterID: state.adapter,
+				Slot:      string(slot),
+				Status:    eventbus.AdapterHealthStopped,
+				Message:   "adapter stopped",
 			})
 			delete(s.state, slot)
 			continue
@@ -229,11 +229,11 @@ func (s *Service) updateState(ctx context.Context, running []Binding) {
 
 		fingerprint := bindingFingerprint(binding)
 		if state.fingerprint != fingerprint {
-			s.publishStatus(ctx, eventbus.ModuleStatusEvent{
-				ModuleID: state.adapter,
-				Slot:     string(slot),
-				Status:   eventbus.ModuleHealthStopped,
-				Message:  "module restarting",
+			s.publishStatus(ctx, eventbus.AdapterStatusEvent{
+				AdapterID: state.adapter,
+				Slot:      string(slot),
+				Status:    eventbus.AdapterHealthStopped,
+				Message:   "adapter restarting",
 			})
 			delete(s.state, slot)
 		}
@@ -246,37 +246,37 @@ func (s *Service) updateState(ctx context.Context, running []Binding) {
 			continue
 		}
 
-		newState := moduleState{
+		newState := adapterState{
 			adapter:     binding.AdapterID,
 			fingerprint: fingerprint,
 			startedAt:   now,
 		}
 		s.state[slot] = newState
 
-		s.publishStatus(ctx, eventbus.ModuleStatusEvent{
-			ModuleID:  binding.AdapterID,
+		s.publishStatus(ctx, eventbus.AdapterStatusEvent{
+			AdapterID: binding.AdapterID,
 			Slot:      string(slot),
-			Status:    eventbus.ModuleHealthReady,
-			Message:   "module ready",
+			Status:    eventbus.AdapterHealthReady,
+			Message:   "adapter ready",
 			StartedAt: now,
 		})
 	}
 }
 
-func (s *Service) publishStatus(ctx context.Context, evt eventbus.ModuleStatusEvent) {
+func (s *Service) publishStatus(ctx context.Context, evt eventbus.AdapterStatusEvent) {
 	slot := Slot(strings.TrimSpace(evt.Slot))
 	if slot != "" {
 		s.recordRuntimeStatus(slot, evt)
 	}
-	if evt.Status != eventbus.ModuleHealthError {
+	if evt.Status != eventbus.AdapterHealthError {
 		s.clearLastError()
 	}
 	if s.bus == nil {
 		return
 	}
 	s.bus.Publish(ctx, eventbus.Envelope{
-		Topic:   eventbus.TopicModulesStatus,
-		Source:  eventbus.SourceModulesService,
+		Topic:   eventbus.TopicAdaptersStatus,
+		Source:  eventbus.SourceAdaptersService,
 		Payload: evt,
 	})
 }
@@ -297,10 +297,10 @@ func (s *Service) publishError(ctx context.Context, err error) {
 	s.errMu.Unlock()
 
 	s.bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicModulesStatus,
-		Source: eventbus.SourceModulesService,
-		Payload: eventbus.ModuleStatusEvent{
-			Status:  eventbus.ModuleHealthError,
+		Topic:  eventbus.TopicAdaptersStatus,
+		Source: eventbus.SourceAdaptersService,
+		Payload: eventbus.AdapterStatusEvent{
+			Status:  eventbus.AdapterHealthError,
 			Message: msg,
 		},
 	})
@@ -309,12 +309,12 @@ func (s *Service) publishError(ctx context.Context, err error) {
 // Overview returns configuration bindings enriched with runtime status.
 func (s *Service) Overview(ctx context.Context) ([]BindingStatus, error) {
 	if s.store == nil {
-		return nil, errors.New("modules: configuration store unavailable")
+		return nil, errors.New("adapters: configuration store unavailable")
 	}
 
 	records, err := s.store.ListAdapterBindings(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("modules: list adapter bindings: %w", err)
+		return nil, fmt.Errorf("adapters: list adapter bindings: %w", err)
 	}
 
 	runtime := s.runtimeSnapshot()
@@ -348,10 +348,10 @@ func (s *Service) Overview(ctx context.Context) ([]BindingStatus, error) {
 	return out, nil
 }
 
-// StartSlot marks the slot as active and reconciles module processes.
+// StartSlot marks the slot as active and reconciles adapter processes.
 func (s *Service) StartSlot(ctx context.Context, slot Slot) (*BindingStatus, error) {
 	if s.store == nil {
-		return nil, errors.New("modules: configuration store unavailable")
+		return nil, errors.New("adapters: configuration store unavailable")
 	}
 
 	binding, err := s.bindingRecord(ctx, slot)
@@ -359,11 +359,11 @@ func (s *Service) StartSlot(ctx context.Context, slot Slot) (*BindingStatus, err
 		return nil, err
 	}
 	if binding.AdapterID == nil || strings.TrimSpace(*binding.AdapterID) == "" {
-		return nil, fmt.Errorf("modules: slot %s has no adapter bound", slot)
+		return nil, fmt.Errorf("adapters: slot %s has no adapter bound", slot)
 	}
 
 	if err := s.store.UpdateAdapterBindingStatus(ctx, string(slot), configstore.BindingStatusActive); err != nil {
-		return nil, fmt.Errorf("modules: activate binding %s: %w", slot, err)
+		return nil, fmt.Errorf("adapters: activate binding %s: %w", slot, err)
 	}
 
 	if err := s.reconcile(ctx); err != nil {
@@ -373,10 +373,10 @@ func (s *Service) StartSlot(ctx context.Context, slot Slot) (*BindingStatus, err
 	return s.bindingStatusForSlot(ctx, slot)
 }
 
-// StopSlot marks the slot as inactive and stops the running module process.
+// StopSlot marks the slot as inactive and stops the running adapter process.
 func (s *Service) StopSlot(ctx context.Context, slot Slot) (*BindingStatus, error) {
 	if s.store == nil {
-		return nil, errors.New("modules: configuration store unavailable")
+		return nil, errors.New("adapters: configuration store unavailable")
 	}
 
 	if _, err := s.bindingRecord(ctx, slot); err != nil {
@@ -384,11 +384,11 @@ func (s *Service) StopSlot(ctx context.Context, slot Slot) (*BindingStatus, erro
 	}
 
 	if err := s.store.UpdateAdapterBindingStatus(ctx, string(slot), configstore.BindingStatusInactive); err != nil {
-		return nil, fmt.Errorf("modules: deactivate binding %s: %w", slot, err)
+		return nil, fmt.Errorf("adapters: deactivate binding %s: %w", slot, err)
 	}
 
 	if err := s.manager.StopSlot(ctx, slot); err != nil {
-		return nil, fmt.Errorf("modules: stop %s: %w", slot, err)
+		return nil, fmt.Errorf("adapters: stop %s: %w", slot, err)
 	}
 
 	if err := s.reconcile(ctx); err != nil {
@@ -409,17 +409,17 @@ func (s *Service) bindingStatusForSlot(ctx context.Context, slot Slot) (*Binding
 			return &copyStatus, nil
 		}
 	}
-	return nil, fmt.Errorf("modules: slot %s not found", slot)
+	return nil, fmt.Errorf("adapters: slot %s not found", slot)
 }
 
 func (s *Service) bindingRecord(ctx context.Context, slot Slot) (*configstore.AdapterBinding, error) {
 	if s.store == nil {
-		return nil, errors.New("modules: configuration store unavailable")
+		return nil, errors.New("adapters: configuration store unavailable")
 	}
 
 	records, err := s.store.ListAdapterBindings(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("modules: list adapter bindings: %w", err)
+		return nil, fmt.Errorf("adapters: list adapter bindings: %w", err)
 	}
 	for _, record := range records {
 		if record.Slot != string(slot) {
@@ -442,11 +442,11 @@ func (s *Service) runtimeSnapshot() map[Slot]RuntimeStatus {
 	return out
 }
 
-func (s *Service) recordRuntimeStatus(slot Slot, evt eventbus.ModuleStatusEvent) {
+func (s *Service) recordRuntimeStatus(slot Slot, evt eventbus.AdapterStatusEvent) {
 	s.statusMu.Lock()
 	defer s.statusMu.Unlock()
 	s.statuses[slot] = runtimeStatus{
-		event:    cloneModuleStatusEvent(evt),
+		event:    cloneAdapterStatusEvent(evt),
 		recorded: time.Now().UTC(),
 	}
 }
@@ -465,7 +465,7 @@ func convertRuntimeStatus(in runtimeStatus) RuntimeStatus {
 		}
 	}
 	return RuntimeStatus{
-		ModuleID:  in.event.ModuleID,
+		AdapterID: in.event.AdapterID,
 		Health:    in.event.Status,
 		Message:   in.event.Message,
 		StartedAt: started,
@@ -474,7 +474,7 @@ func convertRuntimeStatus(in runtimeStatus) RuntimeStatus {
 	}
 }
 
-func cloneModuleStatusEvent(evt eventbus.ModuleStatusEvent) eventbus.ModuleStatusEvent {
+func cloneAdapterStatusEvent(evt eventbus.AdapterStatusEvent) eventbus.AdapterStatusEvent {
 	cloned := evt
 	if len(evt.Extra) > 0 {
 		extra := make(map[string]string, len(evt.Extra))
@@ -486,7 +486,7 @@ func cloneModuleStatusEvent(evt eventbus.ModuleStatusEvent) eventbus.ModuleStatu
 	return cloned
 }
 
-// Shutdown stops background goroutines and terminates managed module processes.
+// Shutdown stops background goroutines and terminates managed adapter processes.
 func (s *Service) Shutdown(ctx context.Context) error {
 	if s.cancel != nil {
 		s.cancel()

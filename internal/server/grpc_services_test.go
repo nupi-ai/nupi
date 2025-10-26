@@ -14,7 +14,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/audio/ingress"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
-	"github.com/nupi-ai/nupi/internal/modules"
+	adapters "github.com/nupi-ai/nupi/internal/plugins/adapters"
 	"github.com/nupi-ai/nupi/internal/pty"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -138,11 +138,11 @@ func TestSessionsServiceGetConversationPagination(t *testing.T) {
 	}
 }
 
-func TestModulesServiceOverview(t *testing.T) {
+func TestAdaptersServiceOverview(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
 	store := openTestStore(t)
-	modulesSvc := newTestModulesService(t, store)
-	apiServer.SetModulesController(modulesSvc)
+	adaptersSvc := newTestAdaptersService(t, store)
+	apiServer.SetAdaptersController(adaptersSvc)
 
 	ctx := context.Background()
 	adapter := configstore.Adapter{ID: "adapter.ai", Source: "builtin", Type: "ai", Name: "Primary AI"}
@@ -153,20 +153,20 @@ func TestModulesServiceOverview(t *testing.T) {
 		t.Fatalf("set active adapter: %v", err)
 	}
 
-	service := newModulesService(apiServer)
+	service := newAdapterRuntimeService(apiServer)
 
 	resp, err := service.Overview(ctx, &emptypb.Empty{})
 	if err != nil {
-		t.Fatalf("modules overview: %v", err)
+		t.Fatalf("adapters overview: %v", err)
 	}
-	if len(resp.GetModules()) == 0 {
-		t.Fatalf("expected modules in overview")
+	if len(resp.GetAdapters()) == 0 {
+		t.Fatalf("expected adapters in overview")
 	}
 
-	var entry *apiv1.ModuleEntry
-	for _, module := range resp.GetModules() {
-		if module.GetSlot() == "ai" {
-			entry = module
+	var entry *apiv1.AdapterEntry
+	for _, adapter := range resp.GetAdapters() {
+		if adapter.GetSlot() == "ai" {
+			entry = adapter
 			break
 		}
 	}
@@ -181,11 +181,11 @@ func TestModulesServiceOverview(t *testing.T) {
 	}
 }
 
-func TestModulesServiceBindStartStop(t *testing.T) {
+func TestAdaptersServiceBindStartStop(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
 	store := openTestStore(t)
-	modulesSvc := newTestModulesService(t, store)
-	apiServer.SetModulesController(modulesSvc)
+	adaptersSvc := newTestAdaptersService(t, store)
+	apiServer.SetAdaptersController(adaptersSvc)
 
 	ctx := context.Background()
 	adapter := configstore.Adapter{ID: "adapter.ai.bind", Source: "builtin", Type: "ai", Name: "Bind AI"}
@@ -193,50 +193,50 @@ func TestModulesServiceBindStartStop(t *testing.T) {
 		t.Fatalf("upsert adapter: %v", err)
 	}
 
-	service := newModulesService(apiServer)
+	service := newAdapterRuntimeService(apiServer)
 
-	bindResp, err := service.BindModule(ctx, &apiv1.BindModuleRequest{
+	bindResp, err := service.BindAdapter(ctx, &apiv1.BindAdapterRequest{
 		Slot:      "ai",
 		AdapterId: adapter.ID,
 	})
 	if err != nil {
-		t.Fatalf("BindModule error: %v", err)
+		t.Fatalf("BindAdapter error: %v", err)
 	}
-	if bindResp.GetModule().AdapterId == nil || bindResp.GetModule().GetAdapterId() != adapter.ID {
-		t.Fatalf("expected bound adapter %s, got %v", adapter.ID, bindResp.GetModule().AdapterId)
+	if bindResp.GetAdapter().AdapterId == nil || bindResp.GetAdapter().GetAdapterId() != adapter.ID {
+		t.Fatalf("expected bound adapter %s, got %v", adapter.ID, bindResp.GetAdapter().AdapterId)
 	}
-	if bindResp.GetModule().GetStatus() != configstore.BindingStatusActive {
-		t.Fatalf("expected status %s, got %s", configstore.BindingStatusActive, bindResp.GetModule().GetStatus())
+	if bindResp.GetAdapter().GetStatus() != configstore.BindingStatusActive {
+		t.Fatalf("expected status %s, got %s", configstore.BindingStatusActive, bindResp.GetAdapter().GetStatus())
 	}
 
-	startResp, err := service.StartModule(ctx, &apiv1.ModuleSlotRequest{Slot: "ai"})
+	startResp, err := service.StartAdapter(ctx, &apiv1.AdapterSlotRequest{Slot: "ai"})
 	if err != nil {
-		t.Fatalf("StartModule error: %v", err)
+		t.Fatalf("StartAdapter error: %v", err)
 	}
-	if startResp.GetModule().GetStatus() != configstore.BindingStatusActive {
-		t.Fatalf("expected active status after start, got %s", startResp.GetModule().GetStatus())
+	if startResp.GetAdapter().GetStatus() != configstore.BindingStatusActive {
+		t.Fatalf("expected active status after start, got %s", startResp.GetAdapter().GetStatus())
 	}
-	if startResp.GetModule().GetRuntime() == nil || startResp.GetModule().GetRuntime().GetHealth() == "" {
+	if startResp.GetAdapter().GetRuntime() == nil || startResp.GetAdapter().GetRuntime().GetHealth() == "" {
 		t.Fatalf("expected runtime health after start")
 	}
 
-	stopResp, err := service.StopModule(ctx, &apiv1.ModuleSlotRequest{Slot: "ai"})
+	stopResp, err := service.StopAdapter(ctx, &apiv1.AdapterSlotRequest{Slot: "ai"})
 	if err != nil {
-		t.Fatalf("StopModule error: %v", err)
+		t.Fatalf("StopAdapter error: %v", err)
 	}
-	if stopResp.GetModule().GetStatus() != configstore.BindingStatusInactive {
-		t.Fatalf("expected inactive status after stop, got %s", stopResp.GetModule().GetStatus())
+	if stopResp.GetAdapter().GetStatus() != configstore.BindingStatusInactive {
+		t.Fatalf("expected inactive status after stop, got %s", stopResp.GetAdapter().GetStatus())
 	}
-	if stopResp.GetModule().GetRuntime() == nil || !strings.EqualFold(stopResp.GetModule().GetRuntime().GetHealth(), string(eventbus.ModuleHealthStopped)) {
-		t.Fatalf("expected runtime health 'stopped', got %+v", stopResp.GetModule().GetRuntime())
+	if stopResp.GetAdapter().GetRuntime() == nil || !strings.EqualFold(stopResp.GetAdapter().GetRuntime().GetHealth(), string(eventbus.AdapterHealthStopped)) {
+		t.Fatalf("expected runtime health 'stopped', got %+v", stopResp.GetAdapter().GetRuntime())
 	}
 }
 
-func TestQuickstartServiceIncludesModules(t *testing.T) {
+func TestQuickstartServiceIncludesAdapters(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
 	store := apiServer.configStore
-	modulesSvc := newTestModulesService(t, store)
-	apiServer.SetModulesController(modulesSvc)
+	adaptersSvc := newTestAdaptersService(t, store)
+	apiServer.SetAdaptersController(adaptersSvc)
 
 	ctx := context.Background()
 	adapter := configstore.Adapter{ID: "adapter.ai.quickstart", Source: "builtin", Type: "ai", Name: "Quickstart AI"}
@@ -252,11 +252,11 @@ func TestQuickstartServiceIncludesModules(t *testing.T) {
 	if err != nil {
 		t.Fatalf("QuickstartService.GetStatus error: %v", err)
 	}
-	if len(resp.GetModules()) == 0 {
-		t.Fatalf("expected modules list in quickstart response")
+	if len(resp.GetAdapters()) == 0 {
+		t.Fatalf("expected adapters list in quickstart response")
 	}
 	var found bool
-	for _, entry := range resp.GetModules() {
+	for _, entry := range resp.GetAdapters() {
 		if entry.GetSlot() == "ai" {
 			found = true
 			if entry.GetAdapterId() != adapter.ID {
@@ -266,20 +266,20 @@ func TestQuickstartServiceIncludesModules(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("ai slot not present in quickstart modules")
+		t.Fatalf("ai slot not present in quickstart adapters")
 	}
-	if got := resp.GetMissingReferenceAdapters(); !reflect.DeepEqual(got, modules.RequiredReferenceAdapters) {
-		t.Fatalf("expected missing reference adapters %v, got %v", modules.RequiredReferenceAdapters, got)
+	if got := resp.GetMissingReferenceAdapters(); !reflect.DeepEqual(got, adapters.RequiredReferenceAdapters) {
+		t.Fatalf("expected missing reference adapters %v, got %v", adapters.RequiredReferenceAdapters, got)
 	}
 }
 
-func TestQuickstartServiceWithoutModulesService(t *testing.T) {
+func TestQuickstartServiceWithoutAdaptersService(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
 
 	service := newQuickstartService(apiServer)
 	_, err := service.GetStatus(context.Background(), &emptypb.Empty{})
 	if err == nil {
-		t.Fatalf("expected error when modules service unavailable")
+		t.Fatalf("expected error when adapter service unavailable")
 	}
 	if status.Code(err) != codes.Unavailable {
 		t.Fatalf("expected error codes.Unavailable, got %v", status.Code(err))
@@ -293,25 +293,25 @@ func TestQuickstartServiceUpdateFailsWhenReferenceMissing(t *testing.T) {
 
 	ctx := context.WithValue(context.Background(), authContextKey{}, storedToken{Role: string(roleAdmin)})
 
-	adapters := []configstore.Adapter{
+	adapterList := []configstore.Adapter{
 		{ID: "adapter.ai.qs", Source: "builtin", Type: "ai", Name: "AI"},
 		{ID: "adapter.stt.custom", Source: "builtin", Type: "stt", Name: "STT"},
 		{ID: "adapter.tts.custom", Source: "builtin", Type: "tts", Name: "TTS"},
 		{ID: "adapter.vad.custom", Source: "builtin", Type: "vad", Name: "VAD"},
 		{ID: "adapter.tunnel.custom", Source: "builtin", Type: "tunnel", Name: "Tunnel"},
 	}
-	for _, adapter := range adapters {
+	for _, adapter := range adapterList {
 		if err := store.UpsertAdapter(ctx, adapter); err != nil {
 			t.Fatalf("upsert adapter: %v", err)
 		}
 	}
 
 	bindings := map[string]string{
-		string(modules.SlotAI):     "adapter.ai.qs",
-		string(modules.SlotSTT):    "adapter.stt.custom",
-		string(modules.SlotTTS):    "adapter.tts.custom",
-		string(modules.SlotVAD):    "adapter.vad.custom",
-		string(modules.SlotTunnel): "adapter.tunnel.custom",
+		string(adapters.SlotAI):     "adapter.ai.qs",
+		string(adapters.SlotSTT):    "adapter.stt.custom",
+		string(adapters.SlotTTS):    "adapter.tts.custom",
+		string(adapters.SlotVAD):    "adapter.vad.custom",
+		string(adapters.SlotTunnel): "adapter.tunnel.custom",
 	}
 	for slot, adapterID := range bindings {
 		if err := store.SetActiveAdapter(ctx, slot, adapterID, nil); err != nil {

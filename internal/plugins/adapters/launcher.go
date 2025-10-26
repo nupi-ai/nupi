@@ -1,4 +1,4 @@
-package modules
+package adapters
 
 import (
 	"context"
@@ -12,9 +12,9 @@ import (
 
 var (
 	// ErrRunnerBinaryUnset indicates the adapter-runner binary path was not configured.
-	ErrRunnerBinaryUnset = errors.New("modules: adapter-runner binary path is empty")
+	ErrRunnerBinaryUnset = errors.New("adapters: adapter-runner binary path is empty")
 	// ErrRunnerBinaryMissing indicates the adapter-runner binary does not exist.
-	ErrRunnerBinaryMissing = errors.New("modules: adapter-runner binary not found")
+	ErrRunnerBinaryMissing = errors.New("adapters: adapter-runner binary not found")
 )
 
 type execLauncher struct{}
@@ -27,7 +27,7 @@ func (execLauncher) Launch(ctx context.Context, binary string, args []string, en
 		if os.IsNotExist(err) {
 			return nil, fmt.Errorf("%w: %s", ErrRunnerBinaryMissing, binary)
 		}
-		return nil, fmt.Errorf("modules: stat adapter-runner: %w", err)
+		return nil, fmt.Errorf("adapters: stat adapter-runner: %w", err)
 	}
 
 	procCtx, cancel := context.WithCancel(context.Background())
@@ -48,7 +48,7 @@ func (execLauncher) Launch(ctx context.Context, binary string, args []string, en
 
 	if err := cmd.Start(); err != nil {
 		cancel()
-		return nil, fmt.Errorf("modules: start adapter-runner: %w", err)
+		return nil, fmt.Errorf("adapters: start adapter-runner: %w", err)
 	}
 
 	handle := &execHandle{

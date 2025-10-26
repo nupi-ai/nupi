@@ -15,15 +15,15 @@ const (
 	defaultGracePeriod = 15 * time.Second
 )
 
-// Config captures the inputs required to launch a module process.
+// Config captures the inputs required to launch an adapter process.
 type Config struct {
 	Slot           string
 	Adapter        string
 	Command        string
 	Args           []string
-	ModuleConfig   string
-	ModuleHome     string
-	ModuleDataDir  string
+	AdapterConfig  string
+	AdapterHome    string
+	AdapterDataDir string
 	ManifestPath   string
 	Transport      string
 	Endpoint       string
@@ -41,36 +41,35 @@ func LoadConfigFromEnv() (Config, error) {
 	}
 
 	cfg := Config{
-		Slot:           get("NUPI_MODULE_SLOT"),
-		Adapter:        get("NUPI_MODULE_ADAPTER"),
-		Command:        get("NUPI_MODULE_COMMAND"),
-		ModuleConfig:   get("NUPI_MODULE_CONFIG"),
-		ModuleHome:     get("NUPI_MODULE_HOME"),
-		ModuleDataDir:  get("NUPI_MODULE_DATA_DIR"),
-		ManifestPath:   get("NUPI_MODULE_MANIFEST_PATH"),
-		Transport:      get("NUPI_MODULE_TRANSPORT"),
-		Endpoint:       get("NUPI_MODULE_ENDPOINT"),
+		Slot:           get("NUPI_ADAPTER_SLOT"),
+		Adapter:        get("NUPI_ADAPTER_ID"),
+		Command:        get("NUPI_ADAPTER_COMMAND"),
+		AdapterConfig:  get("NUPI_ADAPTER_CONFIG"),
+		AdapterHome:    get("NUPI_ADAPTER_HOME"),
+		AdapterDataDir: get("NUPI_ADAPTER_DATA_DIR"),
+		ManifestPath:   get("NUPI_ADAPTER_MANIFEST_PATH"),
+		Transport:      get("NUPI_ADAPTER_TRANSPORT"),
+		Endpoint:       get("NUPI_ADAPTER_ENDPOINT"),
 		ListenAddrEnv:  get("NUPI_ADAPTER_LISTEN_ADDR_ENV"),
 		ListenAddr:     get("NUPI_ADAPTER_LISTEN_ADDR"),
 		GracePeriod:    defaultGracePeriod,
 		RawEnvironment: env,
 	}
 
-	if graceRaw := get("NUPI_MODULE_SHUTDOWN_GRACE"); graceRaw != "" {
+	if graceRaw := get("NUPI_ADAPTER_SHUTDOWN_GRACE"); graceRaw != "" {
 		if duration, err := time.ParseDuration(graceRaw); err == nil && duration > 0 {
 			cfg.GracePeriod = duration
 		}
 	}
 
-	// Fallback for legacy naming.
-	argsJSON := get("NUPI_MODULE_ARGS")
+	argsJSON := get("NUPI_ADAPTER_ARGS")
 	if argsJSON == "" {
-		argsJSON = get("NUPI_MODULE_ARGS_JSON")
+		argsJSON = get("NUPI_ADAPTER_ARGS_JSON")
 	}
 	if argsJSON != "" {
 		var args []string
 		if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-			return Config{}, fmt.Errorf("adapter-runner: parse NUPI_MODULE_ARGS: %w", err)
+			return Config{}, fmt.Errorf("adapter-runner: parse NUPI_ADAPTER_ARGS: %w", err)
 		}
 		cfg.Args = args
 	}
@@ -88,12 +87,12 @@ func LoadConfigFromEnv() (Config, error) {
 
 func (c *Config) validateAndResolve() error {
 	if strings.TrimSpace(c.Command) == "" {
-		return errors.New("adapter-runner: NUPI_MODULE_COMMAND is required")
+		return errors.New("adapter-runner: NUPI_ADAPTER_COMMAND is required")
 	}
 
 	// Resolve relative command path.
 	if !filepath.IsAbs(c.Command) {
-		base := strings.TrimSpace(c.ModuleHome)
+		base := strings.TrimSpace(c.AdapterHome)
 		if base == "" {
 			base, _ = os.Getwd()
 		}
@@ -106,28 +105,28 @@ func (c *Config) validateAndResolve() error {
 	}
 	c.Command = absCommand
 
-	// Ensure module home is absolute if provided.
-	if c.ModuleHome != "" {
-		if !filepath.IsAbs(c.ModuleHome) {
-			homeAbs, err := filepath.Abs(c.ModuleHome)
+	// Ensure adapter home is absolute if provided.
+	if c.AdapterHome != "" {
+		if !filepath.IsAbs(c.AdapterHome) {
+			homeAbs, err := filepath.Abs(c.AdapterHome)
 			if err != nil {
-				return fmt.Errorf("adapter-runner: resolve module home: %w", err)
+				return fmt.Errorf("adapter-runner: resolve adapter home: %w", err)
 			}
-			c.ModuleHome = homeAbs
+			c.AdapterHome = homeAbs
 		}
 	}
 
-	// Resolve data dir relative to module home if necessary.
-	if c.ModuleDataDir != "" && !filepath.IsAbs(c.ModuleDataDir) {
-		base := c.ModuleHome
+	// Resolve data dir relative to adapter home if necessary.
+	if c.AdapterDataDir != "" && !filepath.IsAbs(c.AdapterDataDir) {
+		base := c.AdapterHome
 		if base == "" {
 			base, _ = os.Getwd()
 		}
-		dataAbs, err := filepath.Abs(filepath.Join(base, c.ModuleDataDir))
+		dataAbs, err := filepath.Abs(filepath.Join(base, c.AdapterDataDir))
 		if err != nil {
-			return fmt.Errorf("adapter-runner: resolve module data dir: %w", err)
+			return fmt.Errorf("adapter-runner: resolve adapter data dir: %w", err)
 		}
-		c.ModuleDataDir = dataAbs
+		c.AdapterDataDir = dataAbs
 	}
 
 	return nil

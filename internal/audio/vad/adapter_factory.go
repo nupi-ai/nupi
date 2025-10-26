@@ -7,24 +7,24 @@ import (
 	"strings"
 
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
-	"github.com/nupi-ai/nupi/internal/modules"
+	"github.com/nupi-ai/nupi/internal/plugins/adapters"
 )
 
-type moduleFactory struct {
+type adapterFactory struct {
 	store *configstore.Store
 }
 
-// NewModuleFactory creates a factory driven by module bindings in the config store.
-func NewModuleFactory(store *configstore.Store) Factory {
+// NewAdapterFactory creates a factory driven by adapter bindings in the config store.
+func NewAdapterFactory(store *configstore.Store) Factory {
 	if store == nil {
 		return FactoryFunc(func(context.Context, SessionParams) (Analyzer, error) {
 			return nil, ErrFactoryUnavailable
 		})
 	}
-	return moduleFactory{store: store}
+	return adapterFactory{store: store}
 }
 
-func (m moduleFactory) Create(ctx context.Context, params SessionParams) (Analyzer, error) {
+func (m adapterFactory) Create(ctx context.Context, params SessionParams) (Analyzer, error) {
 	bindings, err := m.store.ListAdapterBindings(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("vad: list adapter bindings: %w", err)
@@ -36,7 +36,7 @@ func (m moduleFactory) Create(ctx context.Context, params SessionParams) (Analyz
 	)
 
 	for _, binding := range bindings {
-		if binding.Slot != string(modules.SlotVAD) {
+		if binding.Slot != string(adapters.SlotVAD) {
 			continue
 		}
 		if !strings.EqualFold(binding.Status, configstore.BindingStatusActive) {
@@ -68,7 +68,7 @@ func (m moduleFactory) Create(ctx context.Context, params SessionParams) (Analyz
 	params.Config = config
 
 	switch adapterID {
-	case modules.MockVADAdapterID:
+	case adapters.MockVADAdapterID:
 		return newMockAnalyzer(params)
 	}
 

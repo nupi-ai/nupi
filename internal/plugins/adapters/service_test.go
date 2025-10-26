@@ -1,4 +1,4 @@
-package modules
+package adapters
 
 import (
 	"context"
@@ -32,7 +32,7 @@ func TestServicePublishesStatusOnStart(t *testing.T) {
 	})
 
 	bus := eventbus.New()
-	sub := bus.Subscribe(eventbus.TopicModulesStatus)
+	sub := bus.Subscribe(eventbus.TopicAdaptersStatus)
 	defer sub.Close()
 
 	svc := NewService(manager, nil, bus, WithEnsureInterval(0))
@@ -46,18 +46,18 @@ func TestServicePublishesStatusOnStart(t *testing.T) {
 
 	select {
 	case evt := <-sub.C():
-		status, ok := evt.Payload.(eventbus.ModuleStatusEvent)
+		status, ok := evt.Payload.(eventbus.AdapterStatusEvent)
 		if !ok {
 			t.Fatalf("unexpected payload type %T", evt.Payload)
 		}
-		if status.Status != eventbus.ModuleHealthReady {
+		if status.Status != eventbus.AdapterHealthReady {
 			t.Fatalf("expected ready status, got %s", status.Status)
 		}
-		if status.ModuleID != "adapter.ai" {
-			t.Fatalf("unexpected module id %q", status.ModuleID)
+		if status.AdapterID != "adapter.ai" {
+			t.Fatalf("unexpected adapter id %q", status.AdapterID)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("timeout waiting for module status event")
+		t.Fatal("timeout waiting for adapter status event")
 	}
 }
 
@@ -81,7 +81,7 @@ func TestServicePublishesRestartOnConfigChange(t *testing.T) {
 	})
 
 	bus := eventbus.New()
-	sub := bus.Subscribe(eventbus.TopicModulesStatus)
+	sub := bus.Subscribe(eventbus.TopicAdaptersStatus)
 	defer sub.Close()
 
 	svc := NewService(manager, nil, bus, WithEnsureInterval(0))
@@ -107,12 +107,12 @@ func TestServicePublishesRestartOnConfigChange(t *testing.T) {
 		t.Fatalf("reconcile after config change: %v", err)
 	}
 
-	var events []eventbus.ModuleStatusEvent
+	var events []eventbus.AdapterStatusEvent
 collect:
 	for {
 		select {
 		case evt := <-sub.C():
-			payload, ok := evt.Payload.(eventbus.ModuleStatusEvent)
+			payload, ok := evt.Payload.(eventbus.AdapterStatusEvent)
 			if !ok {
 				t.Fatalf("unexpected payload type %T", evt.Payload)
 			}
@@ -128,10 +128,10 @@ collect:
 	if len(events) != 2 {
 		t.Fatalf("expected 2 events (stop + start), got %d", len(events))
 	}
-	if events[0].Status != eventbus.ModuleHealthStopped {
+	if events[0].Status != eventbus.AdapterHealthStopped {
 		t.Fatalf("expected first event to be stopped, got %s", events[0].Status)
 	}
-	if events[1].Status != eventbus.ModuleHealthReady {
+	if events[1].Status != eventbus.AdapterHealthReady {
 		t.Fatalf("expected second event to be ready, got %s", events[1].Status)
 	}
 }
@@ -156,7 +156,7 @@ func TestServicePublishesErrorOnEnsureFailure(t *testing.T) {
 	})
 
 	bus := eventbus.New()
-	sub := bus.Subscribe(eventbus.TopicModulesStatus)
+	sub := bus.Subscribe(eventbus.TopicAdaptersStatus)
 	defer sub.Close()
 
 	svc := NewService(manager, nil, bus, WithEnsureInterval(0))
@@ -166,11 +166,11 @@ func TestServicePublishesErrorOnEnsureFailure(t *testing.T) {
 
 	select {
 	case evt := <-sub.C():
-		status, ok := evt.Payload.(eventbus.ModuleStatusEvent)
+		status, ok := evt.Payload.(eventbus.AdapterStatusEvent)
 		if !ok {
 			t.Fatalf("unexpected payload type %T", evt.Payload)
 		}
-		if status.Status != eventbus.ModuleHealthError {
+		if status.Status != eventbus.AdapterHealthError {
 			t.Fatalf("expected error status, got %s", status.Status)
 		}
 		if status.Message == "" {
@@ -201,7 +201,7 @@ func TestServiceErrorCacheClearedOnRecovery(t *testing.T) {
 	})
 
 	bus := eventbus.New()
-	sub := bus.Subscribe(eventbus.TopicModulesStatus)
+	sub := bus.Subscribe(eventbus.TopicAdaptersStatus)
 	defer sub.Close()
 
 	svc := NewService(manager, nil, bus, WithEnsureInterval(0))
@@ -211,11 +211,11 @@ func TestServiceErrorCacheClearedOnRecovery(t *testing.T) {
 
 	select {
 	case evt := <-sub.C():
-		status, ok := evt.Payload.(eventbus.ModuleStatusEvent)
+		status, ok := evt.Payload.(eventbus.AdapterStatusEvent)
 		if !ok {
 			t.Fatalf("unexpected payload type %T", evt.Payload)
 		}
-		if status.Status != eventbus.ModuleHealthError {
+		if status.Status != eventbus.AdapterHealthError {
 			t.Fatalf("expected error status, got %s", status.Status)
 		}
 	case <-time.After(time.Second):
@@ -229,8 +229,8 @@ func TestServiceErrorCacheClearedOnRecovery(t *testing.T) {
 	}
 	select {
 	case evt := <-sub.C():
-		status := evt.Payload.(eventbus.ModuleStatusEvent)
-		if status.Status != eventbus.ModuleHealthReady {
+		status := evt.Payload.(eventbus.AdapterStatusEvent)
+		if status.Status != eventbus.AdapterHealthReady {
 			t.Fatalf("expected ready status, got %s", status.Status)
 		}
 	case <-time.After(time.Second):
@@ -247,8 +247,8 @@ func TestServiceErrorCacheClearedOnRecovery(t *testing.T) {
 
 	select {
 	case evt := <-sub.C():
-		status := evt.Payload.(eventbus.ModuleStatusEvent)
-		if status.Status != eventbus.ModuleHealthError {
+		status := evt.Payload.(eventbus.AdapterStatusEvent)
+		if status.Status != eventbus.AdapterHealthError {
 			t.Fatalf("expected repeated error status, got %s", status.Status)
 		}
 	case <-time.After(time.Second):
@@ -315,7 +315,7 @@ func TestServiceOverviewStartStop(t *testing.T) {
 	if ai.Status != configstore.BindingStatusActive {
 		t.Fatalf("expected status active, got %s", ai.Status)
 	}
-	if ai.Runtime == nil || ai.Runtime.Health != eventbus.ModuleHealthReady {
+	if ai.Runtime == nil || ai.Runtime.Health != eventbus.AdapterHealthReady {
 		t.Fatalf("expected runtime health ready, got %+v", ai.Runtime)
 	}
 
@@ -326,7 +326,7 @@ func TestServiceOverviewStartStop(t *testing.T) {
 	if stopped.Status != configstore.BindingStatusInactive {
 		t.Fatalf("expected status inactive after stop, got %s", stopped.Status)
 	}
-	if stopped.Runtime == nil || stopped.Runtime.Health != eventbus.ModuleHealthStopped {
+	if stopped.Runtime == nil || stopped.Runtime.Health != eventbus.AdapterHealthStopped {
 		t.Fatalf("expected runtime stopped after stop, got %+v", stopped.Runtime)
 	}
 
@@ -337,7 +337,7 @@ func TestServiceOverviewStartStop(t *testing.T) {
 	if started.Status != configstore.BindingStatusActive {
 		t.Fatalf("expected status active after start, got %s", started.Status)
 	}
-	if started.Runtime == nil || started.Runtime.Health != eventbus.ModuleHealthReady {
+	if started.Runtime == nil || started.Runtime.Health != eventbus.AdapterHealthReady {
 		t.Fatalf("expected runtime ready after start, got %+v", started.Runtime)
 	}
 }

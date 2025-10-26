@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { open, save } from "@tauri-apps/api/dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 
 type JsonValue = unknown;
 
@@ -127,33 +127,47 @@ export function VoicePanel() {
 
   const pickInput = useCallback(async () => {
     setStatus("Opening file picker…");
-    const selected = await open({
-      multiple: false,
-      filters: [
-        { name: "Audio", extensions: ["wav"] },
-        { name: "All Files", extensions: ["*"] },
-      ],
-    });
-    if (typeof selected === "string") {
+    try {
+      const selected = await open({
+        multiple: false,
+        directory: false,
+        filters: [
+          { name: "Audio", extensions: ["wav"] },
+          { name: "All Files", extensions: ["*"] },
+        ],
+      });
+
+      if (!selected) {
+        setStatus("File selection cancelled");
+        return;
+      }
+
       setInputPath(selected);
       setStatus(`Selected file: ${selected}`);
-    } else if (Array.isArray(selected) && selected.length > 0) {
-      setInputPath(selected[0]);
-      setStatus(`Selected file: ${selected[0]}`);
-    } else {
-      setStatus("File selection cancelled");
+    } catch (error) {
+      console.error("Failed to open audio picker", error);
+      setStatus("Unable to open file picker");
     }
   }, []);
 
   const pickOutput = useCallback(async () => {
-    const saved = await save({
-      filters: [{ name: "WAV", extensions: ["wav"] }],
-      defaultPath: "nupi-playback.wav",
-    });
-    if (typeof saved === "string") {
-      setOutputPath(saved);
-      setStatus(`Playback audio will be saved to ${saved}`);
-      setDisablePlayback(false);
+    setStatus("Choosing output file…");
+    try {
+      const saved = await save({
+        defaultPath: "nupi-playback.wav",
+        filters: [{ name: "WAV", extensions: ["wav"] }],
+      });
+
+      if (saved) {
+        setOutputPath(saved);
+        setStatus(`Playback audio will be saved to ${saved}`);
+        setDisablePlayback(false);
+      } else {
+        setStatus("Playback output selection cancelled");
+      }
+    } catch (error) {
+      console.error("Failed to open save dialog", error);
+      setStatus("Unable to open save dialog");
     }
   }, []);
 

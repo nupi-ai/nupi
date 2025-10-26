@@ -13,15 +13,15 @@ import (
 	"time"
 )
 
-// StartOptions customises how the module process is launched.
+// StartOptions customises how the adapter process is launched.
 type StartOptions struct {
 	Stdout io.Writer
 	Stderr io.Writer
 	Env    []string // optional override. When empty, parent environment is used.
 }
 
-// ModuleProcess exposes control primitives for the launched module.
-type ModuleProcess struct {
+// AdapterProcess exposes control primitives for the launched adapter.
+type AdapterProcess struct {
 	cmd         *exec.Cmd
 	stdoutDone  chan struct{}
 	stderrDone  chan struct{}
@@ -31,22 +31,22 @@ type ModuleProcess struct {
 	terminateMu sync.Mutex
 }
 
-// Start launches the module command described by cfg.
-func Start(ctx context.Context, cfg Config, opts *StartOptions) (*ModuleProcess, error) {
+// Start launches the adapter command described by cfg.
+func Start(ctx context.Context, cfg Config, opts *StartOptions) (*AdapterProcess, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
-	if err := ensureDir(cfg.ModuleHome, 0o755); err != nil {
-		return nil, fmt.Errorf("adapter-runner: ensure module home: %w", err)
+	if err := ensureDir(cfg.AdapterHome, 0o755); err != nil {
+		return nil, fmt.Errorf("adapter-runner: ensure adapter home: %w", err)
 	}
-	if err := ensureDir(cfg.ModuleDataDir, 0o755); err != nil {
-		return nil, fmt.Errorf("adapter-runner: ensure module data dir: %w", err)
+	if err := ensureDir(cfg.AdapterDataDir, 0o755); err != nil {
+		return nil, fmt.Errorf("adapter-runner: ensure adapter data dir: %w", err)
 	}
 
 	cmd := exec.CommandContext(ctx, cfg.Command, cfg.Args...)
-	if cfg.ModuleHome != "" {
-		cmd.Dir = cfg.ModuleHome
+	if cfg.AdapterHome != "" {
+		cmd.Dir = cfg.AdapterHome
 	}
 
 	env := cfg.RawEnvironment
@@ -76,10 +76,10 @@ func Start(ctx context.Context, cfg Config, opts *StartOptions) (*ModuleProcess,
 	}
 
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("adapter-runner: start module: %w", err)
+		return nil, fmt.Errorf("adapter-runner: start adapter: %w", err)
 	}
 
-	proc := &ModuleProcess{
+	proc := &AdapterProcess{
 		cmd:        cmd,
 		stdoutDone: make(chan struct{}),
 		stderrDone: make(chan struct{}),
@@ -110,8 +110,8 @@ func Start(ctx context.Context, cfg Config, opts *StartOptions) (*ModuleProcess,
 	return proc, nil
 }
 
-// Wait blocks until the module exits and returns the underlying error.
-func (p *ModuleProcess) Wait() error {
+// Wait blocks until the adapter exits and returns the underlying error.
+func (p *AdapterProcess) Wait() error {
 	if p == nil {
 		return errors.New("adapter-runner: nil process")
 	}
@@ -122,9 +122,9 @@ func (p *ModuleProcess) Wait() error {
 	return err
 }
 
-// Terminate sends the provided signal to the module and waits for graceful
+// Terminate sends the provided signal to the adapter and waits for graceful
 // shutdown. If the process does not exit within grace, it is killed forcibly.
-func (p *ModuleProcess) Terminate(sig os.Signal, grace time.Duration) error {
+func (p *AdapterProcess) Terminate(sig os.Signal, grace time.Duration) error {
 	if p == nil || p.cmd == nil || p.cmd.Process == nil {
 		return nil
 	}
@@ -156,7 +156,7 @@ func (p *ModuleProcess) Terminate(sig os.Signal, grace time.Duration) error {
 	case <-timer.C:
 		// Force kill.
 		if err := p.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
-			return fmt.Errorf("adapter-runner: kill module: %w", err)
+			return fmt.Errorf("adapter-runner: kill adapter: %w", err)
 		}
 		<-p.waitCh
 		return p.waitErr
@@ -164,7 +164,7 @@ func (p *ModuleProcess) Terminate(sig os.Signal, grace time.Duration) error {
 }
 
 // Pid returns the OS process identifier.
-func (p *ModuleProcess) Pid() int {
+func (p *AdapterProcess) Pid() int {
 	if p == nil || p.cmd == nil || p.cmd.Process == nil {
 		return 0
 	}

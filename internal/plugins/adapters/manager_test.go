@@ -1,4 +1,4 @@
-package modules
+package adapters
 
 import (
 	"context"
@@ -30,7 +30,7 @@ func (f *fakeBindingSource) ListAdapterBindings(context.Context) ([]configstore.
 	return out, nil
 }
 
-func TestManagerEnsureStartsModules(t *testing.T) {
+func TestManagerEnsureStartsAdapters(t *testing.T) {
 	store := &fakeBindingSource{
 		bindings: []configstore.AdapterBinding{
 			{
@@ -163,7 +163,7 @@ func TestManagerEnsureConfigChange(t *testing.T) {
 
 	records := launcher.Records()
 	if len(records) != 2 {
-		t.Fatalf("expected module to restart on config change, got %d launches", len(records))
+		t.Fatalf("expected adapter to restart on config change, got %d launches", len(records))
 	}
 	if launcher.StopCount(string(SlotAI)) != 1 {
 		t.Fatalf("expected previous handle to be stopped on config change")
@@ -181,7 +181,7 @@ func TestManagerEnsureMissingStore(t *testing.T) {
 	}
 }
 
-func TestManagerStartModuleConfiguresEnvironment(t *testing.T) {
+func TestManagerStartAdapterConfiguresEnvironment(t *testing.T) {
 	ctx := context.Background()
 	tempDir := t.TempDir()
 	dbPath := filepath.Join(tempDir, "config.db")
@@ -199,16 +199,16 @@ apiVersion: nap.nupi.ai/v1alpha1
 kind: Plugin
 type: adapter
 metadata:
-  name: Sample Module
-  slug: Example Module
+  name: Sample Adapter
+  slug: Example Adapter
 spec:
-  moduleType: ai
+  slot: ai
   mode: external
   entrypoint:
-    listenEnv: MODULE_LISTEN_ADDR
+    listenEnv: ADAPTER_LISTEN_ADDR
   assets:
     models:
-      cacheDirEnv: MODULE_CACHE_DIR
+      cacheDirEnv: ADAPTER_CACHE_DIR
   telemetry:
     stdout: true
     stderr: false
@@ -227,7 +227,7 @@ spec:
 	if err := store.SetActiveAdapter(ctx, string(SlotAI), adapter.ID, map[string]any{"token": "abc"}); err != nil {
 		t.Fatalf("set active adapter: %v", err)
 	}
-	endpoint := configstore.ModuleEndpoint{
+	endpoint := configstore.AdapterEndpoint{
 		AdapterID: adapter.ID,
 		Transport: "grpc",
 		Address:   "127.0.0.1:9500",
@@ -237,7 +237,7 @@ spec:
 			"CUSTOM_FLAG": "1",
 		},
 	}
-	if err := store.UpsertModuleEndpoint(ctx, endpoint); err != nil {
+	if err := store.UpsertAdapterEndpoint(ctx, endpoint); err != nil {
 		t.Fatalf("upsert endpoint: %v", err)
 	}
 
@@ -270,28 +270,28 @@ spec:
 		return "", false
 	}
 
-	if slot, ok := envLookup("NUPI_MODULE_SLOT"); !ok || slot != string(SlotAI) {
-		t.Fatalf("expected NUPI_MODULE_SLOT=%s, got %q", SlotAI, slot)
+	if slot, ok := envLookup("NUPI_ADAPTER_SLOT"); !ok || slot != string(SlotAI) {
+		t.Fatalf("expected NUPI_ADAPTER_SLOT=%s, got %q", SlotAI, slot)
 	}
-	if adapterID, ok := envLookup("NUPI_MODULE_ADAPTER"); !ok || adapterID != adapter.ID {
-		t.Fatalf("expected NUPI_MODULE_ADAPTER=%s, got %q", adapter.ID, adapterID)
+	if adapterID, ok := envLookup("NUPI_ADAPTER_ID"); !ok || adapterID != adapter.ID {
+		t.Fatalf("expected NUPI_ADAPTER_ID=%s, got %q", adapter.ID, adapterID)
 	}
-	if cfg, ok := envLookup("NUPI_MODULE_CONFIG"); !ok || cfg != `{"token":"abc"}` {
-		t.Fatalf("expected NUPI_MODULE_CONFIG, got %q", cfg)
+	if cfg, ok := envLookup("NUPI_ADAPTER_CONFIG"); !ok || cfg != `{"token":"abc"}` {
+		t.Fatalf("expected NUPI_ADAPTER_CONFIG, got %q", cfg)
 	}
-	home, ok := envLookup("NUPI_MODULE_HOME")
+	home, ok := envLookup("NUPI_ADAPTER_HOME")
 	if !ok {
-		t.Fatalf("missing NUPI_MODULE_HOME in env")
+		t.Fatalf("missing NUPI_ADAPTER_HOME in env")
 	}
-	expectedDir := filepath.Join(pluginDir, "example-module")
+	expectedDir := filepath.Join(pluginDir, "example-adapter")
 	if home != expectedDir {
-		t.Fatalf("unexpected module home: %s (expected %s)", home, expectedDir)
+		t.Fatalf("unexpected adapter home: %s (expected %s)", home, expectedDir)
 	}
 	if info, err := os.Stat(home); err != nil || !info.IsDir() {
-		t.Fatalf("module home directory not created: %v", err)
+		t.Fatalf("adapter home directory not created: %v", err)
 	}
-	if manifestPath, ok := envLookup("NUPI_MODULE_MANIFEST_PATH"); !ok || manifestPath == "" {
-		t.Fatalf("missing NUPI_MODULE_MANIFEST_PATH")
+	if manifestPath, ok := envLookup("NUPI_ADAPTER_MANIFEST_PATH"); !ok || manifestPath == "" {
+		t.Fatalf("missing NUPI_ADAPTER_MANIFEST_PATH")
 	} else {
 		data, err := os.ReadFile(manifestPath)
 		if err != nil {
@@ -302,29 +302,29 @@ spec:
 		}
 	}
 
-	dataDir, ok := envLookup("NUPI_MODULE_DATA_DIR")
+	dataDir, ok := envLookup("NUPI_ADAPTER_DATA_DIR")
 	if !ok {
-		t.Fatalf("missing NUPI_MODULE_DATA_DIR")
+		t.Fatalf("missing NUPI_ADAPTER_DATA_DIR")
 	}
 	if _, err := os.Stat(dataDir); err != nil {
 		t.Fatalf("data dir not created: %v", err)
 	}
-	if cacheDir, ok := envLookup("MODULE_CACHE_DIR"); !ok || cacheDir != dataDir {
-		t.Fatalf("expected MODULE_CACHE_DIR=%s, got %q", dataDir, cacheDir)
+	if cacheDir, ok := envLookup("ADAPTER_CACHE_DIR"); !ok || cacheDir != dataDir {
+		t.Fatalf("expected ADAPTER_CACHE_DIR=%s, got %q", dataDir, cacheDir)
 	}
-	if transport, ok := envLookup("NUPI_MODULE_TRANSPORT"); !ok || transport != endpoint.Transport {
+	if transport, ok := envLookup("NUPI_ADAPTER_TRANSPORT"); !ok || transport != endpoint.Transport {
 		t.Fatalf("expected transport %s, got %q", endpoint.Transport, transport)
 	}
-	if addr, ok := envLookup("NUPI_MODULE_ENDPOINT"); !ok || addr != endpoint.Address {
-		t.Fatalf("expected module endpoint %s, got %q", endpoint.Address, addr)
+	if addr, ok := envLookup("NUPI_ADAPTER_ENDPOINT"); !ok || addr != endpoint.Address {
+		t.Fatalf("expected adapter endpoint %s, got %q", endpoint.Address, addr)
 	}
-	if listenAddr, ok := envLookup("MODULE_LISTEN_ADDR"); !ok || listenAddr != endpoint.Address {
-		t.Fatalf("expected MODULE_LISTEN_ADDR=%s, got %q", endpoint.Address, listenAddr)
+	if listenAddr, ok := envLookup("ADAPTER_LISTEN_ADDR"); !ok || listenAddr != endpoint.Address {
+		t.Fatalf("expected ADAPTER_LISTEN_ADDR=%s, got %q", endpoint.Address, listenAddr)
 	}
-	if cmd, ok := envLookup("NUPI_MODULE_COMMAND"); !ok || cmd != endpoint.Command {
+	if cmd, ok := envLookup("NUPI_ADAPTER_COMMAND"); !ok || cmd != endpoint.Command {
 		t.Fatalf("expected command %s, got %q", endpoint.Command, cmd)
 	}
-	if args, ok := envLookup("NUPI_MODULE_ARGS"); !ok || args != `["--foo"]` {
+	if args, ok := envLookup("NUPI_ADAPTER_ARGS"); !ok || args != `["--foo"]` {
 		t.Fatalf("expected args [\"--foo\"], got %q", args)
 	}
 	if customEnv, ok := envLookup("CUSTOM_FLAG"); !ok || customEnv != "1" {
@@ -358,12 +358,12 @@ func TestManagerEnsureRestartsOnEndpointChange(t *testing.T) {
 		t.Fatalf("set active adapter: %v", err)
 	}
 
-	initialEndpoint := configstore.ModuleEndpoint{
+	initialEndpoint := configstore.AdapterEndpoint{
 		AdapterID: adapter.ID,
 		Transport: "grpc",
 		Address:   "127.0.0.1:9400",
 	}
-	if err := store.UpsertModuleEndpoint(ctx, initialEndpoint); err != nil {
+	if err := store.UpsertAdapterEndpoint(ctx, initialEndpoint); err != nil {
 		t.Fatalf("upsert endpoint: %v", err)
 	}
 
@@ -382,12 +382,12 @@ func TestManagerEnsureRestartsOnEndpointChange(t *testing.T) {
 		t.Fatalf("expected initial launch, got %d", len(launcher.Records()))
 	}
 
-	updatedEndpoint := configstore.ModuleEndpoint{
+	updatedEndpoint := configstore.AdapterEndpoint{
 		AdapterID: adapter.ID,
 		Transport: "grpc",
 		Address:   "127.0.0.1:9501",
 	}
-	if err := store.UpsertModuleEndpoint(ctx, updatedEndpoint); err != nil {
+	if err := store.UpsertAdapterEndpoint(ctx, updatedEndpoint); err != nil {
 		t.Fatalf("update endpoint: %v", err)
 	}
 
@@ -398,7 +398,7 @@ func TestManagerEnsureRestartsOnEndpointChange(t *testing.T) {
 		t.Fatalf("expected relaunch after endpoint change, got %d", len(launcher.Records()))
 	}
 	if launcher.StopCount(string(SlotAI)) != 1 {
-		t.Fatalf("expected module stop before restart")
+		t.Fatalf("expected adapter stop before restart")
 	}
 }
 
@@ -422,7 +422,7 @@ type: adapter
 metadata:
   name: Primary AI
 spec:
-  moduleType: ai
+  slot: ai
 `
 	adapter := configstore.Adapter{
 		ID:       "adapter.ai",
@@ -461,7 +461,7 @@ metadata:
   name: Primary AI
   version: v2
 spec:
-  moduleType: ai
+  slot: ai
   telemetry:
     stdout: true
 `
@@ -477,7 +477,7 @@ spec:
 		t.Fatalf("expected relaunch after manifest change, got %d", len(launcher.Records()))
 	}
 	if launcher.StopCount(string(SlotAI)) != 1 {
-		t.Fatalf("expected module stop before restart")
+		t.Fatalf("expected adapter stop before restart")
 	}
 }
 

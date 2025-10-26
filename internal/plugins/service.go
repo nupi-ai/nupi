@@ -2,7 +2,6 @@ package plugins
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -10,14 +9,15 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/nupi-ai/nupi/internal/detector"
-	"github.com/nupi-ai/nupi/internal/pluginmanifest"
+	"github.com/nupi-ai/nupi/internal/plugins/manifest"
+	pipelinecleaners "github.com/nupi-ai/nupi/internal/plugins/pipeline_cleaners"
+	tooldetectors "github.com/nupi-ai/nupi/internal/plugins/tool_detectors"
 )
 
 // Service manages plugin assets and metadata for the daemon.
 type Service struct {
 	pluginDir   string
-	pipelineIdx map[string]*PipelinePlugin
+	pipelineIdx map[string]*pipelinecleaners.PipelinePlugin
 	pipelineMu  sync.RWMutex
 }
 
@@ -26,7 +26,7 @@ func NewService(instanceDir string) *Service {
 	pluginDir := filepath.Join(instanceDir, "plugins")
 	return &Service{
 		pluginDir:   pluginDir,
-		pipelineIdx: make(map[string]*PipelinePlugin),
+		pipelineIdx: make(map[string]*pipelinecleaners.PipelinePlugin),
 	}
 }
 
@@ -37,40 +37,40 @@ func (s *Service) PluginDir() string {
 
 // LoadPipelinePlugins rebuilds the in-memory cleaner registry.
 func (s *Service) LoadPipelinePlugins() error {
-	manifests, err := pluginmanifest.Discover(s.pluginDir)
+	manifests, err := manifest.Discover(s.pluginDir)
 	if err != nil {
 		return err
 	}
 	return s.loadPipelinePlugins(manifests)
 }
 
-func (s *Service) loadPipelinePlugins(manifests []*pluginmanifest.Manifest) error {
-	index := make(map[string]*PipelinePlugin)
-	for _, manifest := range manifests {
-		if manifest.Type != pluginmanifest.PluginTypePipelineCleaner {
+func (s *Service) loadPipelinePlugins(manifests []*manifest.Manifest) error {
+	index := make(map[string]*pipelinecleaners.PipelinePlugin)
+	for _, mf := range manifests {
+		if mf.Type != manifest.PluginTypePipelineCleaner {
 			continue
 		}
 
-		mainPath, err := manifest.MainPath()
+		mainPath, err := mf.MainPath()
 		if err != nil {
-			log.Printf("[Plugins] skip pipeline cleaner %s: %v", manifest.Dir, err)
+			log.Printf("[Plugins] skip pipeline cleaner %s: %v", mf.Dir, err)
 			continue
 		}
 
-		plugin, err := LoadPipelinePlugin(mainPath)
+		plugin, err := pipelinecleaners.LoadPipelinePlugin(mainPath)
 		if err != nil {
 			log.Printf("[Plugins] skip pipeline cleaner %s: %v", mainPath, err)
 			continue
 		}
 
-		if plugin.Name == "" && strings.TrimSpace(manifest.Metadata.Name) != "" {
-			plugin.Name = manifest.Metadata.Name
+		if plugin.Name == "" && strings.TrimSpace(mf.Metadata.Name) != "" {
+			plugin.Name = mf.Metadata.Name
 		}
 
 		keys := []string{plugin.Name}
 		keys = append(keys, plugin.Commands...)
 		if len(keys) == 0 {
-			keys = append(keys, filepath.Base(manifest.Dir))
+			keys = append(keys, filepath.Base(mf.Dir))
 		}
 
 		for _, key := range keys {
@@ -86,14 +86,11 @@ func (s *Service) loadPipelinePlugins(manifests []*pluginmanifest.Manifest) erro
 	s.pipelineIdx = index
 	s.pipelineMu.Unlock()
 
-	if err := s.writePipelineIndex(index); err != nil {
-		log.Printf("[Plugins] pipeline index write error: %v", err)
-	}
 	return nil
 }
 
 // PipelinePluginFor returns a cleaner matching the supplied name.
-func (s *Service) PipelinePluginFor(name string) (*PipelinePlugin, bool) {
+func (s *Service) PipelinePluginFor(name string) (*pipelinecleaners.PipelinePlugin, bool) {
 	s.pipelineMu.RLock()
 	defer s.pipelineMu.RUnlock()
 
@@ -112,43 +109,14 @@ func (s *Service) PipelinePluginFor(name string) (*PipelinePlugin, bool) {
 	return plugin, ok
 }
 
-func (s *Service) writePipelineIndex(index map[string]*PipelinePlugin) error {
-	manifest := make(map[string]string, len(index))
-	for key, plugin := range index {
-		if plugin == nil {
-			continue
-		}
-		rel, err := filepath.Rel(s.pluginDir, plugin.FilePath)
-		if err != nil {
-			rel = plugin.FilePath
-		}
-		manifest[key] = rel
-	}
-
-	data, err := json.MarshalIndent(manifest, "", "  ")
-	if err != nil {
-		return fmt.Errorf("pipeline index marshal: %w", err)
-	}
-
-	path := filepath.Join(s.pluginDir, "pipeline_cleaners_index.json")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("pipeline index ensure dir: %w", err)
-	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return fmt.Errorf("pipeline index write: %w", err)
-	}
-
-	return nil
-}
-
 // GenerateIndex rebuilds the plugin detection index.
 func (s *Service) GenerateIndex() error {
-	manifests, err := pluginmanifest.Discover(s.pluginDir)
+	manifests, err := manifest.Discover(s.pluginDir)
 	if err != nil {
 		return err
 	}
 
-	generator := detector.NewIndexGenerator(s.pluginDir, manifests)
+	generator := tooldetectors.NewIndexGenerator(s.pluginDir, manifests)
 	if err := generator.Generate(); err != nil {
 		return err
 	}
@@ -162,7 +130,7 @@ func (s *Service) Start(ctx context.Context) error {
 		return fmt.Errorf("ensure plugin dir: %w", err)
 	}
 
-	manifests, err := pluginmanifest.Discover(s.pluginDir)
+	manifests, err := manifest.Discover(s.pluginDir)
 	if err != nil {
 		return err
 	}
@@ -171,7 +139,7 @@ func (s *Service) Start(ctx context.Context) error {
 		log.Printf("[Plugins] pipeline load error: %v", err)
 	}
 
-	generator := detector.NewIndexGenerator(s.pluginDir, manifests)
+	generator := tooldetectors.NewIndexGenerator(s.pluginDir, manifests)
 	if err := generator.Generate(); err != nil {
 		return err
 	}

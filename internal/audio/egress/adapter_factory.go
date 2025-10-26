@@ -7,24 +7,24 @@ import (
 	"strings"
 
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
-	"github.com/nupi-ai/nupi/internal/modules"
+	"github.com/nupi-ai/nupi/internal/plugins/adapters"
 )
 
-type moduleFactory struct {
+type adapterFactory struct {
 	store *configstore.Store
 }
 
-// NewModuleFactory creates a factory that resolves synthesizers based on module bindings.
-func NewModuleFactory(store *configstore.Store) Factory {
+// NewAdapterFactory creates a factory that resolves synthesizers based on adapter bindings.
+func NewAdapterFactory(store *configstore.Store) Factory {
 	if store == nil {
 		return FactoryFunc(func(context.Context, SessionParams) (Synthesizer, error) {
 			return nil, ErrFactoryUnavailable
 		})
 	}
-	return moduleFactory{store: store}
+	return adapterFactory{store: store}
 }
 
-func (m moduleFactory) Create(ctx context.Context, params SessionParams) (Synthesizer, error) {
+func (m adapterFactory) Create(ctx context.Context, params SessionParams) (Synthesizer, error) {
 	bindings, err := m.store.ListAdapterBindings(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("tts: list adapter bindings: %w", err)
@@ -36,7 +36,7 @@ func (m moduleFactory) Create(ctx context.Context, params SessionParams) (Synthe
 	)
 
 	for _, binding := range bindings {
-		if binding.Slot != string(modules.SlotTTS) {
+		if binding.Slot != string(adapters.SlotTTS) {
 			continue
 		}
 		if !strings.EqualFold(binding.Status, configstore.BindingStatusActive) {
@@ -68,7 +68,7 @@ func (m moduleFactory) Create(ctx context.Context, params SessionParams) (Synthe
 	params.Config = config
 
 	switch adapterID {
-	case modules.MockTTSAdapterID:
+	case adapters.MockTTSAdapterID:
 		return newMockSynthesizer(params)
 	}
 

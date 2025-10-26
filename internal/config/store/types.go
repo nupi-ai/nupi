@@ -14,7 +14,7 @@ type SecurityEntry struct {
 	UpdatedAt string
 }
 
-// Adapter describes an installed adapter module.
+// Adapter describes an installed adapter plugin.
 type Adapter struct {
 	ID        string
 	Source    string
@@ -41,8 +41,8 @@ const (
 	BindingStatusRequired = "required"
 )
 
-// ModuleEndpoint describes how to reach or launch a module adapter.
-type ModuleEndpoint struct {
+// AdapterEndpoint describes how to reach or launch an adapter.
+type AdapterEndpoint struct {
 	AdapterID string
 	Transport string
 	Address   string

@@ -1,4 +1,4 @@
-package modules
+package adapters
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 )
 
-// LaunchRecord captures metadata about a launched mock module process.
+// LaunchRecord captures metadata about a launched mock adapter process.
 type LaunchRecord struct {
 	Binary     string
 	Args       []string
@@ -46,7 +46,7 @@ func (m *MockLauncher) SetError(err error) {
 	m.err = err
 }
 
-// Launch records module metadata and returns a controllable handle.
+// Launch records adapter metadata and returns a controllable handle.
 func (m *MockLauncher) Launch(ctx context.Context, binary string, args []string, env []string, stdout io.Writer, stderr io.Writer) (ProcessHandle, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

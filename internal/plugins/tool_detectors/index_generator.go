@@ -1,4 +1,4 @@
-package detector
+package tooldetectors
 
 import (
 	"fmt"
@@ -6,17 +6,17 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/nupi-ai/nupi/internal/pluginmanifest"
+	"github.com/nupi-ai/nupi/internal/plugins/manifest"
 )
 
 // IndexGenerator creates detectors_index.json from detector plugin manifests.
 type IndexGenerator struct {
 	pluginDir string
-	manifests []*pluginmanifest.Manifest
+	manifests []*manifest.Manifest
 }
 
 // NewIndexGenerator creates a new index generator.
-func NewIndexGenerator(pluginDir string, manifests []*pluginmanifest.Manifest) *IndexGenerator {
+func NewIndexGenerator(pluginDir string, manifests []*manifest.Manifest) *IndexGenerator {
 	return &IndexGenerator{
 		pluginDir: pluginDir,
 		manifests: manifests,
@@ -35,7 +35,7 @@ func (g *IndexGenerator) Generate() error {
 	manifests := g.manifests
 	if manifests == nil {
 		var err error
-		manifests, err = pluginmanifest.Discover(g.pluginDir)
+		manifests, err = manifest.Discover(g.pluginDir)
 		if err != nil {
 			return err
 		}
@@ -44,14 +44,14 @@ func (g *IndexGenerator) Generate() error {
 	index := make(PluginIndex)
 	successCount := 0
 
-	for _, manifest := range manifests {
-		if manifest.Type != pluginmanifest.PluginTypeToolDetector {
+	for _, mf := range manifests {
+		if mf.Type != manifest.PluginTypeToolDetector {
 			continue
 		}
 
-		mainPath, err := manifest.MainPath()
+		mainPath, err := mf.MainPath()
 		if err != nil {
-			log.Printf("[IndexGenerator] Warning: skip detector %s: %v", manifest.Dir, err)
+			log.Printf("[IndexGenerator] Warning: skip detector %s: %v", mf.Dir, err)
 			continue
 		}
 
@@ -61,7 +61,7 @@ func (g *IndexGenerator) Generate() error {
 			continue
 		}
 
-		relativePath, err := manifest.RelativeMainPath(g.pluginDir)
+		relativePath, err := mf.RelativeMainPath(g.pluginDir)
 		if err != nil {
 			log.Printf("[IndexGenerator] Warning: relative path error for %s: %v", mainPath, err)
 			relativePath = mainPath
@@ -91,7 +91,7 @@ func (g *IndexGenerator) ListPlugins() ([]map[string]interface{}, error) {
 	manifests := g.manifests
 	if manifests == nil {
 		var err error
-		manifests, err = pluginmanifest.Discover(g.pluginDir)
+		manifests, err = manifest.Discover(g.pluginDir)
 		if err != nil {
 			return nil, err
 		}
@@ -99,22 +99,22 @@ func (g *IndexGenerator) ListPlugins() ([]map[string]interface{}, error) {
 
 	var plugins []map[string]interface{}
 
-	for _, manifest := range manifests {
-		if manifest.Type != pluginmanifest.PluginTypeToolDetector {
+	for _, mf := range manifests {
+		if mf.Type != manifest.PluginTypeToolDetector {
 			continue
 		}
 
-		mainPath, err := manifest.MainPath()
+		mainPath, err := mf.MainPath()
 		if err != nil {
 			plugins = append(plugins, map[string]interface{}{
-				"file":     manifest.Dir,
+				"file":     mf.Dir,
 				"error":    err.Error(),
 				"commands": []string{},
 			})
 			continue
 		}
 
-		rel, err := manifest.RelativeMainPath(g.pluginDir)
+		rel, err := mf.RelativeMainPath(g.pluginDir)
 		if err != nil {
 			rel = mainPath
 		}

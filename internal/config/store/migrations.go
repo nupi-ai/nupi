@@ -16,7 +16,7 @@ type MigrationResult struct {
 	PendingSlots []string
 }
 
-// EnsureRequiredAdapterSlots makes sure required module slots exist and are marked as required when no adapter is bound.
+// EnsureRequiredAdapterSlots makes sure required adapter slots exist and are marked as required when no adapter is bound.
 func (s *Store) EnsureRequiredAdapterSlots(ctx context.Context) (MigrationResult, error) {
 	var result MigrationResult
 	if s.readOnly {

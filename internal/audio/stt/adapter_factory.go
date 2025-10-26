@@ -7,24 +7,24 @@ import (
 	"strings"
 
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
-	"github.com/nupi-ai/nupi/internal/modules"
+	adapters "github.com/nupi-ai/nupi/internal/plugins/adapters"
 )
 
-type moduleFactory struct {
+type adapterFactory struct {
 	store *configstore.Store
 }
 
-// NewModuleFactory creates a factory based on module bindings stored in config.Store.
-func NewModuleFactory(store *configstore.Store) Factory {
+// NewAdapterFactory creates a factory based on adapter bindings stored in config.Store.
+func NewAdapterFactory(store *configstore.Store) Factory {
 	if store == nil {
 		return FactoryFunc(func(context.Context, SessionParams) (Transcriber, error) {
 			return nil, ErrFactoryUnavailable
 		})
 	}
-	return moduleFactory{store: store}
+	return adapterFactory{store: store}
 }
 
-func (m moduleFactory) Create(ctx context.Context, params SessionParams) (Transcriber, error) {
+func (m adapterFactory) Create(ctx context.Context, params SessionParams) (Transcriber, error) {
 	bindings, err := m.store.ListAdapterBindings(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("stt: list adapter bindings: %w", err)
@@ -36,7 +36,7 @@ func (m moduleFactory) Create(ctx context.Context, params SessionParams) (Transc
 	)
 
 	for _, binding := range bindings {
-		if binding.Slot != string(modules.SlotSTT) {
+		if binding.Slot != string(adapters.SlotSTT) {
 			continue
 		}
 		if !strings.EqualFold(binding.Status, configstore.BindingStatusActive) {
@@ -67,16 +67,16 @@ func (m moduleFactory) Create(ctx context.Context, params SessionParams) (Transc
 	params.Config = activeConfig
 
 	switch activeAdapter {
-	case modules.MockSTTAdapterID:
+	case adapters.MockSTTAdapterID:
 		return newMockTranscriber(params)
 	}
 
-	endpoint, err := m.store.GetModuleEndpoint(ctx, activeAdapter)
+	endpoint, err := m.store.GetAdapterEndpoint(ctx, activeAdapter)
 	if err != nil {
 		if configstore.IsNotFound(err) {
 			return nil, ErrAdapterUnavailable
 		}
-		return nil, fmt.Errorf("stt: fetch module endpoint for %s: %w", activeAdapter, err)
+		return nil, fmt.Errorf("stt: fetch adapter endpoint for %s: %w", activeAdapter, err)
 	}
 
 	return newNAPTranscriber(ctx, params, endpoint)

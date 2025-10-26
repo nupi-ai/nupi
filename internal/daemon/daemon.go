@@ -26,9 +26,9 @@ import (
 	"github.com/nupi-ai/nupi/internal/contentpipeline"
 	"github.com/nupi-ai/nupi/internal/conversation"
 	"github.com/nupi-ai/nupi/internal/eventbus"
-	"github.com/nupi-ai/nupi/internal/modules"
 	"github.com/nupi-ai/nupi/internal/observability"
 	"github.com/nupi-ai/nupi/internal/plugins"
+	adapters "github.com/nupi-ai/nupi/internal/plugins/adapters"
 	daemonruntime "github.com/nupi-ai/nupi/internal/runtime"
 	"github.com/nupi-ai/nupi/internal/server"
 	"github.com/nupi-ai/nupi/internal/server/runtimebridge"
@@ -89,7 +89,7 @@ func New(opts Options) (*Daemon, error) {
 		return nil, fmt.Errorf("daemon: load transport config: %w", err)
 	}
 
-	if err := modules.EnsureBuiltinAdapters(context.Background(), opts.Store); err != nil {
+	if err := adapters.EnsureBuiltinAdapters(context.Background(), opts.Store); err != nil {
 		return nil, fmt.Errorf("daemon: ensure builtin adapters: %w", err)
 	}
 
@@ -112,26 +112,26 @@ func New(opts Options) (*Daemon, error) {
 
 	pipelineService := contentpipeline.NewService(bus, pluginService, contentpipeline.WithMetricsInterval(30*time.Second))
 	audioIngressService := ingress.New(bus)
-	audioSTTService := stt.New(bus, stt.WithFactory(stt.NewModuleFactory(opts.Store)))
-	audioVADService := vad.New(bus, vad.WithFactory(vad.NewModuleFactory(opts.Store)))
+	audioSTTService := stt.New(bus, stt.WithFactory(stt.NewAdapterFactory(opts.Store)))
+	audioVADService := vad.New(bus, vad.WithFactory(vad.NewAdapterFactory(opts.Store)))
 	audioBargeService := barge.New(bus)
-	audioEgressService := egress.New(bus, egress.WithFactory(egress.NewModuleFactory(opts.Store)))
+	audioEgressService := egress.New(bus, egress.WithFactory(egress.NewAdapterFactory(opts.Store)))
 	conversationService := conversation.NewService(bus)
-	moduleManager := modules.NewManager(modules.ManagerOptions{
+	adapterManager := adapters.NewManager(adapters.ManagerOptions{
 		Store:     opts.Store,
 		Runner:    runnerManager,
 		Adapters:  opts.Store,
 		PluginDir: pluginService.PluginDir(),
 		Bus:       bus,
 	})
-	modulesService := modules.NewService(moduleManager, opts.Store, bus)
+	adaptersService := adapters.NewService(adapterManager, opts.Store, bus)
 	eventCounter := observability.NewEventCounter()
 	bus.AddObserver(eventCounter)
 	metricsExporter := observability.NewPrometheusExporter(bus, eventCounter)
 	metricsExporter.WithPipeline(pipelineService)
 	apiServer.SetMetricsExporter(metricsExporter)
 	apiServer.SetConversationStore(conversationService)
-	apiServer.SetModulesController(modulesService)
+	apiServer.SetAdaptersController(adaptersService)
 	apiServer.SetAudioIngress(runtimebridge.AudioIngressProvider(audioIngressService))
 	apiServer.SetAudioEgress(runtimebridge.AudioEgressController(audioEgressService))
 	apiServer.SetEventBus(bus)
@@ -166,8 +166,8 @@ func New(opts Options) (*Daemon, error) {
 		return nil, err
 	}
 
-	if err := host.Register("modules", func(ctx context.Context) (daemonruntime.Service, error) {
-		return modulesService, nil
+	if err := host.Register("adapter_runtime", func(ctx context.Context) (daemonruntime.Service, error) {
+		return adaptersService, nil
 	}); err != nil {
 		return nil, err
 	}

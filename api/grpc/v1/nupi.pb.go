@@ -868,13 +868,13 @@ func (x *GetConversationResponse) GetNextOffset() uint32 {
 	return 0
 }
 
-// ModuleRuntime exposes runtime metadata for an adapter process.
-type ModuleRuntime struct {
+// AdapterRuntime exposes runtime metadata for an adapter process.
+type AdapterRuntime struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
 
-	ModuleId  string                 `protobuf:"bytes,1,opt,name=module_id,json=moduleId,proto3" json:"module_id,omitempty"`
+	AdapterId string                 `protobuf:"bytes,1,opt,name=adapter_id,json=adapterId,proto3" json:"adapter_id,omitempty"`
 	Health    string                 `protobuf:"bytes,2,opt,name=health,proto3" json:"health,omitempty"`
 	Message   string                 `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
 	StartedAt *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
@@ -882,8 +882,8 @@ type ModuleRuntime struct {
 	Extra     map[string]string      `protobuf:"bytes,6,rep,name=extra,proto3" json:"extra,omitempty" protobuf_key:"bytes,1,opt,name=key,proto3" protobuf_val:"bytes,2,opt,name=value,proto3"`
 }
 
-func (x *ModuleRuntime) Reset() {
-	*x = ModuleRuntime{}
+func (x *AdapterRuntime) Reset() {
+	*x = AdapterRuntime{}
 	if protoimpl.UnsafeEnabled {
 		mi := &file_api_grpc_v1_nupi_proto_msgTypes[13]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -891,13 +891,13 @@ func (x *ModuleRuntime) Reset() {
 	}
 }
 
-func (x *ModuleRuntime) String() string {
+func (x *AdapterRuntime) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*ModuleRuntime) ProtoMessage() {}
+func (*AdapterRuntime) ProtoMessage() {}
 
-func (x *ModuleRuntime) ProtoReflect() protoreflect.Message {
+func (x *AdapterRuntime) ProtoReflect() protoreflect.Message {
 	mi := &file_api_grpc_v1_nupi_proto_msgTypes[13]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -909,69 +909,69 @@ func (x *ModuleRuntime) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use ModuleRuntime.ProtoReflect.Descriptor instead.
-func (*ModuleRuntime) Descriptor() ([]byte, []int) {
+// Deprecated: Use AdapterRuntime.ProtoReflect.Descriptor instead.
+func (*AdapterRuntime) Descriptor() ([]byte, []int) {
 	return file_api_grpc_v1_nupi_proto_rawDescGZIP(), []int{13}
 }
 
-func (x *ModuleRuntime) GetModuleId() string {
+func (x *AdapterRuntime) GetAdapterId() string {
 	if x != nil {
-		return x.ModuleId
+		return x.AdapterId
 	}
 	return ""
 }
 
-func (x *ModuleRuntime) GetHealth() string {
+func (x *AdapterRuntime) GetHealth() string {
 	if x != nil {
 		return x.Health
 	}
 	return ""
 }
 
-func (x *ModuleRuntime) GetMessage() string {
+func (x *AdapterRuntime) GetMessage() string {
 	if x != nil {
 		return x.Message
 	}
 	return ""
 }
 
-func (x *ModuleRuntime) GetStartedAt() *timestamppb.Timestamp {
+func (x *AdapterRuntime) GetStartedAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.StartedAt
 	}
 	return nil
 }
 
-func (x *ModuleRuntime) GetUpdatedAt() *timestamppb.Timestamp {
+func (x *AdapterRuntime) GetUpdatedAt() *timestamppb.Timestamp {
 	if x != nil {
 		return x.UpdatedAt
 	}
 	return nil
 }
 
-func (x *ModuleRuntime) GetExtra() map[string]string {
+func (x *AdapterRuntime) GetExtra() map[string]string {
 	if x != nil {
 		return x.Extra
 	}
 	return nil
 }
 
-// ModuleEntry mirrors module binding status together with runtime info.
-type ModuleEntry struct {
+// AdapterEntry mirrors adapter binding status together with runtime info.
+type AdapterEntry struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
 
-	Slot       string         `protobuf:"bytes,1,opt,name=slot,proto3" json:"slot,omitempty"`
-	AdapterId  *string        `protobuf:"bytes,2,opt,name=adapter_id,json=adapterId,proto3,oneof" json:"adapter_id,omitempty"`
-	Status     string         `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"`
-	ConfigJson string         `protobuf:"bytes,4,opt,name=config_json,json=configJson,proto3" json:"config_json,omitempty"`
-	UpdatedAt  string         `protobuf:"bytes,5,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
-	Runtime    *ModuleRuntime `protobuf:"bytes,6,opt,name=runtime,proto3" json:"runtime,omitempty"`
+	Slot       string          `protobuf:"bytes,1,opt,name=slot,proto3" json:"slot,omitempty"`
+	AdapterId  *string         `protobuf:"bytes,2,opt,name=adapter_id,json=adapterId,proto3,oneof" json:"adapter_id,omitempty"`
+	Status     string          `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"`
+	ConfigJson string          `protobuf:"bytes,4,opt,name=config_json,json=configJson,proto3" json:"config_json,omitempty"`
+	UpdatedAt  string          `protobuf:"bytes,5,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	Runtime    *AdapterRuntime `protobuf:"bytes,6,opt,name=runtime,proto3" json:"runtime,omitempty"`
 }
 
-func (x *ModuleEntry) Reset() {
-	*x = ModuleEntry{}
+func (x *AdapterEntry) Reset() {
+	*x = AdapterEntry{}
 	if protoimpl.UnsafeEnabled {
 		mi := &file_api_grpc_v1_nupi_proto_msgTypes[14]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -979,13 +979,13 @@ func (x *ModuleEntry) Reset() {
 	}
 }
 
-func (x *ModuleEntry) String() string {
+func (x *AdapterEntry) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*ModuleEntry) ProtoMessage() {}
+func (*AdapterEntry) ProtoMessage() {}
 
-func (x *ModuleEntry) ProtoReflect() protoreflect.Message {
+func (x *AdapterEntry) ProtoReflect() protoreflect.Message {
 	mi := &file_api_grpc_v1_nupi_proto_msgTypes[14]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -997,64 +997,64 @@ func (x *ModuleEntry) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use ModuleEntry.ProtoReflect.Descriptor instead.
-func (*ModuleEntry) Descriptor() ([]byte, []int) {
+// Deprecated: Use AdapterEntry.ProtoReflect.Descriptor instead.
+func (*AdapterEntry) Descriptor() ([]byte, []int) {
 	return file_api_grpc_v1_nupi_proto_rawDescGZIP(), []int{14}
 }
 
-func (x *ModuleEntry) GetSlot() string {
+func (x *AdapterEntry) GetSlot() string {
 	if x != nil {
 		return x.Slot
 	}
 	return ""
 }
 
-func (x *ModuleEntry) GetAdapterId() string {
+func (x *AdapterEntry) GetAdapterId() string {
 	if x != nil && x.AdapterId != nil {
 		return *x.AdapterId
 	}
 	return ""
 }
 
-func (x *ModuleEntry) GetStatus() string {
+func (x *AdapterEntry) GetStatus() string {
 	if x != nil {
 		return x.Status
 	}
 	return ""
 }
 
-func (x *ModuleEntry) GetConfigJson() string {
+func (x *AdapterEntry) GetConfigJson() string {
 	if x != nil {
 		return x.ConfigJson
 	}
 	return ""
 }
 
-func (x *ModuleEntry) GetUpdatedAt() string {
+func (x *AdapterEntry) GetUpdatedAt() string {
 	if x != nil {
 		return x.UpdatedAt
 	}
 	return ""
 }
 
-func (x *ModuleEntry) GetRuntime() *ModuleRuntime {
+func (x *AdapterEntry) GetRuntime() *AdapterRuntime {
 	if x != nil {
 		return x.Runtime
 	}
 	return nil
 }
 
-// ModulesOverviewResponse summarizes module slots.
-type ModulesOverviewResponse struct {
+// AdaptersOverviewResponse summarizes adapter slots.
+type AdaptersOverviewResponse struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
 
-	Modules []*ModuleEntry `protobuf:"bytes,1,rep,name=modules,proto3" json:"modules,omitempty"`
+	Adapters []*AdapterEntry `protobuf:"bytes,1,rep,name=adapters,proto3" json:"adapters,omitempty"`
 }
 
-func (x *ModulesOverviewResponse) Reset() {
-	*x = ModulesOverviewResponse{}
+func (x *AdaptersOverviewResponse) Reset() {
+	*x = AdaptersOverviewResponse{}
 	if protoimpl.UnsafeEnabled {
 		mi := &file_api_grpc_v1_nupi_proto_msgTypes[15]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -1062,13 +1062,13 @@ func (x *ModulesOverviewResponse) Reset() {
 	}
 }
 
-func (x *ModulesOverviewResponse) String() string {
+func (x *AdaptersOverviewResponse) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*ModulesOverviewResponse) ProtoMessage() {}
+func (*AdaptersOverviewResponse) ProtoMessage() {}
 
-func (x *ModulesOverviewResponse) ProtoReflect() protoreflect.Message {
+func (x *AdaptersOverviewResponse) ProtoReflect() protoreflect.Message {
 	mi := &file_api_grpc_v1_nupi_proto_msgTypes[15]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -1080,20 +1080,20 @@ func (x *ModulesOverviewResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use ModulesOverviewResponse.ProtoReflect.Descriptor instead.
-func (*ModulesOverviewResponse) Descriptor() ([]byte, []int) {
+// Deprecated: Use AdaptersOverviewResponse.ProtoReflect.Descriptor instead.
+func (*AdaptersOverviewResponse) Descriptor() ([]byte, []int) {
 	return file_api_grpc_v1_nupi_proto_rawDescGZIP(), []int{15}
 }
 
-func (x *ModulesOverviewResponse) GetModules() []*ModuleEntry {
+func (x *AdaptersOverviewResponse) GetAdapters() []*AdapterEntry {
 	if x != nil {
-		return x.Modules
+		return x.Adapters
 	}
 	return nil
 }
 
-// BindModuleRequest activates an adapter for a slot.
-type BindModuleRequest struct {
+// BindAdapterRequest activates an adapter for a slot.
+type BindAdapterRequest struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
@@ -1103,8 +1103,8 @@ type BindModuleRequest struct {
 	ConfigJson string `protobuf:"bytes,3,opt,name=config_json,json=configJson,proto3" json:"config_json,omitempty"`
 }
 
-func (x *BindModuleRequest) Reset() {
-	*x = BindModuleRequest{}
+func (x *BindAdapterRequest) Reset() {
+	*x = BindAdapterRequest{}
 	if protoimpl.UnsafeEnabled {
 		mi := &file_api_grpc_v1_nupi_proto_msgTypes[16]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -1112,13 +1112,13 @@ func (x *BindModuleRequest) Reset() {
 	}
 }
 
-func (x *BindModuleRequest) String() string {
+func (x *BindAdapterRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*BindModuleRequest) ProtoMessage() {}
+func (*BindAdapterRequest) ProtoMessage() {}
 
-func (x *BindModuleRequest) ProtoReflect() protoreflect.Message {
+func (x *BindAdapterRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_api_grpc_v1_nupi_proto_msgTypes[16]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -1130,34 +1130,34 @@ func (x *BindModuleRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use BindModuleRequest.ProtoReflect.Descriptor instead.
-func (*BindModuleRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use BindAdapterRequest.ProtoReflect.Descriptor instead.
+func (*BindAdapterRequest) Descriptor() ([]byte, []int) {
 	return file_api_grpc_v1_nupi_proto_rawDescGZIP(), []int{16}
 }
 
-func (x *BindModuleRequest) GetSlot() string {
+func (x *BindAdapterRequest) GetSlot() string {
 	if x != nil {
 		return x.Slot
 	}
 	return ""
 }
 
-func (x *BindModuleRequest) GetAdapterId() string {
+func (x *BindAdapterRequest) GetAdapterId() string {
 	if x != nil {
 		return x.AdapterId
 	}
 	return ""
 }
 
-func (x *BindModuleRequest) GetConfigJson() string {
+func (x *BindAdapterRequest) GetConfigJson() string {
 	if x != nil {
 		return x.ConfigJson
 	}
 	return ""
 }
 
-// ModuleSlotRequest targets a single slot for start/stop actions.
-type ModuleSlotRequest struct {
+// AdapterSlotRequest targets a single slot for start/stop actions.
+type AdapterSlotRequest struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
@@ -1165,8 +1165,8 @@ type ModuleSlotRequest struct {
 	Slot string `protobuf:"bytes,1,opt,name=slot,proto3" json:"slot,omitempty"`
 }
 
-func (x *ModuleSlotRequest) Reset() {
-	*x = ModuleSlotRequest{}
+func (x *AdapterSlotRequest) Reset() {
+	*x = AdapterSlotRequest{}
 	if protoimpl.UnsafeEnabled {
 		mi := &file_api_grpc_v1_nupi_proto_msgTypes[17]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -1174,13 +1174,13 @@ func (x *ModuleSlotRequest) Reset() {
 	}
 }
 
-func (x *ModuleSlotRequest) String() string {
+func (x *AdapterSlotRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*ModuleSlotRequest) ProtoMessage() {}
+func (*AdapterSlotRequest) ProtoMessage() {}
 
-func (x *ModuleSlotRequest) ProtoReflect() protoreflect.Message {
+func (x *AdapterSlotRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_api_grpc_v1_nupi_proto_msgTypes[17]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -1192,29 +1192,29 @@ func (x *ModuleSlotRequest) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use ModuleSlotRequest.ProtoReflect.Descriptor instead.
-func (*ModuleSlotRequest) Descriptor() ([]byte, []int) {
+// Deprecated: Use AdapterSlotRequest.ProtoReflect.Descriptor instead.
+func (*AdapterSlotRequest) Descriptor() ([]byte, []int) {
 	return file_api_grpc_v1_nupi_proto_rawDescGZIP(), []int{17}
 }
 
-func (x *ModuleSlotRequest) GetSlot() string {
+func (x *AdapterSlotRequest) GetSlot() string {
 	if x != nil {
 		return x.Slot
 	}
 	return ""
 }
 
-// ModuleActionResponse returns the updated binding entry.
-type ModuleActionResponse struct {
+// AdapterActionResponse returns the updated binding entry.
+type AdapterActionResponse struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
 
-	Module *ModuleEntry `protobuf:"bytes,1,opt,name=module,proto3" json:"module,omitempty"`
+	Adapter *AdapterEntry `protobuf:"bytes,1,opt,name=adapter,proto3" json:"adapter,omitempty"`
 }
 
-func (x *ModuleActionResponse) Reset() {
-	*x = ModuleActionResponse{}
+func (x *AdapterActionResponse) Reset() {
+	*x = AdapterActionResponse{}
 	if protoimpl.UnsafeEnabled {
 		mi := &file_api_grpc_v1_nupi_proto_msgTypes[18]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -1222,13 +1222,13 @@ func (x *ModuleActionResponse) Reset() {
 	}
 }
 
-func (x *ModuleActionResponse) String() string {
+func (x *AdapterActionResponse) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*ModuleActionResponse) ProtoMessage() {}
+func (*AdapterActionResponse) ProtoMessage() {}
 
-func (x *ModuleActionResponse) ProtoReflect() protoreflect.Message {
+func (x *AdapterActionResponse) ProtoReflect() protoreflect.Message {
 	mi := &file_api_grpc_v1_nupi_proto_msgTypes[18]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -1240,14 +1240,14 @@ func (x *ModuleActionResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use ModuleActionResponse.ProtoReflect.Descriptor instead.
-func (*ModuleActionResponse) Descriptor() ([]byte, []int) {
+// Deprecated: Use AdapterActionResponse.ProtoReflect.Descriptor instead.
+func (*AdapterActionResponse) Descriptor() ([]byte, []int) {
 	return file_api_grpc_v1_nupi_proto_rawDescGZIP(), []int{18}
 }
 
-func (x *ModuleActionResponse) GetModule() *ModuleEntry {
+func (x *AdapterActionResponse) GetAdapter() *AdapterEntry {
 	if x != nil {
-		return x.Module
+		return x.Adapter
 	}
 	return nil
 }
@@ -2245,12 +2245,12 @@ var file_api_grpc_v1_nupi_proto_goTypes = []interface{}{
 	(*ConversationTurn)(nil),             // 10: nupi.api.v1.ConversationTurn
 	(*GetConversationRequest)(nil),       // 11: nupi.api.v1.GetConversationRequest
 	(*GetConversationResponse)(nil),      // 12: nupi.api.v1.GetConversationResponse
-	(*ModuleRuntime)(nil),                // 13: nupi.api.v1.ModuleRuntime
-	(*ModuleEntry)(nil),                  // 14: nupi.api.v1.ModuleEntry
-	(*ModulesOverviewResponse)(nil),      // 15: nupi.api.v1.ModulesOverviewResponse
-	(*BindModuleRequest)(nil),            // 16: nupi.api.v1.BindModuleRequest
-	(*ModuleSlotRequest)(nil),            // 17: nupi.api.v1.ModuleSlotRequest
-	(*ModuleActionResponse)(nil),         // 18: nupi.api.v1.ModuleActionResponse
+	(*AdapterRuntime)(nil),               // 13: nupi.api.v1.AdapterRuntime
+	(*AdapterEntry)(nil),                 // 14: nupi.api.v1.AdapterEntry
+	(*AdaptersOverviewResponse)(nil),     // 15: nupi.api.v1.AdaptersOverviewResponse
+	(*BindAdapterRequest)(nil),           // 16: nupi.api.v1.BindAdapterRequest
+	(*AdapterSlotRequest)(nil),           // 17: nupi.api.v1.AdapterSlotRequest
+	(*AdapterActionResponse)(nil),        // 18: nupi.api.v1.AdapterActionResponse
 	(*AudioFormat)(nil),                  // 19: nupi.api.v1.AudioFormat
 	(*AudioChunk)(nil),                   // 20: nupi.api.v1.AudioChunk
 	(*StreamAudioInRequest)(nil),         // 21: nupi.api.v1.StreamAudioInRequest
@@ -2261,7 +2261,7 @@ var file_api_grpc_v1_nupi_proto_goTypes = []interface{}{
 	(*GetAudioCapabilitiesRequest)(nil),  // 26: nupi.api.v1.GetAudioCapabilitiesRequest
 	(*AudioCapability)(nil),              // 27: nupi.api.v1.AudioCapability
 	(*GetAudioCapabilitiesResponse)(nil), // 28: nupi.api.v1.GetAudioCapabilitiesResponse
-	nil,                                  // 29: nupi.api.v1.ModuleRuntime.ExtraEntry
+	nil,                                  // 29: nupi.api.v1.AdapterRuntime.ExtraEntry
 	nil,                                  // 30: nupi.api.v1.AudioChunk.MetadataEntry
 	nil,                                  // 31: nupi.api.v1.AudioCapability.MetadataEntry
 	(*timestamppb.Timestamp)(nil),        // 32: google.protobuf.Timestamp
@@ -2273,12 +2273,12 @@ var file_api_grpc_v1_nupi_proto_depIdxs = []int32{
 	32, // 2: nupi.api.v1.ConversationTurn.at:type_name -> google.protobuf.Timestamp
 	9,  // 3: nupi.api.v1.ConversationTurn.metadata:type_name -> nupi.api.v1.ConversationMetadata
 	10, // 4: nupi.api.v1.GetConversationResponse.turns:type_name -> nupi.api.v1.ConversationTurn
-	32, // 5: nupi.api.v1.ModuleRuntime.started_at:type_name -> google.protobuf.Timestamp
-	32, // 6: nupi.api.v1.ModuleRuntime.updated_at:type_name -> google.protobuf.Timestamp
-	29, // 7: nupi.api.v1.ModuleRuntime.extra:type_name -> nupi.api.v1.ModuleRuntime.ExtraEntry
-	13, // 8: nupi.api.v1.ModuleEntry.runtime:type_name -> nupi.api.v1.ModuleRuntime
-	14, // 9: nupi.api.v1.ModulesOverviewResponse.modules:type_name -> nupi.api.v1.ModuleEntry
-	14, // 10: nupi.api.v1.ModuleActionResponse.module:type_name -> nupi.api.v1.ModuleEntry
+	32, // 5: nupi.api.v1.AdapterRuntime.started_at:type_name -> google.protobuf.Timestamp
+	32, // 6: nupi.api.v1.AdapterRuntime.updated_at:type_name -> google.protobuf.Timestamp
+	29, // 7: nupi.api.v1.AdapterRuntime.extra:type_name -> nupi.api.v1.AdapterRuntime.ExtraEntry
+	13, // 8: nupi.api.v1.AdapterEntry.runtime:type_name -> nupi.api.v1.AdapterRuntime
+	14, // 9: nupi.api.v1.AdaptersOverviewResponse.adapters:type_name -> nupi.api.v1.AdapterEntry
+	14, // 10: nupi.api.v1.AdapterActionResponse.adapter:type_name -> nupi.api.v1.AdapterEntry
 	30, // 11: nupi.api.v1.AudioChunk.metadata:type_name -> nupi.api.v1.AudioChunk.MetadataEntry
 	19, // 12: nupi.api.v1.StreamAudioInRequest.format:type_name -> nupi.api.v1.AudioFormat
 	20, // 13: nupi.api.v1.StreamAudioInRequest.chunk:type_name -> nupi.api.v1.AudioChunk
@@ -2293,10 +2293,10 @@ var file_api_grpc_v1_nupi_proto_depIdxs = []int32{
 	5,  // 22: nupi.api.v1.SessionsService.CreateSession:input_type -> nupi.api.v1.CreateSessionRequest
 	7,  // 23: nupi.api.v1.SessionsService.KillSession:input_type -> nupi.api.v1.KillSessionRequest
 	11, // 24: nupi.api.v1.SessionsService.GetConversation:input_type -> nupi.api.v1.GetConversationRequest
-	33, // 25: nupi.api.v1.ModulesService.Overview:input_type -> google.protobuf.Empty
-	16, // 26: nupi.api.v1.ModulesService.BindModule:input_type -> nupi.api.v1.BindModuleRequest
-	17, // 27: nupi.api.v1.ModulesService.StartModule:input_type -> nupi.api.v1.ModuleSlotRequest
-	17, // 28: nupi.api.v1.ModulesService.StopModule:input_type -> nupi.api.v1.ModuleSlotRequest
+	33, // 25: nupi.api.v1.AdaptersService.Overview:input_type -> google.protobuf.Empty
+	16, // 26: nupi.api.v1.AdaptersService.BindAdapter:input_type -> nupi.api.v1.BindAdapterRequest
+	17, // 27: nupi.api.v1.AdaptersService.StartAdapter:input_type -> nupi.api.v1.AdapterSlotRequest
+	17, // 28: nupi.api.v1.AdaptersService.StopAdapter:input_type -> nupi.api.v1.AdapterSlotRequest
 	21, // 29: nupi.api.v1.AudioService.StreamAudioIn:input_type -> nupi.api.v1.StreamAudioInRequest
 	23, // 30: nupi.api.v1.AudioService.StreamAudioOut:input_type -> nupi.api.v1.StreamAudioOutRequest
 	25, // 31: nupi.api.v1.AudioService.InterruptTTS:input_type -> nupi.api.v1.InterruptTTSRequest
@@ -2306,10 +2306,10 @@ var file_api_grpc_v1_nupi_proto_depIdxs = []int32{
 	6,  // 35: nupi.api.v1.SessionsService.CreateSession:output_type -> nupi.api.v1.CreateSessionResponse
 	8,  // 36: nupi.api.v1.SessionsService.KillSession:output_type -> nupi.api.v1.KillSessionResponse
 	12, // 37: nupi.api.v1.SessionsService.GetConversation:output_type -> nupi.api.v1.GetConversationResponse
-	15, // 38: nupi.api.v1.ModulesService.Overview:output_type -> nupi.api.v1.ModulesOverviewResponse
-	18, // 39: nupi.api.v1.ModulesService.BindModule:output_type -> nupi.api.v1.ModuleActionResponse
-	18, // 40: nupi.api.v1.ModulesService.StartModule:output_type -> nupi.api.v1.ModuleActionResponse
-	18, // 41: nupi.api.v1.ModulesService.StopModule:output_type -> nupi.api.v1.ModuleActionResponse
+	15, // 38: nupi.api.v1.AdaptersService.Overview:output_type -> nupi.api.v1.AdaptersOverviewResponse
+	18, // 39: nupi.api.v1.AdaptersService.BindAdapter:output_type -> nupi.api.v1.AdapterActionResponse
+	18, // 40: nupi.api.v1.AdaptersService.StartAdapter:output_type -> nupi.api.v1.AdapterActionResponse
+	18, // 41: nupi.api.v1.AdaptersService.StopAdapter:output_type -> nupi.api.v1.AdapterActionResponse
 	22, // 42: nupi.api.v1.AudioService.StreamAudioIn:output_type -> nupi.api.v1.StreamAudioInResponse
 	24, // 43: nupi.api.v1.AudioService.StreamAudioOut:output_type -> nupi.api.v1.StreamAudioOutResponse
 	33, // 44: nupi.api.v1.AudioService.InterruptTTS:output_type -> google.protobuf.Empty
@@ -2484,7 +2484,7 @@ func file_api_grpc_v1_nupi_proto_init() {
 			}
 		}
 		file_api_grpc_v1_nupi_proto_msgTypes[13].Exporter = func(v interface{}, i int) interface{} {
-			switch v := v.(*ModuleRuntime); i {
+			switch v := v.(*AdapterRuntime); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -2496,7 +2496,7 @@ func file_api_grpc_v1_nupi_proto_init() {
 			}
 		}
 		file_api_grpc_v1_nupi_proto_msgTypes[14].Exporter = func(v interface{}, i int) interface{} {
-			switch v := v.(*ModuleEntry); i {
+			switch v := v.(*AdapterEntry); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -2508,7 +2508,7 @@ func file_api_grpc_v1_nupi_proto_init() {
 			}
 		}
 		file_api_grpc_v1_nupi_proto_msgTypes[15].Exporter = func(v interface{}, i int) interface{} {
-			switch v := v.(*ModulesOverviewResponse); i {
+			switch v := v.(*AdaptersOverviewResponse); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -2520,7 +2520,7 @@ func file_api_grpc_v1_nupi_proto_init() {
 			}
 		}
 		file_api_grpc_v1_nupi_proto_msgTypes[16].Exporter = func(v interface{}, i int) interface{} {
-			switch v := v.(*BindModuleRequest); i {
+			switch v := v.(*BindAdapterRequest); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -2532,7 +2532,7 @@ func file_api_grpc_v1_nupi_proto_init() {
 			}
 		}
 		file_api_grpc_v1_nupi_proto_msgTypes[17].Exporter = func(v interface{}, i int) interface{} {
-			switch v := v.(*ModuleSlotRequest); i {
+			switch v := v.(*AdapterSlotRequest); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -2544,7 +2544,7 @@ func file_api_grpc_v1_nupi_proto_init() {
 			}
 		}
 		file_api_grpc_v1_nupi_proto_msgTypes[18].Exporter = func(v interface{}, i int) interface{} {
-			switch v := v.(*ModuleActionResponse); i {
+			switch v := v.(*AdapterActionResponse); i {
 			case 0:
 				return &v.state
 			case 1:
