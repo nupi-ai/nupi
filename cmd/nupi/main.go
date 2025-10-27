@@ -1110,7 +1110,7 @@ func configTransport(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return out.Error("Failed to create request", err)
 	}
-	resp, err := doRequest(c, req)
+	resp, err := doStreamingRequest(c, req)
 	if err != nil {
 		return out.Error("Failed to fetch transport configuration", err)
 	}
@@ -1305,6 +1305,13 @@ func doRequest(c *client.Client, req *http.Request) (*http.Response, error) {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	return c.HTTPClient().Do(req)
+}
+
+func doStreamingRequest(c *client.Client, req *http.Request) (*http.Response, error) {
+	if token := strings.TrimSpace(c.Token()); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	return c.StreamingHTTPClient().Do(req)
 }
 
 func readErrorMessage(resp *http.Response) string {
@@ -2057,7 +2064,7 @@ func adaptersLogs(cmd *cobra.Command, _ []string) error {
 		return out.Error("Failed to create request", err)
 	}
 
-	resp, err := doRequest(c, req)
+	resp, err := doStreamingRequest(c, req)
 	if err != nil {
 		return out.Error("Failed to fetch adapter logs", err)
 	}

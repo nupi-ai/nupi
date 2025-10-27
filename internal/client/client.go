@@ -226,6 +226,12 @@ func (c *Client) HTTPClient() *http.Client {
 	return c.httpClient
 }
 
+// StreamingHTTPClient returns an HTTP client configured for long-lived streams
+// (timeouts disabled).
+func (c *Client) StreamingHTTPClient() *http.Client {
+	return c.streamingHTTPClient()
+}
+
 // Token returns the bearer token configured for the client, if any.
 func (c *Client) Token() string {
 	return c.token
