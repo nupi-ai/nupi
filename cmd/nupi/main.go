@@ -1783,7 +1783,7 @@ func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 	adapterIDFlag, _ := cmd.Flags().GetString("id")
 	adapterID := strings.TrimSpace(adapterIDFlag)
 	if adapterID == "" {
-		adapterID = strings.TrimSpace(manifest.Metadata.Slug)
+		adapterID = formatAdapterID(manifest.Metadata.Catalog, manifest.Metadata.Slug)
 	}
 	if adapterID == "" {
 		return out.Error("Adapter identifier required", errors.New("manifest metadata.slug missing; use --id"))
@@ -2442,6 +2442,15 @@ func adapterEntryFromProto(entry *apiv1.AdapterEntry) apihttp.AdapterEntry {
 	return out
 }
 
+func formatAdapterID(catalog, slug string) string {
+	catalog = strings.TrimSpace(catalog)
+	slug = strings.TrimSpace(slug)
+	if catalog == "" {
+		catalog = "others"
+	}
+	return catalog + "/" + slug
+}
+
 func adapterLabel(entry apihttp.AdapterEntry) string {
 	if entry.AdapterID == nil || strings.TrimSpace(*entry.AdapterID) == "" {
 		return "-"
@@ -2453,11 +2462,7 @@ func adapterHealthLabel(entry apihttp.AdapterEntry) string {
 	if entry.Runtime == nil || strings.TrimSpace(entry.Runtime.Health) == "" {
 		return "-"
 	}
-	health := entry.Runtime.Health
-	if strings.TrimSpace(entry.Runtime.AdapterID) != "" {
-		health = fmt.Sprintf("%s (%s)", health, entry.Runtime.AdapterID)
-	}
-	return health
+	return entry.Runtime.Health
 }
 
 func sortedAdapters(entries []apihttp.AdapterEntry) []apihttp.AdapterEntry {
