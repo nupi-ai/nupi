@@ -23,9 +23,16 @@ func TestServicePublishesStatusOnStart(t *testing.T) {
 			},
 		},
 	}
+	store.setAdapter(configstore.Adapter{ID: "adapter.ai"})
+	store.setEndpoint(configstore.AdapterEndpoint{
+		AdapterID: "adapter.ai",
+		Transport: "grpc",
+		Address:   "127.0.0.1:9400",
+	})
 	launcher := NewMockLauncher()
 	manager := NewManager(ManagerOptions{
 		Store:     store,
+		Adapters:  store,
 		Runner:    adapterrunner.NewManager(t.TempDir()),
 		Launcher:  launcher,
 		PluginDir: t.TempDir(),
@@ -72,9 +79,16 @@ func TestServicePublishesRestartOnConfigChange(t *testing.T) {
 			},
 		},
 	}
+	store.setAdapter(configstore.Adapter{ID: "adapter.stt"})
+	store.setEndpoint(configstore.AdapterEndpoint{
+		AdapterID: "adapter.stt",
+		Transport: "grpc",
+		Address:   "127.0.0.1:9500",
+	})
 	launcher := NewMockLauncher()
 	manager := NewManager(ManagerOptions{
 		Store:     store,
+		Adapters:  store,
 		Runner:    adapterrunner.NewManager(t.TempDir()),
 		Launcher:  launcher,
 		PluginDir: t.TempDir(),
@@ -146,10 +160,17 @@ func TestServicePublishesErrorOnEnsureFailure(t *testing.T) {
 			},
 		},
 	}
+	store.setAdapter(configstore.Adapter{ID: "adapter.tts.fail"})
+	store.setEndpoint(configstore.AdapterEndpoint{
+		AdapterID: "adapter.tts.fail",
+		Transport: "grpc",
+		Address:   "127.0.0.1:9600",
+	})
 	launcher := NewMockLauncher()
 	launcher.SetError(errors.New("launch failure"))
 	manager := NewManager(ManagerOptions{
 		Store:     store,
+		Adapters:  store,
 		Runner:    adapterrunner.NewManager(t.TempDir()),
 		Launcher:  launcher,
 		PluginDir: t.TempDir(),
@@ -191,10 +212,17 @@ func TestServiceErrorCacheClearedOnRecovery(t *testing.T) {
 			},
 		},
 	}
+	store.setAdapter(configstore.Adapter{ID: "adapter.ai"})
+	store.setEndpoint(configstore.AdapterEndpoint{
+		AdapterID: "adapter.ai",
+		Transport: "grpc",
+		Address:   "127.0.0.1:9700",
+	})
 	launcher := NewMockLauncher()
 	launcher.SetError(errors.New("launch failure"))
 	manager := NewManager(ManagerOptions{
 		Store:     store,
+		Adapters:  store,
 		Runner:    adapterrunner.NewManager(t.TempDir()),
 		Launcher:  launcher,
 		PluginDir: t.TempDir(),
@@ -276,10 +304,18 @@ func TestServiceOverviewStartStop(t *testing.T) {
 	if err := store.SetActiveAdapter(ctx, string(SlotAI), adapter.ID, nil); err != nil {
 		t.Fatalf("set active adapter: %v", err)
 	}
+	if err := store.UpsertAdapterEndpoint(ctx, configstore.AdapterEndpoint{
+		AdapterID: adapter.ID,
+		Transport: "grpc",
+		Address:   "127.0.0.1:9800",
+	}); err != nil {
+		t.Fatalf("upsert endpoint: %v", err)
+	}
 
 	launcher := NewMockLauncher()
 	manager := NewManager(ManagerOptions{
 		Store:     store,
+		Adapters:  store,
 		Runner:    adapterrunner.NewManager(t.TempDir()),
 		Launcher:  launcher,
 		PluginDir: t.TempDir(),

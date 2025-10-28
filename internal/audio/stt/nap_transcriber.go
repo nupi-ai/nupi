@@ -33,12 +33,18 @@ type napTranscriber struct {
 }
 
 func newNAPTranscriber(ctx context.Context, params SessionParams, endpoint configstore.AdapterEndpoint) (Transcriber, error) {
-	if endpoint.Transport != "grpc" {
+	transport := strings.TrimSpace(endpoint.Transport)
+	if transport == "" {
+		transport = "process"
+	}
+	switch transport {
+	case "grpc", "process":
+	default:
 		return nil, fmt.Errorf("stt: unsupported transport %q for adapter %s", endpoint.Transport, endpoint.AdapterID)
 	}
 	address := strings.TrimSpace(endpoint.Address)
 	if address == "" {
-		return nil, fmt.Errorf("stt: adapter %s missing gRPC address", endpoint.AdapterID)
+		return nil, fmt.Errorf("stt: adapter %s missing address", endpoint.AdapterID)
 	}
 
 	dialOpts := []grpc.DialOption{

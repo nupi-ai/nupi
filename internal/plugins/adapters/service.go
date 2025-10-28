@@ -253,12 +253,14 @@ func (s *Service) updateState(ctx context.Context, running []Binding) {
 		}
 		s.state[slot] = newState
 
+		extra := cloneStringMap(binding.Runtime)
 		s.publishStatus(ctx, eventbus.AdapterStatusEvent{
 			AdapterID: binding.AdapterID,
 			Slot:      string(slot),
 			Status:    eventbus.AdapterHealthReady,
 			Message:   "adapter ready",
 			StartedAt: now,
+			Extra:     extra,
 		})
 	}
 }

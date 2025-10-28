@@ -57,7 +57,7 @@ func New(opts ...BusOption) *Bus {
 		TopicAdaptersStatus:          128,
 		TopicAdaptersLog:             256,
 		TopicAudioIngressRaw:         256,
-		TopicAudioIngressSegment:     256,
+		TopicAudioIngressSegment:     10000,
 		TopicAudioEgressPlayback:     256,
 		TopicAudioInterrupt:          64,
 		TopicSpeechTranscriptPartial: 256,

@@ -110,13 +110,6 @@ func New(opts Options) (*Daemon, error) {
 		return nil, err
 	}
 
-	pipelineService := contentpipeline.NewService(bus, pluginService, contentpipeline.WithMetricsInterval(30*time.Second))
-	audioIngressService := ingress.New(bus)
-	audioSTTService := stt.New(bus, stt.WithFactory(stt.NewAdapterFactory(opts.Store)))
-	audioVADService := vad.New(bus, vad.WithFactory(vad.NewAdapterFactory(opts.Store)))
-	audioBargeService := barge.New(bus)
-	audioEgressService := egress.New(bus, egress.WithFactory(egress.NewAdapterFactory(opts.Store)))
-	conversationService := conversation.NewService(bus)
 	adapterManager := adapters.NewManager(adapters.ManagerOptions{
 		Store:     opts.Store,
 		Runner:    runnerManager,
@@ -125,6 +118,14 @@ func New(opts Options) (*Daemon, error) {
 		Bus:       bus,
 	})
 	adaptersService := adapters.NewService(adapterManager, opts.Store, bus)
+
+	pipelineService := contentpipeline.NewService(bus, pluginService, contentpipeline.WithMetricsInterval(30*time.Second))
+	audioIngressService := ingress.New(bus)
+	audioSTTService := stt.New(bus, stt.WithFactory(stt.NewAdapterFactory(opts.Store, adaptersService)))
+	audioVADService := vad.New(bus, vad.WithFactory(vad.NewAdapterFactory(opts.Store)))
+	audioBargeService := barge.New(bus)
+	audioEgressService := egress.New(bus, egress.WithFactory(egress.NewAdapterFactory(opts.Store)))
+	conversationService := conversation.NewService(bus)
 	eventCounter := observability.NewEventCounter()
 	bus.AddObserver(eventCounter)
 	metricsExporter := observability.NewPrometheusExporter(bus, eventCounter)

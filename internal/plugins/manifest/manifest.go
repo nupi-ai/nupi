@@ -55,11 +55,12 @@ type AdapterSpec struct {
 }
 
 type AdapterEntrypoint struct {
-	Command    string   `yaml:"command"`
-	Args       []string `yaml:"args"`
-	Transport  string   `yaml:"transport"`
-	ListenEnv  string   `yaml:"listenEnv"`
-	WorkingDir string   `yaml:"workingDir"`
+	Command      string   `yaml:"command"`
+	Args         []string `yaml:"args"`
+	Transport    string   `yaml:"transport"`
+	ListenEnv    string   `yaml:"listenEnv"`
+	WorkingDir   string   `yaml:"workingDir"`
+	ReadyTimeout string   `yaml:"readyTimeout"`
 }
 
 type AdapterAssets struct {

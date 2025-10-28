@@ -149,6 +149,13 @@ func TestAdaptersServiceOverview(t *testing.T) {
 	if err := store.UpsertAdapter(ctx, adapter); err != nil {
 		t.Fatalf("upsert adapter: %v", err)
 	}
+	if err := store.UpsertAdapterEndpoint(ctx, configstore.AdapterEndpoint{
+		AdapterID: adapter.ID,
+		Transport: "grpc",
+		Address:   "127.0.0.1:9930",
+	}); err != nil {
+		t.Fatalf("upsert adapter endpoint: %v", err)
+	}
 	if err := store.SetActiveAdapter(ctx, "ai", adapter.ID, nil); err != nil {
 		t.Fatalf("set active adapter: %v", err)
 	}
@@ -191,6 +198,13 @@ func TestAdaptersServiceBindStartStop(t *testing.T) {
 	adapter := configstore.Adapter{ID: "adapter.ai.bind", Source: "builtin", Type: "ai", Name: "Bind AI"}
 	if err := store.UpsertAdapter(ctx, adapter); err != nil {
 		t.Fatalf("upsert adapter: %v", err)
+	}
+	if err := store.UpsertAdapterEndpoint(ctx, configstore.AdapterEndpoint{
+		AdapterID: adapter.ID,
+		Transport: "grpc",
+		Address:   "127.0.0.1:9940",
+	}); err != nil {
+		t.Fatalf("upsert adapter endpoint: %v", err)
 	}
 
 	service := newAdapterRuntimeService(apiServer)
@@ -242,6 +256,13 @@ func TestQuickstartServiceIncludesAdapters(t *testing.T) {
 	adapter := configstore.Adapter{ID: "adapter.ai.quickstart", Source: "builtin", Type: "ai", Name: "Quickstart AI"}
 	if err := store.UpsertAdapter(ctx, adapter); err != nil {
 		t.Fatalf("upsert adapter: %v", err)
+	}
+	if err := store.UpsertAdapterEndpoint(ctx, configstore.AdapterEndpoint{
+		AdapterID: adapter.ID,
+		Transport: "grpc",
+		Address:   "127.0.0.1:9950",
+	}); err != nil {
+		t.Fatalf("upsert adapter endpoint: %v", err)
 	}
 	if err := store.SetActiveAdapter(ctx, "ai", adapter.ID, nil); err != nil {
 		t.Fatalf("set active adapter: %v", err)
@@ -303,6 +324,13 @@ func TestQuickstartServiceUpdateFailsWhenReferenceMissing(t *testing.T) {
 	for _, adapter := range adapterList {
 		if err := store.UpsertAdapter(ctx, adapter); err != nil {
 			t.Fatalf("upsert adapter: %v", err)
+		}
+		if err := store.UpsertAdapterEndpoint(ctx, configstore.AdapterEndpoint{
+			AdapterID: adapter.ID,
+			Transport: "grpc",
+			Address:   "127.0.0.1:0",
+		}); err != nil {
+			t.Fatalf("upsert adapter endpoint %s: %v", adapter.ID, err)
 		}
 	}
 

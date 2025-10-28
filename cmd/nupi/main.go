@@ -1845,7 +1845,14 @@ func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 		return out.Error("--adapter-dir is required when --build is set", errors.New("missing adapter directory"))
 	}
 
-	slug := sanitizeAdapterSlug(adapterID)
+	// Use manifest slug when available so locally-installed adapters land in the same
+	// directory structure as runtime-managed process transports. This keeps assets/config in
+	// sync regardless of install path.
+	slugSource := strings.TrimSpace(manifest.Metadata.Slug)
+	if slugSource == "" {
+		slugSource = adapterID
+	}
+	slug := sanitizeAdapterSlug(slugSource)
 
 	var command string
 	if buildFlag {

@@ -888,6 +888,13 @@ func TestHandleQuickstartIncludesAdapters(t *testing.T) {
 	if err := store.UpsertAdapter(ctx, adapter); err != nil {
 		t.Fatalf("upsert adapter: %v", err)
 	}
+	if err := store.UpsertAdapterEndpoint(ctx, configstore.AdapterEndpoint{
+		AdapterID: adapter.ID,
+		Transport: "grpc",
+		Address:   "127.0.0.1:9910",
+	}); err != nil {
+		t.Fatalf("upsert adapter endpoint: %v", err)
+	}
 	if err := store.SetActiveAdapter(ctx, "ai", adapter.ID, nil); err != nil {
 		t.Fatalf("set active adapter: %v", err)
 	}
@@ -976,6 +983,13 @@ func TestHandleQuickstartCompleteFailsWhenReferenceMissing(t *testing.T) {
 	for _, adapter := range adapters {
 		if err := store.UpsertAdapter(ctx, adapter); err != nil {
 			t.Fatalf("upsert adapter %s: %v", adapter.ID, err)
+		}
+		if err := store.UpsertAdapterEndpoint(ctx, configstore.AdapterEndpoint{
+			AdapterID: adapter.ID,
+			Transport: "grpc",
+			Address:   "127.0.0.1:0",
+		}); err != nil {
+			t.Fatalf("upsert adapter endpoint %s: %v", adapter.ID, err)
 		}
 	}
 
@@ -1120,6 +1134,13 @@ func TestHandleAdaptersGet(t *testing.T) {
 	adapter := configstore.Adapter{ID: "adapter.ai", Source: "builtin", Type: "ai", Name: "Primary AI"}
 	if err := store.UpsertAdapter(ctx, adapter); err != nil {
 		t.Fatalf("upsert adapter: %v", err)
+	}
+	if err := store.UpsertAdapterEndpoint(ctx, configstore.AdapterEndpoint{
+		AdapterID: adapter.ID,
+		Transport: "grpc",
+		Address:   "127.0.0.1:9920",
+	}); err != nil {
+		t.Fatalf("upsert adapter endpoint: %v", err)
 	}
 	if err := store.SetActiveAdapter(ctx, "ai", adapter.ID, nil); err != nil {
 		t.Fatalf("set active adapter: %v", err)
@@ -1342,6 +1363,13 @@ func TestHandleAdaptersBindStartStop(t *testing.T) {
 	if err := store.UpsertAdapter(ctx, adapter); err != nil {
 		t.Fatalf("upsert adapter: %v", err)
 	}
+	if err := store.UpsertAdapterEndpoint(ctx, configstore.AdapterEndpoint{
+		AdapterID: adapter.ID,
+		Transport: "grpc",
+		Address:   "127.0.0.1:9900",
+	}); err != nil {
+		t.Fatalf("upsert adapter endpoint: %v", err)
+	}
 
 	bindReq := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/adapters/bind", bytes.NewBufferString(`{"slot":"ai","adapter_id":"adapter.ai.bind"}`)))
 	bindReq.Header.Set("Content-Type", "application/json")
@@ -1488,6 +1516,13 @@ func enableVoiceAdapters(t *testing.T, store *configstore.Store) {
 		if err := store.UpsertAdapter(ctx, adapter); err != nil {
 			t.Fatalf("upsert adapter %s: %v", adapter.ID, err)
 		}
+		if err := store.UpsertAdapterEndpoint(ctx, configstore.AdapterEndpoint{
+			AdapterID: adapter.ID,
+			Transport: "grpc",
+			Address:   "127.0.0.1:0",
+		}); err != nil {
+			t.Fatalf("upsert adapter endpoint %s: %v", adapter.ID, err)
+		}
 	}
 	if err := store.SetActiveAdapter(ctx, slots.STT, "adapter.stt.mock", nil); err != nil {
 		t.Fatalf("activate stt adapter: %v", err)
@@ -1501,6 +1536,7 @@ func newTestAdaptersService(t *testing.T, store *configstore.Store) *adapters.Se
 	t.Helper()
 	manager := adapters.NewManager(adapters.ManagerOptions{
 		Store:    store,
+		Adapters: store,
 		Runner:   adapterrunner.NewManager(t.TempDir()),
 		Launcher: testAdapterLauncher{},
 	})

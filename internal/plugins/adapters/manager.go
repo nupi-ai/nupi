@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/nupi-ai/nupi/internal/adapterrunner"
 	"github.com/nupi-ai/nupi/internal/config"
@@ -34,6 +36,8 @@ const (
 	SlotTunnel Slot = "tunnel"
 )
 
+const processReadyTimeout = 30 * time.Second
+
 var defaultSlots = []Slot{SlotAI, SlotSTT, SlotTTS, SlotVAD, SlotTunnel}
 
 // Binding describes a configured adapter bound to a slot.
@@ -43,6 +47,7 @@ type Binding struct {
 	Config      map[string]any
 	RawConfig   string
 	Fingerprint string
+	Runtime     map[string]string
 }
 
 // BindingSource exposes adapter binding metadata.
@@ -108,6 +113,11 @@ type bindingPlan struct {
 	endpoint    configstore.AdapterEndpoint
 	fingerprint string
 }
+
+const adapterReadyTimeoutEnv = "NUPI_ADAPTER_READY_TIMEOUT"
+
+var allocateProcessAddressFn = allocateProcessAddress
+var waitForAdapterReadyFn = waitForAdapterReady
 
 var (
 	// ErrBindingSourceNotConfigured indicates the manager was created without a store.
@@ -314,6 +324,9 @@ func (m *Manager) Running() []Binding {
 	for _, inst := range m.instances {
 		binding := inst.binding
 		binding.Fingerprint = inst.fingerprint
+		if len(binding.Runtime) > 0 {
+			binding.Runtime = cloneStringMap(binding.Runtime)
+		}
 		out = append(out, binding)
 	}
 	return out
@@ -404,6 +417,51 @@ func (m *Manager) startAdapter(ctx context.Context, plan bindingPlan) (*adapterI
 	manifest := plan.manifest
 	endpoint := plan.endpoint
 	manifestRaw := strings.TrimSpace(adapter.Manifest)
+
+	transport := strings.TrimSpace(endpoint.Transport)
+	if transport == "" {
+		transport = "process"
+	}
+	endpoint.Transport = transport
+
+	runtimeExtra := map[string]string{
+		RuntimeExtraTransport: transport,
+	}
+
+	if transport == "process" {
+		if strings.TrimSpace(endpoint.Command) == "" {
+			return nil, fmt.Errorf("adapters: endpoint command required for process transport (%s)", plan.binding.AdapterID)
+		}
+		addr, err := allocateProcessAddressFn()
+		if err != nil {
+			return nil, fmt.Errorf("adapters: allocate process address: %w", err)
+		}
+		endpoint.Address = addr
+	}
+
+	if addr := strings.TrimSpace(endpoint.Address); addr != "" {
+		runtimeExtra[RuntimeExtraAddress] = addr
+	}
+
+	readyTimeout := processReadyTimeout
+	if manifest != nil && manifest.Adapter != nil {
+		if v := strings.TrimSpace(manifest.Adapter.Entrypoint.ReadyTimeout); v != "" {
+			if parsed, err := time.ParseDuration(v); err == nil && parsed > 0 {
+				readyTimeout = parsed
+			} else {
+				log.Printf("[Adapters] invalid ready timeout %q for %s: %v", v, plan.binding.AdapterID, err)
+			}
+		}
+	}
+	if endpoint.Env != nil {
+		if v := strings.TrimSpace(endpoint.Env[adapterReadyTimeoutEnv]); v != "" {
+			if parsed, err := time.ParseDuration(v); err == nil && parsed > 0 {
+				readyTimeout = parsed
+			} else {
+				log.Printf("[Adapters] invalid ready timeout env %q for %s: %v", v, plan.binding.AdapterID, err)
+			}
+		}
+	}
 
 	pluginRoot := m.pluginRoot()
 	if pluginRoot != "" {
@@ -503,6 +561,29 @@ func (m *Manager) startAdapter(ctx context.Context, plan bindingPlan) (*adapterI
 		return nil, err
 	}
 
+	if transport == "process" {
+		readyCtx, cancel := context.WithTimeout(ctx, readyTimeout)
+		readyErr := waitForAdapterReadyFn(readyCtx, endpoint.Address)
+		cancel()
+		if readyErr != nil {
+			if stdoutLogger != nil {
+				stdoutLogger.Close()
+			}
+			if stderrLogger != nil {
+				stderrLogger.Close()
+			}
+			stopCtx, stopCancel := context.WithTimeout(context.Background(), time.Second)
+			_ = handle.Stop(stopCtx)
+			stopCancel()
+			return nil, fmt.Errorf("adapters: process adapter %s readiness: %w", plan.binding.AdapterID, readyErr)
+		}
+	}
+
+	if len(runtimeExtra) > 0 {
+		plan.binding.Runtime = cloneStringMap(runtimeExtra)
+	}
+	plan.endpoint = endpoint
+
 	cleanupDataDir = false
 	cleanupHome = false
 
@@ -599,7 +680,11 @@ func computePlanFingerprint(binding Binding, manifestRaw string, endpoint config
 	write(strings.TrimSpace(binding.RawConfig))
 	write(strings.TrimSpace(manifestRaw))
 	write(endpoint.Transport)
-	write(endpoint.Address)
+	// For process transport, address is dynamically allocated per-instance and should NOT affect fingerprint.
+	// Including it would cause fingerprint changes on every reconciliation loop, triggering spurious restarts.
+	if endpoint.Transport != "process" {
+		write(endpoint.Address)
+	}
 	write(endpoint.Command)
 	for _, arg := range endpoint.Args {
 		write(arg)
@@ -728,4 +813,64 @@ func sanitizeIdentifier(value string) string {
 		return res[:64]
 	}
 	return res
+}
+
+// allocateProcessAddress reserves an ephemeral localhost TCP port for process adapters.
+// NOTE: Closing the listener introduces a narrow race window before the adapter binds to the
+// port. This is acceptable because:
+//  1. The OS assigns ports from the ephemeral range on 127.0.0.1, keeping collision probability low.
+//  2. If the adapter fails to bind (for example due to EADDRINUSE), Ensure() surfaces the error
+//     and the reconciliation loop retries with a fresh allocation.
+//  3. Ports never leave the local loopback interface, so another user cannot hijack them remotely.
+//
+// If these assumptions change we should revisit this approach (e.g. add retry logic or active health checks).
+func allocateProcessAddress() (string, error) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return "", err
+	}
+	addr := ln.Addr().String()
+	if err := ln.Close(); err != nil {
+		return "", err
+	}
+	return addr, nil
+}
+
+func waitForAdapterReady(ctx context.Context, addr string) error {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return errors.New("adapters: wait ready: address empty")
+	}
+
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		conn, err := net.DialTimeout("tcp", addr, 250*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			return nil
+		}
+		lastErr := err
+
+		select {
+		case <-ctx.Done():
+			if ctx.Err() != nil {
+				return fmt.Errorf("dial %s: %w", addr, ctx.Err())
+			}
+			return fmt.Errorf("dial %s: %w", addr, lastErr)
+		case <-ticker.C:
+		}
+	}
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }

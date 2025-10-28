@@ -8,15 +8,18 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/nupi-ai/nupi/internal/adapterrunner"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 )
 
 type fakeBindingSource struct {
-	mu       sync.Mutex
-	bindings []configstore.AdapterBinding
-	err      error
+	mu        sync.Mutex
+	bindings  []configstore.AdapterBinding
+	adapters  map[string]configstore.Adapter
+	endpoints map[string]configstore.AdapterEndpoint
+	err       error
 }
 
 func (f *fakeBindingSource) ListAdapterBindings(context.Context) ([]configstore.AdapterBinding, error) {
@@ -30,7 +33,62 @@ func (f *fakeBindingSource) ListAdapterBindings(context.Context) ([]configstore.
 	return out, nil
 }
 
+func (f *fakeBindingSource) setAdapter(adapter configstore.Adapter) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.adapters == nil {
+		f.adapters = make(map[string]configstore.Adapter)
+	}
+	f.adapters[adapter.ID] = adapter
+}
+
+func (f *fakeBindingSource) setEndpoint(endpoint configstore.AdapterEndpoint) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.endpoints == nil {
+		f.endpoints = make(map[string]configstore.AdapterEndpoint)
+	}
+	f.endpoints[endpoint.AdapterID] = endpoint
+}
+
+func (f *fakeBindingSource) GetAdapter(ctx context.Context, adapterID string) (configstore.Adapter, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	adapterID = strings.TrimSpace(adapterID)
+	if adapterID == "" || f.adapters == nil {
+		return configstore.Adapter{}, configstore.NotFoundError{Entity: "adapter", Key: adapterID}
+	}
+	adapter, ok := f.adapters[adapterID]
+	if !ok {
+		return configstore.Adapter{}, configstore.NotFoundError{Entity: "adapter", Key: adapterID}
+	}
+	copyAdapter := adapter
+	return copyAdapter, nil
+}
+
+func (f *fakeBindingSource) GetAdapterEndpoint(ctx context.Context, adapterID string) (configstore.AdapterEndpoint, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	adapterID = strings.TrimSpace(adapterID)
+	if adapterID == "" || f.endpoints == nil {
+		return configstore.AdapterEndpoint{}, configstore.NotFoundError{Entity: "adapter_endpoint", Key: adapterID}
+	}
+	endpoint, ok := f.endpoints[adapterID]
+	if !ok {
+		return configstore.AdapterEndpoint{}, configstore.NotFoundError{Entity: "adapter_endpoint", Key: adapterID}
+	}
+	copyEndpoint := endpoint
+	return copyEndpoint, nil
+}
+
 func TestManagerEnsureStartsAdapters(t *testing.T) {
+	defer func(original func() (string, error)) {
+		allocateProcessAddressFn = original
+	}(allocateProcessAddressFn)
+	allocateProcessAddressFn = func() (string, error) {
+		return "127.0.0.1:60001", nil
+	}
+
 	store := &fakeBindingSource{
 		bindings: []configstore.AdapterBinding{
 			{
@@ -41,9 +99,22 @@ func TestManagerEnsureStartsAdapters(t *testing.T) {
 			},
 		},
 	}
+	store.setAdapter(configstore.Adapter{ID: "adapter.ai"})
+	store.setEndpoint(configstore.AdapterEndpoint{
+		AdapterID: "adapter.ai",
+		Transport: "grpc",
+		Address:   "127.0.0.1:9100",
+	})
+	defer func(original func() (string, error)) {
+		allocateProcessAddressFn = original
+	}(allocateProcessAddressFn)
+	allocateProcessAddressFn = func() (string, error) {
+		return "127.0.0.1:60001", nil
+	}
 	launcher := NewMockLauncher()
 	manager := NewManager(ManagerOptions{
 		Store:     store,
+		Adapters:  store,
 		Runner:    adapterrunner.NewManager(t.TempDir()),
 		Launcher:  launcher,
 		PluginDir: t.TempDir(),
@@ -91,6 +162,361 @@ func TestManagerEnsureStartsAdapters(t *testing.T) {
 	}
 }
 
+func TestManagerEnsureProcessTransportAllocFailure(t *testing.T) {
+	defer func(original func() (string, error)) {
+		allocateProcessAddressFn = original
+	}(allocateProcessAddressFn)
+	allocateProcessAddressFn = func() (string, error) {
+		return "", errors.New("no ports")
+	}
+	defer func(original func(context.Context, string) error) {
+		waitForAdapterReadyFn = original
+	}(waitForAdapterReadyFn)
+	waitForAdapterReadyFn = func(context.Context, string) error {
+		return nil
+	}
+
+	store := &fakeBindingSource{
+		bindings: []configstore.AdapterBinding{
+			{
+				Slot:      string(SlotAI),
+				Status:    "active",
+				AdapterID: strPtr("adapter.ai"),
+			},
+		},
+	}
+	store.setAdapter(configstore.Adapter{ID: "adapter.ai"})
+	store.setEndpoint(configstore.AdapterEndpoint{
+		AdapterID: "adapter.ai",
+		Transport: "process",
+		Command:   "serve",
+	})
+
+	launcher := NewMockLauncher()
+	manager := NewManager(ManagerOptions{
+		Store:     store,
+		Adapters:  store,
+		Runner:    adapterrunner.NewManager(t.TempDir()),
+		Launcher:  launcher,
+		PluginDir: t.TempDir(),
+	})
+
+	err := manager.Ensure(context.Background())
+	if err == nil {
+		t.Fatalf("expected ensure to fail due to port allocation error")
+	}
+	if !strings.Contains(err.Error(), "allocate process address") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(launcher.Records()) != 0 {
+		t.Fatalf("expected no launches when allocation fails")
+	}
+}
+
+func TestManagerEnsureProcessTransportReadyFailure(t *testing.T) {
+	defer func(original func() (string, error)) {
+		allocateProcessAddressFn = original
+	}(allocateProcessAddressFn)
+	allocateProcessAddressFn = func() (string, error) {
+		return "127.0.0.1:60100", nil
+	}
+	defer func(original func(context.Context, string) error) {
+		waitForAdapterReadyFn = original
+	}(waitForAdapterReadyFn)
+	waitForAdapterReadyFn = func(context.Context, string) error {
+		return errors.New("dial failed")
+	}
+
+	store := &fakeBindingSource{
+		bindings: []configstore.AdapterBinding{
+			{
+				Slot:      string(SlotAI),
+				Status:    "active",
+				AdapterID: strPtr("adapter.ai"),
+			},
+		},
+	}
+	store.setAdapter(configstore.Adapter{ID: "adapter.ai"})
+	store.setEndpoint(configstore.AdapterEndpoint{
+		AdapterID: "adapter.ai",
+		Transport: "process",
+		Command:   "serve",
+	})
+
+	launcher := NewMockLauncher()
+	manager := NewManager(ManagerOptions{
+		Store:     store,
+		Adapters:  store,
+		Runner:    adapterrunner.NewManager(t.TempDir()),
+		Launcher:  launcher,
+		PluginDir: t.TempDir(),
+	})
+
+	err := manager.Ensure(context.Background())
+	if err == nil {
+		t.Fatalf("expected ensure to fail when adapter not ready")
+	}
+	if !strings.Contains(err.Error(), "readiness") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(launcher.Records()) != 1 {
+		t.Fatalf("expected launch attempt recorded")
+	}
+	if launcher.StopCount(string(SlotAI)) == 0 {
+		t.Fatalf("expected handle to be stopped after readiness failure")
+	}
+}
+
+func TestManagerEnsureProcessTransportReallocatesPortOnRestart(t *testing.T) {
+	defer func(original func() (string, error)) {
+		allocateProcessAddressFn = original
+	}(allocateProcessAddressFn)
+	ports := []string{"127.0.0.1:60001", "127.0.0.1:60002"}
+	var mu sync.Mutex
+	allocateProcessAddressFn = func() (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if len(ports) == 0 {
+			return "", errors.New("no more ports")
+		}
+		addr := ports[0]
+		ports = ports[1:]
+		return addr, nil
+	}
+	defer func(original func(context.Context, string) error) {
+		waitForAdapterReadyFn = original
+	}(waitForAdapterReadyFn)
+	waitForAdapterReadyFn = func(context.Context, string) error {
+		return nil
+	}
+
+	store := &fakeBindingSource{
+		bindings: []configstore.AdapterBinding{
+			{
+				Slot:      string(SlotAI),
+				Status:    "active",
+				AdapterID: strPtr("adapter.ai"),
+			},
+		},
+	}
+	store.setAdapter(configstore.Adapter{ID: "adapter.ai"})
+	store.setEndpoint(configstore.AdapterEndpoint{
+		AdapterID: "adapter.ai",
+		Transport: "process",
+		Command:   "serve",
+	})
+
+	launcher := NewMockLauncher()
+	manager := NewManager(ManagerOptions{
+		Store:     store,
+		Adapters:  store,
+		Runner:    adapterrunner.NewManager(t.TempDir()),
+		Launcher:  launcher,
+		PluginDir: t.TempDir(),
+	})
+
+	if err := manager.Ensure(context.Background()); err != nil {
+		t.Fatalf("initial ensure: %v", err)
+	}
+	mu.Lock()
+	inst, ok := manager.instances[SlotAI]
+	mu.Unlock()
+	if !ok {
+		t.Fatalf("adapter instance not registered")
+	}
+	firstAddr := inst.binding.Runtime[RuntimeExtraAddress]
+	if firstAddr == "" {
+		t.Fatalf("expected runtime address on first start")
+	}
+
+	store.mu.Lock()
+	store.bindings[0].Config = `{"token":"rotated"}`
+	store.mu.Unlock()
+
+	if err := manager.Ensure(context.Background()); err != nil {
+		t.Fatalf("ensure after config change: %v", err)
+	}
+
+	mu.Lock()
+	inst, ok = manager.instances[SlotAI]
+	mu.Unlock()
+	if !ok {
+		t.Fatalf("adapter instance missing after restart")
+	}
+	secondAddr := inst.binding.Runtime[RuntimeExtraAddress]
+	if secondAddr == "" {
+		t.Fatalf("expected runtime address on restart")
+	}
+	if secondAddr == firstAddr {
+		t.Fatalf("expected new port allocation on restart; got %s", secondAddr)
+	}
+}
+
+func TestManagerEnsureProcessTransportAllocatesFreshPortAfterStop(t *testing.T) {
+	defer func(original func() (string, error)) {
+		allocateProcessAddressFn = original
+	}(allocateProcessAddressFn)
+	ports := []string{"127.0.0.1:60005", "127.0.0.1:60006"}
+	var mu sync.Mutex
+	allocateProcessAddressFn = func() (string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if len(ports) == 0 {
+			return "", errors.New("no ports left")
+		}
+		addr := ports[0]
+		ports = ports[1:]
+		return addr, nil
+	}
+	defer func(original func(context.Context, string) error) {
+		waitForAdapterReadyFn = original
+	}(waitForAdapterReadyFn)
+	waitForAdapterReadyFn = func(context.Context, string) error {
+		return nil
+	}
+
+	store := &fakeBindingSource{
+		bindings: []configstore.AdapterBinding{
+			{
+				Slot:      string(SlotAI),
+				Status:    "active",
+				AdapterID: strPtr("adapter.ai"),
+			},
+		},
+	}
+	store.setAdapter(configstore.Adapter{ID: "adapter.ai"})
+	store.setEndpoint(configstore.AdapterEndpoint{
+		AdapterID: "adapter.ai",
+		Transport: "process",
+		Command:   "serve",
+	})
+
+	launcher := NewMockLauncher()
+	manager := NewManager(ManagerOptions{
+		Store:     store,
+		Adapters:  store,
+		Runner:    adapterrunner.NewManager(t.TempDir()),
+		Launcher:  launcher,
+		PluginDir: t.TempDir(),
+	})
+
+	ctx := context.Background()
+	if err := manager.Ensure(ctx); err != nil {
+		t.Fatalf("initial ensure: %v", err)
+	}
+
+	mu.Lock()
+	inst, ok := manager.instances[SlotAI]
+	mu.Unlock()
+	if !ok {
+		t.Fatalf("adapter instance missing")
+	}
+	firstAddr := inst.binding.Runtime[RuntimeExtraAddress]
+	if firstAddr == "" {
+		t.Fatalf("expected runtime address after first ensure")
+	}
+
+	if err := manager.StopSlot(ctx, SlotAI); err != nil {
+		t.Fatalf("stop slot: %v", err)
+	}
+
+	if err := manager.Ensure(ctx); err != nil {
+		t.Fatalf("ensure after stop: %v", err)
+	}
+
+	mu.Lock()
+	inst, ok = manager.instances[SlotAI]
+	mu.Unlock()
+	if !ok {
+		t.Fatalf("adapter instance missing after restart")
+	}
+	secondAddr := inst.binding.Runtime[RuntimeExtraAddress]
+	if secondAddr == "" {
+		t.Fatalf("expected runtime address after restart")
+	}
+	if secondAddr == firstAddr {
+		t.Fatalf("expected new port after restart; got %s", secondAddr)
+	}
+}
+
+func TestManagerProcessTransportReadyTimeoutOverride(t *testing.T) {
+	defer func(original func() (string, error)) {
+		allocateProcessAddressFn = original
+	}(allocateProcessAddressFn)
+	allocateProcessAddressFn = func() (string, error) {
+		return "127.0.0.1:60300", nil
+	}
+	defer func(original func(context.Context, string) error) {
+		waitForAdapterReadyFn = original
+	}(waitForAdapterReadyFn)
+	var capturedDeadline time.Time
+	waitForAdapterReadyFn = func(ctx context.Context, _ string) error {
+		capturedDeadline, _ = ctx.Deadline()
+		return nil
+	}
+
+	storeDir := t.TempDir()
+	store, err := configstore.Open(configstore.Options{DBPath: filepath.Join(storeDir, "config.db")})
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	manifest := `
+apiVersion: nap.nupi.ai/v1alpha1
+kind: Plugin
+type: adapter
+metadata:
+  name: Ready Adapter
+spec:
+  slot: ai
+  entrypoint:
+    command: sleep
+    args: ["1"]
+    transport: process
+    readyTimeout: 2s
+`
+	if err := store.UpsertAdapter(context.Background(), configstore.Adapter{
+		ID:       "adapter.ready",
+		Source:   "test",
+		Type:     "ai",
+		Name:     "Ready Adapter",
+		Manifest: manifest,
+	}); err != nil {
+		t.Fatalf("upsert adapter: %v", err)
+	}
+	if err := store.SetActiveAdapter(context.Background(), string(SlotAI), "adapter.ready", nil); err != nil {
+		t.Fatalf("bind adapter: %v", err)
+	}
+	if err := store.UpsertAdapterEndpoint(context.Background(), configstore.AdapterEndpoint{
+		AdapterID: "adapter.ready",
+		Transport: "process",
+		Command:   "sleep",
+		Args:      []string{"1"},
+	}); err != nil {
+		t.Fatalf("upsert endpoint: %v", err)
+	}
+
+	launcher := NewMockLauncher()
+	manager := NewManager(ManagerOptions{
+		Store:     store,
+		Adapters:  store,
+		Runner:    adapterrunner.NewManager(filepath.Join(storeDir, "runner")),
+		Launcher:  launcher,
+		PluginDir: filepath.Join(storeDir, "plugins"),
+	})
+
+	if err := manager.Ensure(context.Background()); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	if capturedDeadline.IsZero() {
+		t.Fatalf("waitForAdapterReady was not called")
+	}
+	if d := time.Until(capturedDeadline); d < time.Second || d > 3*time.Second {
+		t.Fatalf("expected ready timeout around 2s, got %v", d)
+	}
+}
+
 func TestManagerEnsureUpdatesOnAdapterChange(t *testing.T) {
 	store := &fakeBindingSource{
 		bindings: []configstore.AdapterBinding{
@@ -101,9 +527,22 @@ func TestManagerEnsureUpdatesOnAdapterChange(t *testing.T) {
 			},
 		},
 	}
+	store.setAdapter(configstore.Adapter{ID: "adapter.tts.v1"})
+	store.setAdapter(configstore.Adapter{ID: "adapter.tts.v2"})
+	store.setEndpoint(configstore.AdapterEndpoint{
+		AdapterID: "adapter.tts.v1",
+		Transport: "grpc",
+		Address:   "127.0.0.1:9200",
+	})
+	store.setEndpoint(configstore.AdapterEndpoint{
+		AdapterID: "adapter.tts.v2",
+		Transport: "grpc",
+		Address:   "127.0.0.1:9201",
+	})
 	launcher := NewMockLauncher()
 	manager := NewManager(ManagerOptions{
 		Store:     store,
+		Adapters:  store,
 		Runner:    adapterrunner.NewManager(t.TempDir()),
 		Launcher:  launcher,
 		PluginDir: t.TempDir(),
@@ -141,9 +580,16 @@ func TestManagerEnsureConfigChange(t *testing.T) {
 			},
 		},
 	}
+	store.setAdapter(configstore.Adapter{ID: "adapter.ai"})
+	store.setEndpoint(configstore.AdapterEndpoint{
+		AdapterID: "adapter.ai",
+		Transport: "grpc",
+		Address:   "127.0.0.1:9300",
+	})
 	launcher := NewMockLauncher()
 	manager := NewManager(ManagerOptions{
 		Store:     store,
+		Adapters:  store,
 		Runner:    adapterrunner.NewManager(t.TempDir()),
 		Launcher:  launcher,
 		PluginDir: t.TempDir(),
@@ -245,6 +691,7 @@ spec:
 	launcher := NewMockLauncher()
 	manager := NewManager(ManagerOptions{
 		Store:     store,
+		Adapters:  store,
 		Runner:    adapterrunner.NewManager(filepath.Join(tempDir, "runner")),
 		Launcher:  launcher,
 		PluginDir: pluginDir,
@@ -357,6 +804,18 @@ func TestManagerEnsureRestartsOnEndpointChange(t *testing.T) {
 	if err := store.SetActiveAdapter(ctx, string(SlotAI), adapter.ID, nil); err != nil {
 		t.Fatalf("set active adapter: %v", err)
 	}
+	if err := store.UpsertAdapterEndpoint(ctx, configstore.AdapterEndpoint{
+		AdapterID: adapter.ID,
+		Transport: "grpc",
+		Address:   "127.0.0.1:9601",
+	}); err != nil {
+		t.Fatalf("upsert endpoint: %v", err)
+	}
+	if endpoint, err := store.GetAdapterEndpoint(ctx, adapter.ID); err != nil {
+		t.Fatalf("verify endpoint: %v", err)
+	} else if !strings.EqualFold(endpoint.Transport, "grpc") {
+		t.Fatalf("expected grpc transport, got %s", endpoint.Transport)
+	}
 
 	initialEndpoint := configstore.AdapterEndpoint{
 		AdapterID: adapter.ID,
@@ -370,6 +829,7 @@ func TestManagerEnsureRestartsOnEndpointChange(t *testing.T) {
 	launcher := NewMockLauncher()
 	manager := NewManager(ManagerOptions{
 		Store:     store,
+		Adapters:  store,
 		Runner:    adapterrunner.NewManager(filepath.Join(tempDir, "runner")),
 		Launcher:  launcher,
 		PluginDir: filepath.Join(tempDir, "plugins"),
@@ -437,10 +897,23 @@ spec:
 	if err := store.SetActiveAdapter(ctx, string(SlotAI), adapter.ID, nil); err != nil {
 		t.Fatalf("set active adapter: %v", err)
 	}
+	if err := store.UpsertAdapterEndpoint(ctx, configstore.AdapterEndpoint{
+		AdapterID: adapter.ID,
+		Transport: "grpc",
+		Address:   "127.0.0.1:9601",
+	}); err != nil {
+		t.Fatalf("upsert endpoint: %v", err)
+	}
+	if endpoint, err := store.GetAdapterEndpoint(ctx, adapter.ID); err != nil {
+		t.Fatalf("verify endpoint: %v", err)
+	} else if !strings.EqualFold(endpoint.Transport, "grpc") {
+		t.Fatalf("expected grpc transport, got %s", endpoint.Transport)
+	}
 
 	launcher := NewMockLauncher()
 	manager := NewManager(ManagerOptions{
 		Store:     store,
+		Adapters:  store,
 		Runner:    adapterrunner.NewManager(filepath.Join(tempDir, "runner")),
 		Launcher:  launcher,
 		PluginDir: filepath.Join(tempDir, "plugins"),

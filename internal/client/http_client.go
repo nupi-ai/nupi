@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	defaultHTTPTimeout = 10 * time.Second
+	defaultHTTPTimeout = 2 * time.Minute
 	maxErrorBody       = 8 << 10
 )
 

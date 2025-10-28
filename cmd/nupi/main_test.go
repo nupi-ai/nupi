@@ -272,7 +272,7 @@ spec:
 	if err != nil {
 		t.Fatalf("ensure instance dirs: %v", err)
 	}
-	expectedDir := filepath.Join(paths.Home, "plugins", sanitizeAdapterSlug(registerPayload.AdapterID), "bin")
+	expectedDir := filepath.Join(paths.Home, "plugins", sanitizeAdapterSlug("local-stt"), "bin")
 	expectedFile := filepath.Join(expectedDir, filepath.Base(binaryPath))
 	if _, err := os.Stat(expectedFile); err != nil {
 		t.Fatalf("expected binary at %s: %v", expectedFile, err)

@@ -60,7 +60,7 @@ func TestVoicePipelineEndToEndWithBarge(t *testing.T) {
 
 	ingressSvc := ingress.New(bus)
 	sttSvc := stt.New(bus,
-		stt.WithFactory(stt.NewAdapterFactory(store)),
+		stt.WithFactory(stt.NewAdapterFactory(store, nil)),
 		stt.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
 	)
 	vadSvc := vad.New(bus,
@@ -367,7 +367,7 @@ func TestAudioIngressToSTTGRPCPipeline(t *testing.T) {
 	ingressSvc := ingress.New(bus)
 	sttSvc := stt.New(
 		bus,
-		stt.WithFactory(stt.NewAdapterFactory(store)),
+		stt.WithFactory(stt.NewAdapterFactory(store, nil)),
 		stt.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
 	)
 	pipelineSvc := contentpipeline.NewService(bus, nil)
