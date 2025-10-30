@@ -240,3 +240,59 @@ func TestCoerceString(t *testing.T) {
 		t.Fatalf("coerceString literal failed: %v %v", val, err)
 	}
 }
+
+func TestNormalizeAdapterOptionValueBoolean(t *testing.T) {
+	opt := AdapterOption{Type: "boolean"}
+	val, err := NormalizeAdapterOptionValue(opt, "true")
+	if err != nil {
+		t.Fatalf("expected bool coercion to succeed: %v", err)
+	}
+	if v, ok := val.(bool); !ok || !v {
+		t.Fatalf("expected true boolean, got %#v", val)
+	}
+
+	if _, err := NormalizeAdapterOptionValue(opt, "not-bool"); err == nil {
+		t.Fatalf("expected error for invalid boolean input")
+	}
+}
+
+func TestNormalizeAdapterOptionValueInteger(t *testing.T) {
+	opt := AdapterOption{Type: "integer"}
+	val, err := NormalizeAdapterOptionValue(opt, " 42 ")
+	if err != nil {
+		t.Fatalf("expected integer coercion to succeed: %v", err)
+	}
+	if v, ok := val.(int); !ok || v != 42 {
+		t.Fatalf("expected 42, got %#v", val)
+	}
+
+	if _, err := NormalizeAdapterOptionValue(opt, "abc"); err == nil {
+		t.Fatalf("expected error for non-integer string")
+	}
+}
+
+func TestNormalizeAdapterOptionValueEnum(t *testing.T) {
+	opt := AdapterOption{Type: "enum", Values: []any{"base", "small"}}
+	val, err := NormalizeAdapterOptionValue(opt, "small")
+	if err != nil {
+		t.Fatalf("expected enum coercion to succeed: %v", err)
+	}
+	if v, ok := val.(string); !ok || v != "small" {
+		t.Fatalf("expected \"small\", got %#v", val)
+	}
+
+	if _, err := NormalizeAdapterOptionValue(opt, "medium"); err == nil {
+		t.Fatalf("expected error for enum value outside allowed set")
+	}
+}
+
+func TestNormalizeAdapterOptionValueNil(t *testing.T) {
+	opt := AdapterOption{Type: "string"}
+	val, err := NormalizeAdapterOptionValue(opt, nil)
+	if err != nil {
+		t.Fatalf("expected nil value to pass through: %v", err)
+	}
+	if val != nil {
+		t.Fatalf("expected nil passthrough, got %#v", val)
+	}
+}

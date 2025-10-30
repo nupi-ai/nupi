@@ -654,10 +654,11 @@ func (m *Manager) prepareBinding(ctx context.Context, binding Binding) (bindingP
 		plan.adapter = adapter
 		plan.manifest = manifest
 		if manifest != nil && manifest.Adapter != nil {
-			merged := mergeAdapterOptionDefaults(manifest.Adapter.Options, plan.binding.Config)
-			if merged != nil {
-				plan.binding.Config = merged
+			resolved, err := resolveAdapterConfig(manifest.Adapter.Options, plan.binding.Config)
+			if err != nil {
+				return bindingPlan{}, fmt.Errorf("adapters: invalid config for %s: %w", binding.AdapterID, err)
 			}
+			plan.binding.Config = resolved
 		}
 
 		endpoint, err := m.lookupEndpoint(ctx, binding.AdapterID)
@@ -675,35 +676,61 @@ func (m *Manager) prepareBinding(ctx context.Context, binding Binding) (bindingP
 	return plan, nil
 }
 
-// mergeAdapterOptionDefaults copies manifest-defined defaults into the adapter
-// configuration when the user did not provide explicit values. Existing keys
-// are preserved. The returned map is a new allocation, or nil when no defaults
-// were applied.
-func mergeAdapterOptionDefaults(options map[string]manifest.AdapterOption, current map[string]any) map[string]any {
+func resolveAdapterConfig(options map[string]manifest.AdapterOption, current map[string]any) (map[string]any, error) {
 	if len(options) == 0 {
-		return current
+		if len(current) == 0 {
+			return nil, nil
+		}
+		out := make(map[string]any, len(current))
+		for key, value := range current {
+			trimmed := strings.TrimSpace(key)
+			if trimmed == "" {
+				continue
+			}
+			out[trimmed] = value
+		}
+		if len(out) == 0 {
+			return nil, nil
+		}
+		return out, nil
 	}
+
 	out := make(map[string]any, len(options)+len(current))
-	for k, v := range current {
-		out[k] = v
-	}
 	for key, opt := range options {
-		normalized := strings.TrimSpace(key)
-		if normalized == "" {
+		trimmed := strings.TrimSpace(key)
+		if trimmed == "" {
 			continue
 		}
-		if _, exists := out[normalized]; exists {
-			continue
+		if opt.Default != nil {
+			out[trimmed] = opt.Default
 		}
-		if opt.Default == nil {
-			continue
-		}
-		out[normalized] = opt.Default
 	}
+
+	for key, raw := range current {
+		trimmed := strings.TrimSpace(key)
+		if trimmed == "" {
+			continue
+		}
+		opt, known := options[trimmed]
+		if !known {
+			out[trimmed] = raw
+			continue
+		}
+		if raw == nil {
+			delete(out, trimmed)
+			continue
+		}
+		coerced, err := manifest.NormalizeAdapterOptionValue(opt, raw)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", trimmed, err)
+		}
+		out[trimmed] = coerced
+	}
+
 	if len(out) == 0 {
-		return nil
+		return nil, nil
 	}
-	return out
+	return out, nil
 }
 
 func computePlanFingerprint(binding Binding, manifestRaw string, endpoint configstore.AdapterEndpoint) string {

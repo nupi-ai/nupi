@@ -431,6 +431,53 @@ func normalizeAdapterOption(key string, opt AdapterOption) (AdapterOption, error
 	return opt, nil
 }
 
+// NormalizeAdapterOptionValue coerces an arbitrary value to the shape required
+// by the supplied adapter option. The returned value is suitable for inclusion
+// in adapter configuration payloads. Nil values are passed through unchanged.
+func NormalizeAdapterOptionValue(opt AdapterOption, value any) (any, error) {
+	if value == nil {
+		return nil, nil
+	}
+
+	switch opt.Type {
+	case "boolean":
+		out, err := coerceBool(value)
+		if err != nil {
+			return nil, err
+		}
+		return out.(bool), nil
+	case "integer":
+		out, err := coerceInt(value)
+		if err != nil {
+			return nil, err
+		}
+		return out.(int), nil
+	case "number":
+		out, err := coerceNumber(value)
+		if err != nil {
+			return nil, err
+		}
+		return out.(float64), nil
+	case "string":
+		out, err := coerceString(value)
+		if err != nil {
+			return nil, err
+		}
+		return out.(string), nil
+	case "enum":
+		out, err := coerceString(value)
+		if err != nil {
+			return nil, err
+		}
+		if !containsValue(opt.Values, out) {
+			return nil, fmt.Errorf("expected one of %v, got %q", opt.Values, out)
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("unsupported option type %q", opt.Type)
+	}
+}
+
 func inferOptionType(value any) string {
 	switch v := value.(type) {
 	case nil:

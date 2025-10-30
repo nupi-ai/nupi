@@ -2,7 +2,9 @@ package adapters
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -955,70 +957,305 @@ spec:
 	}
 }
 
-func TestMergeAdapterOptionDefaults(t *testing.T) {
-	t.Run("nil options returns original config", func(t *testing.T) {
-		if mergeAdapterOptionDefaults(nil, nil) != nil {
-			t.Fatalf("expected nil when no options/config provided")
+func TestEnsureFailsOnInvalidConfig(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+
+	source := &fakeBindingSource{
+		bindings: []configstore.AdapterBinding{
+			{
+				Slot:      string(SlotSTT),
+				AdapterID: strPtr("ai.nupi/stt-local-whisper"),
+				Config:    `{"threads":"abc"}`,
+				Status:    configstore.BindingStatusActive,
+			},
+		},
+	}
+
+	manifest := `
+apiVersion: nap.nupi.ai/v1alpha1
+kind: Plugin
+type: adapter
+metadata:
+  name: Whisper STT
+  slug: stt-local-whisper
+  catalog: ai.nupi
+spec:
+  slot: stt
+  mode: local
+  entrypoint:
+    command: ./adapter
+  options:
+    threads:
+      type: integer
+`
+	source.setAdapter(configstore.Adapter{
+		ID:       "ai.nupi/stt-local-whisper",
+		Manifest: manifest,
+	})
+
+	manager := NewManager(ManagerOptions{
+		Store:     source,
+		Adapters:  source,
+		Runner:    adapterrunner.NewManager(filepath.Join(tempDir, "runner")),
+		Launcher:  NewMockLauncher(),
+		PluginDir: filepath.Join(tempDir, "plugins"),
+	})
+
+	if err := manager.Ensure(ctx); err == nil {
+		t.Fatalf("expected Ensure to fail when config cannot be coerced")
+	}
+}
+
+func TestEnsurePopulatesAdapterConfigEnv(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "config.db")
+
+	originalWait := waitForAdapterReadyFn
+	t.Cleanup(func() {
+		waitForAdapterReadyFn = originalWait
+	})
+	waitForAdapterReadyFn = func(context.Context, string) error {
+		return nil
+	}
+
+	originalAlloc := allocateProcessAddressFn
+	t.Cleanup(func() {
+		allocateProcessAddressFn = originalAlloc
+	})
+	var portCounter int
+	allocateProcessAddressFn = func() (string, error) {
+		portCounter++
+		return fmt.Sprintf("127.0.0.1:%d", 55050+portCounter), nil
+	}
+
+	store, err := configstore.Open(configstore.Options{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		store.Close()
+	})
+
+	manifest := `
+apiVersion: nap.nupi.ai/v1alpha1
+kind: Plugin
+type: adapter
+metadata:
+  name: Whisper STT
+  slug: stt-local-whisper
+  catalog: ai.nupi
+spec:
+  slot: stt
+  mode: local
+  entrypoint:
+    command: ./adapter
+  options:
+    use_gpu:
+      type: boolean
+      default: true
+    threads:
+      type: integer
+      default: 4
+    voice:
+      type: enum
+      values: [en-US, pl-PL]
+      default: en-US
+    accuracy:
+      type: number
+      default: 0.5
+`
+
+	adapterID := "ai.nupi/stt-local-whisper"
+	adapter := configstore.Adapter{
+		ID:       adapterID,
+		Source:   "test",
+		Type:     "stt",
+		Name:     "Whisper STT",
+		Manifest: manifest,
+	}
+	if err := store.UpsertAdapter(ctx, adapter); err != nil {
+		t.Fatalf("upsert adapter: %v", err)
+	}
+	userConfig := map[string]any{
+		"use_gpu": "false",
+		"threads": "6",
+		"voice":   "pl-PL",
+		"custom":  "user-value",
+	}
+	if err := store.SetActiveAdapter(ctx, string(SlotSTT), adapter.ID, userConfig); err != nil {
+		t.Fatalf("set active adapter: %v", err)
+	}
+	if err := store.UpsertAdapterEndpoint(ctx, configstore.AdapterEndpoint{
+		AdapterID: adapter.ID,
+		Transport: "process",
+		Command:   "./adapter-bin",
+	}); err != nil {
+		t.Fatalf("upsert endpoint: %v", err)
+	}
+
+	launcher := NewMockLauncher()
+	manager := NewManager(ManagerOptions{
+		Store:     store,
+		Adapters:  store,
+		Runner:    adapterrunner.NewManager(filepath.Join(tempDir, "runner")),
+		Launcher:  launcher,
+		PluginDir: filepath.Join(tempDir, "plugins"),
+	})
+
+	if err := manager.Ensure(ctx); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+
+	records := launcher.Records()
+	if len(records) != 1 {
+		t.Fatalf("expected 1 launch record, got %d", len(records))
+	}
+
+	var cfgJSON string
+	for _, env := range records[0].Env {
+		if strings.HasPrefix(env, "NUPI_ADAPTER_CONFIG=") {
+			cfgJSON = strings.TrimPrefix(env, "NUPI_ADAPTER_CONFIG=")
+			break
+		}
+	}
+	if cfgJSON == "" {
+		t.Fatalf("missing NUPI_ADAPTER_CONFIG in launch environment")
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(cfgJSON), &payload); err != nil {
+		t.Fatalf("unmarshal adapter config: %v", err)
+	}
+
+	if val, ok := payload["use_gpu"].(bool); !ok || val {
+		t.Fatalf("expected use_gpu=false, got %#v", payload["use_gpu"])
+	}
+	if val, ok := payload["threads"].(float64); !ok || val != 6 {
+		t.Fatalf("expected threads=6, got %#v", payload["threads"])
+	}
+	if val, ok := payload["voice"].(string); !ok || val != "pl-PL" {
+		t.Fatalf("expected voice=pl-PL, got %#v", payload["voice"])
+	}
+	if val, ok := payload["accuracy"].(float64); !ok || val != 0.5 {
+		t.Fatalf("expected accuracy=0.5, got %#v", payload["accuracy"])
+	}
+	if val, ok := payload["custom"].(string); !ok || val != "user-value" {
+		t.Fatalf("expected custom=user-value, got %#v", payload["custom"])
+	}
+
+	if len(payload) != 5 {
+		t.Fatalf("expected 5 keys in payload, got %d", len(payload))
+	}
+}
+
+func TestResolveAdapterConfig(t *testing.T) {
+	t.Run("no options returns trimmed copy of config", func(t *testing.T) {
+		result, err := resolveAdapterConfig(nil, nil)
+		if err != nil {
+			t.Fatalf("expected nil result without error, got %v", err)
+		}
+		if result != nil {
+			t.Fatalf("expected nil map for empty input, got %#v", result)
 		}
 
-		current := map[string]any{"api_key": "secret"}
-		result := mergeAdapterOptionDefaults(nil, current)
+		current := map[string]any{
+			"  api_key  ": "secret",
+		}
+		result, err = resolveAdapterConfig(nil, current)
+		if err != nil {
+			t.Fatalf("resolveAdapterConfig returned error: %v", err)
+		}
 		if result["api_key"] != "secret" {
-			t.Fatalf("expected existing config preserved: %#v", result)
+			t.Fatalf("expected api_key preserved, got %#v", result["api_key"])
+		}
+		if _, exists := result["  api_key  "]; exists {
+			t.Fatalf("expected trimmed key in result")
 		}
 		if &result == &current {
-			t.Fatalf("expected new map allocation")
+			t.Fatalf("expected result map to be a copy")
 		}
 	})
 
-	t.Run("applies defaults for missing keys", func(t *testing.T) {
+	t.Run("applies defaults and coerces values", func(t *testing.T) {
 		opts := map[string]manifestpkg.AdapterOption{
 			"use_gpu":  {Type: "boolean", Default: true},
-			"threads":  {Type: "integer", Default: 6},
-			"language": {Type: "string", Default: "en"},
+			"threads":  {Type: "integer", Default: 4},
+			"voice":    {Type: "enum", Values: []any{"en-US", "pl-PL"}, Default: "en-US"},
+			"model":    {Type: "string", Default: "base"},
+			"accuracy": {Type: "number", Default: 0.5},
 		}
-		result := mergeAdapterOptionDefaults(opts, nil)
-		if val, ok := result["use_gpu"].(bool); !ok || !val {
-			t.Fatalf("expected use_gpu=true, got %#v", result["use_gpu"])
+		current := map[string]any{
+			"use_gpu":  "false",
+			"threads":  "6",
+			"voice":    "pl-PL",
+			"accuracy": "0.75",
+		}
+
+		result, err := resolveAdapterConfig(opts, current)
+		if err != nil {
+			t.Fatalf("resolveAdapterConfig returned error: %v", err)
+		}
+
+		if val, ok := result["use_gpu"].(bool); !ok || val {
+			t.Fatalf("expected coerced boolean false, got %#v", result["use_gpu"])
 		}
 		if val, ok := result["threads"].(int); !ok || val != 6 {
-			t.Fatalf("expected threads=6, got %#v", result["threads"])
+			t.Fatalf("expected coerced integer 6, got %#v", result["threads"])
 		}
-		if result["language"] != "en" {
-			t.Fatalf("expected language=en, got %#v", result["language"])
+		if val, ok := result["accuracy"].(float64); !ok || val != 0.75 {
+			t.Fatalf("expected coerced number 0.75, got %#v", result["accuracy"])
+		}
+		if val, ok := result["voice"].(string); !ok || val != "pl-PL" {
+			t.Fatalf("expected enum selection pl-PL, got %#v", result["voice"])
+		}
+		if val, ok := result["model"].(string); !ok || val != "base" {
+			t.Fatalf("expected default string base, got %#v", result["model"])
 		}
 	})
 
-	t.Run("existing keys are preserved", func(t *testing.T) {
+	t.Run("rejects invalid values", func(t *testing.T) {
+		opts := map[string]manifestpkg.AdapterOption{
+			"use_gpu": {Type: "boolean", Default: true},
+			"threads": {Type: "integer"},
+		}
+		badBool := map[string]any{"use_gpu": "maybe"}
+		if _, err := resolveAdapterConfig(opts, badBool); err == nil {
+			t.Fatalf("expected error for invalid boolean")
+		}
+
+		badInt := map[string]any{"threads": "abc"}
+		if _, err := resolveAdapterConfig(opts, badInt); err == nil {
+			t.Fatalf("expected error for invalid integer")
+		}
+	})
+
+	t.Run("nil user value removes default", func(t *testing.T) {
 		opts := map[string]manifestpkg.AdapterOption{
 			"use_gpu": {Type: "boolean", Default: true},
 		}
-		current := map[string]any{"use_gpu": false}
-		result := mergeAdapterOptionDefaults(opts, current)
-		if val, ok := result["use_gpu"].(bool); !ok || val {
-			t.Fatalf("expected existing config to win, got %#v", result["use_gpu"])
+		current := map[string]any{"use_gpu": nil}
+		result, err := resolveAdapterConfig(opts, current)
+		if err != nil {
+			t.Fatalf("resolveAdapterConfig returned error: %v", err)
+		}
+		if _, exists := result["use_gpu"]; exists {
+			t.Fatalf("expected nil value to drop option from result")
 		}
 	})
 
-	t.Run("ignores nil defaults", func(t *testing.T) {
+	t.Run("preserves unknown keys", func(t *testing.T) {
 		opts := map[string]manifestpkg.AdapterOption{
-			"placeholder": {Type: "string"},
+			"use_gpu": {Type: "boolean", Default: true},
 		}
-		if result := mergeAdapterOptionDefaults(opts, nil); result != nil {
-			t.Fatalf("expected nil map when defaults absent, got %#v", result)
+		current := map[string]any{"custom": "value"}
+		result, err := resolveAdapterConfig(opts, current)
+		if err != nil {
+			t.Fatalf("resolveAdapterConfig returned error: %v", err)
 		}
-	})
-
-	t.Run("trims option keys", func(t *testing.T) {
-		opts := map[string]manifestpkg.AdapterOption{
-			" threads ": {Type: "integer", Default: 2},
-		}
-		result := mergeAdapterOptionDefaults(opts, nil)
-		if val, ok := result["threads"].(int); !ok || val != 2 {
-			t.Fatalf("expected trimmed key with default, got %#v", result)
-		}
-		if _, exists := result[" threads "]; exists {
-			t.Fatalf("whitespace key should not survive trimming")
+		if result["custom"] != "value" {
+			t.Fatalf("expected unknown key preserved, got %#v", result["custom"])
 		}
 	})
 }
