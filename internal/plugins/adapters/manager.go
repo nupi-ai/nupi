@@ -653,6 +653,12 @@ func (m *Manager) prepareBinding(ctx context.Context, binding Binding) (bindingP
 		}
 		plan.adapter = adapter
 		plan.manifest = manifest
+		if manifest != nil && manifest.Adapter != nil {
+			merged := mergeAdapterOptionDefaults(manifest.Adapter.Options, plan.binding.Config)
+			if merged != nil {
+				plan.binding.Config = merged
+			}
+		}
 
 		endpoint, err := m.lookupEndpoint(ctx, binding.AdapterID)
 		if errors.Is(err, errAdapterDetailsUnavailable) {
@@ -669,6 +675,37 @@ func (m *Manager) prepareBinding(ctx context.Context, binding Binding) (bindingP
 	return plan, nil
 }
 
+// mergeAdapterOptionDefaults copies manifest-defined defaults into the adapter
+// configuration when the user did not provide explicit values. Existing keys
+// are preserved. The returned map is a new allocation, or nil when no defaults
+// were applied.
+func mergeAdapterOptionDefaults(options map[string]manifest.AdapterOption, current map[string]any) map[string]any {
+	if len(options) == 0 {
+		return current
+	}
+	out := make(map[string]any, len(options)+len(current))
+	for k, v := range current {
+		out[k] = v
+	}
+	for key, opt := range options {
+		normalized := strings.TrimSpace(key)
+		if normalized == "" {
+			continue
+		}
+		if _, exists := out[normalized]; exists {
+			continue
+		}
+		if opt.Default == nil {
+			continue
+		}
+		out[normalized] = opt.Default
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func computePlanFingerprint(binding Binding, manifestRaw string, endpoint configstore.AdapterEndpoint) string {
 	h := sha256.New()
 	write := func(value string) {
@@ -677,7 +714,13 @@ func computePlanFingerprint(binding Binding, manifestRaw string, endpoint config
 	}
 
 	write(binding.AdapterID)
-	write(strings.TrimSpace(binding.RawConfig))
+	rawConfig := strings.TrimSpace(binding.RawConfig)
+	if rawConfig == "" && len(binding.Config) > 0 {
+		if payload, err := json.Marshal(binding.Config); err == nil {
+			rawConfig = string(payload)
+		}
+	}
+	write(strings.TrimSpace(rawConfig))
 	write(strings.TrimSpace(manifestRaw))
 	write(endpoint.Transport)
 	// For process transport, address is dynamically allocated per-instance and should NOT affect fingerprint.

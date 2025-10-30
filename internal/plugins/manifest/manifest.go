@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -47,11 +49,12 @@ type PipelineCleanerSpec struct {
 }
 
 type AdapterSpec struct {
-	Slot       string            `yaml:"slot"`
-	Mode       string            `yaml:"mode"`
-	Entrypoint AdapterEntrypoint `yaml:"entrypoint"`
-	Assets     AdapterAssets     `yaml:"assets"`
-	Telemetry  AdapterTelemetry  `yaml:"telemetry"`
+	Slot       string                   `yaml:"slot"`
+	Mode       string                   `yaml:"mode"`
+	Entrypoint AdapterEntrypoint        `yaml:"entrypoint"`
+	Assets     AdapterAssets            `yaml:"assets"`
+	Telemetry  AdapterTelemetry         `yaml:"telemetry"`
+	Options    map[string]AdapterOption `yaml:"options"`
 }
 
 type AdapterEntrypoint struct {
@@ -74,6 +77,17 @@ type AdapterModelAssets struct {
 type AdapterTelemetry struct {
 	Stdout *bool `yaml:"stdout"`
 	Stderr *bool `yaml:"stderr"`
+}
+
+// AdapterOption describes a configurable option exposed by an adapter plugin.
+// It supports a small set of primitive types (string, enum, boolean, integer,
+// number). Values are validated when the manifest is parsed so that defaults
+// remain consistent with declared types.
+type AdapterOption struct {
+	Type        string `yaml:"type" json:"type"`
+	Description string `yaml:"description,omitempty" json:"description,omitempty"`
+	Default     any    `yaml:"default,omitempty" json:"default,omitempty"`
+	Values      []any  `yaml:"values,omitempty" json:"values,omitempty"`
 }
 
 type Manifest struct {
@@ -256,6 +270,21 @@ func decodeManifest(data []byte, dir, file string) (*Manifest, error) {
 		if err := doc.Spec.Decode(&spec); err != nil {
 			return nil, fmt.Errorf("decode adapter spec %s: %w", file, err)
 		}
+		if len(spec.Options) > 0 {
+			validated := make(map[string]AdapterOption, len(spec.Options))
+			for key, opt := range spec.Options {
+				normalizedKey := strings.TrimSpace(key)
+				if normalizedKey == "" {
+					return nil, fmt.Errorf("adapter option key is empty in %s", file)
+				}
+				normalizedOpt, err := normalizeAdapterOption(normalizedKey, opt)
+				if err != nil {
+					return nil, fmt.Errorf("adapter option %q: %w", normalizedKey, err)
+				}
+				validated[normalizedKey] = normalizedOpt
+			}
+			spec.Options = validated
+		}
 		manifest.Adapter = &spec
 	case PluginTypeToolDetector:
 		var spec DetectorSpec
@@ -280,6 +309,277 @@ func decodeManifest(data []byte, dir, file string) (*Manifest, error) {
 	}
 
 	return manifest, nil
+}
+
+var allowedOptionTypes = map[string]struct{}{
+	"string":  {},
+	"enum":    {},
+	"boolean": {},
+	"integer": {},
+	"number":  {},
+}
+
+func normalizeAdapterOption(key string, opt AdapterOption) (AdapterOption, error) {
+	opt.Description = strings.TrimSpace(opt.Description)
+	opt.Type = strings.ToLower(strings.TrimSpace(opt.Type))
+
+	if opt.Type == "" {
+		if len(opt.Values) > 0 {
+			opt.Type = "enum"
+		} else if inferred := inferOptionType(opt.Default); inferred != "" {
+			opt.Type = inferred
+		} else {
+			opt.Type = "string"
+		}
+	}
+
+	if _, ok := allowedOptionTypes[opt.Type]; !ok {
+		return AdapterOption{}, fmt.Errorf("unsupported type %q", opt.Type)
+	}
+
+	normalizeValues := func(fn func(any) (any, error)) ([]any, error) {
+		if len(opt.Values) == 0 {
+			return nil, nil
+		}
+		out := make([]any, len(opt.Values))
+		for i, raw := range opt.Values {
+			val, err := fn(raw)
+			if err != nil {
+				return nil, fmt.Errorf("invalid value at index %d: %w", i, err)
+			}
+			out[i] = val
+		}
+		return out, nil
+	}
+
+	switch opt.Type {
+	case "boolean":
+		if opt.Default != nil {
+			val, err := coerceBool(opt.Default)
+			if err != nil {
+				return AdapterOption{}, fmt.Errorf("default: %w", err)
+			}
+			opt.Default = val
+		}
+		values, err := normalizeValues(coerceBool)
+		if err != nil {
+			return AdapterOption{}, err
+		}
+		opt.Values = values
+	case "integer":
+		if opt.Default != nil {
+			val, err := coerceInt(opt.Default)
+			if err != nil {
+				return AdapterOption{}, fmt.Errorf("default: %w", err)
+			}
+			opt.Default = val
+		}
+		values, err := normalizeValues(coerceInt)
+		if err != nil {
+			return AdapterOption{}, err
+		}
+		opt.Values = values
+	case "number":
+		if opt.Default != nil {
+			val, err := coerceNumber(opt.Default)
+			if err != nil {
+				return AdapterOption{}, fmt.Errorf("default: %w", err)
+			}
+			opt.Default = val
+		}
+		values, err := normalizeValues(coerceNumber)
+		if err != nil {
+			return AdapterOption{}, err
+		}
+		opt.Values = values
+	case "string":
+		if opt.Default != nil {
+			val, err := coerceString(opt.Default)
+			if err != nil {
+				return AdapterOption{}, fmt.Errorf("default: %w", err)
+			}
+			opt.Default = val
+		}
+		values, err := normalizeValues(coerceString)
+		if err != nil {
+			return AdapterOption{}, err
+		}
+		opt.Values = values
+	case "enum":
+		values, err := normalizeValues(coerceString)
+		if err != nil {
+			return AdapterOption{}, err
+		}
+		if len(values) == 0 {
+			return AdapterOption{}, fmt.Errorf("enum requires non-empty values")
+		}
+		opt.Values = values
+		if opt.Default != nil {
+			val, err := coerceString(opt.Default)
+			if err != nil {
+				return AdapterOption{}, fmt.Errorf("default: %w", err)
+			}
+			if !containsValue(opt.Values, val) {
+				return AdapterOption{}, fmt.Errorf("default %q not present in values", val)
+			}
+			opt.Default = val
+		}
+	default:
+		return AdapterOption{}, fmt.Errorf("unsupported option type %q", opt.Type)
+	}
+
+	return opt, nil
+}
+
+func inferOptionType(value any) string {
+	switch v := value.(type) {
+	case nil:
+		return ""
+	case bool:
+		return "boolean"
+	case int, int32, int64:
+		return "integer"
+	case uint, uint32, uint64:
+		return "integer"
+	case float32:
+		if isFloatIntegral(float64(v)) {
+			return "integer"
+		}
+		return "number"
+	case float64:
+		if isFloatIntegral(v) {
+			return "integer"
+		}
+		return "number"
+	case string:
+		return "string"
+	default:
+		return ""
+	}
+}
+
+func coerceBool(value any) (any, error) {
+	switch v := value.(type) {
+	case bool:
+		return v, nil
+	case string:
+		trimmed := strings.TrimSpace(strings.ToLower(v))
+		if trimmed == "true" || trimmed == "1" {
+			return true, nil
+		}
+		if trimmed == "false" || trimmed == "0" {
+			return false, nil
+		}
+		return nil, fmt.Errorf("expected boolean, got %q", v)
+	default:
+		return nil, fmt.Errorf("expected boolean, got %T", value)
+	}
+}
+
+func coerceInt(value any) (any, error) {
+	switch v := value.(type) {
+	case int:
+		return v, nil
+	case int32:
+		return int(v), nil
+	case int64:
+		return intFromInt64(v)
+	case uint:
+		return intFromInt64(int64(v))
+	case uint32:
+		return intFromInt64(int64(v))
+	case uint64:
+		if v > uint64(math.MaxInt64) {
+			return nil, fmt.Errorf("integer value out of range: %d", v)
+		}
+		return intFromInt64(int64(v))
+	case float32:
+		if !isFloatIntegral(float64(v)) {
+			return nil, fmt.Errorf("expected integer, got %v", v)
+		}
+		return intFromInt64(int64(v))
+	case float64:
+		if !isFloatIntegral(v) {
+			return nil, fmt.Errorf("expected integer, got %v", v)
+		}
+		return intFromInt64(int64(v))
+	case string:
+		trimmed := strings.TrimSpace(v)
+		if trimmed == "" {
+			return nil, fmt.Errorf("expected integer, got empty string")
+		}
+		parsed, err := strconv.ParseInt(trimmed, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("expected integer, got %q", v)
+		}
+		return intFromInt64(parsed)
+	default:
+		return nil, fmt.Errorf("expected integer, got %T", value)
+	}
+}
+
+func coerceNumber(value any) (any, error) {
+	switch v := value.(type) {
+	case float32:
+		return float64(v), nil
+	case float64:
+		return v, nil
+	case int:
+		return float64(v), nil
+	case int32:
+		return float64(v), nil
+	case int64:
+		return float64(v), nil
+	case uint:
+		return float64(v), nil
+	case uint32:
+		return float64(v), nil
+	case uint64:
+		return float64(v), nil
+	case string:
+		trimmed := strings.TrimSpace(v)
+		if trimmed == "" {
+			return nil, fmt.Errorf("expected number, got empty string")
+		}
+		parsed, err := strconv.ParseFloat(trimmed, 64)
+		if err != nil {
+			return nil, fmt.Errorf("expected number, got %q", v)
+		}
+		return parsed, nil
+	default:
+		return nil, fmt.Errorf("expected number, got %T", value)
+	}
+}
+
+func coerceString(value any) (any, error) {
+	switch v := value.(type) {
+	case string:
+		return v, nil
+	case fmt.Stringer:
+		return v.String(), nil
+	default:
+		return nil, fmt.Errorf("expected string, got %T", value)
+	}
+}
+
+func containsValue(values []any, expected any) bool {
+	for _, v := range values {
+		if v == expected {
+			return true
+		}
+	}
+	return false
+}
+
+func isFloatIntegral(value float64) bool {
+	return math.Mod(value, 1.0) == 0
+}
+
+func intFromInt64(v int64) (int, error) {
+	if int64(int(v)) != v {
+		return 0, fmt.Errorf("integer value out of range: %d", v)
+	}
+	return int(v), nil
 }
 
 func locateManifestFile(dir string) (string, error) {

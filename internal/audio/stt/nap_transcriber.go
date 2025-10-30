@@ -163,7 +163,7 @@ func (t *napTranscriber) OnSegment(ctx context.Context, segment eventbus.AudioIn
 		return nil, fmt.Errorf("stt: send segment: %w", err)
 	}
 
-	return t.collectResponses(), t.drainError()
+	return t.collectResponses(segment.Last), t.drainError()
 }
 
 func (t *napTranscriber) Close(ctx context.Context) ([]Transcription, error) {
@@ -187,9 +187,31 @@ func (t *napTranscriber) Close(ctx context.Context) ([]Transcription, error) {
 	return transcripts, nil
 }
 
-func (t *napTranscriber) collectResponses() []Transcription {
+const sttResponseGracePeriod = 10 * time.Millisecond
+
+func (t *napTranscriber) collectResponses(wait bool) []Transcription {
 	var transcripts []Transcription
-	timer := time.NewTimer(50 * time.Millisecond)
+
+	// Drain anything already buffered without blocking.
+drainBuffered:
+	for {
+		select {
+		case tr, ok := <-t.responses:
+			if !ok {
+				return transcripts
+			}
+			transcripts = append(transcripts, tr)
+		default:
+			break drainBuffered
+		}
+	}
+
+	if len(transcripts) > 0 || !wait {
+		return transcripts
+	}
+
+	// Allow a brief grace period for final segments to deliver late transcripts.
+	timer := time.NewTimer(sttResponseGracePeriod)
 	defer timer.Stop()
 
 	for {
@@ -199,12 +221,28 @@ func (t *napTranscriber) collectResponses() []Transcription {
 				return transcripts
 			}
 			transcripts = append(transcripts, tr)
-			if !timer.Stop() {
-				<-timer.C
+			// After receiving the first item, drain whatever else is pending.
+			for {
+				select {
+				case tr, ok := <-t.responses:
+					if !ok {
+						return transcripts
+					}
+					transcripts = append(transcripts, tr)
+				default:
+					return transcripts
+				}
 			}
-			timer.Reset(50 * time.Millisecond)
-		case <-timer.C:
-			return transcripts
+		default:
+			select {
+			case tr, ok := <-t.responses:
+				if !ok {
+					return transcripts
+				}
+				transcripts = append(transcripts, tr)
+			case <-timer.C:
+				return transcripts
+			}
 		}
 	}
 }

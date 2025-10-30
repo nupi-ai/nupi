@@ -12,6 +12,7 @@ import (
 
 	"github.com/nupi-ai/nupi/internal/adapterrunner"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
+	manifestpkg "github.com/nupi-ai/nupi/internal/plugins/manifest"
 )
 
 type fakeBindingSource struct {
@@ -952,6 +953,74 @@ spec:
 	if launcher.StopCount(string(SlotAI)) != 1 {
 		t.Fatalf("expected adapter stop before restart")
 	}
+}
+
+func TestMergeAdapterOptionDefaults(t *testing.T) {
+	t.Run("nil options returns original config", func(t *testing.T) {
+		if mergeAdapterOptionDefaults(nil, nil) != nil {
+			t.Fatalf("expected nil when no options/config provided")
+		}
+
+		current := map[string]any{"api_key": "secret"}
+		result := mergeAdapterOptionDefaults(nil, current)
+		if result["api_key"] != "secret" {
+			t.Fatalf("expected existing config preserved: %#v", result)
+		}
+		if &result == &current {
+			t.Fatalf("expected new map allocation")
+		}
+	})
+
+	t.Run("applies defaults for missing keys", func(t *testing.T) {
+		opts := map[string]manifestpkg.AdapterOption{
+			"use_gpu":  {Type: "boolean", Default: true},
+			"threads":  {Type: "integer", Default: 6},
+			"language": {Type: "string", Default: "en"},
+		}
+		result := mergeAdapterOptionDefaults(opts, nil)
+		if val, ok := result["use_gpu"].(bool); !ok || !val {
+			t.Fatalf("expected use_gpu=true, got %#v", result["use_gpu"])
+		}
+		if val, ok := result["threads"].(int); !ok || val != 6 {
+			t.Fatalf("expected threads=6, got %#v", result["threads"])
+		}
+		if result["language"] != "en" {
+			t.Fatalf("expected language=en, got %#v", result["language"])
+		}
+	})
+
+	t.Run("existing keys are preserved", func(t *testing.T) {
+		opts := map[string]manifestpkg.AdapterOption{
+			"use_gpu": {Type: "boolean", Default: true},
+		}
+		current := map[string]any{"use_gpu": false}
+		result := mergeAdapterOptionDefaults(opts, current)
+		if val, ok := result["use_gpu"].(bool); !ok || val {
+			t.Fatalf("expected existing config to win, got %#v", result["use_gpu"])
+		}
+	})
+
+	t.Run("ignores nil defaults", func(t *testing.T) {
+		opts := map[string]manifestpkg.AdapterOption{
+			"placeholder": {Type: "string"},
+		}
+		if result := mergeAdapterOptionDefaults(opts, nil); result != nil {
+			t.Fatalf("expected nil map when defaults absent, got %#v", result)
+		}
+	})
+
+	t.Run("trims option keys", func(t *testing.T) {
+		opts := map[string]manifestpkg.AdapterOption{
+			" threads ": {Type: "integer", Default: 2},
+		}
+		result := mergeAdapterOptionDefaults(opts, nil)
+		if val, ok := result["threads"].(int); !ok || val != 2 {
+			t.Fatalf("expected trimmed key with default, got %#v", result)
+		}
+		if _, exists := result[" threads "]; exists {
+			t.Fatalf("whitespace key should not survive trimming")
+		}
+	})
 }
 
 func strPtr(v string) *string {
