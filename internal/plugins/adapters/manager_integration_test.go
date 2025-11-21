@@ -69,6 +69,11 @@ spec:
   entrypoint:
     command: %s
     transport: process
+  options:
+    model:
+      type: string
+      description: Whisper model size
+      default: base
 `, adapterSlug, filepath.ToSlash(filepath.Join(".", "bin", adapterBinaryName)))
 
 	dbPath := filepath.Join(tempDir, "config.db")

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/nupi-ai/nupi/internal/client"
 	manifestpkg "github.com/nupi-ai/nupi/internal/plugins/manifest"
 	tooldetectors "github.com/nupi-ai/nupi/internal/plugins/tool_detectors"
 	"github.com/spf13/cobra"
@@ -95,6 +96,42 @@ var pluginsListCmd = &cobra.Command{
 
 				fmt.Printf("%-17s  %-24s  %s\n", name, file, commands)
 			}
+		}
+
+		return nil
+	},
+}
+
+// pluginsWarningsCmd shows plugin discovery warnings
+var pluginsWarningsCmd = &cobra.Command{
+	Use:   "warnings",
+	Short: "Show plugin discovery warnings",
+	Long: `Displays warnings for plugins that were skipped during discovery due to manifest errors.
+
+This shows the current state from the most recent plugin discovery scan. Warnings will
+disappear when manifests are fixed and the daemon reloads plugins (e.g., after restart
+or config change). For historical tracking, check daemon logs.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		c, err := client.New()
+		if err != nil {
+			return fmt.Errorf("failed to connect to daemon: %w", err)
+		}
+
+		count, warnings, err := c.GetPluginWarnings()
+		if err != nil {
+			return fmt.Errorf("failed to get plugin warnings: %w", err)
+		}
+
+		if count == 0 {
+			fmt.Println("No plugin discovery warnings.")
+			fmt.Println("All plugins loaded successfully.")
+			return nil
+		}
+
+		fmt.Printf("Found %d plugin(s) with warnings:\n\n", count)
+		for i, w := range warnings {
+			fmt.Printf("%d. %s\n", i+1, w.Dir)
+			fmt.Printf("   Error: %s\n\n", w.Error)
 		}
 
 		return nil
@@ -192,6 +229,7 @@ func init() {
 	pluginsCmd.AddCommand(pluginsRebuildCmd)
 	pluginsCmd.AddCommand(pluginsListCmd)
 	pluginsCmd.AddCommand(pluginsInfoCmd)
+	pluginsCmd.AddCommand(pluginsWarningsCmd)
 
 	// Add to root command
 	rootCmd.AddCommand(pluginsCmd)

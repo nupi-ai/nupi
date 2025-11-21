@@ -323,6 +323,54 @@ spec:
 	}
 }
 
+func TestParseAdapterRejectsMissingMode(t *testing.T) {
+	data := `apiVersion: nap.nupi.ai/v1alpha1
+kind: Plugin
+type: adapter
+metadata:
+  name: test
+  slug: test
+  catalog: ai.nupi
+  version: 0.0.1
+spec:
+  slot: ai
+  entrypoint:
+    command: ./adapter
+    transport: process`
+
+	_, err := Parse([]byte(data))
+	if err == nil {
+		t.Fatal("expected error for adapter without mode")
+	}
+	if !strings.Contains(err.Error(), "missing required field: mode") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestParseAdapterRejectsMissingTransport(t *testing.T) {
+	data := `apiVersion: nap.nupi.ai/v1alpha1
+kind: Plugin
+type: adapter
+metadata:
+  name: test
+  slug: test
+  catalog: ai.nupi
+  version: 0.0.1
+spec:
+  slot: ai
+  mode: local
+  entrypoint:
+    command: ./adapter`
+
+	_, err := Parse([]byte(data))
+	if err == nil {
+		t.Fatal("expected error for adapter without transport")
+	}
+	if !strings.Contains(err.Error(), "missing required field: entrypoint.transport") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
 func TestParseAdapterRejectsProcessWithoutCommand(t *testing.T) {
 	data := `apiVersion: nap.nupi.ai/v1alpha1
 kind: Plugin

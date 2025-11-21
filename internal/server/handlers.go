@@ -191,6 +191,7 @@ type APIServer struct {
 	shutdownFn func(context.Context) error
 
 	metricsExporter PrometheusExporter
+	pluginWarnings  PluginWarningsProvider
 }
 
 // TransportSnapshot captures the runtime server transport settings.
@@ -322,6 +323,11 @@ func (s *APIServer) SetEventBus(bus *eventbus.Bus) {
 // SetMetricsExporter wires the metrics exporter used by the /metrics endpoint.
 func (s *APIServer) SetMetricsExporter(exporter PrometheusExporter) {
 	s.metricsExporter = exporter
+}
+
+// SetPluginWarningsProvider wires the plugin warnings provider used by the /plugins/warnings endpoint.
+func (s *APIServer) SetPluginWarningsProvider(provider PluginWarningsProvider) {
+	s.pluginWarnings = provider
 }
 
 // CurrentTransportSnapshot returns the currently applied transport configuration.
@@ -1027,6 +1033,7 @@ func (s *APIServer) Prepare(ctx context.Context) (*PreparedHTTPServer, error) {
 	mux.HandleFunc("/adapters/bind", s.handleAdaptersBind)
 	mux.HandleFunc("/adapters/start", s.handleAdaptersStart)
 	mux.HandleFunc("/adapters/stop", s.handleAdaptersStop)
+	mux.HandleFunc("/plugins/warnings", s.handlePluginWarnings)
 	mux.HandleFunc("/daemon/status", s.handleDaemonStatus)
 	mux.HandleFunc("/daemon/shutdown", s.handleDaemonShutdown)
 	mux.HandleFunc("/config/quickstart", s.handleQuickstart)
@@ -3532,6 +3539,39 @@ func (s *APIServer) handleDaemonStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	if snapshot.TLSEnabled {
 		response["tls_enabled"] = true
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func (s *APIServer) handlePluginWarnings(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodOptions:
+		w.WriteHeader(http.StatusNoContent)
+		return
+	case http.MethodGet:
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if s.pluginWarnings == nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"count":    0,
+			"warnings": []any{},
+		})
+		return
+	}
+
+	warnings := s.pluginWarnings.GetDiscoveryWarnings()
+	response := map[string]any{
+		"count":    len(warnings),
+		"warnings": warnings,
+	}
+	if warnings == nil {
+		response["warnings"] = []any{}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
