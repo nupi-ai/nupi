@@ -6,6 +6,8 @@ import (
 	"github.com/nupi-ai/nupi/internal/audio/egress"
 	"github.com/nupi-ai/nupi/internal/audio/ingress"
 	"github.com/nupi-ai/nupi/internal/eventbus"
+	"github.com/nupi-ai/nupi/internal/plugins"
+	"github.com/nupi-ai/nupi/internal/plugins/manifest"
 	"github.com/nupi-ai/nupi/internal/server"
 )
 
@@ -66,4 +68,59 @@ func (a *audioEgressAdapter) PlaybackFormat() eventbus.AudioFormat {
 
 func (a *audioEgressAdapter) Interrupt(sessionID, streamID, reason string, metadata map[string]string) {
 	a.service.Interrupt(sessionID, streamID, reason, metadata)
+}
+
+// PluginWarningsProvider wraps plugins.Service for use by API handlers.
+func PluginWarningsProvider(service *plugins.Service) server.PluginWarningsProvider {
+	if service == nil {
+		return nil
+	}
+	return &pluginWarningsAdapter{service: service}
+}
+
+type pluginWarningsAdapter struct {
+	service *plugins.Service
+}
+
+func (a *pluginWarningsAdapter) GetDiscoveryWarnings() []server.PluginDiscoveryWarning {
+	warnings := a.service.GetDiscoveryWarnings()
+	if len(warnings) == 0 {
+		return nil
+	}
+
+	result := make([]server.PluginDiscoveryWarning, len(warnings))
+	for i, w := range warnings {
+		result[i] = server.PluginDiscoveryWarning{
+			Dir:   w.Dir,
+			Error: formatError(w.Err),
+		}
+	}
+	return result
+}
+
+func formatError(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+// PluginWarningsProviderFromManifest creates a provider directly from manifest warnings (for testing).
+func PluginWarningsProviderFromManifest(warnings []manifest.DiscoveryWarning) server.PluginWarningsProvider {
+	result := make([]server.PluginDiscoveryWarning, len(warnings))
+	for i, w := range warnings {
+		result[i] = server.PluginDiscoveryWarning{
+			Dir:   w.Dir,
+			Error: formatError(w.Err),
+		}
+	}
+	return &staticWarningsProvider{warnings: result}
+}
+
+type staticWarningsProvider struct {
+	warnings []server.PluginDiscoveryWarning
+}
+
+func (p *staticWarningsProvider) GetDiscoveryWarnings() []server.PluginDiscoveryWarning {
+	return p.warnings
 }

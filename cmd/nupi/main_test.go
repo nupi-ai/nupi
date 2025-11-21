@@ -172,6 +172,7 @@ metadata:
   slug: local-stt
 spec:
   slot: stt
+  mode: local
   entrypoint:
     command: ./adapter
     args: ["--foo", "bar"]
@@ -248,6 +249,7 @@ metadata:
   slug: local-stt
 spec:
   slot: stt
+  mode: local
   entrypoint:
     command: ./adapter
     args: ["--variant", "base"]
@@ -329,6 +331,7 @@ metadata:
   slug: local-stt
 spec:
   slot: stt
+  mode: local
   entrypoint:
     command: ./adapter
     transport: grpc

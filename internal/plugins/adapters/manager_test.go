@@ -659,6 +659,10 @@ spec:
   entrypoint:
     transport: grpc
     listenEnv: ADAPTER_LISTEN_ADDR
+  options:
+    token:
+      type: string
+      description: API token
   assets:
     models:
       cacheDirEnv: ADAPTER_CACHE_DIR
@@ -1158,7 +1162,8 @@ spec:
 }
 
 func TestResolveAdapterConfig(t *testing.T) {
-	t.Run("no options returns trimmed copy of config", func(t *testing.T) {
+	t.Run("no options rejects non-empty config", func(t *testing.T) {
+		// Empty config with no options is valid
 		result, err := resolveAdapterConfig(nil, nil)
 		if err != nil {
 			t.Fatalf("expected nil result without error, got %v", err)
@@ -1167,21 +1172,16 @@ func TestResolveAdapterConfig(t *testing.T) {
 			t.Fatalf("expected nil map for empty input, got %#v", result)
 		}
 
+		// Non-empty config with no options should be rejected (manifest as single source of truth)
 		current := map[string]any{
-			"  api_key  ": "secret",
+			"api_key": "secret",
 		}
-		result, err = resolveAdapterConfig(nil, current)
-		if err != nil {
-			t.Fatalf("resolveAdapterConfig returned error: %v", err)
+		_, err = resolveAdapterConfig(nil, current)
+		if err == nil {
+			t.Fatal("expected error for non-empty config when manifest declares no options")
 		}
-		if result["api_key"] != "secret" {
-			t.Fatalf("expected api_key preserved, got %#v", result["api_key"])
-		}
-		if _, exists := result["  api_key  "]; exists {
-			t.Fatalf("expected trimmed key in result")
-		}
-		if &result == &current {
-			t.Fatalf("expected result map to be a copy")
+		if !strings.Contains(err.Error(), "declares no options") {
+			t.Errorf("expected 'declares no options' error, got: %v", err)
 		}
 	})
 

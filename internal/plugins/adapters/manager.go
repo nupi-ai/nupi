@@ -757,6 +757,11 @@ func (m *Manager) prepareBinding(ctx context.Context, binding Binding) (bindingP
 }
 
 func resolveAdapterConfig(options map[string]manifest.AdapterOption, current map[string]any) (map[string]any, error) {
+	// Validate config against manifest options before processing
+	if err := manifest.ValidateConfigAgainstOptions(options, current); err != nil {
+		return nil, err
+	}
+
 	if len(options) == 0 {
 		if len(current) == 0 {
 			return nil, nil

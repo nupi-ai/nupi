@@ -12,15 +12,21 @@ import (
 
 // PrometheusExporter renders observability metrics in Prometheus text format.
 type PrometheusExporter struct {
-	bus      *eventbus.Bus
-	counter  *EventCounter
-	pipeline PipelineMetricsProvider
-	audio    func() AudioMetricsSnapshot
+	bus             *eventbus.Bus
+	counter         *EventCounter
+	pipeline        PipelineMetricsProvider
+	audio           func() AudioMetricsSnapshot
+	pluginWarnings  PluginWarningsProvider
 }
 
 // PipelineMetricsProvider exposes a Metrics method compatible with content pipeline services.
 type PipelineMetricsProvider interface {
 	Metrics() contentpipeline.Metrics
+}
+
+// PluginWarningsProvider exposes the count of plugin discovery warnings.
+type PluginWarningsProvider interface {
+	WarningsCount() int
 }
 
 // AudioMetricsSnapshot represents a point-in-time snapshot of audio-related counters.
@@ -52,6 +58,11 @@ func (e *PrometheusExporter) WithAudioMetrics(provider func() AudioMetricsSnapsh
 	e.audio = provider
 }
 
+// WithPluginWarnings enables exporting plugin discovery warning metrics.
+func (e *PrometheusExporter) WithPluginWarnings(provider PluginWarningsProvider) {
+	e.pluginWarnings = provider
+}
+
 // Export produces the metrics payload in Prometheus' text exposition format.
 func (e *PrometheusExporter) Export() []byte {
 	var buf bytes.Buffer
@@ -60,6 +71,7 @@ func (e *PrometheusExporter) Export() []byte {
 	e.writeBusMetrics(&buf)
 	e.writePipelineMetrics(&buf)
 	e.writeAudioMetrics(&buf)
+	e.writePluginWarningsMetrics(&buf)
 
 	return buf.Bytes()
 }
@@ -158,6 +170,18 @@ func (e *PrometheusExporter) writeAudioMetrics(buf *bytes.Buffer) {
 	buf.WriteString("# HELP nupi_vad_retry_failures_total Total number of VAD adapter retry attempts that failed.\n")
 	buf.WriteString("# TYPE nupi_vad_retry_failures_total counter\n")
 	buf.WriteString(fmt.Sprintf("nupi_vad_retry_failures_total %d\n", snapshot.VADRetryFailures))
+}
+
+func (e *PrometheusExporter) writePluginWarningsMetrics(buf *bytes.Buffer) {
+	if e.pluginWarnings == nil {
+		return
+	}
+
+	count := e.pluginWarnings.WarningsCount()
+
+	buf.WriteString("# HELP nupi_plugins_discovery_warnings Current number of plugins skipped during last discovery due to manifest errors.\n")
+	buf.WriteString("# TYPE nupi_plugins_discovery_warnings gauge\n")
+	buf.WriteString(fmt.Sprintf("nupi_plugins_discovery_warnings %d\n", count))
 }
 
 func durationSeconds(d time.Duration) float64 {

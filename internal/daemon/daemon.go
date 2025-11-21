@@ -130,12 +130,14 @@ func New(opts Options) (*Daemon, error) {
 	bus.AddObserver(eventCounter)
 	metricsExporter := observability.NewPrometheusExporter(bus, eventCounter)
 	metricsExporter.WithPipeline(pipelineService)
+	metricsExporter.WithPluginWarnings(pluginService)
 	apiServer.SetMetricsExporter(metricsExporter)
 	apiServer.SetConversationStore(conversationService)
 	apiServer.SetAdaptersController(adaptersService)
 	apiServer.SetAudioIngress(runtimebridge.AudioIngressProvider(audioIngressService))
 	apiServer.SetAudioEgress(runtimebridge.AudioEgressController(audioEgressService))
 	apiServer.SetEventBus(bus)
+	apiServer.SetPluginWarningsProvider(runtimebridge.PluginWarningsProvider(pluginService))
 
 	if err := host.Register("audio_ingress", func(ctx context.Context) (daemonruntime.Service, error) {
 		return audioIngressService, nil

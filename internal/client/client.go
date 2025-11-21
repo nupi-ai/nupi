@@ -493,6 +493,40 @@ func (c *Client) GetDaemonStatus() (map[string]any, error) {
 	return status, nil
 }
 
+// PluginWarning represents a plugin that was skipped during discovery.
+type PluginWarning struct {
+	Dir   string `json:"dir"`
+	Error string `json:"error"`
+}
+
+// GetPluginWarnings returns plugin discovery warnings from the daemon.
+func (c *Client) GetPluginWarnings() (int, []PluginWarning, error) {
+	req, err := http.NewRequest(http.MethodGet, c.baseURL+"/plugins/warnings", nil)
+	if err != nil {
+		return 0, nil, err
+	}
+	c.addAuth(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return 0, nil, fmt.Errorf("get plugin warnings: %w", readAPIError(resp))
+	}
+
+	var result struct {
+		Count    int             `json:"count"`
+		Warnings []PluginWarning `json:"warnings"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return 0, nil, fmt.Errorf("decode warnings: %w", err)
+	}
+	return result.Count, result.Warnings, nil
+}
+
 // ListSessions returns all sessions via REST.
 func (c *Client) ListSessions() ([]protocol.SessionInfo, error) {
 	req, err := http.NewRequest(http.MethodGet, c.baseURL+"/sessions", nil)

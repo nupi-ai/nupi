@@ -35,3 +35,14 @@ type AdaptersController interface {
 	StartSlot(ctx context.Context, slot adapters.Slot) (*adapters.BindingStatus, error)
 	StopSlot(ctx context.Context, slot adapters.Slot) (*adapters.BindingStatus, error)
 }
+
+// PluginDiscoveryWarning represents a plugin that was skipped during discovery.
+type PluginDiscoveryWarning struct {
+	Dir   string `json:"dir"`
+	Error string `json:"error"`
+}
+
+// PluginWarningsProvider exposes plugin discovery warnings for observability.
+type PluginWarningsProvider interface {
+	GetDiscoveryWarnings() []PluginDiscoveryWarning
+}
