@@ -65,8 +65,10 @@ metadata:
   slug: %s
 spec:
   slot: stt
+  mode: local
   entrypoint:
     command: %s
+    transport: process
 `, adapterSlug, filepath.ToSlash(filepath.Join(".", "bin", adapterBinaryName)))
 
 	dbPath := filepath.Join(tempDir, "config.db")

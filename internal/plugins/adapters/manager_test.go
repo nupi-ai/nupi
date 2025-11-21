@@ -475,6 +475,7 @@ metadata:
   name: Ready Adapter
 spec:
   slot: ai
+  mode: local
   entrypoint:
     command: sleep
     args: ["1"]
@@ -656,6 +657,7 @@ spec:
   slot: ai
   mode: external
   entrypoint:
+    transport: grpc
     listenEnv: ADAPTER_LISTEN_ADDR
   assets:
     models:
@@ -888,6 +890,9 @@ metadata:
   name: Primary AI
 spec:
   slot: ai
+  mode: local
+  entrypoint:
+    transport: grpc
 `
 	adapter := configstore.Adapter{
 		ID:       "adapter.ai",
@@ -940,6 +945,9 @@ metadata:
   version: v2
 spec:
   slot: ai
+  mode: local
+  entrypoint:
+    transport: grpc
   telemetry:
     stdout: true
 `
@@ -1053,6 +1061,7 @@ spec:
   mode: local
   entrypoint:
     command: ./adapter
+    transport: process
   options:
     use_gpu:
       type: boolean
@@ -1084,7 +1093,6 @@ spec:
 		"use_gpu": "false",
 		"threads": "6",
 		"voice":   "pl-PL",
-		"custom":  "user-value",
 	}
 	if err := store.SetActiveAdapter(ctx, string(SlotSTT), adapter.ID, userConfig); err != nil {
 		t.Fatalf("set active adapter: %v", err)
@@ -1143,12 +1151,9 @@ spec:
 	if val, ok := payload["accuracy"].(float64); !ok || val != 0.5 {
 		t.Fatalf("expected accuracy=0.5, got %#v", payload["accuracy"])
 	}
-	if val, ok := payload["custom"].(string); !ok || val != "user-value" {
-		t.Fatalf("expected custom=user-value, got %#v", payload["custom"])
-	}
 
-	if len(payload) != 5 {
-		t.Fatalf("expected 5 keys in payload, got %d", len(payload))
+	if len(payload) != 4 {
+		t.Fatalf("expected 4 keys in payload, got %d: %v", len(payload), payload)
 	}
 }
 
@@ -1247,17 +1252,17 @@ func TestResolveAdapterConfig(t *testing.T) {
 		}
 	})
 
-	t.Run("preserves unknown keys", func(t *testing.T) {
+	t.Run("rejects unknown keys", func(t *testing.T) {
 		opts := map[string]manifestpkg.AdapterOption{
 			"use_gpu": {Type: "boolean", Default: true},
 		}
 		current := map[string]any{"custom": "value"}
-		result, err := resolveAdapterConfig(opts, current)
-		if err != nil {
-			t.Fatalf("resolveAdapterConfig returned error: %v", err)
+		_, err := resolveAdapterConfig(opts, current)
+		if err == nil {
+			t.Fatalf("expected error for unknown option, got success")
 		}
-		if result["custom"] != "value" {
-			t.Fatalf("expected unknown key preserved, got %#v", result["custom"])
+		if !strings.Contains(err.Error(), "unknown option") {
+			t.Fatalf("unexpected error message: %v", err)
 		}
 	})
 }
@@ -1384,6 +1389,7 @@ metadata:
   name: Mock AI
 spec:
   slot: ai
+  mode: local
   entrypoint:
     command: ./bin/mock
     transport: process
@@ -1497,6 +1503,7 @@ metadata:
   name: Mock AI
 spec:
   slot: ai
+  mode: local
   entrypoint:
     command: ./bin/mock
     transport: process
@@ -1574,6 +1581,7 @@ metadata:
   name: AdapterClean
 spec:
   slot: ai
+  mode: local
   entrypoint:
     command: ./bin/mock
     transport: process
@@ -1618,6 +1626,25 @@ spec:
 	}
 	if _, err := os.Stat(filepath.Join(adapterHome, "data")); !os.IsNotExist(err) {
 		t.Fatalf("expected data dir cleaned up, got err=%v", err)
+	}
+}
+
+func TestResolveAdapterConfigRejectsUnknownOptions(t *testing.T) {
+	options := map[string]manifestpkg.AdapterOption{
+		"known_option": {Type: "string", Default: "default"},
+	}
+
+	config := map[string]any{
+		"known_option":   "value",
+		"unknown_option": "should_fail",
+	}
+
+	_, err := resolveAdapterConfig(options, config)
+	if err == nil {
+		t.Fatalf("expected error for unknown option")
+	}
+	if !strings.Contains(err.Error(), "unknown option") {
+		t.Fatalf("unexpected error message: %v", err)
 	}
 }
 

@@ -3,6 +3,7 @@ package adapters
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -11,6 +12,16 @@ import (
 )
 
 const maxLogLineLength = 2048
+
+// Rate limiting configuration to prevent chatty adapters from flooding the event bus.
+const (
+	// Maximum messages per second allowed (refill rate).
+	rateLimitMessagesPerSecond = 50
+	// Maximum burst size (bucket capacity).
+	rateLimitBurstSize = 100
+	// Interval for reporting dropped messages.
+	droppedMessagesReportInterval = 5 * time.Second
+)
 
 // adapterLogWriter publishes adapter stdout/stderr lines on the event bus.
 type adapterLogWriter struct {
@@ -21,14 +32,24 @@ type adapterLogWriter struct {
 
 	mu  sync.Mutex
 	buf bytes.Buffer
+
+	// Rate limiting state (token bucket).
+	tokens         float64
+	lastRefill     time.Time
+	droppedCount   int
+	lastDropReport time.Time
 }
 
 func newAdapterLogWriter(bus *eventbus.Bus, adapterID string, slot Slot, level eventbus.LogLevel) *adapterLogWriter {
+	now := time.Now()
 	return &adapterLogWriter{
-		bus:       bus,
-		adapterID: adapterID,
-		slot:      slot,
-		level:     level,
+		bus:            bus,
+		adapterID:      adapterID,
+		slot:           slot,
+		level:          level,
+		tokens:         rateLimitBurstSize, // Start with full bucket.
+		lastRefill:     now,
+		lastDropReport: now,
 	}
 }
 
@@ -83,6 +104,19 @@ func (w *adapterLogWriter) publish(message string) {
 	if strings.TrimSpace(message) == "" {
 		return
 	}
+
+	now := time.Now()
+
+	// Refill tokens based on elapsed time.
+	w.refillTokens(now)
+
+	// Check if we should publish or drop due to rate limiting.
+	if !w.shouldPublish(now) {
+		w.droppedCount++
+		return
+	}
+
+	// Publish the log message.
 	truncatedMessage, truncated := limitLogLine(message)
 	fields := map[string]string{
 		"slot": string(w.slot),
@@ -94,14 +128,76 @@ func (w *adapterLogWriter) publish(message string) {
 		AdapterID: w.adapterID,
 		Level:     w.level,
 		Message:   truncatedMessage,
-		Timestamp: time.Now().UTC(),
+		Timestamp: now.UTC(),
 		Fields:    fields,
 	}
 	w.bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicAdaptersLog,
-		Source:  eventbus.SourceAdapterRunner,
-		Payload: event,
+		Topic:     eventbus.TopicAdaptersLog,
+		Source:    eventbus.SourceAdapterRunner,
+		Payload:   event,
+		Timestamp: now,
 	})
+
+	// Periodically report dropped messages.
+	w.reportDroppedMessages(now)
+}
+
+// refillTokens adds tokens to the bucket based on elapsed time since last refill.
+func (w *adapterLogWriter) refillTokens(now time.Time) {
+	elapsed := now.Sub(w.lastRefill).Seconds()
+	if elapsed <= 0 {
+		return
+	}
+	tokensToAdd := elapsed * rateLimitMessagesPerSecond
+	w.tokens += tokensToAdd
+	if w.tokens > rateLimitBurstSize {
+		w.tokens = rateLimitBurstSize
+	}
+	w.lastRefill = now
+}
+
+// shouldPublish checks if we have tokens available and consumes one if so.
+func (w *adapterLogWriter) shouldPublish(now time.Time) bool {
+	if w.tokens >= 1.0 {
+		w.tokens -= 1.0
+		return true
+	}
+	return false
+}
+
+// reportDroppedMessages publishes a summary of dropped messages periodically.
+func (w *adapterLogWriter) reportDroppedMessages(now time.Time) {
+	if w.droppedCount == 0 {
+		return
+	}
+	if now.Sub(w.lastDropReport) < droppedMessagesReportInterval {
+		return
+	}
+
+	// Publish drop report as a warning.
+	message := fmt.Sprintf("Rate limit exceeded: %d messages dropped in last %v",
+		w.droppedCount, now.Sub(w.lastDropReport).Round(time.Second))
+	fields := map[string]string{
+		"slot":         string(w.slot),
+		"rate_limited": "true",
+	}
+	event := eventbus.AdapterLogEvent{
+		AdapterID: w.adapterID,
+		Level:     eventbus.LogLevelWarn,
+		Message:   message,
+		Timestamp: now.UTC(),
+		Fields:    fields,
+	}
+	w.bus.Publish(context.Background(), eventbus.Envelope{
+		Topic:     eventbus.TopicAdaptersLog,
+		Source:    eventbus.SourceAdapterRunner,
+		Payload:   event,
+		Timestamp: now,
+	})
+
+	// Reset counters.
+	w.droppedCount = 0
+	w.lastDropReport = now
 }
 
 func limitLogLine(line string) (string, bool) {

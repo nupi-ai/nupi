@@ -37,9 +37,9 @@ func (s *Service) PluginDir() string {
 
 // LoadPipelinePlugins rebuilds the in-memory cleaner registry.
 func (s *Service) LoadPipelinePlugins() error {
-	manifests, err := manifest.Discover(s.pluginDir)
-	if err != nil {
-		return err
+	manifests, warnings := manifest.DiscoverWithWarnings(s.pluginDir)
+	for _, w := range warnings {
+		log.Printf("[Plugins] skipped plugin in %s: %v", w.Dir, w.Err)
 	}
 	return s.loadPipelinePlugins(manifests)
 }
@@ -111,9 +111,9 @@ func (s *Service) PipelinePluginFor(name string) (*pipelinecleaners.PipelinePlug
 
 // GenerateIndex rebuilds the plugin detection index.
 func (s *Service) GenerateIndex() error {
-	manifests, err := manifest.Discover(s.pluginDir)
-	if err != nil {
-		return err
+	manifests, warnings := manifest.DiscoverWithWarnings(s.pluginDir)
+	for _, w := range warnings {
+		log.Printf("[Plugins] skipped plugin in %s: %v", w.Dir, w.Err)
 	}
 
 	generator := tooldetectors.NewIndexGenerator(s.pluginDir, manifests)
@@ -130,9 +130,9 @@ func (s *Service) Start(ctx context.Context) error {
 		return fmt.Errorf("ensure plugin dir: %w", err)
 	}
 
-	manifests, err := manifest.Discover(s.pluginDir)
-	if err != nil {
-		return err
+	manifests, warnings := manifest.DiscoverWithWarnings(s.pluginDir)
+	for _, w := range warnings {
+		log.Printf("[Plugins] skipped plugin in %s: %v", w.Dir, w.Err)
 	}
 
 	if err := s.loadPipelinePlugins(manifests); err != nil {

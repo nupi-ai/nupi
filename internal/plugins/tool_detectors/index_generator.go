@@ -34,10 +34,10 @@ func (g *IndexGenerator) Generate() error {
 
 	manifests := g.manifests
 	if manifests == nil {
-		var err error
-		manifests, err = manifest.Discover(g.pluginDir)
-		if err != nil {
-			return err
+		var warnings []manifest.DiscoveryWarning
+		manifests, warnings = manifest.DiscoverWithWarnings(g.pluginDir)
+		for _, w := range warnings {
+			log.Printf("[IndexGenerator] skipped plugin in %s: %v", w.Dir, w.Err)
 		}
 	}
 
@@ -90,10 +90,10 @@ func (g *IndexGenerator) Generate() error {
 func (g *IndexGenerator) ListPlugins() ([]map[string]interface{}, error) {
 	manifests := g.manifests
 	if manifests == nil {
-		var err error
-		manifests, err = manifest.Discover(g.pluginDir)
-		if err != nil {
-			return nil, err
+		var warnings []manifest.DiscoveryWarning
+		manifests, warnings = manifest.DiscoverWithWarnings(g.pluginDir)
+		for _, w := range warnings {
+			log.Printf("[IndexGenerator] skipped plugin in %s: %v", w.Dir, w.Err)
 		}
 	}
 

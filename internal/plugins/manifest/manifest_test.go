@@ -2,7 +2,10 @@ package manifest
 
 import (
 	"math"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -20,6 +23,7 @@ spec:
   mode: local
   entrypoint:
     command: ./adapter
+    transport: process
   options:
     use_gpu:
       type: boolean
@@ -295,4 +299,502 @@ func TestNormalizeAdapterOptionValueNil(t *testing.T) {
 	if val != nil {
 		t.Fatalf("expected nil passthrough, got %#v", val)
 	}
+}
+
+func TestParseAdapterRejectsEmptySlot(t *testing.T) {
+	data := `apiVersion: nap.nupi.ai/v1alpha1
+kind: Plugin
+type: adapter
+metadata:
+  name: test
+  slug: test
+  catalog: ai.nupi
+  version: 0.0.1
+spec:
+  entrypoint:
+    command: ./adapter`
+
+	_, err := Parse([]byte(data))
+	if err == nil {
+		t.Fatalf("expected error for adapter without slot")
+	}
+	if !strings.Contains(err.Error(), "missing required field: slot") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestParseAdapterRejectsProcessWithoutCommand(t *testing.T) {
+	data := `apiVersion: nap.nupi.ai/v1alpha1
+kind: Plugin
+type: adapter
+metadata:
+  name: test
+  slug: test
+  catalog: ai.nupi
+  version: 0.0.1
+spec:
+  slot: stt
+  mode: local
+  entrypoint:
+    transport: process`
+
+	_, err := Parse([]byte(data))
+	if err == nil {
+		t.Fatalf("expected error for process adapter without command")
+	}
+	if !strings.Contains(err.Error(), "transport=process requires entrypoint.command") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestNormalizeAdapterOptionRejectsIntegerDefaultNotInValues(t *testing.T) {
+	data := `apiVersion: nap.nupi.ai/v1alpha1
+kind: Plugin
+type: adapter
+metadata:
+  name: test
+  slug: test
+  catalog: ai.nupi
+  version: 0.0.1
+spec:
+  slot: stt
+  mode: local
+  entrypoint:
+    command: ./adapter
+    transport: process
+  options:
+    threads:
+      type: integer
+      default: 3
+      values: [1, 2, 4, 8]`
+
+	_, err := Parse([]byte(data))
+	if err == nil {
+		t.Fatalf("expected error for integer default not in values")
+	}
+	if !strings.Contains(err.Error(), "not present in values") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestNormalizeAdapterOptionValueRejectsIntegerNotInValues(t *testing.T) {
+	opt := AdapterOption{Type: "integer", Values: []any{1, 2, 4, 8}}
+	_, err := NormalizeAdapterOptionValue(opt, 3)
+	if err == nil {
+		t.Fatalf("expected error for integer value not in values list")
+	}
+	if !strings.Contains(err.Error(), "expected one of") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestNormalizeAdapterOptionValueRejectsNumberNotInValues(t *testing.T) {
+	opt := AdapterOption{Type: "number", Values: []any{1.0, 2.5, 5.0}}
+	_, err := NormalizeAdapterOptionValue(opt, 3.14)
+	if err == nil {
+		t.Fatalf("expected error for number value not in values list")
+	}
+}
+
+func TestNormalizeAdapterOptionValueRejectsBooleanNotInValues(t *testing.T) {
+	opt := AdapterOption{Type: "boolean", Values: []any{true}}
+	_, err := NormalizeAdapterOptionValue(opt, false)
+	if err == nil {
+		t.Fatalf("expected error for boolean value not in values list")
+	}
+}
+
+func TestParseAdapterRejectsInvalidTransport(t *testing.T) {
+	data := `apiVersion: nap.nupi.ai/v1alpha1
+kind: Plugin
+type: adapter
+metadata:
+  name: test
+  slug: test
+  catalog: ai.nupi
+  version: 0.0.1
+spec:
+  slot: stt
+  mode: local
+  entrypoint:
+    transport: invalid
+    command: ./adapter`
+
+	_, err := Parse([]byte(data))
+	if err == nil {
+		t.Fatalf("expected error for invalid transport")
+	}
+	if !strings.Contains(err.Error(), "invalid transport") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestDiscoverWithWarningsReturnsSkippedPlugins(t *testing.T) {
+	root := t.TempDir()
+
+	// Valid manifest
+	createPluginYAML(t, root, "valid/plugin1", adapterManifest("Valid", "plugin1", "valid", "stt"))
+
+	// Invalid YAML
+	createFile(t, root, "invalid/plugin2/plugin.yaml", "this is not valid yaml: [")
+
+	// Missing slot
+	createPluginYAML(t, root, "invalid/plugin3", `apiVersion: nap.nupi.ai/v1alpha1
+kind: Plugin
+type: adapter
+metadata:
+  name: No Slot
+  slug: no-slot
+  catalog: invalid
+spec:
+  entrypoint:
+    transport: process`)
+
+	manifests, warnings := DiscoverWithWarnings(root)
+
+	if len(manifests) != 1 {
+		t.Fatalf("expected 1 valid manifest, got %d", len(manifests))
+	}
+	if manifests[0].Metadata.Slug != "plugin1" {
+		t.Fatalf("expected valid manifest to be plugin1, got %s", manifests[0].Metadata.Slug)
+	}
+
+	if len(warnings) != 2 {
+		t.Fatalf("expected 2 warnings, got %d", len(warnings))
+	}
+
+	// Verify warnings contain expected directories
+	dirs := make(map[string]bool)
+	for _, w := range warnings {
+		dirs[filepath.Base(w.Dir)] = true
+	}
+	if !dirs["plugin2"] || !dirs["plugin3"] {
+		t.Fatalf("expected warnings for plugin2 and plugin3, got: %v", warnings)
+	}
+}
+
+func TestDiscoverFindsPluginsInCatalogStructure(t *testing.T) {
+	root := t.TempDir()
+
+	// Create catalog/slug directory structure with manifests
+	createPluginYAML(t, root, "builtin/adapter.stt.mock", adapterManifest("Mock STT", "adapter.stt.mock", "builtin", "stt"))
+	createPluginYAML(t, root, "ai/claude", adapterManifest("Claude AI", "claude", "ai", "ai"))
+	createPluginYAML(t, root, "tools/detector.git", toolDetectorManifest("Git Detector", "detector.git", "tools"))
+
+	manifests, err := Discover(root)
+	if err != nil {
+		t.Fatalf("Discover failed: %v", err)
+	}
+
+	if len(manifests) != 3 {
+		t.Fatalf("expected 3 manifests, got %d", len(manifests))
+	}
+
+	// Verify manifests are sorted by directory path
+	if manifests[0].Metadata.Slug != "claude" {
+		t.Fatalf("expected first manifest to be claude, got %s", manifests[0].Metadata.Slug)
+	}
+	if manifests[1].Metadata.Slug != "adapter.stt.mock" {
+		t.Fatalf("expected second manifest to be adapter.stt.mock, got %s", manifests[1].Metadata.Slug)
+	}
+	if manifests[2].Metadata.Slug != "detector.git" {
+		t.Fatalf("expected third manifest to be detector.git, got %s", manifests[2].Metadata.Slug)
+	}
+}
+
+func TestDiscoverReturnsNilForNonexistentRoot(t *testing.T) {
+	manifests, err := Discover("/nonexistent/path/that/does/not/exist")
+	if err != nil {
+		t.Fatalf("expected no error for nonexistent root, got: %v", err)
+	}
+	if manifests != nil {
+		t.Fatalf("expected nil manifests for nonexistent root, got %d items", len(manifests))
+	}
+}
+
+func TestDiscoverSkipsInvalidManifests(t *testing.T) {
+	root := t.TempDir()
+
+	// Valid manifest
+	createPluginYAML(t, root, "valid/plugin1", adapterManifest("Valid", "plugin1", "valid", "stt"))
+
+	// Invalid YAML (will be logged and skipped)
+	createFile(t, root, "invalid/plugin2/plugin.yaml", "this is not valid yaml: [")
+
+	// Missing slot (will be logged and skipped)
+	createPluginYAML(t, root, "invalid/plugin3", `apiVersion: nap.nupi.ai/v1alpha1
+kind: Plugin
+type: adapter
+metadata:
+  name: No Slot
+  slug: no-slot
+  catalog: invalid
+spec:
+  entrypoint:
+    command: ./adapter`)
+
+	// Missing slug (will be logged and skipped)
+	createPluginYAML(t, root, "invalid/plugin4", `apiVersion: nap.nupi.ai/v1alpha1
+kind: Plugin
+type: adapter
+metadata:
+  name: No Slug
+spec:
+  slot: stt`)
+
+	manifests, err := Discover(root)
+	if err != nil {
+		t.Fatalf("expected Discover to be resilient and skip invalid manifests, got error: %v", err)
+	}
+	if len(manifests) != 1 {
+		t.Fatalf("expected 1 valid manifest, got %d", len(manifests))
+	}
+	if manifests[0].Metadata.Slug != "plugin1" {
+		t.Fatalf("expected valid manifest to be plugin1, got %s", manifests[0].Metadata.Slug)
+	}
+}
+
+func TestDiscoverSkipsFilesInRootAndCatalog(t *testing.T) {
+	root := t.TempDir()
+
+	// Create files that should be ignored
+	createFile(t, root, "README.md", "# Plugins")
+	createFile(t, root, "builtin/README.md", "# Builtin plugins")
+
+	// Create valid plugin
+	createPluginYAML(t, root, "builtin/plugin1", adapterManifest("Plugin", "plugin1", "builtin", "stt"))
+
+	manifests, err := Discover(root)
+	if err != nil {
+		t.Fatalf("Discover failed: %v", err)
+	}
+
+	if len(manifests) != 1 {
+		t.Fatalf("expected 1 manifest (ignoring files), got %d", len(manifests))
+	}
+}
+
+func TestLoadFromDirLoadsManifest(t *testing.T) {
+	root := t.TempDir()
+	createPluginYAML(t, root, "builtin/test", adapterManifest("Test Adapter", "test", "builtin", "stt"))
+
+	pluginDir := filepath.Join(root, "builtin", "test")
+	mf, err := LoadFromDir(pluginDir)
+	if err != nil {
+		t.Fatalf("LoadFromDir failed: %v", err)
+	}
+
+	if mf.Metadata.Name != "Test Adapter" {
+		t.Fatalf("expected name 'Test Adapter', got %s", mf.Metadata.Name)
+	}
+	if mf.Metadata.Slug != "test" {
+		t.Fatalf("expected slug 'test', got %s", mf.Metadata.Slug)
+	}
+	if mf.Type != PluginTypeAdapter {
+		t.Fatalf("expected type adapter, got %s", mf.Type)
+	}
+	if mf.Dir != pluginDir {
+		t.Fatalf("expected Dir to be set to %s, got %s", pluginDir, mf.Dir)
+	}
+}
+
+func TestLoadFromDirPrefersYAMLOverYMLAndJSON(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "test")
+
+	// Create all three variants
+	createFile(t, root, filepath.Join("test", "plugin.json"), `{"kind":"Plugin"}`)
+	createFile(t, root, filepath.Join("test", "plugin.yml"), adapterManifest("YML Version", "test-yml", "test", "stt"))
+	createFile(t, root, filepath.Join("test", "plugin.yaml"), adapterManifest("YAML Version", "test-yaml", "test", "stt"))
+
+	mf, err := LoadFromDir(dir)
+	if err != nil {
+		t.Fatalf("LoadFromDir failed: %v", err)
+	}
+
+	// Should prefer plugin.yaml
+	if mf.Metadata.Name != "YAML Version" {
+		t.Fatalf("expected plugin.yaml to be preferred, got name: %s", mf.Metadata.Name)
+	}
+}
+
+func TestLoadFromDirFallsBackToYMLAndJSON(t *testing.T) {
+	root := t.TempDir()
+
+	// Test .yml fallback
+	ymlDir := filepath.Join(root, "yml-plugin")
+	createFile(t, root, filepath.Join("yml-plugin", "plugin.yml"), adapterManifest("YML Plugin", "yml", "test", "stt"))
+	mf, err := LoadFromDir(ymlDir)
+	if err != nil {
+		t.Fatalf("LoadFromDir .yml failed: %v", err)
+	}
+	if mf.Metadata.Name != "YML Plugin" {
+		t.Fatalf("expected YML plugin to load, got: %s", mf.Metadata.Name)
+	}
+
+	// Test .json fallback
+	jsonDir := filepath.Join(root, "json-plugin")
+	createFile(t, root, filepath.Join("json-plugin", "plugin.json"), `{
+		"apiVersion": "nap.nupi.ai/v1alpha1",
+		"kind": "Plugin",
+		"type": "adapter",
+		"metadata": {"name": "JSON Plugin", "slug": "json", "catalog": "test"},
+		"spec": {"slot": "stt", "mode": "local", "entrypoint": {"command": "./adapter", "transport": "process"}}
+	}`)
+	mf, err = LoadFromDir(jsonDir)
+	if err != nil {
+		t.Fatalf("LoadFromDir .json failed: %v", err)
+	}
+	if mf.Metadata.Name != "JSON Plugin" {
+		t.Fatalf("expected JSON plugin to load, got: %s", mf.Metadata.Name)
+	}
+}
+
+func TestLoadFromDirReturnsErrorForMissingManifest(t *testing.T) {
+	root := t.TempDir()
+	_, err := LoadFromDir(root)
+	if err == nil {
+		t.Fatalf("expected error for directory without manifest")
+	}
+}
+
+func TestMainPathReturnsAbsolutePathForDetector(t *testing.T) {
+	root := t.TempDir()
+	createPluginYAML(t, root, "tools/test", toolDetectorManifest("Test Detector", "test", "tools"))
+
+	pluginDir := filepath.Join(root, "tools", "test")
+	mf, err := LoadFromDir(pluginDir)
+	if err != nil {
+		t.Fatalf("LoadFromDir failed: %v", err)
+	}
+
+	mainPath, err := mf.MainPath()
+	if err != nil {
+		t.Fatalf("MainPath failed: %v", err)
+	}
+
+	expected := filepath.Join(root, "tools", "test", "main.js")
+	if mainPath != expected {
+		t.Fatalf("expected MainPath %s, got %s", expected, mainPath)
+	}
+}
+
+func TestMainPathReturnsAbsolutePathForPipelineCleaner(t *testing.T) {
+	root := t.TempDir()
+	createPluginYAML(t, root, "cleaners/test", pipelineCleanerManifest("Test Cleaner", "test", "cleaners", "cleaner.js"))
+
+	pluginDir := filepath.Join(root, "cleaners", "test")
+	mf, err := LoadFromDir(pluginDir)
+	if err != nil {
+		t.Fatalf("LoadFromDir failed: %v", err)
+	}
+
+	mainPath, err := mf.MainPath()
+	if err != nil {
+		t.Fatalf("MainPath failed: %v", err)
+	}
+
+	expected := filepath.Join(root, "cleaners", "test", "cleaner.js")
+	if mainPath != expected {
+		t.Fatalf("expected MainPath %s, got %s", expected, mainPath)
+	}
+}
+
+func TestMainPathReturnsErrorForAdapter(t *testing.T) {
+	root := t.TempDir()
+	createPluginYAML(t, root, "builtin/test", adapterManifest("Test", "test", "builtin", "stt"))
+
+	pluginDir := filepath.Join(root, "builtin", "test")
+	mf, err := LoadFromDir(pluginDir)
+	if err != nil {
+		t.Fatalf("LoadFromDir failed: %v", err)
+	}
+
+	_, err = mf.MainPath()
+	if err == nil {
+		t.Fatalf("expected error for adapter MainPath, got success")
+	}
+}
+
+func TestRelativeMainPathReturnsRelativePath(t *testing.T) {
+	root := t.TempDir()
+	createPluginYAML(t, root, "tools/test", toolDetectorManifest("Test", "test", "tools"))
+
+	pluginDir := filepath.Join(root, "tools", "test")
+	mf, err := LoadFromDir(pluginDir)
+	if err != nil {
+		t.Fatalf("LoadFromDir failed: %v", err)
+	}
+
+	relPath, err := mf.RelativeMainPath(root)
+	if err != nil {
+		t.Fatalf("RelativeMainPath failed: %v", err)
+	}
+
+	expected := filepath.Join("tools", "test", "main.js")
+	if relPath != expected {
+		t.Fatalf("expected RelativeMainPath %s, got %s", expected, relPath)
+	}
+}
+
+// Test helpers
+
+func createPluginYAML(t *testing.T, root, path, content string) {
+	t.Helper()
+	createFile(t, root, filepath.Join(path, "plugin.yaml"), content)
+}
+
+func createFile(t *testing.T, root, path, content string) {
+	t.Helper()
+	fullPath := filepath.Join(root, path)
+	dir := filepath.Dir(fullPath)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("failed to create directory %s: %v", dir, err)
+	}
+	if err := os.WriteFile(fullPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("failed to write file %s: %v", fullPath, err)
+	}
+}
+
+func adapterManifest(name, slug, catalog, slot string) string {
+	return `apiVersion: nap.nupi.ai/v1alpha1
+kind: Plugin
+type: adapter
+metadata:
+  name: ` + name + `
+  slug: ` + slug + `
+  catalog: ` + catalog + `
+  version: 0.0.1
+spec:
+  slot: ` + slot + `
+  mode: local
+  entrypoint:
+    command: ./adapter
+    transport: process`
+}
+
+func toolDetectorManifest(name, slug, catalog string) string {
+	return `apiVersion: nap.nupi.ai/v1alpha1
+kind: Plugin
+type: tool-detector
+metadata:
+  name: ` + name + `
+  slug: ` + slug + `
+  catalog: ` + catalog + `
+  version: 0.0.1
+spec:
+  main: main.js`
+}
+
+func pipelineCleanerManifest(name, slug, catalog, main string) string {
+	return `apiVersion: nap.nupi.ai/v1alpha1
+kind: Plugin
+type: pipeline-cleaner
+metadata:
+  name: ` + name + `
+  slug: ` + slug + `
+  catalog: ` + catalog + `
+  version: 0.0.1
+spec:
+  main: ` + main
 }
