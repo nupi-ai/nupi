@@ -793,9 +793,7 @@ func resolveAdapterConfig(options map[string]manifest.AdapterOption, current map
 		}
 		opt, known := options[trimmed]
 		if !known {
-			out[trimmed] = raw
-			log.Printf("[Adapters] unknown adapter option %q passed through as-is", trimmed)
-			continue
+			return nil, fmt.Errorf("unknown option %q (not declared in manifest)", trimmed)
 		}
 		if raw == nil {
 			delete(out, trimmed)

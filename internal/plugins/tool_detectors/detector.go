@@ -239,10 +239,9 @@ func (d *ToolDetector) runParallelDetection(plugins map[string]*JSPlugin, output
 }
 
 func (d *ToolDetector) loadAllPlugins() {
-	manifests, err := manifest.Discover(d.pluginDir)
-	if err != nil {
-		log.Printf("[Detector] Failed to discover plugins: %v", err)
-		return
+	manifests, warnings := manifest.DiscoverWithWarnings(d.pluginDir)
+	for _, w := range warnings {
+		log.Printf("[Detector] skipped plugin in %s: %v", w.Dir, w.Err)
 	}
 
 	for _, mf := range manifests {

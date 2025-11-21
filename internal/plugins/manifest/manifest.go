@@ -104,6 +104,12 @@ type Manifest struct {
 	PipelineCleaner *PipelineCleanerSpec
 }
 
+// DiscoveryWarning represents a skipped plugin during discovery.
+type DiscoveryWarning struct {
+	Dir string
+	Err error
+}
+
 // Parse decodes a manifest from the provided raw bytes without requiring a backing directory.
 func Parse(data []byte) (*Manifest, error) {
 	return decodeManifest(data, "", "")
@@ -138,16 +144,27 @@ func (m *Manifest) RelativeMainPath(root string) (string, error) {
 	return rel, nil
 }
 
+// Discover scans the plugin directory and returns valid manifests.
+// Invalid manifests are logged and skipped. For detailed error reporting,
+// use DiscoverWithWarnings instead.
 func Discover(root string) ([]*Manifest, error) {
+	manifests, _ := DiscoverWithWarnings(root)
+	return manifests, nil
+}
+
+// DiscoverWithWarnings scans the plugin directory and returns both valid manifests
+// and warnings about skipped plugins.
+func DiscoverWithWarnings(root string) ([]*Manifest, []DiscoveryWarning) {
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("read plugin root: %w", err)
+		return nil, []DiscoveryWarning{{Dir: root, Err: fmt.Errorf("read plugin root: %w", err)}}
 	}
 
 	var manifests []*Manifest
+	var warnings []DiscoveryWarning
 
 	for _, catalogEntry := range entries {
 		if !catalogEntry.IsDir() {
@@ -161,7 +178,12 @@ func Discover(root string) ([]*Manifest, error) {
 			if errors.Is(err, fs.ErrNotExist) {
 				continue
 			}
-			return nil, fmt.Errorf("read catalog dir %s: %w", catalogDir, err)
+			warnings = append(warnings, DiscoveryWarning{
+				Dir: catalogDir,
+				Err: fmt.Errorf("read catalog dir: %w", err),
+			})
+			log.Printf("[PluginManifest] skipping catalog %s: %v", catalogDir, err)
+			continue
 		}
 
 		for _, slugEntry := range slugEntries {
@@ -175,7 +197,9 @@ func Discover(root string) ([]*Manifest, error) {
 				continue
 			}
 			if err != nil {
-				return nil, fmt.Errorf("load manifest in %s: %w", slugDir, err)
+				warnings = append(warnings, DiscoveryWarning{Dir: slugDir, Err: err})
+				log.Printf("[PluginManifest] skipping %s: %v", slugDir, err)
+				continue
 			}
 
 			if manifest.Metadata.Catalog == "" {
@@ -186,6 +210,10 @@ func Discover(root string) ([]*Manifest, error) {
 			}
 
 			if manifest.Metadata.Slug == "" {
+				warnings = append(warnings, DiscoveryWarning{
+					Dir: slugDir,
+					Err: fmt.Errorf("slug metadata is required"),
+				})
 				log.Printf("[PluginManifest] skipping %s: slug metadata is required", slugDir)
 				continue
 			}
@@ -197,7 +225,7 @@ func Discover(root string) ([]*Manifest, error) {
 	sort.Slice(manifests, func(i, j int) bool {
 		return manifests[i].Dir < manifests[j].Dir
 	})
-	return manifests, nil
+	return manifests, warnings
 }
 
 func LoadFromDir(dir string) (*Manifest, error) {
@@ -285,6 +313,9 @@ func decodeManifest(data []byte, dir, file string) (*Manifest, error) {
 			}
 			spec.Options = validated
 		}
+		if err := validateAdapterSpec(&spec, file); err != nil {
+			return nil, err
+		}
 		manifest.Adapter = &spec
 	case PluginTypeToolDetector:
 		var spec DetectorSpec
@@ -354,57 +385,69 @@ func normalizeAdapterOption(key string, opt AdapterOption) (AdapterOption, error
 
 	switch opt.Type {
 	case "boolean":
-		if opt.Default != nil {
-			val, err := coerceBool(opt.Default)
-			if err != nil {
-				return AdapterOption{}, fmt.Errorf("default: %w", err)
-			}
-			opt.Default = val
-		}
 		values, err := normalizeValues(coerceBool)
 		if err != nil {
 			return AdapterOption{}, err
 		}
 		opt.Values = values
-	case "integer":
 		if opt.Default != nil {
-			val, err := coerceInt(opt.Default)
+			val, err := coerceBool(opt.Default)
 			if err != nil {
 				return AdapterOption{}, fmt.Errorf("default: %w", err)
 			}
+			if len(opt.Values) > 0 && !containsValue(opt.Values, val) {
+				return AdapterOption{}, fmt.Errorf("default %v not present in values", val)
+			}
 			opt.Default = val
 		}
+	case "integer":
 		values, err := normalizeValues(coerceInt)
 		if err != nil {
 			return AdapterOption{}, err
 		}
 		opt.Values = values
-	case "number":
 		if opt.Default != nil {
-			val, err := coerceNumber(opt.Default)
+			val, err := coerceInt(opt.Default)
 			if err != nil {
 				return AdapterOption{}, fmt.Errorf("default: %w", err)
 			}
+			if len(opt.Values) > 0 && !containsValue(opt.Values, val) {
+				return AdapterOption{}, fmt.Errorf("default %v not present in values", val)
+			}
 			opt.Default = val
 		}
+	case "number":
 		values, err := normalizeValues(coerceNumber)
 		if err != nil {
 			return AdapterOption{}, err
 		}
 		opt.Values = values
-	case "string":
 		if opt.Default != nil {
-			val, err := coerceString(opt.Default)
+			val, err := coerceNumber(opt.Default)
 			if err != nil {
 				return AdapterOption{}, fmt.Errorf("default: %w", err)
 			}
+			if len(opt.Values) > 0 && !containsValue(opt.Values, val) {
+				return AdapterOption{}, fmt.Errorf("default %v not present in values", val)
+			}
 			opt.Default = val
 		}
+	case "string":
 		values, err := normalizeValues(coerceString)
 		if err != nil {
 			return AdapterOption{}, err
 		}
 		opt.Values = values
+		if opt.Default != nil {
+			val, err := coerceString(opt.Default)
+			if err != nil {
+				return AdapterOption{}, fmt.Errorf("default: %w", err)
+			}
+			if len(opt.Values) > 0 && !containsValue(opt.Values, val) {
+				return AdapterOption{}, fmt.Errorf("default %q not present in values", val)
+			}
+			opt.Default = val
+		}
 	case "enum":
 		values, err := normalizeValues(coerceString)
 		if err != nil {
@@ -445,11 +488,17 @@ func NormalizeAdapterOptionValue(opt AdapterOption, value any) (any, error) {
 		if err != nil {
 			return nil, err
 		}
+		if len(opt.Values) > 0 && !containsValue(opt.Values, out) {
+			return nil, fmt.Errorf("expected one of %v, got %v", opt.Values, out)
+		}
 		return out.(bool), nil
 	case "integer":
 		out, err := coerceInt(value)
 		if err != nil {
 			return nil, err
+		}
+		if len(opt.Values) > 0 && !containsValue(opt.Values, out) {
+			return nil, fmt.Errorf("expected one of %v, got %v", opt.Values, out)
 		}
 		return out.(int), nil
 	case "number":
@@ -457,11 +506,17 @@ func NormalizeAdapterOptionValue(opt AdapterOption, value any) (any, error) {
 		if err != nil {
 			return nil, err
 		}
+		if len(opt.Values) > 0 && !containsValue(opt.Values, out) {
+			return nil, fmt.Errorf("expected one of %v, got %v", opt.Values, out)
+		}
 		return out.(float64), nil
 	case "string":
 		out, err := coerceString(value)
 		if err != nil {
 			return nil, err
+		}
+		if len(opt.Values) > 0 && !containsValue(opt.Values, out) {
+			return nil, fmt.Errorf("expected one of %v, got %q", opt.Values, out)
 		}
 		return out.(string), nil
 	case "enum":
@@ -651,4 +706,47 @@ func locateManifestFile(dir string) (string, error) {
 	}
 
 	return "", fs.ErrNotExist
+}
+
+var allowedTransports = map[string]struct{}{
+	"process": {},
+	"grpc":    {},
+	"http":    {},
+}
+
+func validateAdapterSpec(spec *AdapterSpec, file string) error {
+	if strings.TrimSpace(spec.Slot) == "" {
+		return fmt.Errorf("adapter manifest %s missing required field: slot", file)
+	}
+
+	// Mode is required per architecture section 5.2 (adapter contract)
+	if strings.TrimSpace(spec.Mode) == "" {
+		return fmt.Errorf("adapter manifest %s missing required field: mode", file)
+	}
+
+	transport := strings.TrimSpace(spec.Entrypoint.Transport)
+	command := strings.TrimSpace(spec.Entrypoint.Command)
+
+	// Transport is required (adapter-runner needs NUPI_ADAPTER_TRANSPORT)
+	if transport == "" {
+		return fmt.Errorf("adapter manifest %s missing required field: entrypoint.transport", file)
+	}
+
+	// Validate transport value
+	if _, ok := allowedTransports[transport]; !ok {
+		return fmt.Errorf("adapter manifest %s has invalid transport %q (allowed: process, grpc, http)", file, transport)
+	}
+
+	// Transport-specific validation
+	switch transport {
+	case "process":
+		if command == "" {
+			return fmt.Errorf("adapter manifest %s with transport=process requires entrypoint.command", file)
+		}
+	case "grpc", "http":
+		// For network transports, command is optional but should be validated if present
+		// The actual network address will be provided via endpoint configuration
+	}
+
+	return nil
 }
