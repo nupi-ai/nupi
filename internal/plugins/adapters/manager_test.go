@@ -1550,6 +1550,77 @@ spec:
 	}
 }
 
+func TestStartAdapterCleansUpOnLaunchFailure(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+
+	originalAlloc := allocateProcessAddressFn
+	allocateProcessAddressFn = func() (string, error) {
+		return "127.0.0.1:59000", nil
+	}
+	t.Cleanup(func() { allocateProcessAddressFn = originalAlloc })
+
+	originalReady := waitForAdapterReadyFn
+	waitForAdapterReadyFn = func(context.Context, string) error {
+		return nil
+	}
+	t.Cleanup(func() { waitForAdapterReadyFn = originalReady })
+
+	manifestRaw := `
+apiVersion: nap.nupi.ai/v1alpha1
+kind: Plugin
+type: adapter
+metadata:
+  name: AdapterClean
+spec:
+  slot: ai
+  entrypoint:
+    command: ./bin/mock
+    transport: process
+`
+	manifest, err := manifestpkg.Parse([]byte(manifestRaw))
+	if err != nil {
+		t.Fatalf("parse manifest: %v", err)
+	}
+
+	launcher := NewMockLauncher()
+	launcher.SetError(fmt.Errorf("failed to launch"))
+
+	pluginDir := filepath.Join(tempDir, "plugins")
+	manager := NewManager(ManagerOptions{
+		Runner:    adapterrunner.NewManager(filepath.Join(tempDir, "runner")),
+		Launcher:  launcher,
+		PluginDir: pluginDir,
+	})
+
+	plan := bindingPlan{
+		binding: Binding{
+			Slot:      SlotAI,
+			AdapterID: "adapter.clean",
+		},
+		adapter: configstore.Adapter{
+			ID:       "adapter.clean",
+			Manifest: manifestRaw,
+		},
+		manifest: manifest,
+		endpoint: configstore.AdapterEndpoint{
+			Transport: "process",
+			Command:   "./bin/mock",
+		},
+	}
+
+	if _, err := manager.startAdapter(ctx, plan); err == nil {
+		t.Fatalf("expected startAdapter to fail")
+	}
+	adapterHome := filepath.Join(pluginDir, "adapterclean")
+	if _, err := os.Stat(adapterHome); !os.IsNotExist(err) {
+		t.Fatalf("expected adapter home cleaned up, got err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(adapterHome, "data")); !os.IsNotExist(err) {
+		t.Fatalf("expected data dir cleaned up, got err=%v", err)
+	}
+}
+
 func strPtr(v string) *string {
 	return &v
 }

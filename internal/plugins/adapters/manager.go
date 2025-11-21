@@ -39,6 +39,7 @@ const (
 const processReadyTimeout = 30 * time.Second
 const adapterStartTimeout = 2 * time.Minute
 const processLaunchMaxAttempts = 3
+const processLaunchRetryDelay = 50 * time.Millisecond
 
 var defaultSlots = []Slot{SlotAI, SlotSTT, SlotTTS, SlotVAD, SlotTunnel}
 
@@ -408,17 +409,13 @@ func (m *Manager) startAdapter(ctx context.Context, plan bindingPlan) (*adapterI
 	)
 
 	var (
-		adapterHome    string
-		dataDir        string
-		cleanupHome    bool
-		cleanupDataDir bool
+		adapterHome string
+		dataDir     string
+		cleanups    []func()
 	)
 	defer func() {
-		if cleanupDataDir && dataDir != "" {
-			_ = os.RemoveAll(dataDir)
-		}
-		if cleanupHome && adapterHome != "" {
-			_ = os.RemoveAll(adapterHome)
+		for i := len(cleanups) - 1; i >= 0; i-- {
+			cleanups[i]()
 		}
 	}()
 
@@ -477,12 +474,22 @@ func (m *Manager) startAdapter(ctx context.Context, plan bindingPlan) (*adapterI
 		if err != nil {
 			return nil, fmt.Errorf("adapters: ensure adapter home for %s: %w", plan.binding.AdapterID, err)
 		}
-		cleanupHome = createdHome
+		if createdHome {
+			cleanups = append(cleanups, func() {
+				_ = os.RemoveAll(adapterHome)
+			})
+		}
+		if err := checkCtx(); err != nil {
+			return nil, err
+		}
 		env = append(env, "NUPI_ADAPTER_HOME="+adapterHome)
 		if manifestRaw != "" {
 			manifestPath := filepath.Join(adapterHome, "plugin.yaml")
 			if err := os.WriteFile(manifestPath, []byte(manifestRaw), 0o644); err != nil {
 				return nil, fmt.Errorf("adapters: write manifest for %s: %w", plan.binding.AdapterID, err)
+			}
+			if err := checkCtx(); err != nil {
+				return nil, err
 			}
 			env = append(env, "NUPI_ADAPTER_MANIFEST_PATH="+manifestPath)
 		}
@@ -494,8 +501,13 @@ func (m *Manager) startAdapter(ctx context.Context, plan bindingPlan) (*adapterI
 		if err != nil {
 			return nil, fmt.Errorf("adapters: ensure data dir for %s: %w", plan.binding.AdapterID, err)
 		}
-		if createdDataDir && !cleanupHome {
-			cleanupDataDir = true
+		if err := checkCtx(); err != nil {
+			return nil, err
+		}
+		if createdDataDir {
+			cleanups = append(cleanups, func() {
+				_ = os.RemoveAll(dataDir)
+			})
 		}
 		env = append(env, "NUPI_ADAPTER_DATA_DIR="+dataDir)
 		if manifest != nil && manifest.Adapter != nil {
@@ -509,6 +521,11 @@ func (m *Manager) startAdapter(ctx context.Context, plan bindingPlan) (*adapterI
 	baseEnv := append([]string(nil), env...)
 
 	if len(endpoint.Args) > 0 {
+		for _, arg := range endpoint.Args {
+			if strings.ContainsAny(arg, "\x00") {
+				return nil, fmt.Errorf("adapters: invalid character in args for %s", plan.binding.AdapterID)
+			}
+		}
 		payload, err := json.Marshal(endpoint.Args)
 		if err != nil {
 			return nil, fmt.Errorf("adapters: marshal endpoint args for %s: %w", plan.binding.AdapterID, err)
@@ -614,10 +631,9 @@ func (m *Manager) startAdapter(ctx context.Context, plan bindingPlan) (*adapterI
 		}
 		plan.endpoint = endpoint
 
-		cleanupDataDir = false
-		cleanupHome = false
+		cleanups = nil
 
-		plan.fingerprint = computePlanFingerprint(plan.binding, plan.adapter.Manifest, plan.endpoint)
+		plan.fingerprint = computePlanFingerprint(plan.binding, plan.manifest, plan.adapter.Manifest, plan.endpoint)
 		plan.binding.Fingerprint = plan.fingerprint
 
 		return &adapterInstance{
@@ -735,7 +751,7 @@ func (m *Manager) prepareBinding(ctx context.Context, binding Binding) (bindingP
 		plan.endpoint = mergedEndpoint
 	}
 
-	plan.fingerprint = computePlanFingerprint(binding, plan.adapter.Manifest, plan.endpoint)
+	plan.fingerprint = computePlanFingerprint(binding, plan.manifest, plan.adapter.Manifest, plan.endpoint)
 	plan.binding.Fingerprint = plan.fingerprint
 	return plan, nil
 }
@@ -778,6 +794,7 @@ func resolveAdapterConfig(options map[string]manifest.AdapterOption, current map
 		opt, known := options[trimmed]
 		if !known {
 			out[trimmed] = raw
+			log.Printf("[Adapters] unknown adapter option %q passed through as-is", trimmed)
 			continue
 		}
 		if raw == nil {
@@ -797,7 +814,14 @@ func resolveAdapterConfig(options map[string]manifest.AdapterOption, current map
 	return out, nil
 }
 
-func computePlanFingerprint(binding Binding, manifestRaw string, endpoint configstore.AdapterEndpoint) string {
+// computePlanFingerprint generates a hash used to detect configuration changes
+// that require adapter restart. The fingerprint includes:
+// - Adapter binding (ID, slot, config)
+// - Manifest runtime fields (slot/mode/entrypoint/options/telemetry/assets)
+// - Endpoint settings (transport, command, args, env; address only for non-process transports)
+// Note: Using parsed manifest removes whitespace sensitivity; adding new runtime-relevant
+// fields should extend this function accordingly.
+func computePlanFingerprint(binding Binding, manifest *manifest.Manifest, manifestRaw string, endpoint configstore.AdapterEndpoint) string {
 	h := sha256.New()
 	write := func(value string) {
 		_, _ = h.Write([]byte(value))
@@ -812,10 +836,70 @@ func computePlanFingerprint(binding Binding, manifestRaw string, endpoint config
 		}
 	}
 	write(strings.TrimSpace(rawConfig))
-	write(strings.TrimSpace(manifestRaw))
+
+	if manifest != nil && manifest.Adapter != nil {
+		spec := manifest.Adapter
+		write(strings.TrimSpace(spec.Slot))
+		write(strings.TrimSpace(spec.Mode))
+		write(strings.TrimSpace(spec.Entrypoint.Command))
+		write(strings.TrimSpace(spec.Entrypoint.Transport))
+		write(strings.TrimSpace(spec.Entrypoint.ListenEnv))
+		write(strings.TrimSpace(spec.Entrypoint.WorkingDir))
+		write(strings.TrimSpace(spec.Entrypoint.ReadyTimeout))
+		if len(spec.Entrypoint.Args) == 0 {
+			write("")
+		} else {
+			args := append([]string(nil), spec.Entrypoint.Args...)
+			for _, arg := range args {
+				write(arg)
+			}
+		}
+		if spec.Telemetry.Stdout != nil {
+			write(fmt.Sprintf("stdout:%t", *spec.Telemetry.Stdout))
+		} else {
+			write("stdout:nil")
+		}
+		if spec.Telemetry.Stderr != nil {
+			write(fmt.Sprintf("stderr:%t", *spec.Telemetry.Stderr))
+		} else {
+			write("stderr:nil")
+		}
+		write(strings.TrimSpace(spec.Assets.Models.CacheDirEnv))
+		if len(spec.Options) == 0 {
+			write("")
+		} else {
+			keys := make([]string, 0, len(spec.Options))
+			for k := range spec.Options {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				opt := spec.Options[k]
+				write(k)
+				write(strings.TrimSpace(opt.Type))
+				write(strings.TrimSpace(opt.Description))
+				if b, err := json.Marshal(opt.Default); err == nil {
+					write(string(b))
+				} else {
+					write(fmt.Sprint(opt.Default))
+				}
+				if len(opt.Values) > 0 {
+					if b, err := json.Marshal(opt.Values); err == nil {
+						write(string(b))
+					} else {
+						write(fmt.Sprint(opt.Values))
+					}
+				} else {
+					write("")
+				}
+			}
+		}
+	} else {
+		write(strings.TrimSpace(manifestRaw))
+	}
+
 	write(endpoint.Transport)
 	// For process transport, address is dynamically allocated per-instance and should NOT affect fingerprint.
-	// Including it would cause fingerprint changes on every reconciliation loop, triggering spurious restarts.
 	if endpoint.Transport != "process" {
 		write(endpoint.Address)
 	}
@@ -907,17 +991,30 @@ func sanitizeAdapterSlug(manifest *manifest.Manifest, fallback string) string {
 	if manifest != nil {
 		if slug := strings.TrimSpace(manifest.Metadata.Slug); slug != "" {
 			if sanitized := sanitizeIdentifier(slug); sanitized != "" {
+				if sanitized != strings.ToLower(strings.ReplaceAll(slug, " ", "-")) {
+					log.Printf("[Adapters] sanitized slug %q -> %q", slug, sanitized)
+				} else if sanitized != slug {
+					log.Printf("[Adapters] sanitized slug %q -> %q", slug, sanitized)
+				}
 				return sanitized
 			}
 		}
 		if name := strings.TrimSpace(manifest.Metadata.Name); name != "" {
 			if sanitized := sanitizeIdentifier(name); sanitized != "" {
+				if sanitized != strings.ToLower(strings.ReplaceAll(name, " ", "-")) {
+					log.Printf("[Adapters] sanitized name %q -> %q", name, sanitized)
+				} else if sanitized != name {
+					log.Printf("[Adapters] sanitized name %q -> %q", name, sanitized)
+				}
 				return sanitized
 			}
 		}
 	}
 	if fallback = strings.TrimSpace(fallback); fallback != "" {
 		if sanitized := sanitizeIdentifier(fallback); sanitized != "" {
+			if sanitized != fallback {
+				log.Printf("[Adapters] sanitized fallback %q -> %q", fallback, sanitized)
+			}
 			return sanitized
 		}
 	}
