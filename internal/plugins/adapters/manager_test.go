@@ -220,8 +220,10 @@ func TestManagerEnsureProcessTransportReadyFailure(t *testing.T) {
 	defer func(original func() (string, error)) {
 		allocateProcessAddressFn = original
 	}(allocateProcessAddressFn)
+	var portCounter int
 	allocateProcessAddressFn = func() (string, error) {
-		return "127.0.0.1:60100", nil
+		portCounter++
+		return fmt.Sprintf("127.0.0.1:%d", 60100+portCounter), nil
 	}
 	defer func(original func(context.Context, string) error) {
 		waitForAdapterReadyFn = original
@@ -262,11 +264,11 @@ func TestManagerEnsureProcessTransportReadyFailure(t *testing.T) {
 	if !strings.Contains(err.Error(), "readiness") {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(launcher.Records()) != 1 {
-		t.Fatalf("expected launch attempt recorded")
+	if len(launcher.Records()) != processLaunchMaxAttempts {
+		t.Fatalf("expected %d launch attempts, got %d", processLaunchMaxAttempts, len(launcher.Records()))
 	}
-	if launcher.StopCount(string(SlotAI)) == 0 {
-		t.Fatalf("expected handle to be stopped after readiness failure")
+	if launcher.StopCount(string(SlotAI)) != processLaunchMaxAttempts {
+		t.Fatalf("expected handle to be stopped after each readiness failure, got %d", launcher.StopCount(string(SlotAI)))
 	}
 }
 
@@ -1258,6 +1260,294 @@ func TestResolveAdapterConfig(t *testing.T) {
 			t.Fatalf("expected unknown key preserved, got %#v", result["custom"])
 		}
 	})
+}
+
+func TestMergeManifestEndpointDefaultsMissingValues(t *testing.T) {
+	manifest := &manifestpkg.Manifest{
+		Adapter: &manifestpkg.AdapterSpec{
+			Entrypoint: manifestpkg.AdapterEntrypoint{
+				Command:   "./bin/mock",
+				Args:      []string{"--foo", "bar"},
+				Transport: "process",
+			},
+		},
+	}
+	endpoint, err := mergeManifestEndpoint(manifest, "adapter.test", configstore.AdapterEndpoint{})
+	if err != nil {
+		t.Fatalf("merge should succeed: %v", err)
+	}
+	if endpoint.Transport != "process" {
+		t.Fatalf("expected transport process, got %q", endpoint.Transport)
+	}
+	if endpoint.Command != "./bin/mock" {
+		t.Fatalf("expected command from manifest, got %q", endpoint.Command)
+	}
+	if len(endpoint.Args) != 2 || endpoint.Args[0] != "--foo" || endpoint.Args[1] != "bar" {
+		t.Fatalf("expected args from manifest, got %v", endpoint.Args)
+	}
+}
+
+func TestMergeManifestEndpointRejectsTransportMismatch(t *testing.T) {
+	manifest := &manifestpkg.Manifest{
+		Adapter: &manifestpkg.AdapterSpec{
+			Entrypoint: manifestpkg.AdapterEntrypoint{
+				Transport: "grpc",
+				Command:   "./bin/mock",
+			},
+		},
+	}
+	_, err := mergeManifestEndpoint(manifest, "adapter.test", configstore.AdapterEndpoint{
+		Transport: "process",
+		Command:   "./bin/override",
+	})
+	if err == nil {
+		t.Fatalf("expected transport mismatch error")
+	}
+}
+
+func TestMergeManifestEndpointRequiresAddressForNetworkTransports(t *testing.T) {
+	manifest := &manifestpkg.Manifest{
+		Adapter: &manifestpkg.AdapterSpec{
+			Entrypoint: manifestpkg.AdapterEntrypoint{
+				Transport: "grpc",
+			},
+		},
+	}
+	if _, err := mergeManifestEndpoint(manifest, "adapter.test", configstore.AdapterEndpoint{}); err == nil {
+		t.Fatalf("expected address requirement error for grpc transport")
+	}
+
+	manifestHTTP := &manifestpkg.Manifest{
+		Adapter: &manifestpkg.AdapterSpec{
+			Entrypoint: manifestpkg.AdapterEntrypoint{},
+		},
+	}
+	endpoint := configstore.AdapterEndpoint{
+		Transport: "http",
+		Address:   "127.0.0.1:7000",
+	}
+	if merged, err := mergeManifestEndpoint(manifestHTTP, "adapter.test", endpoint); err != nil {
+		t.Fatalf("expected merge to succeed: %v", err)
+	} else if merged.Transport != "http" || merged.Address != endpoint.Address {
+		t.Fatalf("unexpected merged endpoint: %+v", merged)
+	}
+}
+
+func TestManagerStopAllStopsEveryInstance(t *testing.T) {
+	manager := NewManager(ManagerOptions{
+		Runner:   adapterrunner.NewManager(t.TempDir()),
+		Launcher: NewMockLauncher(),
+	})
+	manager.instances = map[Slot]*adapterInstance{
+		SlotAI: {
+			binding: Binding{Slot: SlotAI},
+			handle:  &mockHandle{slot: string(SlotAI), parent: manager.launcher.(*MockLauncher)},
+		},
+		SlotSTT: {
+			binding: Binding{Slot: SlotSTT},
+			handle:  &mockHandle{slot: string(SlotSTT), parent: manager.launcher.(*MockLauncher)},
+		},
+	}
+
+	if err := manager.StopAll(context.Background()); err != nil {
+		t.Fatalf("StopAll returned error: %v", err)
+	}
+	if len(manager.instances) != 0 {
+		t.Fatalf("expected instances to be cleared, got %d", len(manager.instances))
+	}
+	launcher := manager.launcher.(*MockLauncher)
+	if launcher.StopCount(string(SlotAI)) != 1 || launcher.StopCount(string(SlotSTT)) != 1 {
+		t.Fatalf("expected Stop called for both slots, got ai=%d stt=%d", launcher.StopCount(string(SlotAI)), launcher.StopCount(string(SlotSTT)))
+	}
+}
+
+func TestStartAdapterRejectsInvalidEnvVars(t *testing.T) {
+	ctx := context.Background()
+
+	originalAlloc := allocateProcessAddressFn
+	allocateProcessAddressFn = func() (string, error) {
+		return "127.0.0.1:55555", nil
+	}
+	defer func() { allocateProcessAddressFn = originalAlloc }()
+
+	originalReady := waitForAdapterReadyFn
+	waitForAdapterReadyFn = func(context.Context, string) error {
+		return nil
+	}
+	defer func() { waitForAdapterReadyFn = originalReady }()
+
+	manifestRaw := `
+apiVersion: nap.nupi.ai/v1alpha1
+kind: Plugin
+type: adapter
+metadata:
+  name: Mock AI
+spec:
+  slot: ai
+  entrypoint:
+    command: ./bin/mock
+    transport: process
+`
+	manifest, err := manifestpkg.Parse([]byte(manifestRaw))
+	if err != nil {
+		t.Fatalf("parse manifest: %v", err)
+	}
+
+	manager := NewManager(ManagerOptions{
+		Runner:    adapterrunner.NewManager(t.TempDir()),
+		Launcher:  NewMockLauncher(),
+		PluginDir: t.TempDir(),
+	})
+
+	badPlans := []struct {
+		name     string
+		endpoint configstore.AdapterEndpoint
+	}{
+		{
+			name: "newline in key",
+			endpoint: configstore.AdapterEndpoint{
+				Transport: "process",
+				Command:   "./bin/mock",
+				Env: map[string]string{
+					"BAD\nKEY": "value",
+				},
+			},
+		},
+		{
+			name: "newline in value",
+			endpoint: configstore.AdapterEndpoint{
+				Transport: "process",
+				Command:   "./bin/mock",
+				Env: map[string]string{
+					"GOOD_KEY": "bad\nvalue",
+				},
+			},
+		},
+		{
+			name: "null byte in value",
+			endpoint: configstore.AdapterEndpoint{
+				Transport: "process",
+				Command:   "./bin/mock",
+				Env: map[string]string{
+					"GOOD_KEY": "bad\x00value",
+				},
+			},
+		},
+		{
+			name: "equals in key",
+			endpoint: configstore.AdapterEndpoint{
+				Transport: "process",
+				Command:   "./bin/mock",
+				Env: map[string]string{
+					"BAD=KEY": "value",
+				},
+			},
+		},
+	}
+
+	for _, tc := range badPlans {
+		t.Run(tc.name, func(t *testing.T) {
+			plan := bindingPlan{
+				binding: Binding{
+					Slot:      SlotAI,
+					AdapterID: "adapter.ai",
+				},
+				adapter: configstore.Adapter{
+					ID:       "adapter.ai",
+					Manifest: manifestRaw,
+				},
+				manifest: manifest,
+				endpoint: tc.endpoint,
+			}
+			if _, err := manager.startAdapter(ctx, plan); err == nil {
+				t.Fatalf("expected startAdapter to fail for %s", tc.name)
+			}
+		})
+	}
+}
+
+func TestStartAdapterRetriesOnReadinessFailure(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+
+	var portCounter int
+	originalAlloc := allocateProcessAddressFn
+	allocateProcessAddressFn = func() (string, error) {
+		portCounter++
+		return fmt.Sprintf("127.0.0.1:%d", 55000+portCounter), nil
+	}
+	t.Cleanup(func() { allocateProcessAddressFn = originalAlloc })
+
+	var readyCalls int
+	originalReady := waitForAdapterReadyFn
+	waitForAdapterReadyFn = func(context.Context, string) error {
+		readyCalls++
+		if readyCalls == 1 {
+			return fmt.Errorf("not ready yet")
+		}
+		return nil
+	}
+	t.Cleanup(func() { waitForAdapterReadyFn = originalReady })
+
+	manifestRaw := `
+apiVersion: nap.nupi.ai/v1alpha1
+kind: Plugin
+type: adapter
+metadata:
+  name: Mock AI
+spec:
+  slot: ai
+  entrypoint:
+    command: ./bin/mock
+    transport: process
+`
+	manifest, err := manifestpkg.Parse([]byte(manifestRaw))
+	if err != nil {
+		t.Fatalf("parse manifest: %v", err)
+	}
+
+	manager := NewManager(ManagerOptions{
+		Runner:    adapterrunner.NewManager(filepath.Join(tempDir, "runner")),
+		Launcher:  NewMockLauncher(),
+		PluginDir: filepath.Join(tempDir, "plugins"),
+	})
+
+	plan := bindingPlan{
+		binding: Binding{
+			Slot:      SlotAI,
+			AdapterID: "adapter.ai",
+		},
+		adapter: configstore.Adapter{
+			ID:       "adapter.ai",
+			Manifest: manifestRaw,
+		},
+		manifest: manifest,
+		endpoint: configstore.AdapterEndpoint{
+			Transport: "process",
+			Command:   "./bin/mock",
+		},
+	}
+
+	inst, err := manager.startAdapter(ctx, plan)
+	if err != nil {
+		t.Fatalf("startAdapter returned error: %v", err)
+	}
+	if readyCalls != 2 {
+		t.Fatalf("expected 2 readiness checks (with retry), got %d", readyCalls)
+	}
+	if portCounter != 2 {
+		t.Fatalf("expected 2 port allocations, got %d", portCounter)
+	}
+	if inst.binding.Runtime[RuntimeExtraAddress] != "127.0.0.1:55002" {
+		t.Fatalf("expected runtime address to use last allocation, got %q", inst.binding.Runtime[RuntimeExtraAddress])
+	}
+	launcher := manager.launcher.(*MockLauncher)
+	if len(launcher.Records()) != 2 {
+		t.Fatalf("expected 2 launch attempts, got %d", len(launcher.Records()))
+	}
+	if launcher.StopCount(string(SlotAI)) != 1 {
+		t.Fatalf("expected one stop after failed readiness, got %d", launcher.StopCount(string(SlotAI)))
+	}
 }
 
 func strPtr(v string) *string {

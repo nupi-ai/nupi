@@ -15,6 +15,12 @@ var allowedAdapterTransports = map[string]struct{}{
 	"http":    {},
 }
 
+// NormalizeAdapterTransport trims whitespace, applies the default ("process" when empty)
+// and verifies the transport is one of the allowed values.
+func NormalizeAdapterTransport(value string) (string, error) {
+	return sanitizeTransport(value)
+}
+
 func sanitizeTransport(value string) (string, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -134,7 +140,7 @@ func (s *Store) UpsertAdapterEndpoint(ctx context.Context, endpoint AdapterEndpo
 		return fmt.Errorf("config: upsert adapter endpoint: adapter id required")
 	}
 
-	trans, err := sanitizeTransport(endpoint.Transport)
+	trans, err := NormalizeAdapterTransport(endpoint.Transport)
 	if err != nil {
 		return err
 	}

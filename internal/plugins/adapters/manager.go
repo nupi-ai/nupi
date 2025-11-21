@@ -37,6 +37,8 @@ const (
 )
 
 const processReadyTimeout = 30 * time.Second
+const adapterStartTimeout = 2 * time.Minute
+const processLaunchMaxAttempts = 3
 
 var defaultSlots = []Slot{SlotAI, SlotSTT, SlotTTS, SlotVAD, SlotTunnel}
 
@@ -371,6 +373,18 @@ func (m *Manager) startAdapter(ctx context.Context, plan bindingPlan) (*adapterI
 		return nil, ErrRunnerManagerNotConfigured
 	}
 
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, adapterStartTimeout)
+		defer cancel()
+	}
+	checkCtx := func() error {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("adapters: start %s context: %w", plan.binding.AdapterID, err)
+		}
+		return nil
+	}
+
 	adapterID := strings.TrimSpace(plan.adapter.ID)
 	if adapterID == "" {
 		adapterID = strings.TrimSpace(plan.binding.AdapterID)
@@ -381,6 +395,9 @@ func (m *Manager) startAdapter(ctx context.Context, plan bindingPlan) (*adapterI
 
 	homeEnv := os.Environ()
 	env := append([]string(nil), homeEnv...)
+	if err := checkCtx(); err != nil {
+		return nil, err
+	}
 
 	binary := strings.TrimSpace(m.runner.BinaryPath())
 	args := []string{"--slot", string(plan.binding.Slot), "--adapter", plan.binding.AdapterID}
@@ -428,21 +445,6 @@ func (m *Manager) startAdapter(ctx context.Context, plan bindingPlan) (*adapterI
 		RuntimeExtraTransport: transport,
 	}
 
-	if transport == "process" {
-		if strings.TrimSpace(endpoint.Command) == "" {
-			return nil, fmt.Errorf("adapters: endpoint command required for process transport (%s)", plan.binding.AdapterID)
-		}
-		addr, err := allocateProcessAddressFn()
-		if err != nil {
-			return nil, fmt.Errorf("adapters: allocate process address: %w", err)
-		}
-		endpoint.Address = addr
-	}
-
-	if addr := strings.TrimSpace(endpoint.Address); addr != "" {
-		runtimeExtra[RuntimeExtraAddress] = addr
-	}
-
 	readyTimeout := processReadyTimeout
 	if manifest != nil && manifest.Adapter != nil {
 		if v := strings.TrimSpace(manifest.Adapter.Entrypoint.ReadyTimeout); v != "" {
@@ -461,6 +463,10 @@ func (m *Manager) startAdapter(ctx context.Context, plan bindingPlan) (*adapterI
 				log.Printf("[Adapters] invalid ready timeout env %q for %s: %v", v, plan.binding.AdapterID, err)
 			}
 		}
+	}
+
+	if err := checkCtx(); err != nil {
+		return nil, err
 	}
 
 	pluginRoot := m.pluginRoot()
@@ -500,28 +506,14 @@ func (m *Manager) startAdapter(ctx context.Context, plan bindingPlan) (*adapterI
 		}
 	}
 
-	if endpoint.Transport != "" {
-		env = append(env, "NUPI_ADAPTER_TRANSPORT="+endpoint.Transport)
-	}
-	if endpoint.Address != "" {
-		env = append(env, "NUPI_ADAPTER_ENDPOINT="+endpoint.Address)
-		listenEnv := "NUPI_ADAPTER_LISTEN_ADDR"
-		if manifest != nil && manifest.Adapter != nil {
-			if v := strings.TrimSpace(manifest.Adapter.Entrypoint.ListenEnv); v != "" {
-				listenEnv = v
-			}
-		}
-		env = append(env, fmt.Sprintf("%s=%s", listenEnv, endpoint.Address))
-	}
-	if endpoint.Command != "" {
-		env = append(env, "NUPI_ADAPTER_COMMAND="+endpoint.Command)
-	}
+	baseEnv := append([]string(nil), env...)
+
 	if len(endpoint.Args) > 0 {
 		payload, err := json.Marshal(endpoint.Args)
 		if err != nil {
 			return nil, fmt.Errorf("adapters: marshal endpoint args for %s: %w", plan.binding.AdapterID, err)
 		}
-		env = append(env, "NUPI_ADAPTER_ARGS="+string(payload))
+		baseEnv = append(baseEnv, "NUPI_ADAPTER_ARGS="+string(payload))
 	}
 	if len(endpoint.Env) > 0 {
 		for k, v := range endpoint.Env {
@@ -529,74 +521,142 @@ func (m *Manager) startAdapter(ctx context.Context, plan bindingPlan) (*adapterI
 			if key == "" {
 				continue
 			}
-			env = append(env, fmt.Sprintf("%s=%s", key, v))
+			if strings.ContainsAny(key, "=\n\r\x00") {
+				return nil, fmt.Errorf("adapters: invalid character in env key %q for %s", key, plan.binding.AdapterID)
+			}
+			if strings.ContainsAny(v, "\n\r\x00") {
+				return nil, fmt.Errorf("adapters: invalid character in env value for key %s in %s", key, plan.binding.AdapterID)
+			}
+			baseEnv = append(baseEnv, fmt.Sprintf("%s=%s", key, v))
 		}
 	}
 
-	stdoutWriter := io.Writer(io.Discard)
-	stderrWriter := io.Writer(io.Discard)
-	var stdoutLogger, stderrLogger *adapterLogWriter
-
-	telemetryStdout := manifest == nil || manifest.Adapter == nil || manifest.Adapter.Telemetry.Stdout == nil || *manifest.Adapter.Telemetry.Stdout
-	telemetryStderr := manifest == nil || manifest.Adapter == nil || manifest.Adapter.Telemetry.Stderr == nil || *manifest.Adapter.Telemetry.Stderr
-	if m.bus != nil {
-		if telemetryStdout {
-			stdoutLogger = newAdapterLogWriter(m.bus, plan.binding.AdapterID, plan.binding.Slot, eventbus.LogLevelInfo)
-			stdoutWriter = stdoutLogger
+	appendAddressEnv := func(envIn []string, addr string) []string {
+		out := append([]string(nil), envIn...)
+		if endpoint.Transport != "" {
+			out = append(out, "NUPI_ADAPTER_TRANSPORT="+endpoint.Transport)
 		}
-		if telemetryStderr {
-			stderrLogger = newAdapterLogWriter(m.bus, plan.binding.AdapterID, plan.binding.Slot, eventbus.LogLevelError)
-			stderrWriter = stderrLogger
+		if endpoint.Command != "" {
+			out = append(out, "NUPI_ADAPTER_COMMAND="+endpoint.Command)
 		}
+		listenEnv := "NUPI_ADAPTER_LISTEN_ADDR"
+		if manifest != nil && manifest.Adapter != nil {
+			if v := strings.TrimSpace(manifest.Adapter.Entrypoint.ListenEnv); v != "" {
+				listenEnv = v
+			}
+		}
+		if strings.TrimSpace(addr) != "" {
+			out = append(out, "NUPI_ADAPTER_ENDPOINT="+addr)
+			out = append(out, fmt.Sprintf("%s=%s", listenEnv, addr))
+		}
+		return out
 	}
 
-	handle, err := m.launcher.Launch(ctx, binary, args, env, stdoutWriter, stderrWriter)
-	if err != nil {
-		if stdoutLogger != nil {
-			stdoutLogger.Close()
+	launchAttempt := func(addr string) (*adapterInstance, error) {
+		if err := checkCtx(); err != nil {
+			return nil, err
 		}
-		if stderrLogger != nil {
-			stderrLogger.Close()
-		}
-		return nil, err
-	}
+		runtimeExtra[RuntimeExtraAddress] = strings.TrimSpace(addr)
+		envAttempt := appendAddressEnv(baseEnv, addr)
 
-	if transport == "process" {
-		readyCtx, cancel := context.WithTimeout(ctx, readyTimeout)
-		readyErr := waitForAdapterReadyFn(readyCtx, endpoint.Address)
-		cancel()
-		if readyErr != nil {
+		stdoutWriter := io.Writer(io.Discard)
+		stderrWriter := io.Writer(io.Discard)
+		var stdoutLogger, stderrLogger *adapterLogWriter
+
+		telemetryStdout := manifest == nil || manifest.Adapter == nil || manifest.Adapter.Telemetry.Stdout == nil || *manifest.Adapter.Telemetry.Stdout
+		telemetryStderr := manifest == nil || manifest.Adapter == nil || manifest.Adapter.Telemetry.Stderr == nil || *manifest.Adapter.Telemetry.Stderr
+		if m.bus != nil {
+			if telemetryStdout {
+				stdoutLogger = newAdapterLogWriter(m.bus, plan.binding.AdapterID, plan.binding.Slot, eventbus.LogLevelInfo)
+				stdoutWriter = stdoutLogger
+			}
+			if telemetryStderr {
+				stderrLogger = newAdapterLogWriter(m.bus, plan.binding.AdapterID, plan.binding.Slot, eventbus.LogLevelError)
+				stderrWriter = stderrLogger
+			}
+		}
+
+		handle, err := m.launcher.Launch(ctx, binary, args, envAttempt, stdoutWriter, stderrWriter)
+		if err != nil {
 			if stdoutLogger != nil {
 				stdoutLogger.Close()
 			}
 			if stderrLogger != nil {
 				stderrLogger.Close()
 			}
+			return nil, err
+		}
+
+		stopHandle := func() {
 			stopCtx, stopCancel := context.WithTimeout(context.Background(), time.Second)
 			_ = handle.Stop(stopCtx)
 			stopCancel()
-			return nil, fmt.Errorf("adapters: process adapter %s readiness: %w", plan.binding.AdapterID, readyErr)
 		}
+
+		if transport == "process" {
+			readyCtx, cancel := context.WithTimeout(ctx, readyTimeout)
+			readyErr := waitForAdapterReadyFn(readyCtx, addr)
+			cancel()
+			if readyErr != nil {
+				if stdoutLogger != nil {
+					stdoutLogger.Close()
+				}
+				if stderrLogger != nil {
+					stderrLogger.Close()
+				}
+				stopHandle()
+				return nil, fmt.Errorf("adapters: process adapter %s readiness: %w", plan.binding.AdapterID, readyErr)
+			}
+		}
+
+		if len(runtimeExtra) > 0 {
+			plan.binding.Runtime = cloneStringMap(runtimeExtra)
+		}
+		plan.endpoint = endpoint
+
+		cleanupDataDir = false
+		cleanupHome = false
+
+		plan.fingerprint = computePlanFingerprint(plan.binding, plan.adapter.Manifest, plan.endpoint)
+		plan.binding.Fingerprint = plan.fingerprint
+
+		return &adapterInstance{
+			binding:     plan.binding,
+			handle:      handle,
+			stdout:      stdoutLogger,
+			stderr:      stderrLogger,
+			fingerprint: plan.fingerprint,
+		}, nil
 	}
 
-	if len(runtimeExtra) > 0 {
-		plan.binding.Runtime = cloneStringMap(runtimeExtra)
+	if transport != "process" {
+		if addr := strings.TrimSpace(endpoint.Address); addr != "" {
+			runtimeExtra[RuntimeExtraAddress] = addr
+		}
+		return launchAttempt(strings.TrimSpace(endpoint.Address))
 	}
-	plan.endpoint = endpoint
 
-	cleanupDataDir = false
-	cleanupHome = false
+	if strings.TrimSpace(endpoint.Command) == "" {
+		return nil, fmt.Errorf("adapters: endpoint command required for process transport (%s)", plan.binding.AdapterID)
+	}
 
-	plan.fingerprint = computePlanFingerprint(plan.binding, plan.adapter.Manifest, plan.endpoint)
-	plan.binding.Fingerprint = plan.fingerprint
-
-	return &adapterInstance{
-		binding:     plan.binding,
-		handle:      handle,
-		stdout:      stdoutLogger,
-		stderr:      stderrLogger,
-		fingerprint: plan.fingerprint,
-	}, nil
+	var lastErr error
+	for attempt := 0; attempt < processLaunchMaxAttempts; attempt++ {
+		if err := checkCtx(); err != nil {
+			return nil, err
+		}
+		addr, err := allocateProcessAddressFn()
+		if err != nil {
+			return nil, fmt.Errorf("adapters: allocate process address: %w", err)
+		}
+		endpoint.Address = addr
+		inst, err := launchAttempt(addr)
+		if err == nil {
+			return inst, nil
+		}
+		lastErr = err
+	}
+	return nil, fmt.Errorf("adapters: process adapter %s readiness after %d attempts: %w", plan.binding.AdapterID, processLaunchMaxAttempts, lastErr)
 }
 
 func (m *Manager) stopAdapter(ctx context.Context, slot Slot, instance *adapterInstance) error {
@@ -668,7 +728,11 @@ func (m *Manager) prepareBinding(ctx context.Context, binding Binding) (bindingP
 		if err != nil {
 			return bindingPlan{}, err
 		}
-		plan.endpoint = endpoint
+		mergedEndpoint, err := mergeManifestEndpoint(manifest, binding.AdapterID, endpoint)
+		if err != nil {
+			return bindingPlan{}, err
+		}
+		plan.endpoint = mergedEndpoint
 	}
 
 	plan.fingerprint = computePlanFingerprint(binding, plan.adapter.Manifest, plan.endpoint)
@@ -883,6 +947,72 @@ func sanitizeIdentifier(value string) string {
 		return res[:64]
 	}
 	return res
+}
+
+func mergeManifestEndpoint(manifest *manifest.Manifest, adapterID string, endpoint configstore.AdapterEndpoint) (configstore.AdapterEndpoint, error) {
+	if endpoint.AdapterID == "" {
+		endpoint.AdapterID = strings.TrimSpace(adapterID)
+	}
+	if manifest == nil || manifest.Adapter == nil {
+		return endpoint, nil
+	}
+
+	entry := manifest.Adapter.Entrypoint
+	endpointTransport := strings.TrimSpace(endpoint.Transport)
+	manifestTransport := strings.TrimSpace(entry.Transport)
+
+	if endpointTransport != "" && manifestTransport != "" {
+		endNormalized, err := normalizeAdapterTransport(endpointTransport)
+		if err != nil {
+			return endpoint, fmt.Errorf("adapters: manifest transport for %s: %w", adapterID, err)
+		}
+		manifestNormalized, err := normalizeAdapterTransport(manifestTransport)
+		if err != nil {
+			return endpoint, fmt.Errorf("adapters: manifest transport for %s: %w", adapterID, err)
+		}
+		if endNormalized != "" && manifestNormalized != "" && endNormalized != manifestNormalized {
+			return endpoint, fmt.Errorf("adapters: transport mismatch for %s (manifest=%s endpoint=%s)", adapterID, manifestNormalized, endNormalized)
+		}
+	}
+
+	transport := endpointTransport
+	if transport == "" {
+		transport = manifestTransport
+	}
+	normalizedTransport, err := normalizeAdapterTransport(transport)
+	if err != nil {
+		return endpoint, fmt.Errorf("adapters: manifest transport for %s: %w", adapterID, err)
+	}
+	if normalizedTransport == "" {
+		normalizedTransport = "process"
+	}
+	endpoint.Transport = normalizedTransport
+
+	if normalizedTransport == "process" {
+		if strings.TrimSpace(endpoint.Command) == "" {
+			endpoint.Command = strings.TrimSpace(entry.Command)
+		}
+		if len(endpoint.Args) == 0 && len(entry.Args) > 0 {
+			endpoint.Args = append([]string(nil), entry.Args...)
+		}
+		if strings.TrimSpace(endpoint.Command) == "" {
+			return endpoint, fmt.Errorf("adapters: process transport for %s requires command", adapterID)
+		}
+	} else {
+		if strings.TrimSpace(endpoint.Address) == "" {
+			return endpoint, fmt.Errorf("adapters: transport %s for %s requires address", normalizedTransport, adapterID)
+		}
+	}
+
+	return endpoint, nil
+}
+
+func normalizeAdapterTransport(value string) (string, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "", nil
+	}
+	return configstore.NormalizeAdapterTransport(trimmed)
 }
 
 // allocateProcessAddress reserves an ephemeral localhost TCP port for process adapters.
