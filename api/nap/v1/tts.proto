@@ -1,0 +1,50 @@
+syntax = "proto3";
+
+package nupi.nap.v1;
+
+option go_package = "github.com/nupi-ai/nupi/api/nap/v1;napv1";
+
+import "google/protobuf/timestamp.proto";
+
+// SynthesisStatus indicates the current state of TTS playback.
+enum SynthesisStatus {
+  SYNTHESIS_STATUS_UNSPECIFIED = 0;
+  SYNTHESIS_STATUS_STARTED = 1;    // synthesis began
+  SYNTHESIS_STATUS_PLAYING = 2;    // actively streaming audio
+  SYNTHESIS_STATUS_FINISHED = 3;   // synthesis completed successfully
+  SYNTHESIS_STATUS_ERROR = 4;      // synthesis failed
+  SYNTHESIS_STATUS_INTERRUPTED = 5; // stopped due to interrupt/barge-in
+}
+
+// StreamSynthesisRequest contains text and metadata for TTS synthesis.
+message StreamSynthesisRequest {
+  string session_id = 1;
+  string stream_id = 2;
+  string text = 3;
+  string config_json = 4;
+  map<string, string> metadata = 5;
+}
+
+// AudioChunk represents a chunk of synthesized PCM audio.
+message AudioChunk {
+  bytes data = 1;
+  uint64 sequence = 2;
+  uint32 duration_ms = 3;
+  bool first = 4;
+  bool last = 5;
+  map<string, string> metadata = 6;
+}
+
+// SynthesisResponse contains status updates and audio chunks.
+message SynthesisResponse {
+  SynthesisStatus status = 1;
+  AudioChunk chunk = 2;
+  google.protobuf.Timestamp timestamp = 3;
+  map<string, string> metadata = 4;
+  string error_message = 5;
+}
+
+// TextToSpeechService exposes the NAP contract for TTS adapters.
+service TextToSpeechService {
+  rpc StreamSynthesis(StreamSynthesisRequest) returns (stream SynthesisResponse);
+}
