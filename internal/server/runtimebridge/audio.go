@@ -2,13 +2,16 @@ package runtimebridge
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/nupi-ai/nupi/internal/audio/egress"
 	"github.com/nupi-ai/nupi/internal/audio/ingress"
 	"github.com/nupi-ai/nupi/internal/eventbus"
+	"github.com/nupi-ai/nupi/internal/intentrouter"
 	"github.com/nupi-ai/nupi/internal/plugins"
 	"github.com/nupi-ai/nupi/internal/plugins/manifest"
 	"github.com/nupi-ai/nupi/internal/server"
+	"github.com/nupi-ai/nupi/internal/session"
 )
 
 // AudioIngressProvider wraps ingress.Service into the API-facing AudioCaptureProvider interface.
@@ -124,3 +127,76 @@ type staticWarningsProvider struct {
 func (p *staticWarningsProvider) GetDiscoveryWarnings() []server.PluginDiscoveryWarning {
 	return p.warnings
 }
+
+// SessionProvider wraps session.Manager for the intentrouter.SessionProvider interface.
+func SessionProvider(manager *session.Manager) intentrouter.SessionProvider {
+	if manager == nil {
+		return nil
+	}
+	return &sessionProviderAdapter{manager: manager}
+}
+
+type sessionProviderAdapter struct {
+	manager *session.Manager
+}
+
+func (a *sessionProviderAdapter) ListSessionInfos() []intentrouter.SessionInfo {
+	sessions := a.manager.ListSessions()
+	infos := make([]intentrouter.SessionInfo, len(sessions))
+	for i, s := range sessions {
+		infos[i] = intentrouter.SessionInfo{
+			ID:        s.ID,
+			Command:   s.Command,
+			Args:      s.Args,
+			WorkDir:   s.WorkDir,
+			Tool:      s.GetDetectedTool(),
+			Status:    string(s.CurrentStatus()),
+			StartTime: s.StartTime,
+		}
+	}
+	return infos
+}
+
+func (a *sessionProviderAdapter) GetSessionInfo(sessionID string) (intentrouter.SessionInfo, bool) {
+	s, err := a.manager.GetSession(sessionID)
+	if err != nil {
+		return intentrouter.SessionInfo{}, false
+	}
+	return intentrouter.SessionInfo{
+		ID:        s.ID,
+		Command:   s.Command,
+		Args:      s.Args,
+		WorkDir:   s.WorkDir,
+		Tool:      s.GetDetectedTool(),
+		Status:    string(s.CurrentStatus()),
+		StartTime: s.StartTime,
+	}, true
+}
+
+func (a *sessionProviderAdapter) ValidateSession(sessionID string) error {
+	_, err := a.manager.GetSession(sessionID)
+	if err != nil {
+		return fmt.Errorf("session %s not found", sessionID)
+	}
+	return nil
+}
+
+// CommandExecutor wraps session.Manager for the intentrouter.CommandExecutor interface.
+func CommandExecutor(manager *session.Manager) intentrouter.CommandExecutor {
+	if manager == nil {
+		return nil
+	}
+	return &commandExecutorAdapter{manager: manager}
+}
+
+type commandExecutorAdapter struct {
+	manager *session.Manager
+}
+
+func (a *commandExecutorAdapter) QueueCommand(sessionID string, command string, origin eventbus.ContentOrigin) error {
+	// For now, we write the command directly to the session's PTY.
+	// In the future, this could be enhanced with command queuing and priority handling.
+	data := []byte(command + "\n")
+	return a.manager.WriteToSession(sessionID, data)
+}
+

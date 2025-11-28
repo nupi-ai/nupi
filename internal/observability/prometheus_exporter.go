@@ -17,6 +17,7 @@ type PrometheusExporter struct {
 	pipeline        PipelineMetricsProvider
 	audio           func() AudioMetricsSnapshot
 	pluginWarnings  PluginWarningsProvider
+	intentRouter    func() IntentRouterMetricsSnapshot
 }
 
 // PipelineMetricsProvider exposes a Metrics method compatible with content pipeline services.
@@ -27,6 +28,17 @@ type PipelineMetricsProvider interface {
 // PluginWarningsProvider exposes the count of plugin discovery warnings.
 type PluginWarningsProvider interface {
 	WarningsCount() int
+}
+
+// IntentRouterMetricsSnapshot represents a point-in-time snapshot of intent router counters.
+type IntentRouterMetricsSnapshot struct {
+	RequestsTotal  uint64
+	RequestsFailed uint64
+	CommandsQueued uint64
+	Clarifications uint64
+	SpeakEvents    uint64
+	AdapterName    string
+	AdapterReady   bool
 }
 
 // AudioMetricsSnapshot represents a point-in-time snapshot of audio-related counters.
@@ -63,6 +75,11 @@ func (e *PrometheusExporter) WithPluginWarnings(provider PluginWarningsProvider)
 	e.pluginWarnings = provider
 }
 
+// WithIntentRouter enables exporting intent router metrics via a snapshot function.
+func (e *PrometheusExporter) WithIntentRouter(provider func() IntentRouterMetricsSnapshot) {
+	e.intentRouter = provider
+}
+
 // Export produces the metrics payload in Prometheus' text exposition format.
 func (e *PrometheusExporter) Export() []byte {
 	var buf bytes.Buffer
@@ -72,6 +89,7 @@ func (e *PrometheusExporter) Export() []byte {
 	e.writePipelineMetrics(&buf)
 	e.writeAudioMetrics(&buf)
 	e.writePluginWarningsMetrics(&buf)
+	e.writeIntentRouterMetrics(&buf)
 
 	return buf.Bytes()
 }
@@ -182,6 +200,46 @@ func (e *PrometheusExporter) writePluginWarningsMetrics(buf *bytes.Buffer) {
 	buf.WriteString("# HELP nupi_plugins_discovery_warnings Current number of plugins skipped during last discovery due to manifest errors.\n")
 	buf.WriteString("# TYPE nupi_plugins_discovery_warnings gauge\n")
 	buf.WriteString(fmt.Sprintf("nupi_plugins_discovery_warnings %d\n", count))
+}
+
+func (e *PrometheusExporter) writeIntentRouterMetrics(buf *bytes.Buffer) {
+	if e.intentRouter == nil {
+		return
+	}
+
+	snapshot := e.intentRouter()
+
+	buf.WriteString("# HELP nupi_intent_requests_total Total number of intent requests processed.\n")
+	buf.WriteString("# TYPE nupi_intent_requests_total counter\n")
+	buf.WriteString(fmt.Sprintf("nupi_intent_requests_total %d\n", snapshot.RequestsTotal))
+
+	buf.WriteString("# HELP nupi_intent_requests_failed_total Total number of failed intent requests.\n")
+	buf.WriteString("# TYPE nupi_intent_requests_failed_total counter\n")
+	buf.WriteString(fmt.Sprintf("nupi_intent_requests_failed_total %d\n", snapshot.RequestsFailed))
+
+	buf.WriteString("# HELP nupi_intent_commands_queued_total Total number of commands queued from intents.\n")
+	buf.WriteString("# TYPE nupi_intent_commands_queued_total counter\n")
+	buf.WriteString(fmt.Sprintf("nupi_intent_commands_queued_total %d\n", snapshot.CommandsQueued))
+
+	buf.WriteString("# HELP nupi_intent_clarifications_total Total number of clarification requests.\n")
+	buf.WriteString("# TYPE nupi_intent_clarifications_total counter\n")
+	buf.WriteString(fmt.Sprintf("nupi_intent_clarifications_total %d\n", snapshot.Clarifications))
+
+	buf.WriteString("# HELP nupi_intent_speak_events_total Total number of speak events generated.\n")
+	buf.WriteString("# TYPE nupi_intent_speak_events_total counter\n")
+	buf.WriteString(fmt.Sprintf("nupi_intent_speak_events_total %d\n", snapshot.SpeakEvents))
+
+	readyVal := 0
+	if snapshot.AdapterReady {
+		readyVal = 1
+	}
+	buf.WriteString("# HELP nupi_intent_adapter_ready Whether the intent adapter is ready (1) or not (0).\n")
+	buf.WriteString("# TYPE nupi_intent_adapter_ready gauge\n")
+	if snapshot.AdapterName != "" {
+		buf.WriteString(fmt.Sprintf("nupi_intent_adapter_ready{adapter=%q} %d\n", snapshot.AdapterName, readyVal))
+	} else {
+		buf.WriteString(fmt.Sprintf("nupi_intent_adapter_ready %d\n", readyVal))
+	}
 }
 
 func durationSeconds(d time.Duration) float64 {

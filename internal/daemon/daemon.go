@@ -26,6 +26,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/contentpipeline"
 	"github.com/nupi-ai/nupi/internal/conversation"
 	"github.com/nupi-ai/nupi/internal/eventbus"
+	"github.com/nupi-ai/nupi/internal/intentrouter"
 	"github.com/nupi-ai/nupi/internal/observability"
 	"github.com/nupi-ai/nupi/internal/plugins"
 	adapters "github.com/nupi-ai/nupi/internal/plugins/adapters"
@@ -186,6 +187,34 @@ func New(opts Options) (*Daemon, error) {
 	}); err != nil {
 		return nil, err
 	}
+
+	// Intent router service - bridges conversation to AI adapters
+	// Starts in passive mode (no adapter) - real AI adapter will be set via
+	// SetAdapter() when configured through adapter manager/config store
+	intentRouterService := intentrouter.NewService(bus,
+		intentrouter.WithSessionProvider(runtimebridge.SessionProvider(sessionManager)),
+		intentrouter.WithCommandExecutor(runtimebridge.CommandExecutor(sessionManager)),
+	)
+
+	if err := host.Register("intent_router", func(ctx context.Context) (daemonruntime.Service, error) {
+		return intentRouterService, nil
+	}); err != nil {
+		return nil, err
+	}
+
+	// Wire intent router metrics to Prometheus exporter
+	metricsExporter.WithIntentRouter(func() observability.IntentRouterMetricsSnapshot {
+		m := intentRouterService.Metrics()
+		return observability.IntentRouterMetricsSnapshot{
+			RequestsTotal:  m.RequestsTotal,
+			RequestsFailed: m.RequestsFailed,
+			CommandsQueued: m.CommandsQueued,
+			Clarifications: m.Clarifications,
+			SpeakEvents:    m.SpeakEvents,
+			AdapterName:    m.AdapterName,
+			AdapterReady:   m.AdapterReady,
+		}
+	})
 
 	// unix socket service
 	if err := host.Register("unix_socket", func(ctx context.Context) (daemonruntime.Service, error) {
