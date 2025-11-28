@@ -36,6 +36,7 @@ const (
 	SourceSessionManager  Source = "session_manager"
 	SourceContentPipeline Source = "content_pipeline"
 	SourceConversation    Source = "conversation"
+	SourceIntentRouter    Source = "intent_router"
 	SourcePluginService   Source = "plugin_service"
 	SourceAdaptersService Source = "adapters_service"
 	SourceAdapterRunner   Source = "adapter_runner"

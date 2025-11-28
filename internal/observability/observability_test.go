@@ -49,6 +49,17 @@ func TestPrometheusExporter(t *testing.T) {
 			VADRetryFailures:   1,
 		}
 	})
+	exporter.WithIntentRouter(func() IntentRouterMetricsSnapshot {
+		return IntentRouterMetricsSnapshot{
+			RequestsTotal:  100,
+			RequestsFailed: 5,
+			CommandsQueued: 80,
+			Clarifications: 10,
+			SpeakEvents:    15,
+			AdapterName:    "test-adapter",
+			AdapterReady:   true,
+		}
+	})
 
 	bus.Publish(context.Background(), eventbus.Envelope{Topic: eventbus.TopicSessionsOutput})
 	bus.Publish(context.Background(), eventbus.Envelope{Topic: eventbus.TopicPipelineCleaned})
@@ -90,6 +101,24 @@ func TestPrometheusExporter(t *testing.T) {
 	}
 	if !strings.Contains(metrics, `nupi_eventbus_latency_seconds{quantile="0.50"}`) {
 		t.Fatalf("expected latency quantile metric in output:\n%s", metrics)
+	}
+	if !strings.Contains(metrics, `nupi_intent_requests_total 100`) {
+		t.Fatalf("expected intent requests total counter in metrics output:\n%s", metrics)
+	}
+	if !strings.Contains(metrics, `nupi_intent_requests_failed_total 5`) {
+		t.Fatalf("expected intent requests failed counter in metrics output:\n%s", metrics)
+	}
+	if !strings.Contains(metrics, `nupi_intent_commands_queued_total 80`) {
+		t.Fatalf("expected intent commands queued counter in metrics output:\n%s", metrics)
+	}
+	if !strings.Contains(metrics, `nupi_intent_clarifications_total 10`) {
+		t.Fatalf("expected intent clarifications counter in metrics output:\n%s", metrics)
+	}
+	if !strings.Contains(metrics, `nupi_intent_speak_events_total 15`) {
+		t.Fatalf("expected intent speak events counter in metrics output:\n%s", metrics)
+	}
+	if !strings.Contains(metrics, `nupi_intent_adapter_ready{adapter="test-adapter"} 1`) {
+		t.Fatalf("expected intent adapter ready gauge with label in metrics output:\n%s", metrics)
 	}
 }
 
