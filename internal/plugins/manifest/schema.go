@@ -74,6 +74,11 @@ func GenerateJSONSchema(options map[string]AdapterOption) ([]byte, error) {
 		}
 
 		schema.Properties[key] = prop
+
+		// Track required options
+		if opt.Required {
+			schema.Required = append(schema.Required, key)
+		}
 	}
 
 	return json.MarshalIndent(schema, "", "  ")
@@ -82,11 +87,16 @@ func GenerateJSONSchema(options map[string]AdapterOption) ([]byte, error) {
 // ValidateConfigAgainstOptions validates adapter config against manifest options.
 // This is a lightweight validation that checks:
 // - No unknown options (not declared in manifest)
+// - All required options are present in config
 // - All values match declared types
 // - Enum/value constraints are satisfied
 //
 // Manifest is the single source of truth: if no options are declared,
 // config MUST be empty or nil.
+//
+// Required vs Optional:
+//   - Options with Required=true MUST be present in config
+//   - Options with Required=false (default) are optional and use Default if not provided
 //
 // Returns detailed error if validation fails.
 func ValidateConfigAgainstOptions(options map[string]AdapterOption, config map[string]any) error {
@@ -102,6 +112,15 @@ func ValidateConfigAgainstOptions(options map[string]AdapterOption, config map[s
 	for key := range config {
 		if _, known := options[key]; !known {
 			return fmt.Errorf("unknown option %q (not declared in manifest)", key)
+		}
+	}
+
+	// Check for missing required options
+	for key, opt := range options {
+		if opt.Required {
+			if _, exists := config[key]; !exists {
+				return fmt.Errorf("missing required option %q", key)
+			}
 		}
 	}
 
