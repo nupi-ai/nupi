@@ -34,6 +34,13 @@ func EnsureBuiltinAdapters(ctx context.Context, store *configstore.Store) error 
 			Name:    "Nupi Mock VAD",
 			Version: "dev",
 		},
+		{
+			ID:      MockAIAdapterID,
+			Source:  "builtin",
+			Type:    "ai",
+			Name:    "Nupi Mock AI",
+			Version: "dev",
+		},
 	}
 
 	for _, adapter := range adapters {

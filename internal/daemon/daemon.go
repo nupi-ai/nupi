@@ -216,6 +216,16 @@ func New(opts Options) (*Daemon, error) {
 		}
 	})
 
+	// Intent router adapter bridge - watches for AI adapter status changes
+	// and updates the intent router with the appropriate adapter.
+	// Uses adaptersService for initial sync with current binding state.
+	intentRouterBridge := intentrouter.NewAdapterBridge(bus, intentRouterService, adaptersService)
+	if err := host.Register("intent_router_bridge", func(ctx context.Context) (daemonruntime.Service, error) {
+		return intentRouterBridge, nil
+	}); err != nil {
+		return nil, err
+	}
+
 	// unix socket service
 	if err := host.Register("unix_socket", func(ctx context.Context) (daemonruntime.Service, error) {
 		socket := paths.Socket

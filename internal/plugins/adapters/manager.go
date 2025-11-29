@@ -370,6 +370,22 @@ func (m *Manager) StopAll(ctx context.Context) error {
 }
 
 func (m *Manager) startAdapter(ctx context.Context, plan bindingPlan) (*adapterInstance, error) {
+	// Handle builtin mock adapters without launching a process.
+	// These adapters are implemented in-process and don't require adapter-runner.
+	if IsBuiltinMockAdapter(plan.binding.AdapterID) {
+		log.Printf("[Adapters] configuring builtin mock adapter: %s", plan.binding.AdapterID)
+		plan.binding.Runtime = map[string]string{
+			RuntimeExtraTransport: "builtin",
+		}
+		plan.fingerprint = computePlanFingerprint(plan.binding, plan.manifest, plan.adapter.Manifest, plan.endpoint)
+		plan.binding.Fingerprint = plan.fingerprint
+		return &adapterInstance{
+			binding:     plan.binding,
+			fingerprint: plan.fingerprint,
+			// No handle - builtin mock runs in-process
+		}, nil
+	}
+
 	if m.runner == nil {
 		return nil, ErrRunnerManagerNotConfigured
 	}
@@ -1173,4 +1189,16 @@ func cloneStringMap(in map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+// IsBuiltinMockAdapter returns true if the adapter is a builtin mock
+// that runs in-process without requiring adapter-runner to launch a process.
+// This function is exported for use by other packages (e.g., intentrouter bridge).
+func IsBuiltinMockAdapter(adapterID string) bool {
+	switch adapterID {
+	case MockSTTAdapterID, MockTTSAdapterID, MockVADAdapterID, MockAIAdapterID:
+		return true
+	default:
+		return false
+	}
 }
