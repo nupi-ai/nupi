@@ -34,16 +34,25 @@ func WithDetachTTL(ttl time.Duration) Option {
 	}
 }
 
+// WithGlobalStore enables global conversation history for sessionless messages.
+func WithGlobalStore(store *GlobalStore) Option {
+	return func(s *Service) {
+		s.globalStore = store
+	}
+}
+
 // Service maintains conversation context and emits prompts for AI adapters.
 type Service struct {
 	bus *eventbus.Bus
 
-	maxHistory int
-	detachTTL  time.Duration
+	maxHistory  int
+	detachTTL   time.Duration
+	globalStore *GlobalStore
 
-	mu       sync.RWMutex
-	sessions map[string][]eventbus.ConversationTurn
-	detach   map[string]*time.Timer
+	mu        sync.RWMutex
+	sessions  map[string][]eventbus.ConversationTurn
+	detach    map[string]*time.Timer
+	toolCache map[string]string // sessionID -> current tool name
 
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -68,6 +77,7 @@ func NewService(bus *eventbus.Bus, opts ...Option) *Service {
 		detachTTL:  defaultDetachTTL,
 		sessions:   make(map[string][]eventbus.ConversationTurn),
 		detach:     make(map[string]*time.Timer),
+		toolCache:  make(map[string]string),
 	}
 	for _, opt := range opts {
 		opt(svc)
@@ -88,13 +98,17 @@ func (s *Service) Start(ctx context.Context) error {
 	lifecycleSub := s.bus.Subscribe(eventbus.TopicSessionsLifecycle, eventbus.WithSubscriptionName("conversation_lifecycle"))
 	replySub := s.bus.Subscribe(eventbus.TopicConversationReply, eventbus.WithSubscriptionName("conversation_reply"))
 	bargeSub := s.bus.Subscribe(eventbus.TopicSpeechBargeIn, eventbus.WithSubscriptionName("conversation_barge"))
-	s.subs = []*eventbus.Subscription{cleanedSub, lifecycleSub, replySub, bargeSub}
+	toolSub := s.bus.Subscribe(eventbus.TopicSessionsTool, eventbus.WithSubscriptionName("conversation_tool"))
+	toolChangeSub := s.bus.Subscribe(eventbus.TopicSessionsToolChanged, eventbus.WithSubscriptionName("conversation_tool_changed"))
+	s.subs = []*eventbus.Subscription{cleanedSub, lifecycleSub, replySub, bargeSub, toolSub, toolChangeSub}
 
-	s.wg.Add(4)
+	s.wg.Add(6)
 	go s.consumePipeline(derivedCtx, cleanedSub)
 	go s.consumeLifecycle(derivedCtx, lifecycleSub)
 	go s.consumeReplies(derivedCtx, replySub)
 	go s.consumeBarge(derivedCtx, bargeSub)
+	go s.consumeToolEvents(derivedCtx, toolSub)
+	go s.consumeToolChangeEvents(derivedCtx, toolChangeSub)
 	return nil
 }
 
@@ -168,6 +182,9 @@ func (s *Service) consumeLifecycle(ctx context.Context, sub *eventbus.Subscripti
 			case eventbus.SessionStateStopped:
 				s.clearSession(msg.SessionID)
 			case eventbus.SessionStateDetached:
+				// Clear tool cache immediately to prevent stale current_tool injection
+				// (conversation history is still kept until detachTTL expires)
+				s.clearToolCache(msg.SessionID)
 				s.scheduleDetachCleanup(msg.SessionID)
 			case eventbus.SessionStateRunning, eventbus.SessionStateCreated:
 				s.cancelDetachCleanup(msg.SessionID)
@@ -222,13 +239,62 @@ func (s *Service) consumeBarge(ctx context.Context, sub *eventbus.Subscription) 
 	}
 }
 
-func (s *Service) handlePipelineMessage(ts time.Time, msg eventbus.PipelineMessageEvent) {
-	if msg.SessionID == "" {
+func (s *Service) consumeToolEvents(ctx context.Context, sub *eventbus.Subscription) {
+	defer s.wg.Done()
+	if sub == nil {
 		return
 	}
 
-	s.cancelDetachCleanup(msg.SessionID)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case env, ok := <-sub.C():
+			if !ok {
+				return
+			}
+			event, ok := env.Payload.(eventbus.SessionToolEvent)
+			if !ok {
+				continue
+			}
+			s.updateToolCache(event.SessionID, event.ToolName)
+		}
+	}
+}
 
+func (s *Service) consumeToolChangeEvents(ctx context.Context, sub *eventbus.Subscription) {
+	defer s.wg.Done()
+	if sub == nil {
+		return
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case env, ok := <-sub.C():
+			if !ok {
+				return
+			}
+			event, ok := env.Payload.(eventbus.SessionToolChangedEvent)
+			if !ok {
+				continue
+			}
+			s.updateToolCache(event.SessionID, event.NewTool)
+		}
+	}
+}
+
+func (s *Service) updateToolCache(sessionID, toolName string) {
+	if sessionID == "" {
+		return
+	}
+	s.mu.Lock()
+	s.toolCache[sessionID] = toolName
+	s.mu.Unlock()
+}
+
+func (s *Service) handlePipelineMessage(ts time.Time, msg eventbus.PipelineMessageEvent) {
 	if ts.IsZero() {
 		ts = time.Now().UTC()
 	}
@@ -242,6 +308,20 @@ func (s *Service) handlePipelineMessage(ts time.Time, msg eventbus.PipelineMessa
 		At:     ts,
 		Meta:   meta.result(),
 	}
+
+	// Handle sessionless ("bezpańskie") messages via GlobalStore
+	if msg.SessionID == "" {
+		if s.globalStore != nil {
+			contextSnapshot := s.globalStore.GetContext()
+			s.globalStore.AddTurn(turn)
+			if msg.Origin == eventbus.OriginUser {
+				s.publishPrompt("", contextSnapshot, turn)
+			}
+		}
+		return
+	}
+
+	s.cancelDetachCleanup(msg.SessionID)
 
 	var contextSnapshot []eventbus.ConversationTurn
 
@@ -262,9 +342,58 @@ func (s *Service) handlePipelineMessage(ts time.Time, msg eventbus.PipelineMessa
 	}
 }
 
+// validEventTypes are the event types supported by the prompts engine.
+var validEventTypes = map[string]bool{
+	"user_intent":     true,
+	"session_output":  true,
+	"history_summary": true,
+	"clarification":   true,
+}
+
 func (s *Service) publishPrompt(sessionID string, ctxTurns []eventbus.ConversationTurn, newTurn eventbus.ConversationTurn) {
 	if s.bus == nil {
 		return
+	}
+
+	// Build Metadata from turn annotations (propagate pipeline annotations)
+	// Extended whitelist to include pipeline metadata needed by AI adapters
+	metadata := make(map[string]string)
+	for key, value := range newTurn.Meta {
+		// Propagate relevant annotations to prompt metadata
+		switch key {
+		// Core event metadata
+		case "tool", "tool_id", "confidence", "stream_id", "event_type",
+			"session_output", "clarification_question", "severity":
+			metadata[key] = value
+		// Extended pipeline metadata (input source, mode, annotations)
+		case "input_source", "mode", "sessionless", "adapter", "language",
+			"model", "provider", "priority", "context_window":
+			metadata[key] = value
+		}
+	}
+
+	// Add current_tool from our tool cache if not already in metadata
+	if sessionID != "" {
+		s.mu.RLock()
+		if tool, ok := s.toolCache[sessionID]; ok && tool != "" {
+			if _, exists := metadata["current_tool"]; !exists {
+				metadata["current_tool"] = tool
+			}
+			if _, exists := metadata["tool"]; !exists {
+				metadata["tool"] = tool
+			}
+		}
+		s.mu.RUnlock()
+	}
+
+	// Validate and set event_type
+	if eventType, exists := metadata["event_type"]; exists {
+		if !validEventTypes[eventType] {
+			// Invalid event_type, reset to default
+			metadata["event_type"] = "user_intent"
+		}
+	} else {
+		metadata["event_type"] = "user_intent"
 	}
 
 	prompt := eventbus.ConversationPromptEvent{
@@ -277,7 +406,7 @@ func (s *Service) publishPrompt(sessionID string, ctxTurns []eventbus.Conversati
 			At:     newTurn.At,
 			Meta:   newTurn.Meta,
 		},
-		Metadata: map[string]string{},
+		Metadata: metadata,
 	}
 
 	s.bus.Publish(context.Background(), eventbus.Envelope{
@@ -293,10 +422,22 @@ func (s *Service) clearSession(sessionID string) {
 	}
 	s.mu.Lock()
 	delete(s.sessions, sessionID)
+	delete(s.toolCache, sessionID)
 	if timer, ok := s.detach[sessionID]; ok {
 		timer.Stop()
 		delete(s.detach, sessionID)
 	}
+	s.mu.Unlock()
+}
+
+// clearToolCache removes just the tool cache for a session without affecting
+// conversation history. Called on detach to prevent stale current_tool injection.
+func (s *Service) clearToolCache(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	s.mu.Lock()
+	delete(s.toolCache, sessionID)
 	s.mu.Unlock()
 }
 
@@ -362,13 +503,23 @@ func (s *Service) Slice(sessionID string, offset, limit int) (int, []eventbus.Co
 	return total, out
 }
 
-func (s *Service) handleReplyMessage(ts time.Time, msg eventbus.ConversationReplyEvent) {
-	if msg.SessionID == "" {
-		return
+// GlobalContext returns a snapshot of the global (sessionless) conversation turns.
+func (s *Service) GlobalContext() []eventbus.ConversationTurn {
+	if s.globalStore == nil {
+		return nil
 	}
+	return s.globalStore.GetContext()
+}
 
-	s.cancelDetachCleanup(msg.SessionID)
+// GlobalSlice returns a paginated view over the global conversation turns.
+func (s *Service) GlobalSlice(offset, limit int) (int, []eventbus.ConversationTurn) {
+	if s.globalStore == nil {
+		return 0, nil
+	}
+	return s.globalStore.Slice(offset, limit)
+}
 
+func (s *Service) handleReplyMessage(ts time.Time, msg eventbus.ConversationReplyEvent) {
 	if ts.IsZero() {
 		ts = time.Now().UTC()
 	}
@@ -398,6 +549,16 @@ func (s *Service) handleReplyMessage(ts time.Time, msg eventbus.ConversationRepl
 		meta.add("prompt_id", msg.PromptID)
 	}
 	turn.Meta = meta.result()
+
+	// Handle sessionless ("bezpańskie") replies via GlobalStore
+	if msg.SessionID == "" {
+		if s.globalStore != nil {
+			s.globalStore.AddTurn(turn)
+		}
+		return
+	}
+
+	s.cancelDetachCleanup(msg.SessionID)
 
 	s.mu.Lock()
 	history := s.sessions[msg.SessionID]

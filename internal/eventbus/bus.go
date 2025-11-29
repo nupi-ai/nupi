@@ -50,6 +50,7 @@ func New(opts ...BusOption) *Bus {
 		TopicSessionsOutput:          1024,
 		TopicSessionsLifecycle:       256,
 		TopicSessionsTool:            128,
+		TopicSessionsToolChanged:     64,
 		TopicPipelineCleaned:         512,
 		TopicPipelineError:           64,
 		TopicConversationPrompt:      256,
@@ -65,6 +66,7 @@ func New(opts ...BusOption) *Bus {
 		TopicSpeechVADDetected:       128,
 		TopicSpeechBargeIn:           64,
 		TopicConversationSpeak:       128,
+		TopicIntentRouterDiagnostics: 64,
 	}
 
 	bus := &Bus{

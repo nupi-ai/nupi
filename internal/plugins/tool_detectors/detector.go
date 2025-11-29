@@ -10,11 +10,19 @@ import (
 	"github.com/nupi-ai/nupi/internal/plugins/manifest"
 )
 
-// ToolDetectedEvent is emitted when a tool is detected.
+// ToolDetectedEvent is emitted when a tool is first detected.
 type ToolDetectedEvent struct {
 	SessionID string
 	Tool      string
 	Timestamp time.Time
+}
+
+// ToolChangedEvent is emitted when the detected tool changes.
+type ToolChangedEvent struct {
+	SessionID    string
+	PreviousTool string
+	NewTool      string
+	Timestamp    time.Time
 }
 
 // DetectionResult holds the result of a plugin detection attempt.
@@ -37,27 +45,45 @@ type ToolDetector struct {
 	buffer           *RingBuffer
 	allPluginsLoaded bool
 
-	detectedTool string
-	detectedIcon string
-	throttleMode bool
-	lastCheck    time.Time
-	startTime    time.Time
+	detectedTool   string
+	detectedIcon   string
+	throttleMode   bool
+	continuousMode bool // Keeps detecting after initial tool
+	lastCheck      time.Time
+	lastToolChange time.Time // Rate limit tool_changed publications (min 5s)
+	startTime      time.Time
 
-	eventChan chan ToolDetectedEvent
-	closeOnce sync.Once
-	mu        sync.RWMutex
+	eventChan  chan ToolDetectedEvent
+	changeChan chan ToolChangedEvent
+	closeOnce  sync.Once
+	mu         sync.RWMutex
+}
+
+// DetectorOption configures a ToolDetector.
+type DetectorOption func(*ToolDetector)
+
+// WithContinuousMode enables continuous tool detection after initial detection.
+func WithContinuousMode(enabled bool) DetectorOption {
+	return func(d *ToolDetector) {
+		d.continuousMode = enabled
+	}
 }
 
 // NewToolDetector creates a new detector for a session.
-func NewToolDetector(sessionID, pluginDir string) *ToolDetector {
-	return &ToolDetector{
-		sessionID: sessionID,
-		pluginDir: pluginDir,
-		indexPath: filepath.Join(pluginDir, "detectors_index.json"),
-		plugins:   make(map[string]*JSPlugin),
-		buffer:    NewRingBuffer(),
-		eventChan: make(chan ToolDetectedEvent, 1),
+func NewToolDetector(sessionID, pluginDir string, opts ...DetectorOption) *ToolDetector {
+	d := &ToolDetector{
+		sessionID:  sessionID,
+		pluginDir:  pluginDir,
+		indexPath:  filepath.Join(pluginDir, "detectors_index.json"),
+		plugins:    make(map[string]*JSPlugin),
+		buffer:     NewRingBuffer(),
+		eventChan:  make(chan ToolDetectedEvent, 1),
+		changeChan: make(chan ToolChangedEvent, 8),
 	}
+	for _, opt := range opts {
+		opt(d)
+	}
+	return d
 }
 
 // Initialize loads the plugin index.
@@ -116,7 +142,8 @@ func (d *ToolDetector) OnOutput(data []byte) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	if d.detectedTool != "" {
+	// If already detected and not in continuous mode, skip processing
+	if d.detectedTool != "" && !d.continuousMode {
 		return
 	}
 
@@ -124,12 +151,23 @@ func (d *ToolDetector) OnOutput(data []byte) {
 
 	now := time.Now()
 
+	// Enter throttle mode after 30s of operation
 	if !d.throttleMode && now.Sub(d.startTime) > 30*time.Second {
 		d.throttleMode = true
 		log.Printf("[Detector] Entering throttle mode after 30s")
 	}
 
-	if d.throttleMode && now.Sub(d.lastCheck) < 5*time.Second {
+	// Debounce: always wait at least 200ms between detection checks
+	// This prevents excessive detection attempts on rapid output bursts
+	const debounceInterval = 200 * time.Millisecond
+	if now.Sub(d.lastCheck) < debounceInterval {
+		return
+	}
+
+	// In throttle mode: check every 5s (both initial and continuous detection per architecture 4.3.1)
+	throttleInterval := 5 * time.Second
+
+	if d.throttleMode && now.Sub(d.lastCheck) < throttleInterval {
 		return
 	}
 
@@ -143,21 +181,60 @@ func (d *ToolDetector) OnOutput(data []byte) {
 
 	results := d.runParallelDetection(d.plugins, output)
 
+	// Rate limit tool_changed publications to prevent spamming bus/UI
+	const toolChangeMinInterval = 5 * time.Second
+
 	for _, result := range results {
 		if result.detected {
-			d.detectedTool = result.plugin.Name
-			d.detectedIcon = result.plugin.Icon
-			log.Printf("[Detector] Tool detected for session %s: %s", d.sessionID, result.plugin.Name)
+			previousTool := d.detectedTool
 
-			select {
-			case d.eventChan <- ToolDetectedEvent{
-				SessionID: d.sessionID,
-				Tool:      result.plugin.Name,
-				Timestamp: time.Now(),
-			}:
-			default:
-				log.Printf("[Detector] Failed to emit detection event (channel full)")
+			// Check if this is a tool change
+			if previousTool != "" && previousTool != result.plugin.Name {
+				// Enforce minimum 5s between tool_changed publications
+				if !d.lastToolChange.IsZero() && now.Sub(d.lastToolChange) < toolChangeMinInterval {
+					log.Printf("[Detector] Skipping tool change %s -> %s (rate limited, last change %v ago)",
+						previousTool, result.plugin.Name, now.Sub(d.lastToolChange))
+					return
+				}
+
+				d.detectedTool = result.plugin.Name
+				d.detectedIcon = result.plugin.Icon
+				d.lastToolChange = now
+				log.Printf("[Detector] Tool changed for session %s: %s -> %s",
+					d.sessionID, previousTool, result.plugin.Name)
+
+				select {
+				case d.changeChan <- ToolChangedEvent{
+					SessionID:    d.sessionID,
+					PreviousTool: previousTool,
+					NewTool:      result.plugin.Name,
+					Timestamp:    time.Now(),
+				}:
+				default:
+					log.Printf("[Detector] Failed to emit change event (channel full)")
+				}
+				return
 			}
+
+			// First detection
+			if previousTool == "" {
+				d.detectedTool = result.plugin.Name
+				d.detectedIcon = result.plugin.Icon
+				log.Printf("[Detector] Tool detected for session %s: %s", d.sessionID, result.plugin.Name)
+
+				select {
+				case d.eventChan <- ToolDetectedEvent{
+					SessionID: d.sessionID,
+					Tool:      result.plugin.Name,
+					Timestamp: time.Now(),
+				}:
+				default:
+					log.Printf("[Detector] Failed to emit detection event (channel full)")
+				}
+				return
+			}
+
+			// Same tool detected again, no event needed
 			return
 		}
 	}
@@ -177,19 +254,52 @@ func (d *ToolDetector) OnOutput(data []byte) {
 		results = d.runParallelDetection(d.plugins, output)
 		for _, result := range results {
 			if result.detected {
-				d.detectedTool = result.plugin.Name
-				d.detectedIcon = result.plugin.Icon
-				log.Printf("[Detector] Tool detected (fallback) for session %s: %s", d.sessionID, result.plugin.Name)
+				previousTool := d.detectedTool
 
-				select {
-				case d.eventChan <- ToolDetectedEvent{
-					SessionID: d.sessionID,
-					Tool:      result.plugin.Name,
-					Timestamp: time.Now(),
-				}:
-				default:
-					log.Printf("[Detector] Failed to emit detection event (channel full)")
+				if previousTool != "" && previousTool != result.plugin.Name {
+					// Enforce minimum 5s between tool_changed publications
+					if !d.lastToolChange.IsZero() && now.Sub(d.lastToolChange) < toolChangeMinInterval {
+						log.Printf("[Detector] Skipping tool change (fallback) %s -> %s (rate limited)",
+							previousTool, result.plugin.Name)
+						return
+					}
+
+					d.detectedTool = result.plugin.Name
+					d.detectedIcon = result.plugin.Icon
+					d.lastToolChange = now
+					log.Printf("[Detector] Tool changed (fallback) for session %s: %s -> %s",
+						d.sessionID, previousTool, result.plugin.Name)
+
+					select {
+					case d.changeChan <- ToolChangedEvent{
+						SessionID:    d.sessionID,
+						PreviousTool: previousTool,
+						NewTool:      result.plugin.Name,
+						Timestamp:    time.Now(),
+					}:
+					default:
+						log.Printf("[Detector] Failed to emit change event (channel full)")
+					}
+					return
 				}
+
+				if previousTool == "" {
+					d.detectedTool = result.plugin.Name
+					d.detectedIcon = result.plugin.Icon
+					log.Printf("[Detector] Tool detected (fallback) for session %s: %s", d.sessionID, result.plugin.Name)
+
+					select {
+					case d.eventChan <- ToolDetectedEvent{
+						SessionID: d.sessionID,
+						Tool:      result.plugin.Name,
+						Timestamp: time.Now(),
+					}:
+					default:
+						log.Printf("[Detector] Failed to emit detection event (channel full)")
+					}
+					return
+				}
+
 				return
 			}
 		}
@@ -281,13 +391,18 @@ func (d *ToolDetector) StopDetection() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	if d.eventChan == nil {
+	if d.eventChan == nil && d.changeChan == nil {
 		return
 	}
 
 	d.closeOnce.Do(func() {
-		close(d.eventChan)
-		log.Printf("[Detector] Detection stopped, event channel closed")
+		if d.eventChan != nil {
+			close(d.eventChan)
+		}
+		if d.changeChan != nil {
+			close(d.changeChan)
+		}
+		log.Printf("[Detector] Detection stopped, channels closed")
 	})
 }
 
@@ -305,7 +420,31 @@ func (d *ToolDetector) GetDetectedIcon() string {
 	return d.detectedIcon
 }
 
-// EventChannel returns the channel for tool detection events.
+// EventChannel returns the channel for initial tool detection events.
 func (d *ToolDetector) EventChannel() <-chan ToolDetectedEvent {
 	return d.eventChan
+}
+
+// ChangeChannel returns the channel for tool change events.
+func (d *ToolDetector) ChangeChannel() <-chan ToolChangedEvent {
+	return d.changeChan
+}
+
+// IsContinuousMode returns whether continuous detection is enabled.
+func (d *ToolDetector) IsContinuousMode() bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.continuousMode
+}
+
+// EnableContinuousMode enables or disables continuous detection at runtime.
+func (d *ToolDetector) EnableContinuousMode(enabled bool) {
+	d.mu.Lock()
+	d.continuousMode = enabled
+	d.mu.Unlock()
+	if enabled {
+		log.Printf("[Detector] Continuous mode enabled for session %s", d.sessionID)
+	} else {
+		log.Printf("[Detector] Continuous mode disabled for session %s", d.sessionID)
+	}
 }

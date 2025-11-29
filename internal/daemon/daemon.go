@@ -29,6 +29,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/intentrouter"
 	"github.com/nupi-ai/nupi/internal/observability"
 	"github.com/nupi-ai/nupi/internal/plugins"
+	"github.com/nupi-ai/nupi/internal/prompts"
 	adapters "github.com/nupi-ai/nupi/internal/plugins/adapters"
 	daemonruntime "github.com/nupi-ai/nupi/internal/runtime"
 	"github.com/nupi-ai/nupi/internal/server"
@@ -53,6 +54,7 @@ type Daemon struct {
 	instancePaths     config.InstancePaths
 	runnerManager     *adapterrunner.Manager
 	eventBus          *eventbus.Bus
+	globalStore       *conversation.GlobalStore
 	ctx               context.Context
 	cancel            context.CancelFunc
 	errMu             sync.Mutex
@@ -126,7 +128,10 @@ func New(opts Options) (*Daemon, error) {
 	audioVADService := vad.New(bus, vad.WithFactory(vad.NewAdapterFactory(opts.Store)))
 	audioBargeService := barge.New(bus)
 	audioEgressService := egress.New(bus, egress.WithFactory(egress.NewAdapterFactory(opts.Store)))
-	conversationService := conversation.NewService(bus)
+
+	// Global conversation store for sessionless ("bezpańskie") messages
+	globalConversationStore := conversation.NewGlobalStore()
+	conversationService := conversation.NewService(bus, conversation.WithGlobalStore(globalConversationStore))
 	eventCounter := observability.NewEventCounter()
 	bus.AddObserver(eventCounter)
 	metricsExporter := observability.NewPrometheusExporter(bus, eventCounter)
@@ -188,12 +193,17 @@ func New(opts Options) (*Daemon, error) {
 		return nil, err
 	}
 
+	// Prompts engine for building AI prompts
+	promptsEngine := prompts.New()
+	promptEngineAdapter := intentrouter.NewPromptEngineAdapter(promptsEngine)
+
 	// Intent router service - bridges conversation to AI adapters
 	// Starts in passive mode (no adapter) - real AI adapter will be set via
 	// SetAdapter() when configured through adapter manager/config store
 	intentRouterService := intentrouter.NewService(bus,
 		intentrouter.WithSessionProvider(runtimebridge.SessionProvider(sessionManager)),
 		intentrouter.WithCommandExecutor(runtimebridge.CommandExecutor(sessionManager)),
+		intentrouter.WithPromptEngine(promptEngineAdapter),
 	)
 
 	if err := host.Register("intent_router", func(ctx context.Context) (daemonruntime.Service, error) {
@@ -257,6 +267,7 @@ func New(opts Options) (*Daemon, error) {
 		instancePaths:  paths,
 		runnerManager:  runnerManager,
 		eventBus:       bus,
+		globalStore:    globalConversationStore,
 	}
 
 	metricsExporter.WithAudioMetrics(func() observability.AudioMetricsSnapshot {
@@ -317,6 +328,11 @@ func (d *Daemon) Start() error {
 	d.ctx, d.cancel = context.WithCancel(context.Background())
 	d.eventBus.StartMetricsReporter(d.ctx, 30*time.Second, nil)
 
+	// Start global conversation store periodic pruning
+	if d.globalStore != nil {
+		d.globalStore.Start()
+	}
+
 	if err := d.serviceHost.Start(d.ctx); err != nil {
 		if d.cancel != nil {
 			d.cancel()
@@ -372,6 +388,9 @@ func (d *Daemon) Shutdown() error {
 	}
 	if d.cancel != nil {
 		d.cancel()
+	}
+	if d.globalStore != nil {
+		d.globalStore.Stop()
 	}
 	if d.eventBus != nil {
 		d.eventBus.Shutdown()

@@ -1364,3 +1364,483 @@ func TestE2EMultipleSessionsCommandRouting(t *testing.T) {
 	defer shutdownCancel()
 	svc.Shutdown(shutdownCtx)
 }
+
+func TestServiceToolChangeEventsUpdateCache(t *testing.T) {
+	bus := eventbus.New()
+	defer bus.Shutdown()
+
+	// Adapter that captures the CurrentTool from request
+	var capturedTool string
+	adapter := NewMockAdapter(
+		WithMockCustomHandler(func(ctx context.Context, req IntentRequest) (*IntentResponse, error) {
+			capturedTool = req.CurrentTool
+			return &IntentResponse{
+				PromptID: req.PromptID,
+				Actions:  []IntentAction{{Type: ActionNoop}},
+			}, nil
+		}),
+	)
+
+	svc := NewService(bus, WithAdapter(adapter))
+
+	replySub := bus.Subscribe(eventbus.TopicConversationReply, eventbus.WithSubscriptionName("test_reply"))
+	defer replySub.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+
+	// Give subscriptions time to be active
+	time.Sleep(50 * time.Millisecond)
+
+	// Publish initial tool detection event
+	bus.Publish(ctx, eventbus.Envelope{
+		Topic:  eventbus.TopicSessionsTool,
+		Source: eventbus.SourceSessionManager,
+		Payload: eventbus.SessionToolEvent{
+			SessionID: "session-1",
+			ToolName:  "vim",
+		},
+	})
+
+	// Wait for event to be processed
+	time.Sleep(50 * time.Millisecond)
+
+	// Publish a prompt - should include the cached tool
+	bus.Publish(ctx, eventbus.Envelope{
+		Topic:  eventbus.TopicConversationPrompt,
+		Source: eventbus.SourceConversation,
+		Payload: eventbus.ConversationPromptEvent{
+			SessionID: "session-1",
+			PromptID:  "prompt-1",
+			NewMessage: eventbus.ConversationMessage{
+				Text: "hello",
+			},
+		},
+	})
+
+	select {
+	case <-replySub.C():
+		// OK
+	case <-time.After(1 * time.Second):
+		t.Fatal("Timeout waiting for reply")
+	}
+
+	if capturedTool != "vim" {
+		t.Errorf("Expected CurrentTool=vim, got %q", capturedTool)
+	}
+
+	// Now publish a tool change event
+	bus.Publish(ctx, eventbus.Envelope{
+		Topic:  eventbus.TopicSessionsToolChanged,
+		Source: eventbus.SourceSessionManager,
+		Payload: eventbus.SessionToolChangedEvent{
+			SessionID:    "session-1",
+			PreviousTool: "vim",
+			NewTool:      "python",
+		},
+	})
+
+	// Wait for event to be processed
+	time.Sleep(50 * time.Millisecond)
+
+	// Publish another prompt - should have updated tool
+	bus.Publish(ctx, eventbus.Envelope{
+		Topic:  eventbus.TopicConversationPrompt,
+		Source: eventbus.SourceConversation,
+		Payload: eventbus.ConversationPromptEvent{
+			SessionID: "session-1",
+			PromptID:  "prompt-2",
+			NewMessage: eventbus.ConversationMessage{
+				Text: "hello again",
+			},
+		},
+	})
+
+	select {
+	case <-replySub.C():
+		// OK
+	case <-time.After(1 * time.Second):
+		t.Fatal("Timeout waiting for second reply")
+	}
+
+	if capturedTool != "python" {
+		t.Errorf("Expected CurrentTool=python after tool change, got %q", capturedTool)
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	svc.Shutdown(shutdownCtx)
+}
+
+func TestServiceToolCacheCleanupOnSessionLifecycle(t *testing.T) {
+	bus := eventbus.New()
+	defer bus.Shutdown()
+
+	adapter := NewMockAdapter(
+		WithMockCustomHandler(func(ctx context.Context, req IntentRequest) (*IntentResponse, error) {
+			return &IntentResponse{
+				PromptID: req.PromptID,
+				Actions:  []IntentAction{{Type: ActionNoop}},
+			}, nil
+		}),
+	)
+
+	svc := NewService(bus, WithAdapter(adapter))
+
+	replySub := bus.Subscribe(eventbus.TopicConversationReply, eventbus.WithSubscriptionName("test_reply"))
+	defer replySub.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Set tool for session
+	bus.Publish(ctx, eventbus.Envelope{
+		Topic:  eventbus.TopicSessionsTool,
+		Source: eventbus.SourceSessionManager,
+		Payload: eventbus.SessionToolEvent{
+			SessionID: "session-1",
+			ToolName:  "vim",
+		},
+	})
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Verify tool is cached
+	if tool := svc.getToolFromCache("session-1"); tool != "vim" {
+		t.Errorf("Expected cached tool=vim, got %q", tool)
+	}
+
+	// Session stops
+	bus.Publish(ctx, eventbus.Envelope{
+		Topic:  eventbus.TopicSessionsLifecycle,
+		Source: eventbus.SourceSessionManager,
+		Payload: eventbus.SessionLifecycleEvent{
+			SessionID: "session-1",
+			State:     eventbus.SessionStateStopped,
+		},
+	})
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Cache should be cleared
+	if tool := svc.getToolFromCache("session-1"); tool != "" {
+		t.Errorf("Expected empty tool after session stopped, got %q", tool)
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	svc.Shutdown(shutdownCtx)
+}
+
+// MockPromptEngine is a mock implementation of PromptEngine for testing.
+type MockPromptEngine struct {
+	lastRequest   PromptBuildRequest
+	systemPrompt  string
+	userPrompt    string
+	shouldError   bool
+	buildCount    int
+	mu            sync.Mutex
+}
+
+func (m *MockPromptEngine) Build(req PromptBuildRequest) (*PromptBuildResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.buildCount++
+	m.lastRequest = req
+	if m.shouldError {
+		return nil, errors.New("mock prompt engine error")
+	}
+	return &PromptBuildResponse{
+		SystemPrompt: m.systemPrompt,
+		UserPrompt:   m.userPrompt,
+	}, nil
+}
+
+func (m *MockPromptEngine) GetLastRequest() PromptBuildRequest {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastRequest
+}
+
+func (m *MockPromptEngine) GetBuildCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.buildCount
+}
+
+func TestServiceEventTypeMetadataPropagation(t *testing.T) {
+	bus := eventbus.New()
+	defer bus.Shutdown()
+
+	var capturedEventType EventType
+	adapter := NewMockAdapter(
+		WithMockCustomHandler(func(ctx context.Context, req IntentRequest) (*IntentResponse, error) {
+			capturedEventType = req.EventType
+			return &IntentResponse{
+				PromptID: req.PromptID,
+				Actions:  []IntentAction{{Type: ActionNoop}},
+			}, nil
+		}),
+	)
+
+	svc := NewService(bus, WithAdapter(adapter))
+
+	replySub := bus.Subscribe(eventbus.TopicConversationReply, eventbus.WithSubscriptionName("test_reply"))
+	defer replySub.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Test user_intent (default)
+	bus.Publish(ctx, eventbus.Envelope{
+		Topic:  eventbus.TopicConversationPrompt,
+		Source: eventbus.SourceConversation,
+		Payload: eventbus.ConversationPromptEvent{
+			SessionID: "session-1",
+			PromptID:  "prompt-1",
+			NewMessage: eventbus.ConversationMessage{
+				Text: "hello",
+			},
+			Metadata: map[string]string{
+				"event_type": "user_intent",
+			},
+		},
+	})
+
+	select {
+	case <-replySub.C():
+	case <-time.After(1 * time.Second):
+		t.Fatal("Timeout waiting for reply")
+	}
+
+	if capturedEventType != EventTypeUserIntent {
+		t.Errorf("Expected EventType=user_intent, got %q", capturedEventType)
+	}
+
+	// Test session_output
+	bus.Publish(ctx, eventbus.Envelope{
+		Topic:  eventbus.TopicConversationPrompt,
+		Source: eventbus.SourceConversation,
+		Payload: eventbus.ConversationPromptEvent{
+			SessionID: "session-1",
+			PromptID:  "prompt-2",
+			NewMessage: eventbus.ConversationMessage{
+				Text: "output text",
+			},
+			Metadata: map[string]string{
+				"event_type":     "session_output",
+				"session_output": "Error: something failed",
+			},
+		},
+	})
+
+	select {
+	case <-replySub.C():
+	case <-time.After(1 * time.Second):
+		t.Fatal("Timeout waiting for reply")
+	}
+
+	if capturedEventType != EventTypeSessionOutput {
+		t.Errorf("Expected EventType=session_output, got %q", capturedEventType)
+	}
+
+	// Test clarification
+	bus.Publish(ctx, eventbus.Envelope{
+		Topic:  eventbus.TopicConversationPrompt,
+		Source: eventbus.SourceConversation,
+		Payload: eventbus.ConversationPromptEvent{
+			SessionID: "session-1",
+			PromptID:  "prompt-3",
+			NewMessage: eventbus.ConversationMessage{
+				Text: "yes, run it",
+			},
+			Metadata: map[string]string{
+				"event_type":             "clarification",
+				"clarification_question": "Do you want me to run the tests?",
+			},
+		},
+	})
+
+	select {
+	case <-replySub.C():
+	case <-time.After(1 * time.Second):
+		t.Fatal("Timeout waiting for reply")
+	}
+
+	if capturedEventType != EventTypeClarification {
+		t.Errorf("Expected EventType=clarification, got %q", capturedEventType)
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	svc.Shutdown(shutdownCtx)
+}
+
+func TestServicePromptEnginePopulatesSystemAndUserPrompts(t *testing.T) {
+	bus := eventbus.New()
+	defer bus.Shutdown()
+
+	var capturedSystemPrompt, capturedUserPrompt string
+	adapter := NewMockAdapter(
+		WithMockCustomHandler(func(ctx context.Context, req IntentRequest) (*IntentResponse, error) {
+			capturedSystemPrompt = req.SystemPrompt
+			capturedUserPrompt = req.UserPrompt
+			return &IntentResponse{
+				PromptID: req.PromptID,
+				Actions:  []IntentAction{{Type: ActionNoop}},
+			}, nil
+		}),
+	)
+
+	mockEngine := &MockPromptEngine{
+		systemPrompt: "You are a helpful assistant",
+		userPrompt:   "User says: hello",
+	}
+
+	svc := NewService(bus, WithAdapter(adapter), WithPromptEngine(mockEngine))
+
+	replySub := bus.Subscribe(eventbus.TopicConversationReply, eventbus.WithSubscriptionName("test_reply"))
+	defer replySub.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	bus.Publish(ctx, eventbus.Envelope{
+		Topic:  eventbus.TopicConversationPrompt,
+		Source: eventbus.SourceConversation,
+		Payload: eventbus.ConversationPromptEvent{
+			SessionID: "session-1",
+			PromptID:  "prompt-1",
+			NewMessage: eventbus.ConversationMessage{
+				Text: "hello",
+			},
+			Metadata: map[string]string{
+				"event_type": "user_intent",
+			},
+		},
+	})
+
+	select {
+	case <-replySub.C():
+	case <-time.After(1 * time.Second):
+		t.Fatal("Timeout waiting for reply")
+	}
+
+	if capturedSystemPrompt != "You are a helpful assistant" {
+		t.Errorf("Expected SystemPrompt='You are a helpful assistant', got %q", capturedSystemPrompt)
+	}
+	if capturedUserPrompt != "User says: hello" {
+		t.Errorf("Expected UserPrompt='User says: hello', got %q", capturedUserPrompt)
+	}
+
+	// Verify prompt engine was called with correct event type
+	lastReq := mockEngine.GetLastRequest()
+	if lastReq.EventType != EventTypeUserIntent {
+		t.Errorf("Expected PromptEngine called with EventType=user_intent, got %q", lastReq.EventType)
+	}
+	if lastReq.Transcript != "hello" {
+		t.Errorf("Expected PromptEngine called with Transcript='hello', got %q", lastReq.Transcript)
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	svc.Shutdown(shutdownCtx)
+}
+
+func TestServiceExtendedMetadataPropagation(t *testing.T) {
+	bus := eventbus.New()
+	defer bus.Shutdown()
+
+	var capturedMetadata map[string]string
+	adapter := NewMockAdapter(
+		WithMockCustomHandler(func(ctx context.Context, req IntentRequest) (*IntentResponse, error) {
+			capturedMetadata = req.Metadata
+			return &IntentResponse{
+				PromptID: req.PromptID,
+				Actions:  []IntentAction{{Type: ActionNoop}},
+			}, nil
+		}),
+	)
+
+	svc := NewService(bus, WithAdapter(adapter))
+
+	replySub := bus.Subscribe(eventbus.TopicConversationReply, eventbus.WithSubscriptionName("test_reply"))
+	defer replySub.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Publish prompt with extended metadata
+	bus.Publish(ctx, eventbus.Envelope{
+		Topic:  eventbus.TopicConversationPrompt,
+		Source: eventbus.SourceConversation,
+		Payload: eventbus.ConversationPromptEvent{
+			SessionID: "session-1",
+			PromptID:  "prompt-1",
+			NewMessage: eventbus.ConversationMessage{
+				Text: "hello",
+			},
+			Metadata: map[string]string{
+				"event_type":   "user_intent",
+				"input_source": "voice",
+				"sessionless":  "true",
+				"confidence":   "0.95",
+			},
+		},
+	})
+
+	select {
+	case <-replySub.C():
+	case <-time.After(1 * time.Second):
+		t.Fatal("Timeout waiting for reply")
+	}
+
+	// Verify extended metadata was propagated
+	if capturedMetadata == nil {
+		t.Fatal("Expected metadata to be captured")
+	}
+	if capturedMetadata["event_type"] != "user_intent" {
+		t.Errorf("Expected event_type=user_intent, got %q", capturedMetadata["event_type"])
+	}
+	if capturedMetadata["input_source"] != "voice" {
+		t.Errorf("Expected input_source=voice, got %q", capturedMetadata["input_source"])
+	}
+	if capturedMetadata["sessionless"] != "true" {
+		t.Errorf("Expected sessionless=true, got %q", capturedMetadata["sessionless"])
+	}
+	if capturedMetadata["confidence"] != "0.95" {
+		t.Errorf("Expected confidence=0.95, got %q", capturedMetadata["confidence"])
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	svc.Shutdown(shutdownCtx)
+}

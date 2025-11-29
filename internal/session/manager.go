@@ -240,9 +240,9 @@ func (m *Manager) CreateSession(opts pty.StartOptions, inspect bool) (*Session, 
 		}
 	}
 
-	// Set up tool detection
+	// Set up tool detection with continuous mode for detecting tool changes
 	if m.pluginDir != "" {
-		toolDetector := tooldetectors.NewToolDetector(sessionID, m.pluginDir)
+		toolDetector := tooldetectors.NewToolDetector(sessionID, m.pluginDir, tooldetectors.WithContinuousMode(true))
 		if err := toolDetector.Initialize(); err != nil {
 			log.Printf("[Manager] Failed to initialize detector: %v", err)
 		} else {
@@ -253,7 +253,7 @@ func (m *Manager) CreateSession(opts pty.StartOptions, inspect bool) (*Session, 
 				log.Printf("[Manager] Failed to start detection: %v", err)
 			}
 
-			// Monitor detection events
+			// Monitor detection events (initial and changes)
 			go m.monitorDetection(session, toolDetector)
 
 			// Add output sink for detection
@@ -573,30 +573,66 @@ func (s *eventBusSink) NotifyEvent(eventType string, exitCode int) {
 	// No-op for lifecycle - handled separately.
 }
 
-// monitorDetection monitors tool detection events
+// monitorDetection monitors tool detection events (initial and changes)
 func (m *Manager) monitorDetection(session *Session, toolDetector *tooldetectors.ToolDetector) {
 	eventChan := toolDetector.EventChannel()
+	changeChan := toolDetector.ChangeChannel()
 
-	// Wait for tool detection event (no timeout)
-	// Detection continues until tool is found or session ends
-	event, ok := <-eventChan
-	if !ok {
-		// Channel closed, detection ended without finding tool
-		log.Printf("[Manager] Detection ended for session %s (channel closed)", session.ID)
-		return
+	// Wait for initial tool detection
+	select {
+	case event, ok := <-eventChan:
+		if !ok {
+			// Channel closed, detection ended without finding tool
+			log.Printf("[Manager] Detection ended for session %s (channel closed)", session.ID)
+			return
+		}
+
+		log.Printf("[Manager] Tool detected for session %s: %s", session.ID, event.Tool)
+
+		m.publish(eventbus.TopicSessionsTool, eventbus.SourcePluginService, eventbus.SessionToolEvent{
+			SessionID: session.ID,
+			ToolName:  event.Tool,
+			ToolID:    event.Tool,
+			IconPath:  session.GetDetectedIcon(),
+		})
+
+		// Notify listeners about tool detection
+		m.notifyListeners("tool_detected", session)
 	}
 
-	log.Printf("[Manager] Tool detected for session %s: %s", session.ID, event.Tool)
+	// Continue monitoring for tool changes in continuous mode
+	for {
+		select {
+		case changeEvent, ok := <-changeChan:
+			if !ok {
+				// Channel closed, stop monitoring
+				log.Printf("[Manager] Tool change monitoring ended for session %s", session.ID)
+				return
+			}
 
-	m.publish(eventbus.TopicSessionsTool, eventbus.SourcePluginService, eventbus.SessionToolEvent{
-		SessionID: session.ID,
-		ToolName:  event.Tool,
-		ToolID:    event.Tool,
-		IconPath:  session.GetDetectedIcon(),
-	})
+			log.Printf("[Manager] Tool changed for session %s: %s -> %s",
+				session.ID, changeEvent.PreviousTool, changeEvent.NewTool)
 
-	// Notify listeners about tool detection
-	m.notifyListeners("tool_detected", session)
+			// Publish tool change event
+			m.publish(eventbus.TopicSessionsToolChanged, eventbus.SourcePluginService, eventbus.SessionToolChangedEvent{
+				SessionID:    session.ID,
+				PreviousTool: changeEvent.PreviousTool,
+				NewTool:      changeEvent.NewTool,
+				Timestamp:    changeEvent.Timestamp,
+			})
+
+			// Also publish updated tool event for current state
+			m.publish(eventbus.TopicSessionsTool, eventbus.SourcePluginService, eventbus.SessionToolEvent{
+				SessionID: session.ID,
+				ToolName:  changeEvent.NewTool,
+				ToolID:    changeEvent.NewTool,
+				IconPath:  session.GetDetectedIcon(),
+			})
+
+			// Notify listeners about tool change
+			m.notifyListeners("tool_changed", session)
+		}
+	}
 }
 
 // setupInspection sets up inspection logging for a session
