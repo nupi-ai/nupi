@@ -33,6 +33,20 @@ type SessionInfo struct {
 	Metadata   map[string]string `json:"metadata,omitempty"`
 }
 
+// EventType categorizes the type of prompt being sent to the AI.
+type EventType string
+
+const (
+	// EventTypeUserIntent is the default - user voice/text requiring interpretation.
+	EventTypeUserIntent EventType = "user_intent"
+	// EventTypeSessionOutput is for notable terminal output needing AI analysis.
+	EventTypeSessionOutput EventType = "session_output"
+	// EventTypeHistorySummary requests summarizing conversation history.
+	EventTypeHistorySummary EventType = "history_summary"
+	// EventTypeClarification follows a previous clarification request.
+	EventTypeClarification EventType = "clarification"
+)
+
 // IntentRequest contains the context sent to the AI adapter for intent resolution.
 type IntentRequest struct {
 	// PromptID identifies the conversation prompt that triggered this request.
@@ -40,6 +54,9 @@ type IntentRequest struct {
 
 	// SessionID is the session context (may be empty if multiple sessions exist).
 	SessionID string `json:"session_id,omitempty"`
+
+	// EventType categorizes the prompt (user_intent, session_output, etc.).
+	EventType EventType `json:"event_type"`
 
 	// Transcript is the user's speech or text input.
 	Transcript string `json:"transcript"`
@@ -49,6 +66,21 @@ type IntentRequest struct {
 
 	// AvailableSessions lists all sessions the user can interact with.
 	AvailableSessions []SessionInfo `json:"available_sessions"`
+
+	// CurrentTool is the detected tool/command in the current session.
+	CurrentTool string `json:"current_tool,omitempty"`
+
+	// SessionOutput contains terminal output for session_output events.
+	SessionOutput string `json:"session_output,omitempty"`
+
+	// ClarificationQuestion contains the original question for clarification events.
+	ClarificationQuestion string `json:"clarification_question,omitempty"`
+
+	// SystemPrompt is the pre-built system prompt from Prompts Engine.
+	SystemPrompt string `json:"system_prompt,omitempty"`
+
+	// UserPrompt is the pre-built user prompt from Prompts Engine.
+	UserPrompt string `json:"user_prompt,omitempty"`
 
 	// Metadata contains additional context (e.g., detected tool, confidence).
 	Metadata map[string]string `json:"metadata,omitempty"`
@@ -142,5 +174,38 @@ func WithSessionProvider(provider SessionProvider) Option {
 func WithCommandExecutor(executor CommandExecutor) Option {
 	return func(s *Service) {
 		s.commandExecutor = executor
+	}
+}
+
+// PromptEngine builds system and user prompts for AI adapters.
+type PromptEngine interface {
+	// Build generates prompts for the given request context.
+	Build(req PromptBuildRequest) (*PromptBuildResponse, error)
+}
+
+// PromptBuildRequest contains the context for building prompts.
+type PromptBuildRequest struct {
+	EventType             EventType
+	SessionID             string
+	Transcript            string
+	History               []eventbus.ConversationTurn
+	AvailableSessions     []SessionInfo
+	CurrentTool           string
+	SessionOutput         string
+	ClarificationQuestion string
+	Metadata              map[string]string
+}
+
+// PromptBuildResponse contains the generated prompts.
+type PromptBuildResponse struct {
+	SystemPrompt string
+	UserPrompt   string
+	Context      map[string]any
+}
+
+// WithPromptEngine sets the prompt engine for generating AI prompts.
+func WithPromptEngine(engine PromptEngine) Option {
+	return func(s *Service) {
+		s.promptEngine = engine
 	}
 }

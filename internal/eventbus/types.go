@@ -12,6 +12,7 @@ const (
 	TopicSessionsOutput          Topic = "sessions.output"
 	TopicSessionsLifecycle       Topic = "sessions.lifecycle"
 	TopicSessionsTool            Topic = "sessions.tool"
+	TopicSessionsToolChanged     Topic = "sessions.tool_changed"
 	TopicPipelineCleaned         Topic = "pipeline.cleaned"
 	TopicPipelineError           Topic = "pipeline.error"
 	TopicConversationPrompt      Topic = "conversation.prompt"
@@ -27,26 +28,28 @@ const (
 	TopicSpeechVADDetected       Topic = "speech.vad.detected"
 	TopicSpeechBargeIn           Topic = "speech.barge_in"
 	TopicConversationSpeak       Topic = "conversation.speak"
+	TopicIntentRouterDiagnostics Topic = "intentrouter.diagnostics"
 )
 
 // Source describes which component produced an event.
 type Source string
 
 const (
-	SourceSessionManager  Source = "session_manager"
-	SourceContentPipeline Source = "content_pipeline"
-	SourceConversation    Source = "conversation"
-	SourceIntentRouter    Source = "intent_router"
-	SourcePluginService   Source = "plugin_service"
-	SourceAdaptersService Source = "adapters_service"
-	SourceAdapterRunner   Source = "adapter_runner"
-	SourceAudioIngress    Source = "audio_ingress"
-	SourceAudioEgress     Source = "audio_egress"
-	SourceAudioSTT        Source = "audio_stt"
-	SourceSpeechBarge     Source = "speech_barge"
-	SourceSpeechVAD       Source = "speech_vad"
-	SourceClient          Source = "client"
-	SourceUnknown         Source = "unknown"
+	SourceSessionManager     Source = "session_manager"
+	SourceContentPipeline    Source = "content_pipeline"
+	SourceConversation       Source = "conversation"
+	SourceIntentRouter       Source = "intent_router"
+	SourceIntentRouterBridge Source = "intent_router_bridge"
+	SourcePluginService      Source = "plugin_service"
+	SourceAdaptersService    Source = "adapters_service"
+	SourceAdapterRunner      Source = "adapter_runner"
+	SourceAudioIngress       Source = "audio_ingress"
+	SourceAudioEgress        Source = "audio_egress"
+	SourceAudioSTT           Source = "audio_stt"
+	SourceSpeechBarge        Source = "speech_barge"
+	SourceSpeechVAD          Source = "speech_vad"
+	SourceClient             Source = "client"
+	SourceUnknown            Source = "unknown"
 )
 
 // Envelope wraps every message published on the bus.
@@ -102,6 +105,14 @@ type SessionToolEvent struct {
 	ToolID     string
 	IconPath   string
 	Confidence *float32
+}
+
+// SessionToolChangedEvent is emitted when the detected tool changes in a session.
+type SessionToolChangedEvent struct {
+	SessionID    string
+	PreviousTool string
+	NewTool      string
+	Timestamp    time.Time
 }
 
 // PipelineMessageEvent is emitted after cleaners normalise output.
@@ -304,4 +315,59 @@ type AdapterLogEvent struct {
 	Message   string
 	Fields    map[string]string
 	Timestamp time.Time
+}
+
+// BridgeDiagnosticType categorizes bridge diagnostic events.
+type BridgeDiagnosticType string
+
+const (
+	// BridgeDiagnosticConfigInvalid indicates config validation failed against manifest.
+	// User action: fix config in DB (check field names, types, required values).
+	// NOT recoverable - requires user intervention.
+	BridgeDiagnosticConfigInvalid BridgeDiagnosticType = "config_invalid"
+
+	// BridgeDiagnosticConnectionFailed indicates connection to adapter failed.
+	// May be transient - adapter might recover on next READY.
+	// Recoverable - system may retry automatically.
+	BridgeDiagnosticConnectionFailed BridgeDiagnosticType = "connection_failed"
+
+	// BridgeDiagnosticLookupFailed indicates controller/DB lookup failed.
+	// May be transient - retry on next READY.
+	// Recoverable - system may retry automatically.
+	BridgeDiagnosticLookupFailed BridgeDiagnosticType = "lookup_failed"
+
+	// BridgeDiagnosticConfigured indicates adapter was successfully configured.
+	// Informational - no action needed.
+	BridgeDiagnosticConfigured BridgeDiagnosticType = "configured"
+
+	// BridgeDiagnosticCleared indicates adapter was cleared (disconnected).
+	// Informational - adapter stopped or errored.
+	BridgeDiagnosticCleared BridgeDiagnosticType = "cleared"
+)
+
+// BridgeDiagnosticEvent reports intent router bridge state changes.
+// Published on TopicIntentRouterDiagnostics, separate from adapter lifecycle events.
+//
+// This event type is for observability/debugging of the bridge component,
+// not for adapter process lifecycle (use AdapterStatusEvent for that).
+type BridgeDiagnosticEvent struct {
+	// AdapterID identifies the adapter involved (may be empty for general errors).
+	AdapterID string
+
+	// Type categorizes the diagnostic event.
+	Type BridgeDiagnosticType
+
+	// Message provides human-readable details.
+	Message string
+
+	// Recoverable indicates if the error might resolve on retry.
+	// true: transient error, system may retry automatically.
+	// false: requires user intervention (e.g., fix config).
+	Recoverable bool
+
+	// Timestamp when the event occurred.
+	Timestamp time.Time
+
+	// Extra contains additional diagnostic data (e.g., field that failed validation).
+	Extra map[string]string
 }

@@ -32,11 +32,15 @@ type Service struct {
 	adapter         IntentAdapter
 	sessionProvider SessionProvider
 	commandExecutor CommandExecutor
+	promptEngine    PromptEngine
 
 	mu     sync.RWMutex
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 	subs   []*eventbus.Subscription
+
+	// Tool cache - tracks current tool per session for prompt context
+	toolCache map[string]string
 
 	// Metrics - using atomic for thread-safe access
 	requestsTotal   uint64
@@ -49,7 +53,8 @@ type Service struct {
 // NewService creates an intent router service.
 func NewService(bus *eventbus.Bus, opts ...Option) *Service {
 	svc := &Service{
-		bus: bus,
+		bus:       bus,
+		toolCache: make(map[string]string),
 	}
 	for _, opt := range opts {
 		opt(svc)
@@ -71,8 +76,23 @@ func (s *Service) Start(ctx context.Context) error {
 	promptSub := s.bus.Subscribe(eventbus.TopicConversationPrompt, eventbus.WithSubscriptionName("intent_router_prompt"))
 	s.subs = append(s.subs, promptSub)
 
-	s.wg.Add(1)
+	// Subscribe to tool detection events (initial detection)
+	toolSub := s.bus.Subscribe(eventbus.TopicSessionsTool, eventbus.WithSubscriptionName("intent_router_tool"))
+	s.subs = append(s.subs, toolSub)
+
+	// Subscribe to tool change events (continuous detection)
+	toolChangeSub := s.bus.Subscribe(eventbus.TopicSessionsToolChanged, eventbus.WithSubscriptionName("intent_router_tool_changed"))
+	s.subs = append(s.subs, toolChangeSub)
+
+	// Subscribe to session lifecycle for tool cache cleanup
+	lifecycleSub := s.bus.Subscribe(eventbus.TopicSessionsLifecycle, eventbus.WithSubscriptionName("intent_router_lifecycle"))
+	s.subs = append(s.subs, lifecycleSub)
+
+	s.wg.Add(4)
 	go s.consumePrompts(derivedCtx, promptSub)
+	go s.consumeToolEvents(derivedCtx, toolSub)
+	go s.consumeToolChangeEvents(derivedCtx, toolChangeSub)
+	go s.consumeLifecycleEvents(derivedCtx, lifecycleSub)
 
 	s.mu.RLock()
 	adapterConfigured := s.adapter != nil
@@ -138,6 +158,16 @@ func (s *Service) SetCommandExecutor(executor CommandExecutor) {
 	s.mu.Unlock()
 }
 
+// SetPromptEngine sets the prompt engine at runtime.
+func (s *Service) SetPromptEngine(engine PromptEngine) {
+	s.mu.Lock()
+	s.promptEngine = engine
+	s.mu.Unlock()
+	if engine != nil {
+		log.Printf("[IntentRouter] Prompt engine configured")
+	}
+}
+
 func (s *Service) consumePrompts(ctx context.Context, sub *eventbus.Subscription) {
 	defer s.wg.Done()
 	if sub == nil {
@@ -163,11 +193,118 @@ func (s *Service) consumePrompts(ctx context.Context, sub *eventbus.Subscription
 	}
 }
 
+func (s *Service) consumeToolEvents(ctx context.Context, sub *eventbus.Subscription) {
+	defer s.wg.Done()
+	if sub == nil {
+		return
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case env, ok := <-sub.C():
+			if !ok {
+				return
+			}
+
+			event, ok := env.Payload.(eventbus.SessionToolEvent)
+			if !ok {
+				continue
+			}
+
+			s.updateToolCache(event.SessionID, event.ToolName)
+		}
+	}
+}
+
+func (s *Service) consumeToolChangeEvents(ctx context.Context, sub *eventbus.Subscription) {
+	defer s.wg.Done()
+	if sub == nil {
+		return
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case env, ok := <-sub.C():
+			if !ok {
+				return
+			}
+
+			event, ok := env.Payload.(eventbus.SessionToolChangedEvent)
+			if !ok {
+				continue
+			}
+
+			s.updateToolCache(event.SessionID, event.NewTool)
+			log.Printf("[IntentRouter] Tool changed for session %s: %s -> %s",
+				event.SessionID, event.PreviousTool, event.NewTool)
+		}
+	}
+}
+
+func (s *Service) updateToolCache(sessionID, toolName string) {
+	if sessionID == "" {
+		return
+	}
+	s.mu.Lock()
+	s.toolCache[sessionID] = toolName
+	s.mu.Unlock()
+}
+
+func (s *Service) getToolFromCache(sessionID string) string {
+	s.mu.RLock()
+	tool := s.toolCache[sessionID]
+	s.mu.RUnlock()
+	return tool
+}
+
+func (s *Service) clearToolCache(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	s.mu.Lock()
+	delete(s.toolCache, sessionID)
+	s.mu.Unlock()
+}
+
+func (s *Service) consumeLifecycleEvents(ctx context.Context, sub *eventbus.Subscription) {
+	defer s.wg.Done()
+	if sub == nil {
+		return
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case env, ok := <-sub.C():
+			if !ok {
+				return
+			}
+
+			event, ok := env.Payload.(eventbus.SessionLifecycleEvent)
+			if !ok {
+				continue
+			}
+
+			// Clean up tool cache when session stops or detaches
+			switch event.State {
+			case eventbus.SessionStateStopped, eventbus.SessionStateDetached:
+				s.clearToolCache(event.SessionID)
+			}
+		}
+	}
+}
+
 func (s *Service) handlePrompt(ctx context.Context, prompt eventbus.ConversationPromptEvent) {
 	s.mu.RLock()
 	adapter := s.adapter
 	sessionProvider := s.sessionProvider
 	commandExecutor := s.commandExecutor
+	promptEngine := s.promptEngine
 	s.mu.RUnlock()
 
 	atomic.AddUint64(&s.requestsTotal, 1)
@@ -188,7 +325,7 @@ func (s *Service) handlePrompt(ctx context.Context, prompt eventbus.Conversation
 	}
 
 	// Build the intent request
-	req := s.buildIntentRequest(prompt, sessionProvider)
+	req := s.buildIntentRequest(prompt, sessionProvider, promptEngine)
 
 	// Call the AI adapter
 	resolveCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -207,18 +344,81 @@ func (s *Service) handlePrompt(ctx context.Context, prompt eventbus.Conversation
 	s.executeActions(ctx, prompt, response, sessionProvider, commandExecutor)
 }
 
-func (s *Service) buildIntentRequest(prompt eventbus.ConversationPromptEvent, provider SessionProvider) IntentRequest {
+func (s *Service) buildIntentRequest(prompt eventbus.ConversationPromptEvent, provider SessionProvider, engine PromptEngine) IntentRequest {
+	// Determine event type from metadata
+	eventType := EventTypeUserIntent
+	if et, ok := prompt.Metadata["event_type"]; ok {
+		switch et {
+		case "session_output":
+			eventType = EventTypeSessionOutput
+		case "history_summary":
+			eventType = EventTypeHistorySummary
+		case "clarification":
+			eventType = EventTypeClarification
+		}
+	}
+
+	// Extract current tool: check metadata first, then our cache, then session provider
+	var currentTool string
+	if tool, ok := prompt.Metadata["current_tool"]; ok {
+		currentTool = tool
+	} else if prompt.SessionID != "" {
+		// Check our local tool cache (updated by tool change events)
+		currentTool = s.getToolFromCache(prompt.SessionID)
+	}
+	// Fallback to session provider if still empty
+	if currentTool == "" && provider != nil && prompt.SessionID != "" {
+		if info, found := provider.GetSessionInfo(prompt.SessionID); found {
+			currentTool = info.Tool
+		}
+	}
+
 	req := IntentRequest{
 		PromptID:            prompt.PromptID,
 		SessionID:           prompt.SessionID,
+		EventType:           eventType,
 		Transcript:          prompt.NewMessage.Text,
 		ConversationHistory: prompt.Context,
+		CurrentTool:         currentTool,
 		Metadata:            prompt.Metadata,
+	}
+
+	// Extract optional fields from metadata
+	if sessionOutput, ok := prompt.Metadata["session_output"]; ok {
+		req.SessionOutput = sessionOutput
+	}
+	if clarificationQ, ok := prompt.Metadata["clarification_question"]; ok {
+		req.ClarificationQuestion = clarificationQ
 	}
 
 	// Add available sessions if provider is configured
 	if provider != nil {
 		req.AvailableSessions = provider.ListSessionInfos()
+	}
+
+	// Build prompts using the engine if available
+	if engine != nil {
+		sessions := make([]SessionInfo, len(req.AvailableSessions))
+		copy(sessions, req.AvailableSessions)
+
+		buildReq := PromptBuildRequest{
+			EventType:             eventType,
+			SessionID:             prompt.SessionID,
+			Transcript:            prompt.NewMessage.Text,
+			History:               prompt.Context,
+			AvailableSessions:     sessions,
+			CurrentTool:           currentTool,
+			SessionOutput:         req.SessionOutput,
+			ClarificationQuestion: req.ClarificationQuestion,
+			Metadata:              prompt.Metadata,
+		}
+
+		if resp, err := engine.Build(buildReq); err == nil && resp != nil {
+			req.SystemPrompt = resp.SystemPrompt
+			req.UserPrompt = resp.UserPrompt
+		} else if err != nil {
+			log.Printf("[IntentRouter] Failed to build prompts: %v", err)
+		}
 	}
 
 	return req

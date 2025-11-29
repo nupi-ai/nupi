@@ -284,15 +284,20 @@ func (s *Service) handleSessionOutput(evt eventbus.SessionOutputEvent) {
 }
 
 func (s *Service) handleTranscript(evt eventbus.SpeechTranscriptEvent) {
-	if evt.SessionID == "" {
-		return
-	}
 	if strings.TrimSpace(evt.Text) == "" {
 		return
 	}
 
+	// Per architecture 4.4.2: sessionless transcripts (SessionID="") are valid
+	// and should be passed to conversation.Service for GlobalStore handling.
+	// This enables "sessionless" voice commands like asking about available
+	// sessions, general questions, or system commands.
+
 	annotations := map[string]string{
 		"input_source": "voice",
+	}
+	if evt.SessionID == "" {
+		annotations["sessionless"] = "true"
 	}
 	if evt.StreamID != "" {
 		annotations["stream_id"] = evt.StreamID

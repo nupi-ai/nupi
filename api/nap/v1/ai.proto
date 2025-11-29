@@ -1,0 +1,157 @@
+syntax = "proto3";
+
+package nupi.nap.v1;
+
+option go_package = "github.com/nupi-ai/nupi/api/nap/v1;napv1";
+
+import "google/protobuf/timestamp.proto";
+
+// ActionType describes the type of action the AI requests.
+enum ActionType {
+  ACTION_TYPE_UNSPECIFIED = 0;
+  ACTION_TYPE_COMMAND = 1;   // Execute a shell command in a session
+  ACTION_TYPE_SPEAK = 2;     // Speak a response via TTS
+  ACTION_TYPE_CLARIFY = 3;   // Request additional information from user
+  ACTION_TYPE_NOOP = 4;      // No action needed
+}
+
+// EventType categorizes the type of AI request.
+enum EventType {
+  EVENT_TYPE_UNSPECIFIED = 0;
+  EVENT_TYPE_USER_INTENT = 1;      // Default: interpret user voice/text
+  EVENT_TYPE_SESSION_OUTPUT = 2;   // Analyze notable terminal output
+  EVENT_TYPE_HISTORY_SUMMARY = 3;  // Summarize conversation history
+  EVENT_TYPE_CLARIFICATION = 4;    // Handle user response to clarification
+}
+
+// ContentOrigin identifies who produced a conversation turn.
+enum ContentOrigin {
+  CONTENT_ORIGIN_UNSPECIFIED = 0;
+  CONTENT_ORIGIN_USER = 1;    // User input (speech/text)
+  CONTENT_ORIGIN_AI = 2;      // AI response
+  CONTENT_ORIGIN_TOOL = 3;    // Tool/session output
+  CONTENT_ORIGIN_SYSTEM = 4;  // System message
+}
+
+// SessionInfo provides context about an available terminal session.
+message SessionInfo {
+  string id = 1;                        // Session identifier
+  string command = 2;                   // Main command running (e.g., "claude", "bash")
+  repeated string args = 3;             // Command arguments
+  string work_dir = 4;                  // Working directory
+  string tool = 5;                      // Detected tool type
+  string status = 6;                    // Session status (running, detached, stopped)
+  google.protobuf.Timestamp start_time = 7;
+  map<string, string> metadata = 8;
+}
+
+// ConversationTurn represents a single turn in conversation history.
+message ConversationTurn {
+  ContentOrigin origin = 1;
+  string text = 2;
+  google.protobuf.Timestamp at = 3;
+  map<string, string> metadata = 4;
+}
+
+// ResolveIntentRequest contains context for AI intent resolution.
+message ResolveIntentRequest {
+  // prompt_id identifies the conversation prompt that triggered this request.
+  string prompt_id = 1;
+
+  // session_id is the current session context (may be empty if multiple sessions).
+  string session_id = 2;
+
+  // transcript is the user's speech or text input to process.
+  string transcript = 3;
+
+  // conversation_history contains recent conversation turns for context.
+  repeated ConversationTurn conversation_history = 4;
+
+  // available_sessions lists all sessions the user can interact with.
+  repeated SessionInfo available_sessions = 5;
+
+  // config_json contains adapter-specific configuration as JSON.
+  string config_json = 6;
+
+  // metadata contains additional context (e.g., detected tool, confidence).
+  map<string, string> metadata = 7;
+
+  // event_type categorizes the request (user_intent, session_output, etc.).
+  // Adapter can use this to select appropriate processing mode.
+  EventType event_type = 8;
+
+  // current_tool is the detected tool/command in the current session.
+  // Populated by Nupi's tool detection plugins.
+  string current_tool = 9;
+
+  // session_output contains terminal output for EVENT_TYPE_SESSION_OUTPUT requests.
+  // This is the notable output that triggered the AI analysis.
+  string session_output = 10;
+
+  // clarification_question contains the original question for EVENT_TYPE_CLARIFICATION.
+  // This helps the AI understand what clarification was being sought.
+  string clarification_question = 11;
+
+  // system_prompt is the pre-built system prompt from Nupi's Prompts Engine.
+  // Adapters may use this directly or modify it based on their capabilities.
+  string system_prompt = 12;
+
+  // user_prompt is the pre-built user prompt from Nupi's Prompts Engine.
+  // Adapters may use this directly or modify it based on their capabilities.
+  string user_prompt = 13;
+}
+
+// IntentAction represents a single action the AI wants to perform.
+message IntentAction {
+  // type is the action type (command, speak, clarify, noop).
+  ActionType type = 1;
+
+  // session_ref identifies the target session for command actions.
+  string session_ref = 2;
+
+  // command is the shell command to execute (for ACTION_TYPE_COMMAND).
+  string command = 3;
+
+  // text is the message to speak or clarification question.
+  string text = 4;
+
+  // metadata contains additional action-specific data.
+  map<string, string> metadata = 5;
+}
+
+// ResolveIntentResponse contains the AI adapter's decision.
+message ResolveIntentResponse {
+  // prompt_id echoes the request's prompt ID for correlation.
+  string prompt_id = 1;
+
+  // actions is the list of actions to perform (usually one, but can be multiple).
+  repeated IntentAction actions = 2;
+
+  // reasoning explains the AI's decision (for debugging/logging).
+  string reasoning = 3;
+
+  // confidence indicates how confident the AI is in its decision (0.0-1.0).
+  float confidence = 4;
+
+  // metadata contains additional response data.
+  map<string, string> metadata = 5;
+
+  // error_message is set if the adapter encountered an error.
+  string error_message = 6;
+}
+
+// IntentResolutionService exposes the NAP contract for AI adapters.
+// AI adapters implement this service to receive user intents and return actions.
+//
+// Unlike STT (bidirectional streaming) or TTS (server streaming), intent resolution
+// is a simple unary RPC - one request, one response. This is because:
+// 1. Intent resolution is typically fast (<1s for local models, <5s for cloud)
+// 2. There's no streaming data (like audio) to process incrementally
+// 3. The response is a discrete decision, not a continuous stream
+//
+// For streaming scenarios (e.g., token-by-token generation), a separate
+// StreamResolveIntent RPC can be added in the future.
+service IntentResolutionService {
+  // ResolveIntent processes user input and returns intended action(s).
+  rpc ResolveIntent(ResolveIntentRequest) returns (ResolveIntentResponse);
+}
