@@ -1651,3 +1651,124 @@ func TestResolveAdapterConfigRejectsUnknownOptions(t *testing.T) {
 func strPtr(v string) *string {
 	return &v
 }
+
+func TestManagerEnsureBuiltinMockAdapterNoRunner(t *testing.T) {
+	// Test that builtin mock adapters can be started without runner manager
+	store := &fakeBindingSource{
+		bindings: []configstore.AdapterBinding{
+			{
+				Slot:      string(SlotAI),
+				Status:    "active",
+				AdapterID: strPtr(MockAIAdapterID),
+			},
+		},
+	}
+	store.setAdapter(configstore.Adapter{
+		ID:     MockAIAdapterID,
+		Source: "builtin",
+		Type:   "ai",
+		Name:   "Nupi Mock AI",
+	})
+
+	// No runner configured - should still work for builtin mocks
+	manager := NewManager(ManagerOptions{
+		Store:    store,
+		Adapters: store,
+		Runner:   nil, // Intentionally nil
+	})
+
+	ctx := context.Background()
+	if err := manager.Ensure(ctx); err != nil {
+		t.Fatalf("Ensure failed for builtin mock: %v", err)
+	}
+
+	running := manager.Running()
+	if len(running) != 1 {
+		t.Fatalf("expected 1 running adapter, got %d", len(running))
+	}
+
+	binding := running[0]
+	if binding.AdapterID != MockAIAdapterID {
+		t.Errorf("expected adapter %s, got %s", MockAIAdapterID, binding.AdapterID)
+	}
+	if binding.Runtime[RuntimeExtraTransport] != "builtin" {
+		t.Errorf("expected transport=builtin, got %s", binding.Runtime[RuntimeExtraTransport])
+	}
+}
+
+func TestManagerEnsureAllBuiltinMockAdapters(t *testing.T) {
+	mockAdapters := []struct {
+		id   string
+		slot Slot
+	}{
+		{MockSTTAdapterID, SlotSTT},
+		{MockTTSAdapterID, SlotTTS},
+		{MockVADAdapterID, SlotVAD},
+		{MockAIAdapterID, SlotAI},
+	}
+
+	for _, tc := range mockAdapters {
+		t.Run(tc.id, func(t *testing.T) {
+			store := &fakeBindingSource{
+				bindings: []configstore.AdapterBinding{
+					{
+						Slot:      string(tc.slot),
+						Status:    "active",
+						AdapterID: strPtr(tc.id),
+					},
+				},
+			}
+			store.setAdapter(configstore.Adapter{
+				ID:     tc.id,
+				Source: "builtin",
+			})
+
+			manager := NewManager(ManagerOptions{
+				Store:    store,
+				Adapters: store,
+				Runner:   nil,
+			})
+
+			ctx := context.Background()
+			if err := manager.Ensure(ctx); err != nil {
+				t.Fatalf("Ensure failed: %v", err)
+			}
+
+			running := manager.Running()
+			if len(running) != 1 {
+				t.Fatalf("expected 1 running adapter, got %d", len(running))
+			}
+			if running[0].AdapterID != tc.id {
+				t.Errorf("expected adapter %s, got %s", tc.id, running[0].AdapterID)
+			}
+		})
+	}
+}
+
+func TestIsBuiltinMockAdapter(t *testing.T) {
+	builtins := []string{
+		MockSTTAdapterID,
+		MockTTSAdapterID,
+		MockVADAdapterID,
+		MockAIAdapterID,
+	}
+
+	for _, id := range builtins {
+		if !IsBuiltinMockAdapter(id) {
+			t.Errorf("expected %s to be builtin mock adapter", id)
+		}
+	}
+
+	nonBuiltins := []string{
+		"adapter.ai.openai",
+		"adapter.stt.whisper",
+		"custom.adapter",
+		"",
+	}
+
+	for _, id := range nonBuiltins {
+		if IsBuiltinMockAdapter(id) {
+			t.Errorf("expected %s to NOT be builtin mock adapter", id)
+		}
+	}
+}
