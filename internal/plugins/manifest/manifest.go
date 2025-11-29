@@ -83,11 +83,17 @@ type AdapterTelemetry struct {
 // It supports a small set of primitive types (string, enum, boolean, integer,
 // number). Values are validated when the manifest is parsed so that defaults
 // remain consistent with declared types.
+//
+// Required vs Optional behavior:
+//   - If Required=true, the option MUST be present in config (validation fails if missing)
+//   - If Required=false (default), the option is optional and adapter uses Default value
+//   - Options with Required=true should NOT have a Default (enforced at manifest load time)
 type AdapterOption struct {
 	Type        string `yaml:"type" json:"type"`
 	Description string `yaml:"description,omitempty" json:"description,omitempty"`
 	Default     any    `yaml:"default,omitempty" json:"default,omitempty"`
 	Values      []any  `yaml:"values,omitempty" json:"values,omitempty"`
+	Required    bool   `yaml:"required,omitempty" json:"required,omitempty"`
 }
 
 type Manifest struct {

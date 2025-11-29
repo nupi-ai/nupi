@@ -422,3 +422,106 @@ func TestGenerateJSONSchema_UnsupportedType(t *testing.T) {
 		t.Errorf("expected 'unsupported option type' error, got: %v", err)
 	}
 }
+
+func TestValidateConfigAgainstOptions_RequiredOption(t *testing.T) {
+	options := map[string]AdapterOption{
+		"api_key": {
+			Type:        "string",
+			Description: "API key for authentication",
+			Required:    true, // Required, no default
+		},
+		"model": {
+			Type:     "string",
+			Default:  "base",
+			Required: false, // Optional with default
+		},
+	}
+
+	t.Run("missing required option", func(t *testing.T) {
+		config := map[string]any{
+			"model": "small",
+			// api_key is missing
+		}
+
+		err := ValidateConfigAgainstOptions(options, config)
+		if err == nil {
+			t.Fatal("expected error for missing required option")
+		}
+		if !strings.Contains(err.Error(), "missing required option") || !strings.Contains(err.Error(), "api_key") {
+			t.Errorf("expected 'missing required option api_key' error, got: %v", err)
+		}
+	})
+
+	t.Run("required option present", func(t *testing.T) {
+		config := map[string]any{
+			"api_key": "secret-key-123",
+			// model is optional, can be omitted
+		}
+
+		if err := ValidateConfigAgainstOptions(options, config); err != nil {
+			t.Errorf("config with required option should pass: %v", err)
+		}
+	})
+
+	t.Run("all options present", func(t *testing.T) {
+		config := map[string]any{
+			"api_key": "secret-key-123",
+			"model":   "large",
+		}
+
+		if err := ValidateConfigAgainstOptions(options, config); err != nil {
+			t.Errorf("config with all options should pass: %v", err)
+		}
+	})
+}
+
+func TestGenerateJSONSchema_RequiredFields(t *testing.T) {
+	options := map[string]AdapterOption{
+		"api_key": {
+			Type:        "string",
+			Description: "API key",
+			Required:    true,
+		},
+		"model": {
+			Type:     "string",
+			Default:  "base",
+			Required: false,
+		},
+		"endpoint": {
+			Type:        "string",
+			Description: "API endpoint",
+			Required:    true,
+		},
+	}
+
+	schema, err := GenerateJSONSchema(options)
+	if err != nil {
+		t.Fatalf("GenerateJSONSchema: %v", err)
+	}
+
+	var parsed JSONSchema
+	if err := json.Unmarshal(schema, &parsed); err != nil {
+		t.Fatalf("unmarshal schema: %v", err)
+	}
+
+	// Should have exactly 2 required fields
+	if len(parsed.Required) != 2 {
+		t.Errorf("expected 2 required fields, got %d: %v", len(parsed.Required), parsed.Required)
+	}
+
+	// Check that api_key and endpoint are in Required list
+	requiredMap := make(map[string]bool)
+	for _, r := range parsed.Required {
+		requiredMap[r] = true
+	}
+
+	if !requiredMap["api_key"] {
+		t.Error("api_key should be in required list")
+	}
+	if !requiredMap["endpoint"] {
+		t.Error("endpoint should be in required list")
+	}
+	if requiredMap["model"] {
+		t.Error("model should NOT be in required list")
+	}
+}

@@ -1,0 +1,300 @@
+package intentrouter
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net"
+	"strings"
+	"sync"
+	"time"
+
+	napv1 "github.com/nupi-ai/nupi/api/nap/v1"
+	configstore "github.com/nupi-ai/nupi/internal/config/store"
+	"github.com/nupi-ai/nupi/internal/eventbus"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/types/known/timestamppb"
+)
+
+// NAPAdapter implements IntentAdapter using NAP AI gRPC protocol.
+// It connects to an external AI adapter process and delegates intent resolution.
+type NAPAdapter struct {
+	adapterID string
+	conn      *grpc.ClientConn
+	client    napv1.IntentResolutionServiceClient
+	config    map[string]any
+
+	mu    sync.RWMutex
+	ready bool
+}
+
+// NAPAdapterParams contains parameters for creating a NAP AI adapter.
+type NAPAdapterParams struct {
+	AdapterID string
+	Endpoint  configstore.AdapterEndpoint
+	Config    map[string]any
+}
+
+// dialTimeout is the maximum time to wait for gRPC connection establishment.
+const dialTimeout = 10 * time.Second
+
+// NewNAPAdapter creates a new NAP AI adapter that connects to a gRPC endpoint.
+func NewNAPAdapter(ctx context.Context, params NAPAdapterParams) (*NAPAdapter, error) {
+	transport := strings.TrimSpace(params.Endpoint.Transport)
+	if transport == "" {
+		transport = "process"
+	}
+	switch transport {
+	case "grpc", "process":
+		// supported
+	default:
+		return nil, fmt.Errorf("ai: unsupported transport %q for adapter %s", params.Endpoint.Transport, params.AdapterID)
+	}
+
+	address := strings.TrimSpace(params.Endpoint.Address)
+	if address == "" {
+		return nil, fmt.Errorf("ai: adapter %s missing address", params.AdapterID)
+	}
+
+	dialOpts := []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()), // TODO: wire TLS for remote adapters
+	}
+	if dialer := dialerFromContext(ctx); dialer != nil {
+		dialOpts = append(dialOpts, grpc.WithContextDialer(dialer))
+	}
+
+	// Apply dial timeout to prevent hanging on bad addresses
+	// The parent context may be long-lived (e.g., context.Background),
+	// so we create a bounded context for the dial operation.
+	dialCtx, cancel := context.WithTimeout(ctx, dialTimeout)
+	defer cancel()
+
+	conn, err := grpc.DialContext(dialCtx, address, dialOpts...)
+	if err != nil {
+		return nil, fmt.Errorf("ai: dial adapter %s: %w", params.AdapterID, err)
+	}
+
+	client := napv1.NewIntentResolutionServiceClient(conn)
+
+	adapter := &NAPAdapter{
+		adapterID: params.AdapterID,
+		conn:      conn,
+		client:    client,
+		config:    params.Config,
+		ready:     true,
+	}
+
+	return adapter, nil
+}
+
+// Name returns the adapter's identifier.
+func (a *NAPAdapter) Name() string {
+	return a.adapterID
+}
+
+// Ready returns true if the adapter is ready to process requests.
+func (a *NAPAdapter) Ready() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.ready
+}
+
+// ResolveIntent processes user input and returns intended action(s).
+func (a *NAPAdapter) ResolveIntent(ctx context.Context, req IntentRequest) (*IntentResponse, error) {
+	a.mu.RLock()
+	if !a.ready {
+		a.mu.RUnlock()
+		return nil, ErrAdapterNotReady
+	}
+	a.mu.RUnlock()
+
+	// Build gRPC request with all protocol fields
+	grpcReq := &napv1.ResolveIntentRequest{
+		PromptId:              req.PromptID,
+		SessionId:             req.SessionID,
+		Transcript:            req.Transcript,
+		Metadata:              copyStringMap(req.Metadata),
+		EventType:             eventTypeToProto(req.EventType),
+		CurrentTool:           req.CurrentTool,
+		SessionOutput:         req.SessionOutput,
+		ClarificationQuestion: req.ClarificationQuestion,
+		SystemPrompt:          req.SystemPrompt,
+		UserPrompt:            req.UserPrompt,
+	}
+
+	// Marshal config if present
+	if len(a.config) > 0 {
+		configJSON, err := json.Marshal(a.config)
+		if err != nil {
+			return nil, fmt.Errorf("ai: marshal config: %w", err)
+		}
+		grpcReq.ConfigJson = string(configJSON)
+	}
+
+	// Convert conversation history
+	for _, turn := range req.ConversationHistory {
+		grpcReq.ConversationHistory = append(grpcReq.ConversationHistory, &napv1.ConversationTurn{
+			Origin:   contentOriginToProto(turn.Origin),
+			Text:     turn.Text,
+			At:       timestampOrNil(turn.At),
+			Metadata: copyStringMap(turn.Meta),
+		})
+	}
+
+	// Convert available sessions
+	for _, session := range req.AvailableSessions {
+		grpcReq.AvailableSessions = append(grpcReq.AvailableSessions, &napv1.SessionInfo{
+			Id:        session.ID,
+			Command:   session.Command,
+			Args:      session.Args,
+			WorkDir:   session.WorkDir,
+			Tool:      session.Tool,
+			Status:    session.Status,
+			StartTime: timestampOrNil(session.StartTime),
+			Metadata:  copyStringMap(session.Metadata),
+		})
+	}
+
+	// Call the adapter
+	grpcResp, err := a.client.ResolveIntent(ctx, grpcReq)
+	if err != nil {
+		return nil, fmt.Errorf("ai: resolve intent: %w", err)
+	}
+
+	// Check for error in response
+	if grpcResp.ErrorMessage != "" {
+		return nil, fmt.Errorf("ai: adapter error: %s", grpcResp.ErrorMessage)
+	}
+
+	// Convert response
+	resp := &IntentResponse{
+		PromptID:   grpcResp.PromptId,
+		Reasoning:  grpcResp.Reasoning,
+		Confidence: grpcResp.Confidence,
+		Metadata:   copyStringMap(grpcResp.Metadata),
+	}
+
+	for _, action := range grpcResp.Actions {
+		resp.Actions = append(resp.Actions, IntentAction{
+			Type:       actionTypeFromProto(action.Type),
+			SessionRef: action.SessionRef,
+			Command:    action.Command,
+			Text:       action.Text,
+			Metadata:   copyStringMap(action.Metadata),
+		})
+	}
+
+	return resp, nil
+}
+
+// Close closes the gRPC connection.
+func (a *NAPAdapter) Close() error {
+	a.mu.Lock()
+	a.ready = false
+	a.mu.Unlock()
+
+	if a.conn != nil {
+		return a.conn.Close()
+	}
+	return nil
+}
+
+// SetReady sets the adapter's ready state (used by bridge on status events).
+func (a *NAPAdapter) SetReady(ready bool) {
+	a.mu.Lock()
+	a.ready = ready
+	a.mu.Unlock()
+}
+
+// contentOriginToProto converts eventbus.ContentOrigin to proto enum.
+func contentOriginToProto(origin eventbus.ContentOrigin) napv1.ContentOrigin {
+	switch origin {
+	case eventbus.OriginUser:
+		return napv1.ContentOrigin_CONTENT_ORIGIN_USER
+	case eventbus.OriginAI:
+		return napv1.ContentOrigin_CONTENT_ORIGIN_AI
+	case eventbus.OriginTool:
+		return napv1.ContentOrigin_CONTENT_ORIGIN_TOOL
+	case eventbus.OriginSystem:
+		return napv1.ContentOrigin_CONTENT_ORIGIN_SYSTEM
+	default:
+		return napv1.ContentOrigin_CONTENT_ORIGIN_UNSPECIFIED
+	}
+}
+
+// eventTypeToProto converts EventType to proto enum.
+func eventTypeToProto(et EventType) napv1.EventType {
+	switch et {
+	case EventTypeUserIntent:
+		return napv1.EventType_EVENT_TYPE_USER_INTENT
+	case EventTypeSessionOutput:
+		return napv1.EventType_EVENT_TYPE_SESSION_OUTPUT
+	case EventTypeHistorySummary:
+		return napv1.EventType_EVENT_TYPE_HISTORY_SUMMARY
+	case EventTypeClarification:
+		return napv1.EventType_EVENT_TYPE_CLARIFICATION
+	default:
+		return napv1.EventType_EVENT_TYPE_UNSPECIFIED
+	}
+}
+
+// actionTypeFromProto converts proto enum to ActionType.
+func actionTypeFromProto(t napv1.ActionType) ActionType {
+	switch t {
+	case napv1.ActionType_ACTION_TYPE_COMMAND:
+		return ActionCommand
+	case napv1.ActionType_ACTION_TYPE_SPEAK:
+		return ActionSpeak
+	case napv1.ActionType_ACTION_TYPE_CLARIFY:
+		return ActionClarify
+	case napv1.ActionType_ACTION_TYPE_NOOP:
+		return ActionNoop
+	default:
+		return ActionNoop
+	}
+}
+
+// copyStringMap creates a copy of a string map.
+func copyStringMap(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[string]string, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+// timestampOrNil converts time.Time to protobuf timestamp, returning nil for zero time.
+func timestampOrNil(t time.Time) *timestamppb.Timestamp {
+	if t.IsZero() {
+		return nil
+	}
+	ts := timestamppb.New(t)
+	if err := ts.CheckValid(); err != nil {
+		return nil
+	}
+	return ts
+}
+
+// dialerContextKey is the context key for custom gRPC dialers (used in tests).
+type dialerContextKey struct{}
+
+// ContextWithDialer attaches a custom dialer to the context.
+// This is primarily for tests using bufconn without real network sockets.
+func ContextWithDialer(ctx context.Context, dialer func(context.Context, string) (net.Conn, error)) context.Context {
+	if ctx == nil || dialer == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, dialerContextKey{}, dialer)
+}
+
+func dialerFromContext(ctx context.Context) func(context.Context, string) (net.Conn, error) {
+	if ctx == nil {
+		return nil
+	}
+	dialer, _ := ctx.Value(dialerContextKey{}).(func(context.Context, string) (net.Conn, error))
+	return dialer
+}

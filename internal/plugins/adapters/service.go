@@ -12,6 +12,7 @@ import (
 
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
+	"github.com/nupi-ai/nupi/internal/plugins/manifest"
 )
 
 // Service orchestrates adapters and publishes status updates on the event bus.
@@ -513,4 +514,29 @@ func (s *Service) clearLastError() {
 	s.errMu.Lock()
 	s.lastErr = ""
 	s.errMu.Unlock()
+}
+
+// ManifestOptions returns the configuration options declared in an adapter's manifest.
+// Returns nil map (not error) for builtin adapters or adapters without manifest options.
+// This allows the intent router bridge to validate config against the manifest schema.
+func (s *Service) ManifestOptions(ctx context.Context, adapterID string) (map[string]manifest.AdapterOption, error) {
+	if s.manager == nil {
+		return nil, ErrManagerNotConfigured
+	}
+
+	// Builtin mock adapters don't have manifests
+	if IsBuiltinMockAdapter(adapterID) {
+		return nil, nil
+	}
+
+	_, mf, err := s.manager.lookupAdapter(ctx, adapterID)
+	if err != nil {
+		return nil, fmt.Errorf("adapters: lookup adapter manifest: %w", err)
+	}
+
+	if mf == nil || mf.Adapter == nil {
+		return nil, nil
+	}
+
+	return mf.Adapter.Options, nil
 }
