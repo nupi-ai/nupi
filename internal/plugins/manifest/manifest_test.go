@@ -20,7 +20,6 @@ metadata:
   version: 0.0.1
 spec:
   slot: stt
-  mode: local
   entrypoint:
     command: ./adapter
     transport: process
@@ -92,7 +91,6 @@ metadata:
   version: 0.0.1
 spec:
   slot: stt
-  mode: local
   entrypoint:
     command: ./adapter
   options:
@@ -115,7 +113,6 @@ metadata:
   version: 0.0.1
 spec:
   slot: stt
-  mode: local
   entrypoint:
     command: ./adapter
   options:
@@ -323,30 +320,6 @@ spec:
 	}
 }
 
-func TestParseAdapterRejectsMissingMode(t *testing.T) {
-	data := `apiVersion: nap.nupi.ai/v1alpha1
-kind: Plugin
-type: adapter
-metadata:
-  name: test
-  slug: test
-  catalog: ai.nupi
-  version: 0.0.1
-spec:
-  slot: ai
-  entrypoint:
-    command: ./adapter
-    transport: process`
-
-	_, err := Parse([]byte(data))
-	if err == nil {
-		t.Fatal("expected error for adapter without mode")
-	}
-	if !strings.Contains(err.Error(), "missing required field: mode") {
-		t.Fatalf("unexpected error message: %v", err)
-	}
-}
-
 func TestParseAdapterRejectsMissingTransport(t *testing.T) {
 	data := `apiVersion: nap.nupi.ai/v1alpha1
 kind: Plugin
@@ -358,7 +331,6 @@ metadata:
   version: 0.0.1
 spec:
   slot: ai
-  mode: local
   entrypoint:
     command: ./adapter`
 
@@ -382,7 +354,6 @@ metadata:
   version: 0.0.1
 spec:
   slot: stt
-  mode: local
   entrypoint:
     transport: process`
 
@@ -406,7 +377,6 @@ metadata:
   version: 0.0.1
 spec:
   slot: stt
-  mode: local
   entrypoint:
     command: ./adapter
     transport: process
@@ -463,7 +433,6 @@ metadata:
   version: 0.0.1
 spec:
   slot: stt
-  mode: local
   entrypoint:
     transport: invalid
     command: ./adapter`
@@ -488,7 +457,6 @@ metadata:
   version: 0.0.1
 spec:
   slot: stt
-  mode: local
   entrypoint:
     runtime: python
     transport: process
@@ -529,7 +497,6 @@ metadata:
   version: 0.0.1
 spec:
   slot: stt
-  mode: local
   entrypoint:
 ` + runtimeLine + `    transport: process
     command: ./adapter`
@@ -756,7 +723,7 @@ func TestLoadFromDirFallsBackToYMLAndJSON(t *testing.T) {
 		"kind": "Plugin",
 		"type": "adapter",
 		"metadata": {"name": "JSON Plugin", "slug": "json", "catalog": "test"},
-		"spec": {"slot": "stt", "mode": "local", "entrypoint": {"command": "./adapter", "transport": "process"}}
+		"spec": {"slot": "stt", "entrypoint": {"command": "./adapter", "transport": "process"}}
 	}`)
 	mf, err = LoadFromDir(jsonDir)
 	if err != nil {
@@ -884,7 +851,6 @@ metadata:
   version: 0.0.1
 spec:
   slot: ` + slot + `
-  mode: local
   entrypoint:
     command: ./adapter
     transport: process`
