@@ -193,8 +193,12 @@ func New(opts Options) (*Daemon, error) {
 		return nil, err
 	}
 
-	// Prompts engine for building AI prompts
-	promptsEngine := prompts.New()
+	// Prompts engine for building AI prompts - loads from SQLite store
+	// Default templates are seeded in store.Open, so they're already available
+	promptsEngine := prompts.New(opts.Store)
+	if err := promptsEngine.LoadTemplates(context.Background()); err != nil {
+		return nil, fmt.Errorf("daemon: load prompt templates: %w", err)
+	}
 	promptEngineAdapter := intentrouter.NewPromptEngineAdapter(promptsEngine)
 
 	// Intent router service - bridges conversation to AI adapters

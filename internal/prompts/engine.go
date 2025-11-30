@@ -2,14 +2,14 @@ package prompts
 
 import (
 	"bytes"
+	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"text/template"
 	"time"
 
+	"github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 )
 
@@ -84,44 +84,54 @@ type BuildResponse struct {
 
 // Engine manages prompt templates and builds prompts for AI adapters.
 type Engine struct {
-	mu          sync.RWMutex
-	templates   map[EventType]*template.Template
-	templateDir string
+	store *store.Store
+
+	mu        sync.RWMutex
+	templates map[EventType]*template.Template
 }
 
-// EngineOption configures the prompt engine.
-type EngineOption func(*Engine)
-
-// WithTemplateDir sets the directory to load custom templates from.
-// Template files should be named: user_intent.tmpl, session_output.tmpl, etc.
-func WithTemplateDir(dir string) EngineOption {
-	return func(e *Engine) {
-		e.templateDir = dir
-	}
-}
-
-// New creates a new prompt engine with default templates.
-// Custom templates can be loaded from a directory using WithTemplateDir option.
-func New(opts ...EngineOption) *Engine {
-	e := &Engine{
+// New creates a new prompt engine backed by the config store.
+func New(s *store.Store) *Engine {
+	return &Engine{
+		store:     s,
 		templates: make(map[EventType]*template.Template),
 	}
+}
 
-	for _, opt := range opts {
-		opt(e)
+// LoadTemplates loads and parses all templates from the store.
+// Should be called after store initialization and prompt seeding.
+func (e *Engine) LoadTemplates(ctx context.Context) error {
+	templates, err := e.store.ListPromptTemplates(ctx)
+	if err != nil {
+		return fmt.Errorf("prompts: failed to load templates from store: %w", err)
 	}
 
-	e.loadDefaultTemplates()
+	e.mu.Lock()
+	defer e.mu.Unlock()
 
-	// Load custom templates from directory if configured (overrides defaults)
-	if e.templateDir != "" {
-		if err := e.LoadTemplatesFromDir(e.templateDir); err != nil {
-			// Log but don't fail - defaults are already loaded
-			fmt.Fprintf(os.Stderr, "[prompts] Warning: failed to load templates from %s: %v\n", e.templateDir, err)
+	for _, pt := range templates {
+		eventType := EventType(pt.EventType)
+		tmpl, err := template.New(pt.EventType).Funcs(templateFuncs).Parse(pt.Content)
+		if err != nil {
+			return fmt.Errorf("prompts: failed to parse template %s: %w", pt.EventType, err)
 		}
+		e.templates[eventType] = tmpl
 	}
 
-	return e
+	return nil
+}
+
+// InvalidateCache clears cached templates. Call this after updating a template.
+func (e *Engine) InvalidateCache() {
+	e.mu.Lock()
+	e.templates = make(map[EventType]*template.Template)
+	e.mu.Unlock()
+}
+
+// Reload reloads templates from the store.
+func (e *Engine) Reload(ctx context.Context) error {
+	e.InvalidateCache()
+	return e.LoadTemplates(ctx)
 }
 
 // BuildPrompt generates system and user prompts for the given request.
@@ -131,7 +141,7 @@ func (e *Engine) BuildPrompt(req BuildRequest) (*BuildResponse, error) {
 	e.mu.RUnlock()
 
 	if !ok {
-		return nil, fmt.Errorf("prompts: unknown event type %q", req.EventType)
+		return nil, fmt.Errorf("prompts: unknown event type %q (templates not loaded?)", req.EventType)
 	}
 
 	data := e.buildTemplateData(req)
@@ -155,97 +165,57 @@ func (e *Engine) BuildPrompt(req BuildRequest) (*BuildResponse, error) {
 	}, nil
 }
 
-// SetTemplate allows overriding a template at runtime.
-func (e *Engine) SetTemplate(eventType EventType, tmplContent string) error {
-	tmpl, err := template.New(string(eventType)).Funcs(templateFuncs).Parse(tmplContent)
+// SetTemplate updates a template in the store and reloads it.
+func (e *Engine) SetTemplate(ctx context.Context, eventType EventType, content string) error {
+	// Validate template syntax first
+	_, err := template.New(string(eventType)).Funcs(templateFuncs).Parse(content)
 	if err != nil {
-		return fmt.Errorf("prompts: invalid template: %w", err)
+		return fmt.Errorf("prompts: invalid template syntax: %w", err)
 	}
 
-	e.mu.Lock()
-	e.templates[eventType] = tmpl
-	e.mu.Unlock()
+	// Save to store
+	if err := e.store.SetPromptTemplate(ctx, string(eventType), content); err != nil {
+		return fmt.Errorf("prompts: failed to save template: %w", err)
+	}
 
-	return nil
+	// Reload templates
+	return e.Reload(ctx)
 }
 
-// LoadTemplatesFromDir loads templates from the specified directory.
-// Template files should be named: user_intent.tmpl, session_output.tmpl,
-// history_summary.tmpl, clarification.tmpl. Only existing files are loaded;
-// missing files keep the default templates.
-func (e *Engine) LoadTemplatesFromDir(dir string) error {
-	if dir == "" {
-		return nil
-	}
-
-	info, err := os.Stat(dir)
+// GetTemplate returns the current template content for an event type.
+func (e *Engine) GetTemplate(ctx context.Context, eventType EventType) (string, bool, error) {
+	pt, err := e.store.GetPromptTemplate(ctx, string(eventType))
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil // Directory doesn't exist, use defaults
+		if store.IsNotFound(err) {
+			return "", false, nil
 		}
-		return fmt.Errorf("prompts: cannot access template dir: %w", err)
+		return "", false, err
 	}
-	if !info.IsDir() {
-		return fmt.Errorf("prompts: %s is not a directory", dir)
-	}
-
-	// Map event types to expected filenames
-	eventTypeFiles := map[EventType]string{
-		EventTypeUserIntent:     "user_intent.tmpl",
-		EventTypeSessionOutput:  "session_output.tmpl",
-		EventTypeHistorySummary: "history_summary.tmpl",
-		EventTypeClarification:  "clarification.tmpl",
-	}
-
-	var loaded int
-	for eventType, filename := range eventTypeFiles {
-		path := filepath.Join(dir, filename)
-		content, err := os.ReadFile(path)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue // Skip missing files, keep default
-			}
-			return fmt.Errorf("prompts: failed to read %s: %w", path, err)
-		}
-
-		if err := e.SetTemplate(eventType, string(content)); err != nil {
-			return fmt.Errorf("prompts: failed to parse %s: %w", path, err)
-		}
-		loaded++
-	}
-
-	if loaded > 0 {
-		fmt.Fprintf(os.Stderr, "[prompts] Loaded %d custom templates from %s\n", loaded, dir)
-	}
-
-	return nil
+	return pt.Content, pt.IsCustom, nil
 }
 
-// ReloadTemplates reloads templates from the configured directory.
-// Returns an error if no directory was configured.
-func (e *Engine) ReloadTemplates() error {
-	e.mu.RLock()
-	dir := e.templateDir
-	e.mu.RUnlock()
-
-	if dir == "" {
-		return fmt.Errorf("prompts: no template directory configured")
+// ResetTemplate resets a template to its default.
+func (e *Engine) ResetTemplate(ctx context.Context, eventType EventType) error {
+	defaults := store.DefaultPromptTemplates()
+	defaultContent, ok := defaults[string(eventType)]
+	if !ok {
+		return fmt.Errorf("prompts: unknown event type %q", eventType)
 	}
 
-	// Reload defaults first, then overlay custom templates
-	e.loadDefaultTemplates()
-	return e.LoadTemplatesFromDir(dir)
+	if err := e.store.ResetPromptTemplate(ctx, string(eventType), defaultContent); err != nil {
+		return fmt.Errorf("prompts: failed to reset template: %w", err)
+	}
+
+	return e.Reload(ctx)
 }
 
-func (e *Engine) loadDefaultTemplates() {
-	for eventType, content := range defaultTemplates {
-		tmpl, err := template.New(string(eventType)).Funcs(templateFuncs).Parse(content)
-		if err != nil {
-			// This should never happen with valid default templates
-			panic(fmt.Sprintf("prompts: failed to parse default template %s: %v", eventType, err))
-		}
-		e.templates[eventType] = tmpl
+// ResetAllTemplates resets all templates to defaults.
+func (e *Engine) ResetAllTemplates(ctx context.Context) error {
+	if err := e.store.ResetAllPromptTemplates(ctx, store.DefaultPromptTemplates()); err != nil {
+		return fmt.Errorf("prompts: failed to reset all templates: %w", err)
 	}
+
+	return e.Reload(ctx)
 }
 
 func (e *Engine) buildTemplateData(req BuildRequest) map[string]any {

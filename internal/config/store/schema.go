@@ -94,6 +94,16 @@ var schemaStatements = []string{
 		PRIMARY KEY (instance_name, profile_name, key),
 		FOREIGN KEY (instance_name, profile_name) REFERENCES profiles(instance_name, name) ON DELETE CASCADE
 	)`,
+	`CREATE TABLE IF NOT EXISTS prompt_templates (
+		instance_name TEXT NOT NULL,
+		profile_name TEXT NOT NULL,
+		event_type TEXT NOT NULL CHECK (event_type IN ('user_intent', 'session_output', 'history_summary', 'clarification')),
+		content TEXT NOT NULL,
+		is_custom INTEGER NOT NULL DEFAULT 0,
+		updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (instance_name, profile_name, event_type),
+		FOREIGN KEY (instance_name, profile_name) REFERENCES profiles(instance_name, name) ON DELETE CASCADE
+	)`,
 }
 
 var requiredAdapterSlots = []string{
@@ -102,6 +112,44 @@ var requiredAdapterSlots = []string{
 	"tts",
 	"vad",
 	"tunnel",
+}
+
+// defaultPromptTemplates contains the default AI prompt templates for seeding.
+// This is the single source of truth for default templates.
+var defaultPromptTemplates = map[string]string{
+	"user_intent":     defaultUserIntentTemplate,
+	"session_output":  defaultSessionOutputTemplate,
+	"history_summary": defaultHistorySummaryTemplate,
+	"clarification":   defaultClarificationTemplate,
+}
+
+// DefaultPromptTemplates returns a copy of the default prompt templates.
+// Used by prompts.Engine for reset operations and CLI.
+func DefaultPromptTemplates() map[string]string {
+	result := make(map[string]string, len(defaultPromptTemplates))
+	for k, v := range defaultPromptTemplates {
+		result[k] = v
+	}
+	return result
+}
+
+// promptEventDescriptions maps event types to human-readable descriptions.
+// This is the single source of truth for event type descriptions.
+var promptEventDescriptions = map[string]string{
+	"user_intent":     "Interprets user voice/text commands",
+	"session_output":  "Analyzes terminal output for notifications",
+	"history_summary": "Summarizes conversation history",
+	"clarification":   "Handles follow-up responses",
+}
+
+// PromptEventDescriptions returns a copy of the event type descriptions.
+// Used by CLI for validation and display.
+func PromptEventDescriptions() map[string]string {
+	result := make(map[string]string, len(promptEventDescriptions))
+	for k, v := range promptEventDescriptions {
+		result[k] = v
+	}
+	return result
 }
 
 func applyPragmas(ctx context.Context, db *sql.DB, readOnly bool) error {
@@ -212,6 +260,18 @@ func seedDefaults(ctx context.Context, db *sql.DB, instanceName, profileName str
 		}
 	}
 
+	// Seed default prompt templates
+	for eventType, content := range defaultPromptTemplates {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO prompt_templates (instance_name, profile_name, event_type, content, is_custom, updated_at)
+			VALUES (?, ?, ?, ?, 0, CURRENT_TIMESTAMP)
+			ON CONFLICT(instance_name, profile_name, event_type) DO NOTHING
+		`, instanceName, profileName, eventType, content); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("config: seed prompt template %s: %w", eventType, err)
+		}
+	}
+
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("config: commit seed transaction: %w", err)
 	}
@@ -227,3 +287,92 @@ func abbreviate(stmt string) string {
 	}
 	return trimmed[:maxLen] + "…"
 }
+
+// Default prompt templates - single source of truth for AI prompts.
+// These are seeded into SQLite when the store opens and used by prompts.Engine.
+
+const defaultUserIntentTemplate = `You are Nupi, an AI assistant for command-line programming. You help users interact with terminal sessions using voice and text commands.
+
+Your capabilities:
+- Execute commands in terminal sessions
+- Explain what's happening in sessions
+- Help users navigate and control their CLI tools
+- Answer questions about available sessions and tools
+
+Available actions you can take:
+- "command": Execute a shell command in a session
+- "speak": Respond to the user with voice/text (no command execution)
+- "clarify": Ask the user for more information
+- "noop": Do nothing (when no action is needed)
+
+{{if .has_session}}Current session: {{.session_id}}{{end}}
+{{if .has_tool}}Current tool: {{.current_tool}}{{end}}
+
+{{if gt .sessions_count 0}}Available sessions:
+{{.sessions}}{{else}}No active sessions.{{end}}
+
+{{if gt .history_count 0}}Recent conversation:
+{{.history}}{{end}}
+
+Guidelines:
+- Be concise and direct
+- When executing commands, prefer the current session unless the user specifies otherwise
+- If the user's intent is unclear, ask for clarification
+- For dangerous operations (rm -rf, etc.), confirm before executing
+- If no session is active and the user wants to run a command, explain they need to start a session first
+
+---USER---
+User said: "{{.transcript}}"
+
+Determine the user's intent and respond with the appropriate action.`
+
+const defaultSessionOutputTemplate = `You are Nupi, an AI assistant monitoring terminal sessions. You're analyzing output from a session to determine if the user should be notified.
+
+{{if .has_session}}Session: {{.session_id}}{{end}}
+{{if .has_tool}}Tool: {{.current_tool}}{{end}}
+
+{{if gt .history_count 0}}Recent conversation context:
+{{.history}}{{end}}
+
+Guidelines for deciding whether to notify the user:
+- Notify for: errors, completion of long-running tasks, important status changes, prompts requiring input
+- Don't notify for: routine output, progress updates, expected responses
+- Be selective - too many notifications are annoying
+
+---USER---
+Session output:
+{{truncate 2000 .session_output}}
+
+Should the user be notified about this output? If yes, what should be said?`
+
+const defaultHistorySummaryTemplate = `You are Nupi, an AI assistant. Summarize the following conversation history concisely.
+
+Guidelines:
+- Focus on key actions taken and their outcomes
+- Note any pending tasks or unresolved issues
+- Keep the summary brief (2-4 sentences)
+- Preserve important context that might be needed for future interactions
+
+---USER---
+Conversation to summarize:
+{{.history}}
+
+Provide a concise summary.`
+
+const defaultClarificationTemplate = `You are Nupi, an AI assistant for command-line programming. The user is responding to a clarification request.
+
+{{if .has_session}}Current session: {{.session_id}}{{end}}
+{{if .has_tool}}Current tool: {{.current_tool}}{{end}}
+
+{{if gt .sessions_count 0}}Available sessions:
+{{.sessions}}{{end}}
+
+Original question asked: "{{.clarification_q}}"
+
+{{if gt .history_count 0}}Recent conversation:
+{{.history}}{{end}}
+
+---USER---
+User's response: "{{.transcript}}"
+
+Based on this clarification, determine the appropriate action to take.`
