@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -12,7 +14,28 @@ import (
 	pipelinecleaners "github.com/nupi-ai/nupi/internal/plugins/pipeline_cleaners"
 )
 
-func TestLoadPipelinePluginSuccess(t *testing.T) {
+func bunAvailable() bool {
+	_, err := exec.LookPath("bun")
+	return err == nil
+}
+
+func setHostScriptEnv(t *testing.T) {
+	t.Helper()
+	// Get the path to host.js relative to this test file
+	_, filename, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("failed to get test file path")
+	}
+	// Navigate from plugins_test.go to jsruntime/host.js
+	hostScript := filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(filename))), "jsruntime", "host.js")
+	if _, err := os.Stat(hostScript); err != nil {
+		t.Skipf("host.js not found at %s", hostScript)
+	}
+	t.Setenv("NUPI_JS_HOST_SCRIPT", hostScript)
+}
+
+func TestLoadPipelinePluginBasic(t *testing.T) {
+	// Test basic loading (without jsruntime validation)
 	dir := t.TempDir()
 	src := `
 module.exports = {
@@ -31,11 +54,9 @@ module.exports = {
 		t.Fatalf("LoadPipelinePlugin returned error: %v", err)
 	}
 
-	if plugin.Name != "sample" {
-		t.Fatalf("expected name sample, got %s", plugin.Name)
-	}
-	if len(plugin.Commands) != 2 || plugin.Commands[0] != "foo" || plugin.Commands[1] != "BAR" {
-		t.Fatalf("unexpected commands: %+v", plugin.Commands)
+	// Basic loading just reads the file, name defaults to filename
+	if plugin.Name != "sample.js" {
+		t.Fatalf("expected name sample.js, got %s", plugin.Name)
 	}
 	if plugin.FilePath != path {
 		t.Fatalf("unexpected path: %s", plugin.FilePath)
@@ -45,24 +66,10 @@ module.exports = {
 	}
 }
 
-func TestLoadPipelinePluginErrors(t *testing.T) {
-	dir := t.TempDir()
-	noTransform := `module.exports = { name: "broken" };`
-	path := filepath.Join(dir, "broken.js")
-	if err := os.WriteFile(path, []byte(noTransform), 0o644); err != nil {
-		t.Fatalf("write plugin: %v", err)
-	}
-	if _, err := pipelinecleaners.LoadPipelinePlugin(path); err == nil {
-		t.Fatalf("expected error for missing transform")
-	}
-
-	badTransform := `module.exports = { transform: "not a function" };`
-	path = filepath.Join(dir, "bad.js")
-	if err := os.WriteFile(path, []byte(badTransform), 0o644); err != nil {
-		t.Fatalf("write plugin: %v", err)
-	}
-	if _, err := pipelinecleaners.LoadPipelinePlugin(path); err == nil {
-		t.Fatalf("expected error for non-function transform")
+func TestLoadPipelinePluginReadError(t *testing.T) {
+	// Test error when file doesn't exist
+	if _, err := pipelinecleaners.LoadPipelinePlugin("/nonexistent/plugin.js"); err == nil {
+		t.Fatalf("expected error for missing file")
 	}
 }
 
@@ -92,6 +99,11 @@ spec:
 }
 
 func TestServiceLoadPipelinePluginsBuildsIndex(t *testing.T) {
+	if !bunAvailable() {
+		t.Skip("bun not available")
+	}
+	setHostScriptEnv(t)
+
 	root := t.TempDir()
 	const catalog = "test.catalog"
 
@@ -103,9 +115,12 @@ func TestServiceLoadPipelinePluginsBuildsIndex(t *testing.T) {
 	writeCleanerPlugin(t, root, catalog, "skip-cleaner", `module.exports = { name: "skip", transform: "oops" };`)
 
 	svc := plugins.NewService(root)
-	if err := svc.LoadPipelinePlugins(); err != nil {
-		t.Fatalf("LoadPipelinePlugins: %v", err)
+
+	// Start the service to initialize jsruntime
+	if err := svc.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
 	}
+	defer svc.Shutdown(context.Background())
 
 	if plugin, ok := svc.PipelinePluginFor("alias"); !ok || plugin.Name != "default" {
 		t.Fatalf("expected default plugin for alias, got %+v ok=%v", plugin, ok)
@@ -114,10 +129,14 @@ func TestServiceLoadPipelinePluginsBuildsIndex(t *testing.T) {
 	if plugin, ok := svc.PipelinePluginFor("unknown"); !ok || plugin.Name != "default" {
 		t.Fatalf("expected fallback default plugin, got %+v ok=%v", plugin, ok)
 	}
-
 }
 
 func TestServiceStartInitialisesPipeline(t *testing.T) {
+	if !bunAvailable() {
+		t.Skip("bun not available")
+	}
+	setHostScriptEnv(t)
+
 	root := t.TempDir()
 	const catalog = "test.catalog"
 	writeCleanerPlugin(t, root, catalog, "default-cleaner", `module.exports = {
@@ -130,6 +149,8 @@ func TestServiceStartInitialisesPipeline(t *testing.T) {
 	if err := svc.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	defer svc.Shutdown(context.Background())
+
 	if _, ok := svc.PipelinePluginFor("something"); !ok {
 		t.Fatalf("expected fallback default plugin to be available")
 	}

@@ -11,8 +11,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/dop251/goja"
 	"github.com/nupi-ai/nupi/internal/eventbus"
+	"github.com/nupi-ai/nupi/internal/jsruntime"
 	pipelinecleaners "github.com/nupi-ai/nupi/internal/plugins/pipeline_cleaners"
 )
 
@@ -35,9 +35,10 @@ type Service struct {
 	errorTotal      atomic.Uint64
 }
 
-// PipelineProvider exposes access to pipeline plugins.
+// PipelineProvider exposes access to pipeline plugins and JS runtime.
 type PipelineProvider interface {
 	PipelinePluginFor(name string) (*pipelinecleaners.PipelinePlugin, bool)
+	JSRuntime() *jsruntime.Runtime
 }
 
 // Option configures optional behaviour on the Service.
@@ -167,7 +168,7 @@ func (s *Service) consumeOutputEvents(ctx context.Context, sub *eventbus.Subscri
 			if !ok {
 				continue
 			}
-			s.handleSessionOutput(payload)
+			s.handleSessionOutput(ctx, payload)
 		}
 	}
 }
@@ -225,7 +226,7 @@ func (s *Service) consumeTranscriptEvents(ctx context.Context, sub *eventbus.Sub
 	}
 }
 
-func (s *Service) handleSessionOutput(evt eventbus.SessionOutputEvent) {
+func (s *Service) handleSessionOutput(ctx context.Context, evt eventbus.SessionOutputEvent) {
 	text := string(bytes.ReplaceAll(evt.Data, []byte("\r\n"), []byte("\n")))
 
 	annotations := map[string]string{}
@@ -243,7 +244,7 @@ func (s *Service) handleSessionOutput(evt eventbus.SessionOutputEvent) {
 	}
 
 	if plugin, ok := s.selectPlugin(toolKey); ok {
-		newText, extraAnn, err := s.runPlugin(plugin, text, annotations)
+		newText, extraAnn, err := s.runPlugin(ctx, plugin, text, annotations)
 		if err != nil {
 			s.errorTotal.Add(1)
 			log.Printf("[ContentPipeline] transform error for session %s: %v", evt.SessionID, err)
@@ -408,64 +409,27 @@ func (s *Service) selectPlugin(tool string) (*pipelinecleaners.PipelinePlugin, b
 	return s.pluginsSvc.PipelinePluginFor("default")
 }
 
-func (s *Service) runPlugin(plugin *pipelinecleaners.PipelinePlugin, text string, annotations map[string]string) (string, map[string]string, error) {
+func (s *Service) runPlugin(ctx context.Context, plugin *pipelinecleaners.PipelinePlugin, text string, annotations map[string]string) (string, map[string]string, error) {
 	if plugin == nil {
 		return text, nil, nil
 	}
 
-	vm := goja.New()
-	exports := vm.NewObject()
-	vm.Set("module", vm.NewObject())
-	vm.Set("exports", exports)
-
-	if _, err := vm.RunString(plugin.Source); err != nil {
-		return text, nil, fmt.Errorf("run plugin %s: %w", plugin.Name, err)
+	rt := s.pluginsSvc.JSRuntime()
+	if rt == nil {
+		return text, nil, fmt.Errorf("plugin %s: jsruntime not available", plugin.Name)
 	}
 
-	moduleObj := vm.Get("module")
-	if moduleObj == nil {
-		moduleObj = vm.Get("exports")
-	} else {
-		moduleExports := moduleObj.ToObject(vm).Get("exports")
-		if moduleExports != nil {
-			exports = moduleExports.ToObject(vm)
-		}
+	input := pipelinecleaners.TransformInput{
+		Text:        text,
+		Annotations: copyStringMap(annotations),
 	}
 
-	transform := exports.Get("transform")
-	fn, ok := goja.AssertFunction(transform)
-	if !ok {
-		return text, nil, fmt.Errorf("plugin %s: transform is not function", plugin.Name)
-	}
-
-	input := map[string]interface{}{
-		"text":        text,
-		"annotations": copyStringMap(annotations),
-	}
-
-	result, err := fn(goja.Undefined(), vm.ToValue(input))
+	output, err := plugin.Transform(ctx, rt, input)
 	if err != nil {
-		return text, nil, fmt.Errorf("plugin %s transform: %w", plugin.Name, err)
+		return text, nil, err
 	}
 
-	switch exported := result.Export().(type) {
-	case nil:
-		return text, nil, nil
-	case string:
-		return exported, nil, nil
-	case map[string]interface{}:
-		newText := text
-		if v, ok := exported["text"].(string); ok {
-			newText = v
-		}
-		var extra map[string]string
-		if annVal, ok := exported["annotations"]; ok {
-			extra = toStringMap(annVal)
-		}
-		return newText, extra, nil
-	default:
-		return text, nil, fmt.Errorf("plugin %s returned unsupported type %T", plugin.Name, exported)
-	}
+	return output.Text, output.Annotations, nil
 }
 
 func copyStringMap(src map[string]string) map[string]string {
@@ -477,26 +441,6 @@ func copyStringMap(src map[string]string) map[string]string {
 		dup[k] = v
 	}
 	return dup
-}
-
-func toStringMap(val interface{}) map[string]string {
-	if val == nil {
-		return nil
-	}
-	result := make(map[string]string)
-	switch typed := val.(type) {
-	case map[string]interface{}:
-		for k, v := range typed {
-			if str, ok := v.(string); ok {
-				result[k] = str
-			}
-		}
-	case map[string]string:
-		for k, v := range typed {
-			result[k] = v
-		}
-	}
-	return result
 }
 
 type toolMetadata struct {

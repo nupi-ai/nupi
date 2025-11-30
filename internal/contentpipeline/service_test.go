@@ -4,13 +4,35 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/plugins"
 )
+
+func bunAvailable() bool {
+	_, err := exec.LookPath("bun")
+	return err == nil
+}
+
+func setHostScriptEnv(t *testing.T) {
+	t.Helper()
+	// Get the path to host.js relative to this test file
+	_, filename, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("failed to get test file path")
+	}
+	// Navigate from service_test.go to jsruntime/host.js
+	hostScript := filepath.Join(filepath.Dir(filepath.Dir(filename)), "jsruntime", "host.js")
+	if _, err := os.Stat(hostScript); err != nil {
+		t.Skipf("host.js not found at %s", hostScript)
+	}
+	t.Setenv("NUPI_JS_HOST_SCRIPT", hostScript)
+}
 
 func writeCleanerPlugin(t *testing.T, root, catalog, slug, script string) {
 	t.Helper()
@@ -40,13 +62,22 @@ spec:
 func newPluginService(t *testing.T, baseDir string) *plugins.Service {
 	t.Helper()
 	svc := plugins.NewService(baseDir)
-	if err := svc.LoadPipelinePlugins(); err != nil {
-		t.Fatalf("load pipeline plugins: %v", err)
+	// Start the service to initialize jsruntime
+	if err := svc.Start(context.Background()); err != nil {
+		t.Fatalf("start plugin service: %v", err)
 	}
+	t.Cleanup(func() {
+		svc.Shutdown(context.Background())
+	})
 	return svc
 }
 
 func TestContentPipelineTransformsOutput(t *testing.T) {
+	if !bunAvailable() {
+		t.Skip("bun not available")
+	}
+	setHostScriptEnv(t)
+
 	tmp := t.TempDir()
 	const catalog = "test.catalog"
 
@@ -116,6 +147,11 @@ func TestContentPipelineTransformsOutput(t *testing.T) {
 }
 
 func TestContentPipelineEmitsErrors(t *testing.T) {
+	if !bunAvailable() {
+		t.Skip("bun not available")
+	}
+	setHostScriptEnv(t)
+
 	tmp := t.TempDir()
 	const catalog = "test.catalog"
 

@@ -114,6 +114,7 @@ type Manager struct {
 	pluginDir      string           // Directory for tool detection plugins
 	recordingStore *recording.Store // Recording metadata store
 	eventBus       *eventbus.Bus
+	jsRuntimeFunc  tooldetectors.JSRuntimeFunc // Function to get JS runtime for tool detection
 }
 
 // NewManager creates a new session manager
@@ -152,6 +153,14 @@ func (m *Manager) UseEventBus(bus *eventbus.Bus) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.eventBus = bus
+}
+
+// SetJSRuntimeFunc sets the function to get the JS runtime for tool detection.
+// This allows detectors to always get the current runtime, even after restarts.
+func (m *Manager) SetJSRuntimeFunc(fn tooldetectors.JSRuntimeFunc) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.jsRuntimeFunc = fn
 }
 
 // AddEventListener adds a listener for session events
@@ -242,7 +251,14 @@ func (m *Manager) CreateSession(opts pty.StartOptions, inspect bool) (*Session, 
 
 	// Set up tool detection with continuous mode for detecting tool changes
 	if m.pluginDir != "" {
-		toolDetector := tooldetectors.NewToolDetector(sessionID, m.pluginDir, tooldetectors.WithContinuousMode(true))
+		detectorOpts := []tooldetectors.DetectorOption{tooldetectors.WithContinuousMode(true)}
+		m.mu.RLock()
+		runtimeFunc := m.jsRuntimeFunc
+		m.mu.RUnlock()
+		if runtimeFunc != nil {
+			detectorOpts = append(detectorOpts, tooldetectors.WithJSRuntimeFunc(runtimeFunc))
+		}
+		toolDetector := tooldetectors.NewToolDetector(sessionID, m.pluginDir, detectorOpts...)
 		if err := toolDetector.Initialize(); err != nil {
 			log.Printf("[Manager] Failed to initialize detector: %v", err)
 		} else {

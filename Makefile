@@ -7,6 +7,8 @@ APP_DIR := clients/desktop
 TAURI_BINARY_DIR := $(APP_DIR)/src-tauri/binaries
 VERSION := $(shell git describe --tags --always 2>/dev/null || echo dev)
 GO_LDFLAGS := -ldflags "-X github.com/nupi-ai/nupi/internal/version.version=$(VERSION)"
+# BUN_VERSION is extracted from Go source (single source of truth)
+BUN_VERSION := $(shell grep 'const BunVersion' internal/jsruntime/installer.go | sed 's/.*"\(.*\)".*/\1/')
 
 # Platform detection
 UNAME_S := $(shell uname -s)
@@ -29,13 +31,29 @@ else ifeq ($(UNAME_S),Windows_NT)
 	TARGET_TRIPLE := x86_64-pc-windows-msvc
 endif
 
+# Bun download URLs based on platform
+ifeq ($(UNAME_S),Darwin)
+	ifeq ($(UNAME_M),arm64)
+		BUN_ARCHIVE := bun-darwin-aarch64.zip
+	else
+		BUN_ARCHIVE := bun-darwin-x64.zip
+	endif
+else ifeq ($(UNAME_S),Linux)
+	ifeq ($(UNAME_M),x86_64)
+		BUN_ARCHIVE := bun-linux-x64.zip
+	else ifeq ($(UNAME_M),aarch64)
+		BUN_ARCHIVE := bun-linux-aarch64.zip
+	endif
+endif
+BUN_URL := https://github.com/oven-sh/bun/releases/download/bun-v$(BUN_VERSION)/$(BUN_ARCHIVE)
+
 # Colors for output
 RED := \033[0;31m
 GREEN := \033[0;32m
 YELLOW := \033[1;33m
 NC := \033[0m # No Color
 
-.PHONY: all clean cli daemon adapter-runner app dev test help install
+.PHONY: all clean cli daemon adapter-runner app dev test help install download-bun
 
 # Default target
 all: cli daemon adapter-runner app
@@ -61,6 +79,20 @@ adapter-runner:
 	@mkdir -p $(BINARY_DIR)
 	@go build $(GO_LDFLAGS) -o $(BINARY_DIR)/adapter-runner ./cmd/adapter-runner
 	@echo "$(GREEN)✓ Adapter-runner built: $(BINARY_DIR)/adapter-runner$(NC)"
+
+# Download Bun runtime for JS plugin execution
+download-bun:
+	@echo "$(YELLOW)Downloading Bun $(BUN_VERSION)...$(NC)"
+	@mkdir -p $(BINARY_DIR)
+	@if [ -z "$(BUN_ARCHIVE)" ]; then \
+		echo "$(RED)✗ Unsupported platform for Bun download$(NC)"; \
+		exit 1; \
+	fi
+	@curl -fsSL "$(BUN_URL)" -o /tmp/bun.zip
+	@unzip -o -j /tmp/bun.zip -d $(BINARY_DIR) "*/bun"
+	@rm /tmp/bun.zip
+	@chmod +x $(BINARY_DIR)/bun
+	@echo "$(GREEN)✓ Bun $(BUN_VERSION) installed to $(BINARY_DIR)/bun$(NC)"
 
 # Build desktop app
 app: cli daemon
@@ -92,9 +124,10 @@ test:
 	@go test -v ./...
 	@echo "$(GREEN)✓ Tests complete$(NC)"
 
-# Install locally to ~/.nupi/bin (no sudo required)
+# Install locally to ~/.nupi/ (no sudo required)
+# Note: host.js is now embedded in the daemon binary, no external files needed
 install: cli daemon adapter-runner
-	@echo "$(YELLOW)Installing Nupi to ~/.nupi/bin/...$(NC)"
+	@echo "$(YELLOW)Installing Nupi to ~/.nupi/...$(NC)"
 	@mkdir -p $(HOME)/.nupi/bin
 	@cp $(BINARY_DIR)/nupi $(HOME)/.nupi/bin/nupi
 	@cp $(BINARY_DIR)/nupid $(HOME)/.nupi/bin/nupid
@@ -102,13 +135,23 @@ install: cli daemon adapter-runner
 	@chmod +x $(HOME)/.nupi/bin/nupid
 	@cp $(BINARY_DIR)/adapter-runner $(HOME)/.nupi/bin/adapter-runner
 	@chmod +x $(HOME)/.nupi/bin/adapter-runner
-	@echo "$(GREEN)✓ Nupi installed to ~/.nupi/bin/$(NC)"
+	@# Copy Bun if it exists locally, otherwise it will be auto-downloaded on first run
+	@if [ -f "$(BINARY_DIR)/bun" ]; then \
+		cp $(BINARY_DIR)/bun $(HOME)/.nupi/bin/bun && \
+		chmod +x $(HOME)/.nupi/bin/bun && \
+		echo "$(GREEN)✓ Bun runtime installed$(NC)"; \
+	else \
+		echo "$(YELLOW)⚠ Bun not bundled (will be auto-downloaded on first run, or run 'make download-bun' to bundle)$(NC)"; \
+	fi
+	@echo "$(GREEN)✓ Nupi installed to ~/.nupi/$(NC)"
 	@echo ""
 	@echo "$(YELLOW)Add to your PATH:$(NC)"
 	@echo '  export PATH="$$HOME/.nupi/bin:$$PATH"'
+	@echo '  export NUPI_HOME="$$HOME/.nupi"'
 	@echo ""
 	@echo "$(YELLOW)Add to your shell config (~/.bashrc or ~/.zshrc):$(NC)"
 	@echo '  echo '\''export PATH="$$HOME/.nupi/bin:$$PATH"'\'' >> ~/.bashrc'
+	@echo '  echo '\''export NUPI_HOME="$$HOME/.nupi"'\'' >> ~/.bashrc'
 
 # Clean build artifacts
 clean:
@@ -124,24 +167,30 @@ help:
 	@echo "$(YELLOW)Nupi Build System$(NC)"
 	@echo ""
 	@echo "Available targets:"
-	@echo "  $(GREEN)make$(NC)         - Build everything (CLI, daemon, and desktop app)"
-	@echo "  $(GREEN)make cli$(NC)     - Build only the CLI binary"
-	@echo "  $(GREEN)make daemon$(NC)  - Build only the daemon binary"
+	@echo "  $(GREEN)make$(NC)              - Build everything (CLI, daemon, and desktop app)"
+	@echo "  $(GREEN)make cli$(NC)          - Build only the CLI binary"
+	@echo "  $(GREEN)make daemon$(NC)       - Build only the daemon binary"
 	@echo "  $(GREEN)make adapter-runner$(NC) - Build only the adapter-runner binary"
-	@echo "  $(GREEN)make app$(NC)     - Build the desktop application"
-	@echo "  $(GREEN)make dev$(NC)     - Run in development mode"
-	@echo "  $(GREEN)make test$(NC)    - Run all tests"
-	@echo "  $(GREEN)make install$(NC) - Install to ~/.nupi/bin/ (no sudo)"
-	@echo "  $(GREEN)make clean$(NC)   - Remove all build artifacts"
-	@echo "  $(GREEN)make help$(NC)    - Show this help message"
+	@echo "  $(GREEN)make download-bun$(NC) - Download Bun $(BUN_VERSION) for bundling (optional)"
+	@echo "  $(GREEN)make app$(NC)          - Build the desktop application"
+	@echo "  $(GREEN)make dev$(NC)          - Run in development mode"
+	@echo "  $(GREEN)make test$(NC)         - Run all tests"
+	@echo "  $(GREEN)make install$(NC)      - Install to ~/.nupi/ (no sudo)"
+	@echo "  $(GREEN)make clean$(NC)        - Remove all build artifacts"
+	@echo "  $(GREEN)make help$(NC)         - Show this help message"
 	@echo ""
 	@echo "Build outputs:"
-	@echo "  CLI:     $(BINARY_DIR)/nupi"
-	@echo "  Daemon:  $(BINARY_DIR)/nupid"
-	@echo "  Runner:  $(BINARY_DIR)/adapter-runner"
-	@echo "  App:     $(APP_DIR)/src-tauri/target/release/bundle/"
+	@echo "  CLI:       $(BINARY_DIR)/nupi"
+	@echo "  Daemon:    $(BINARY_DIR)/nupid"
+	@echo "  Runner:    $(BINARY_DIR)/adapter-runner"
+	@echo "  Bun:       $(BINARY_DIR)/bun (after download-bun, or auto-downloaded on first run)"
+	@echo "  App:       $(APP_DIR)/src-tauri/target/release/bundle/"
+	@echo ""
+	@echo "Note: host.js is embedded in the daemon binary. Bun is auto-downloaded on first run"
+	@echo "      if not found in PATH or bundled. Use 'make download-bun' for offline installs."
 	@echo ""
 	@echo "Installation:"
-	@echo "  $(YELLOW)make install$(NC)      - Manual install to ~/.nupi/bin/"
-	@echo "  $(YELLOW)curl install.sh$(NC)   - Automated install (recommended)"
-	@echo "  $(YELLOW)Tauri Desktop$(NC)     - Auto-installs on first run"
+	@echo "  $(YELLOW)make install$(NC)          - Manual install to ~/.nupi/"
+	@echo "  $(YELLOW)make download-bun install$(NC) - Include bundled Bun runtime"
+	@echo "  $(YELLOW)curl install.sh$(NC)       - Automated install (recommended)"
+	@echo "  $(YELLOW)Tauri Desktop$(NC)         - Auto-installs on first run"

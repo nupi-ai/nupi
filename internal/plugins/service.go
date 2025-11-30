@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/nupi-ai/nupi/internal/jsruntime"
 	"github.com/nupi-ai/nupi/internal/plugins/manifest"
 	pipelinecleaners "github.com/nupi-ai/nupi/internal/plugins/pipeline_cleaners"
 	tooldetectors "github.com/nupi-ai/nupi/internal/plugins/tool_detectors"
@@ -19,6 +20,9 @@ type Service struct {
 	pluginDir   string
 	pipelineIdx map[string]*pipelinecleaners.PipelinePlugin
 	pipelineMu  sync.RWMutex
+
+	supervisedRT   *jsruntime.SupervisedRuntime
+	supervisedRTMu sync.RWMutex
 
 	lastWarnings   []manifest.DiscoveryWarning
 	lastWarningsMu sync.RWMutex
@@ -53,6 +57,10 @@ func (s *Service) LoadPipelinePlugins() error {
 
 func (s *Service) loadPipelinePlugins(manifests []*manifest.Manifest) error {
 	index := make(map[string]*pipelinecleaners.PipelinePlugin)
+
+	// Get jsruntime for loading plugins with validation
+	rt := s.runtime()
+
 	for _, mf := range manifests {
 		if mf.Type != manifest.PluginTypePipelineCleaner {
 			continue
@@ -64,7 +72,13 @@ func (s *Service) loadPipelinePlugins(manifests []*manifest.Manifest) error {
 			continue
 		}
 
-		plugin, err := pipelinecleaners.LoadPipelinePlugin(mainPath)
+		// Use jsruntime for loading when available (validates transform function)
+		var plugin *pipelinecleaners.PipelinePlugin
+		if rt != nil {
+			plugin, err = pipelinecleaners.LoadPipelinePluginWithRuntime(context.Background(), rt, mainPath)
+		} else {
+			plugin, err = pipelinecleaners.LoadPipelinePlugin(mainPath)
+		}
 		if err != nil {
 			log.Printf("[Plugins] skip pipeline cleaner %s: %v", mainPath, err)
 			continue
@@ -127,7 +141,8 @@ func (s *Service) GenerateIndex() error {
 		}
 	}
 
-	generator := tooldetectors.NewIndexGenerator(s.pluginDir, manifests)
+	// Use jsruntime-aware index generator when available
+	generator := tooldetectors.NewIndexGeneratorWithRuntime(s.pluginDir, manifests, s.runtime())
 	if err := generator.Generate(); err != nil {
 		return err
 	}
@@ -139,6 +154,11 @@ func (s *Service) GenerateIndex() error {
 func (s *Service) Start(ctx context.Context) error {
 	if err := os.MkdirAll(s.pluginDir, 0o755); err != nil {
 		return fmt.Errorf("ensure plugin dir: %w", err)
+	}
+
+	// Start supervised JS runtime for plugin execution with auto-restart
+	if err := s.startJSRuntime(ctx); err != nil {
+		return fmt.Errorf("JS runtime failed to start (is Bun installed?): %w", err)
 	}
 
 	manifests, warnings := manifest.DiscoverWithWarnings(s.pluginDir)
@@ -154,7 +174,8 @@ func (s *Service) Start(ctx context.Context) error {
 		log.Printf("[Plugins] pipeline load error: %v", err)
 	}
 
-	generator := tooldetectors.NewIndexGenerator(s.pluginDir, manifests)
+	// Use jsruntime-aware index generator when available
+	generator := tooldetectors.NewIndexGeneratorWithRuntime(s.pluginDir, manifests, s.runtime())
 	if err := generator.Generate(); err != nil {
 		return err
 	}
@@ -163,9 +184,67 @@ func (s *Service) Start(ctx context.Context) error {
 	return nil
 }
 
-// Shutdown is a no-op for plugin management.
+// Shutdown stops the plugin service and JS runtime.
 func (s *Service) Shutdown(ctx context.Context) error {
+	s.supervisedRTMu.Lock()
+	srt := s.supervisedRT
+	s.supervisedRT = nil
+	s.supervisedRTMu.Unlock()
+
+	if srt != nil {
+		if err := srt.Shutdown(ctx); err != nil {
+			log.Printf("[Plugins] JS runtime shutdown error: %v", err)
+			return err
+		}
+		log.Printf("[Plugins] JS runtime stopped")
+	}
 	return nil
+}
+
+// startJSRuntime initializes the supervised persistent Bun subprocess.
+// Uses embedded host.js script - no external file needed.
+// The supervised runtime will automatically restart if the process crashes.
+func (s *Service) startJSRuntime(ctx context.Context) error {
+	// Pass empty strings - NewSupervised() will use embedded host.js and resolve bun
+	srt, err := jsruntime.NewSupervised(ctx, "", "")
+	if err != nil {
+		return err
+	}
+
+	s.supervisedRTMu.Lock()
+	s.supervisedRT = srt
+	s.supervisedRTMu.Unlock()
+
+	// Register callback to reload plugins after runtime restart
+	srt.OnRestart(func() {
+		log.Printf("[Plugins] JS runtime restarted, reloading plugins...")
+		if err := s.LoadPipelinePlugins(); err != nil {
+			log.Printf("[Plugins] Failed to reload pipeline plugins after restart: %v", err)
+		}
+		if err := s.GenerateIndex(); err != nil {
+			log.Printf("[Plugins] Failed to regenerate index after restart: %v", err)
+		}
+		log.Printf("[Plugins] Plugin reload after restart completed")
+	})
+
+	log.Printf("[Plugins] JS runtime started (supervised, embedded host.js)")
+	return nil
+}
+
+// JSRuntime returns the active JS runtime, or nil if not available.
+// Deprecated: Use runtime() internally. This is kept for backward compatibility.
+func (s *Service) JSRuntime() *jsruntime.Runtime {
+	return s.runtime()
+}
+
+// runtime returns the underlying Runtime from the supervised runtime.
+func (s *Service) runtime() *jsruntime.Runtime {
+	s.supervisedRTMu.RLock()
+	defer s.supervisedRTMu.RUnlock()
+	if s.supervisedRT == nil {
+		return nil
+	}
+	return s.supervisedRT.Runtime()
 }
 
 // GetDiscoveryWarnings returns the most recent plugin discovery warnings.
