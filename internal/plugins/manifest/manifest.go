@@ -50,7 +50,6 @@ type PipelineCleanerSpec struct {
 
 type AdapterSpec struct {
 	Slot       string                   `yaml:"slot"`
-	Mode       string                   `yaml:"mode"`
 	Entrypoint AdapterEntrypoint        `yaml:"entrypoint"`
 	Assets     AdapterAssets            `yaml:"assets"`
 	Telemetry  AdapterTelemetry         `yaml:"telemetry"`
@@ -730,11 +729,6 @@ var allowedRuntimes = map[string]struct{}{
 func validateAdapterSpec(spec *AdapterSpec, file string) error {
 	if strings.TrimSpace(spec.Slot) == "" {
 		return fmt.Errorf("adapter manifest %s missing required field: slot", file)
-	}
-
-	// Mode is required per architecture section 5.2 (adapter contract)
-	if strings.TrimSpace(spec.Mode) == "" {
-		return fmt.Errorf("adapter manifest %s missing required field: mode", file)
 	}
 
 	runtime := strings.TrimSpace(spec.Entrypoint.Runtime)
