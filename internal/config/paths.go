@@ -75,8 +75,12 @@ func GetProfilePaths(instanceName, profileName string) ProfilePaths {
 	}
 }
 
-// GetNupiHome returns the Nupi home directory (~/.nupi).
+// GetNupiHome returns the Nupi home directory.
+// Uses NUPI_HOME environment variable if set, otherwise defaults to ~/.nupi.
 func GetNupiHome() string {
+	if home := os.Getenv("NUPI_HOME"); home != "" {
+		return home
+	}
 	userHome, _ := os.UserHomeDir()
 	return filepath.Join(userHome, ".nupi")
 }

@@ -1,11 +1,14 @@
 package tooldetectors
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"time"
 
+	"github.com/nupi-ai/nupi/internal/jsruntime"
 	"github.com/nupi-ai/nupi/internal/plugins/manifest"
 )
 
@@ -13,6 +16,7 @@ import (
 type IndexGenerator struct {
 	pluginDir string
 	manifests []*manifest.Manifest
+	jsRuntime *jsruntime.Runtime
 }
 
 // NewIndexGenerator creates a new index generator.
@@ -20,6 +24,15 @@ func NewIndexGenerator(pluginDir string, manifests []*manifest.Manifest) *IndexG
 	return &IndexGenerator{
 		pluginDir: pluginDir,
 		manifests: manifests,
+	}
+}
+
+// NewIndexGeneratorWithRuntime creates a new index generator with jsruntime support.
+func NewIndexGeneratorWithRuntime(pluginDir string, manifests []*manifest.Manifest, rt *jsruntime.Runtime) *IndexGenerator {
+	return &IndexGenerator{
+		pluginDir: pluginDir,
+		manifests: manifests,
+		jsRuntime: rt,
 	}
 }
 
@@ -55,7 +68,16 @@ func (g *IndexGenerator) Generate() error {
 			continue
 		}
 
-		plugin, err := LoadPlugin(mainPath)
+		// Use jsruntime for loading when available (validates detect function)
+		// 10s timeout to prevent hanging on malformed plugins
+		var plugin *JSPlugin
+		if g.jsRuntime != nil {
+			loadCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			plugin, err = LoadPluginWithRuntime(loadCtx, g.jsRuntime, mainPath)
+			cancel()
+		} else {
+			plugin, err = LoadPlugin(mainPath)
+		}
 		if err != nil {
 			log.Printf("[IndexGenerator] Warning: failed to load %s: %v", mainPath, err)
 			continue
@@ -119,7 +141,16 @@ func (g *IndexGenerator) ListPlugins() ([]map[string]interface{}, error) {
 			rel = mainPath
 		}
 
-		plugin, err := LoadPlugin(mainPath)
+		// Use jsruntime for loading when available
+		// 10s timeout to prevent hanging on malformed plugins
+		var plugin *JSPlugin
+		if g.jsRuntime != nil {
+			loadCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			plugin, err = LoadPluginWithRuntime(loadCtx, g.jsRuntime, mainPath)
+			cancel()
+		} else {
+			plugin, err = LoadPlugin(mainPath)
+		}
 		if err != nil {
 			plugins = append(plugins, map[string]interface{}{
 				"file":     rel,

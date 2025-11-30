@@ -8,39 +8,74 @@ import (
 )
 
 func TestGetNupiHome(t *testing.T) {
-	os.Setenv("NUPI_HOME", "/tmp/should-be-ignored")
-	defer os.Unsetenv("NUPI_HOME")
+	t.Run("default to ~/.nupi", func(t *testing.T) {
+		// Ensure NUPI_HOME is not set
+		orig := os.Getenv("NUPI_HOME")
+		os.Unsetenv("NUPI_HOME")
+		defer func() {
+			if orig != "" {
+				os.Setenv("NUPI_HOME", orig)
+			}
+		}()
 
-	home := GetNupiHome()
+		home := GetNupiHome()
+		userHome, _ := os.UserHomeDir()
+		expected := filepath.Join(userHome, ".nupi")
 
-	userHome, _ := os.UserHomeDir()
-	expected := filepath.Join(userHome, ".nupi")
+		if home != expected {
+			t.Errorf("GetNupiHome() = %s; want %s", home, expected)
+		}
+	})
 
-	if home != expected {
-		t.Errorf("GetNupiHome() = %s; want %s (NUPI_HOME should be ignored)", home, expected)
-	}
+	t.Run("respects NUPI_HOME", func(t *testing.T) {
+		orig := os.Getenv("NUPI_HOME")
+		os.Setenv("NUPI_HOME", "/custom/nupi/home")
+		defer func() {
+			if orig != "" {
+				os.Setenv("NUPI_HOME", orig)
+			} else {
+				os.Unsetenv("NUPI_HOME")
+			}
+		}()
+
+		home := GetNupiHome()
+		if home != "/custom/nupi/home" {
+			t.Errorf("GetNupiHome() = %s; want /custom/nupi/home (NUPI_HOME should be respected)", home)
+		}
+	})
 }
 
 func TestGetInstancePaths(t *testing.T) {
+	// Use controlled NUPI_HOME for predictable paths
+	orig := os.Getenv("NUPI_HOME")
+	os.Setenv("NUPI_HOME", "/test/nupi")
+	defer func() {
+		if orig != "" {
+			os.Setenv("NUPI_HOME", orig)
+		} else {
+			os.Unsetenv("NUPI_HOME")
+		}
+	}()
+
 	paths := GetInstancePaths("")
 
-	if !strings.Contains(paths.Config, "instances/default/config.yaml") {
-		t.Errorf("Config path incorrect: %s", paths.Config)
+	if paths.Config != "/test/nupi/instances/default/config.yaml" {
+		t.Errorf("Config path incorrect: got %s, want /test/nupi/instances/default/config.yaml", paths.Config)
 	}
-	if !strings.Contains(paths.Socket, "instances/default/nupi.sock") {
-		t.Errorf("Socket path incorrect: %s", paths.Socket)
+	if paths.Socket != "/test/nupi/instances/default/nupi.sock" {
+		t.Errorf("Socket path incorrect: got %s, want /test/nupi/instances/default/nupi.sock", paths.Socket)
 	}
-	if !strings.Contains(paths.Lock, "instances/default/daemon.lock") {
-		t.Errorf("Lock path incorrect: %s", paths.Lock)
+	if paths.Lock != "/test/nupi/instances/default/daemon.lock" {
+		t.Errorf("Lock path incorrect: got %s, want /test/nupi/instances/default/daemon.lock", paths.Lock)
 	}
-	if !strings.Contains(paths.Home, "instances/default") {
-		t.Errorf("Home path incorrect: %s", paths.Home)
+	if paths.Home != "/test/nupi/instances/default" {
+		t.Errorf("Home path incorrect: got %s, want /test/nupi/instances/default", paths.Home)
 	}
-	if !strings.Contains(paths.BinDir, ".nupi/bin") {
-		t.Errorf("BinDir path incorrect: %s", paths.BinDir)
+	if paths.BinDir != "/test/nupi/bin" {
+		t.Errorf("BinDir path incorrect: got %s, want /test/nupi/bin", paths.BinDir)
 	}
-	if !strings.Contains(paths.RunnerRoot, "bin/adapter-runner") {
-		t.Errorf("RunnerRoot path incorrect: %s", paths.RunnerRoot)
+	if paths.RunnerRoot != "/test/nupi/bin/adapter-runner" {
+		t.Errorf("RunnerRoot path incorrect: got %s, want /test/nupi/bin/adapter-runner", paths.RunnerRoot)
 	}
 }
 

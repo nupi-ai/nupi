@@ -105,6 +105,7 @@ func New(opts Options) (*Daemon, error) {
 
 	pluginService := plugins.NewService(paths.Home)
 	sessionManager.SetPluginDir(pluginService.PluginDir())
+	sessionManager.SetJSRuntimeFunc(pluginService.JSRuntime)
 
 	// plugins service
 	if err := host.Register("plugins", func(ctx context.Context) (daemonruntime.Service, error) {

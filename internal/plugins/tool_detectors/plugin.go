@@ -1,14 +1,14 @@
 package tooldetectors
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"time"
 
-	"github.com/dop251/goja"
+	"github.com/nupi-ai/nupi/internal/jsruntime"
 )
 
 // JSPlugin represents a JavaScript plugin for tool detection.
@@ -21,148 +21,110 @@ type JSPlugin struct {
 }
 
 // LoadPlugin loads a JavaScript plugin from file.
+// This only reads the file and stores metadata. Validation happens when loaded into jsruntime.
 func LoadPlugin(filePath string) (*JSPlugin, error) {
 	content, err := os.ReadFile(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read plugin %s: %w", filePath, err)
 	}
 
-	vm := goja.New()
-
-	exports := vm.NewObject()
-	vm.Set("module", vm.NewObject())
-	vm.Set("exports", exports)
-
-	_, err = vm.RunString(string(content))
-	if err != nil {
-		return nil, fmt.Errorf("failed to execute plugin %s: %w", filePath, err)
-	}
-
-	moduleObj := vm.Get("module")
-	if moduleObj == nil {
-		moduleObj = vm.Get("exports")
-	} else {
-		moduleExports := moduleObj.ToObject(vm).Get("exports")
-		if moduleExports != nil {
-			exports = moduleExports.ToObject(vm)
-		}
-	}
-
 	plugin := &JSPlugin{
 		FilePath: filePath,
 		Source:   string(content),
-	}
-
-	if name := exports.Get("name"); name != nil {
-		plugin.Name = name.String()
-	} else {
-		plugin.Name = filepath.Base(filePath)
-	}
-
-	if commands := exports.Get("commands"); commands != nil {
-		if arr, ok := commands.Export().([]interface{}); ok {
-			for _, cmd := range arr {
-				if str, ok := cmd.(string); ok {
-					plugin.Commands = append(plugin.Commands, str)
-				}
-			}
-		}
-	}
-
-	if icon := exports.Get("icon"); icon != nil {
-		plugin.Icon = icon.String()
-	}
-
-	if detectProp := exports.Get("detect"); detectProp != nil {
-		if _, ok := goja.AssertFunction(detectProp); !ok {
-			return nil, fmt.Errorf("plugin %s: detect must be a function", filePath)
-		}
-	} else {
-		return nil, fmt.Errorf("plugin %s: missing detect function", filePath)
+		Name:     filepath.Base(filePath),
 	}
 
 	return plugin, nil
 }
 
-// Detect runs the plugin's detect function with the given output.
-func (p *JSPlugin) Detect(output string) (bool, error) {
-	type detectResult struct {
-		result bool
-		err    error
+// LoadPluginWithRuntime loads a tool detector plugin and validates it via jsruntime.
+// Returns plugin metadata extracted by the JS runtime.
+// Fails if the plugin doesn't export a detect function.
+func LoadPluginWithRuntime(ctx context.Context, rt *jsruntime.Runtime, filePath string) (*JSPlugin, error) {
+	if rt == nil {
+		// Fallback to basic loading without validation
+		return LoadPlugin(filePath)
 	}
-	resultChan := make(chan detectResult, 1)
 
-	vm := goja.New()
-
-	console := vm.NewObject()
-	console.Set("log", func(call goja.FunctionCall) goja.Value {
-		var args []interface{}
-		for _, arg := range call.Arguments {
-			args = append(args, arg.Export())
-		}
-		log.Println(args...)
-		return goja.Undefined()
+	meta, err := rt.LoadPluginWithOptions(ctx, filePath, jsruntime.LoadPluginOptions{
+		RequireFunctions: []string{"detect"},
 	})
-	vm.Set("console", console)
-
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				if _, ok := r.(goja.InterruptedError); ok {
-					return
-				}
-				resultChan <- detectResult{false, fmt.Errorf("plugin panicked: %v", r)}
-			}
-		}()
-
-		exports := vm.NewObject()
-		vm.Set("module", vm.NewObject())
-		vm.Set("exports", exports)
-
-		_, err := vm.RunString(p.Source)
-		if err != nil {
-			resultChan <- detectResult{false, fmt.Errorf("failed to load plugin: %w", err)}
-			return
-		}
-
-		moduleObj := vm.Get("module")
-		if moduleObj == nil {
-			moduleObj = vm.Get("exports")
-		} else {
-			moduleExports := moduleObj.ToObject(vm).Get("exports")
-			if moduleExports != nil {
-				exports = moduleExports.ToObject(vm)
-			}
-		}
-
-		detectProp := exports.Get("detect")
-		if detectProp == nil {
-			resultChan <- detectResult{false, fmt.Errorf("detect function not found")}
-			return
-		}
-
-		detectFn, ok := goja.AssertFunction(detectProp)
-		if !ok {
-			resultChan <- detectResult{false, fmt.Errorf("detect is not a function")}
-			return
-		}
-
-		result, err := detectFn(goja.Undefined(), vm.ToValue(output))
-		if err != nil {
-			resultChan <- detectResult{false, fmt.Errorf("detect function error: %w", err)}
-			return
-		}
-
-		resultChan <- detectResult{result.ToBoolean(), nil}
-	}()
-
-	select {
-	case res := <-resultChan:
-		return res.result, res.err
-	case <-time.After(1 * time.Second):
-		vm.Interrupt("timeout")
-		return false, fmt.Errorf("plugin timeout after 1s")
+	if err != nil {
+		return nil, fmt.Errorf("tool detector: load %s: %w", filePath, err)
 	}
+
+	// Double-check the detect function exists
+	if !meta.HasDetect {
+		return nil, fmt.Errorf("tool detector: %s missing detect function", filePath)
+	}
+
+	plugin := &JSPlugin{
+		FilePath: filePath,
+		Name:     meta.Name,
+		Commands: meta.Commands,
+		Icon:     meta.Icon,
+	}
+
+	// Read source for reference (may be needed for logging/debugging)
+	data, err := os.ReadFile(filePath)
+	if err == nil {
+		plugin.Source = string(data)
+	}
+
+	return plugin, nil
+}
+
+// Detect runs the plugin's detect function with the given output via jsruntime.
+// If the plugin is not loaded (e.g., after runtime restart), it will reload and retry once.
+func (p *JSPlugin) Detect(ctx context.Context, rt *jsruntime.Runtime, output string) (bool, error) {
+	if rt == nil {
+		return false, fmt.Errorf("tool detector %s: jsruntime not available", p.Name)
+	}
+
+	result, err := p.callDetect(ctx, rt, output)
+	if err != nil {
+		// If plugin not loaded, try to reload and retry once
+		if jsruntime.IsPluginNotLoadedError(err) {
+			if reloadErr := p.reload(ctx, rt); reloadErr != nil {
+				return false, fmt.Errorf("tool detector %s: reload failed: %w", p.Name, reloadErr)
+			}
+			// Retry after reload
+			result, err = p.callDetect(ctx, rt, output)
+			if err != nil {
+				return false, fmt.Errorf("tool detector %s (after reload): %w", p.Name, err)
+			}
+		} else {
+			return false, fmt.Errorf("tool detector %s: %w", p.Name, err)
+		}
+	}
+
+	// Parse result - should be a boolean
+	switch v := result.(type) {
+	case bool:
+		return v, nil
+	case nil:
+		return false, nil
+	default:
+		return false, fmt.Errorf("tool detector %s: unexpected result type %T", p.Name, result)
+	}
+}
+
+// callDetect calls the detect function with timeout.
+func (p *JSPlugin) callDetect(ctx context.Context, rt *jsruntime.Runtime, output string) (any, error) {
+	callCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
+	defer cancel()
+	return rt.Call(callCtx, p.FilePath, "detect", output)
+}
+
+// reload reloads the plugin into the runtime.
+func (p *JSPlugin) reload(ctx context.Context, rt *jsruntime.Runtime) error {
+	reloadCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	_, err := rt.LoadPluginWithOptions(reloadCtx, p.FilePath, jsruntime.LoadPluginOptions{
+		RequireFunctions: []string{"detect"},
+	})
+	return err
 }
 
 // GetInfo returns plugin information as JSON.

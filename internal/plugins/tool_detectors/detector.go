@@ -1,12 +1,14 @@
 package tooldetectors
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"path/filepath"
 	"sync"
 	"time"
 
+	"github.com/nupi-ai/nupi/internal/jsruntime"
 	"github.com/nupi-ai/nupi/internal/plugins/manifest"
 )
 
@@ -33,11 +35,18 @@ type DetectionResult struct {
 	error    error
 }
 
+// JSRuntimeFunc is a function that returns the current JS runtime.
+// Using a function allows the detector to always get the current runtime,
+// even after a supervised restart.
+type JSRuntimeFunc func() *jsruntime.Runtime
+
 // ToolDetector manages tool detection for a session.
 type ToolDetector struct {
-	sessionID string
-	pluginDir string
-	indexPath string
+	sessionID   string
+	pluginDir   string
+	indexPath   string
+	runtimeFunc JSRuntimeFunc // Function to get current runtime (preferred)
+	jsRuntime   *jsruntime.Runtime // Static runtime (for backward compat)
 
 	index            PluginIndex
 	plugins          map[string]*JSPlugin
@@ -69,6 +78,23 @@ func WithContinuousMode(enabled bool) DetectorOption {
 	}
 }
 
+// WithJSRuntime sets a static JS runtime for plugin execution.
+// Deprecated: Use WithJSRuntimeFunc for dynamic runtime that survives restarts.
+func WithJSRuntime(rt *jsruntime.Runtime) DetectorOption {
+	return func(d *ToolDetector) {
+		d.jsRuntime = rt
+	}
+}
+
+// WithJSRuntimeFunc sets a function to get the current JS runtime.
+// This is preferred over WithJSRuntime as it allows the detector to
+// get the current runtime even after a supervised restart.
+func WithJSRuntimeFunc(fn JSRuntimeFunc) DetectorOption {
+	return func(d *ToolDetector) {
+		d.runtimeFunc = fn
+	}
+}
+
 // NewToolDetector creates a new detector for a session.
 func NewToolDetector(sessionID, pluginDir string, opts ...DetectorOption) *ToolDetector {
 	d := &ToolDetector{
@@ -84,6 +110,14 @@ func NewToolDetector(sessionID, pluginDir string, opts ...DetectorOption) *ToolD
 		opt(d)
 	}
 	return d
+}
+
+// getRuntime returns the current JS runtime, preferring runtimeFunc over static jsRuntime.
+func (d *ToolDetector) getRuntime() *jsruntime.Runtime {
+	if d.runtimeFunc != nil {
+		return d.runtimeFunc()
+	}
+	return d.jsRuntime
 }
 
 // Initialize loads the plugin index.
@@ -116,9 +150,17 @@ func (d *ToolDetector) OnSessionStart(command string, args []string) error {
 	log.Printf("[Detector] Found %d candidate plugins for command '%s': %v",
 		len(candidates), command, candidates)
 
+	rt := d.getRuntime()
 	for _, pluginFile := range candidates {
 		pluginPath := filepath.Join(d.pluginDir, pluginFile)
-		plugin, err := LoadPlugin(pluginPath)
+		// Use jsruntime for loading when available
+		var plugin *JSPlugin
+		var err error
+		if rt != nil {
+			plugin, err = LoadPluginWithRuntime(context.Background(), rt, pluginPath)
+		} else {
+			plugin, err = LoadPlugin(pluginPath)
+		}
 		if err != nil {
 			log.Printf("[Detector] Failed to load plugin %s: %v", pluginFile, err)
 			continue
@@ -311,11 +353,22 @@ func (d *ToolDetector) runParallelDetection(plugins map[string]*JSPlugin, output
 		return nil
 	}
 
+	rt := d.getRuntime()
+	if rt == nil {
+		// Runtime not available - this can happen during startup or after a crash.
+		// Detection will be retried on next output.
+		log.Printf("[Detector] JS runtime not available, skipping detection for session %s", d.sessionID)
+		return nil
+	}
+
 	results := make(chan DetectionResult, len(plugins))
+	// Use a timeout context for detection operations
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 
 	for filename, plugin := range plugins {
 		go func(p *JSPlugin, f string) {
-			detected, err := p.Detect(output)
+			detected, err := p.Detect(ctx, rt, output)
 			results <- DetectionResult{
 				plugin:   p,
 				filename: f,
@@ -354,6 +407,7 @@ func (d *ToolDetector) loadAllPlugins() {
 		log.Printf("[Detector] skipped plugin in %s: %v", w.Dir, w.Err)
 	}
 
+	rt := d.getRuntime()
 	for _, mf := range manifests {
 		if mf.Type != manifest.PluginTypeToolDetector {
 			continue
@@ -374,7 +428,13 @@ func (d *ToolDetector) loadAllPlugins() {
 			continue
 		}
 
-		plugin, err := LoadPlugin(mainPath)
+		// Use jsruntime for loading when available
+		var plugin *JSPlugin
+		if rt != nil {
+			plugin, err = LoadPluginWithRuntime(context.Background(), rt, mainPath)
+		} else {
+			plugin, err = LoadPlugin(mainPath)
+		}
 		if err != nil {
 			log.Printf("[Detector] Failed to load plugin %s: %v", relPath, err)
 			continue
