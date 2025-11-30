@@ -572,6 +572,14 @@ func (m *Manager) startAdapter(ctx context.Context, plan bindingPlan) (*adapterI
 		if endpoint.Command != "" {
 			out = append(out, "NUPI_ADAPTER_COMMAND="+endpoint.Command)
 		}
+		// Pass runtime to adapter-runner (js requires Nupi-provided JS runtime)
+		if manifest != nil && manifest.Adapter != nil {
+			runtime := strings.TrimSpace(manifest.Adapter.Entrypoint.Runtime)
+			if runtime == "" {
+				runtime = "binary" // default
+			}
+			out = append(out, "NUPI_ADAPTER_RUNTIME="+runtime)
+		}
 		listenEnv := "NUPI_ADAPTER_LISTEN_ADDR"
 		if manifest != nil && manifest.Adapter != nil {
 			if v := strings.TrimSpace(manifest.Adapter.Entrypoint.ListenEnv); v != "" {
@@ -860,6 +868,7 @@ func computePlanFingerprint(binding Binding, manifest *manifest.Manifest, manife
 		spec := manifest.Adapter
 		write(strings.TrimSpace(spec.Slot))
 		write(strings.TrimSpace(spec.Mode))
+		write(strings.TrimSpace(spec.Entrypoint.Runtime))
 		write(strings.TrimSpace(spec.Entrypoint.Command))
 		write(strings.TrimSpace(spec.Entrypoint.Transport))
 		write(strings.TrimSpace(spec.Entrypoint.ListenEnv))

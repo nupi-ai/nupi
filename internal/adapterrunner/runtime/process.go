@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -44,7 +45,17 @@ func Start(ctx context.Context, cfg Config, opts *StartOptions) (*AdapterProcess
 		return nil, fmt.Errorf("adapter-runner: ensure adapter data dir: %w", err)
 	}
 
-	cmd := exec.CommandContext(ctx, cfg.Command, cfg.Args...)
+	// Determine actual command and args based on runtime
+	command := cfg.Command
+	args := cfg.Args
+	if cfg.Runtime == "js" {
+		// Use Nupi-provided JS runtime (currently Bun)
+		jsRuntime := resolveJSRuntime()
+		args = append([]string{"run", command}, args...)
+		command = jsRuntime
+	}
+
+	cmd := exec.CommandContext(ctx, command, args...)
 	if cfg.AdapterHome != "" {
 		cmd.Dir = cfg.AdapterHome
 	}
@@ -187,6 +198,25 @@ func ExitCode(err error) int {
 		return exitErr.ExitCode()
 	}
 	return 1
+}
+
+// resolveJSRuntime returns path to the JS runtime.
+// Currently uses Bun, but this is an implementation detail hidden from plugins.
+// Plugins declare "runtime: js" and Nupi decides which runtime to use.
+func resolveJSRuntime() string {
+	// 1. Check NUPI_JS_RUNTIME env (for testing/override)
+	if path := os.Getenv("NUPI_JS_RUNTIME"); path != "" {
+		return path
+	}
+	// 2. Check bundled location in NUPI_HOME
+	if home := os.Getenv("NUPI_HOME"); home != "" {
+		bundled := filepath.Join(home, "bin", "bun")
+		if _, err := os.Stat(bundled); err == nil {
+			return bundled
+		}
+	}
+	// 3. Fall back to system bun (assumed in PATH)
+	return "bun"
 }
 
 func ensureDir(path string, perm os.FileMode) error {

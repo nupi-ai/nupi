@@ -58,6 +58,7 @@ type AdapterSpec struct {
 }
 
 type AdapterEntrypoint struct {
+	Runtime      string   `yaml:"runtime"`
 	Command      string   `yaml:"command"`
 	Args         []string `yaml:"args"`
 	Transport    string   `yaml:"transport"`
@@ -720,6 +721,12 @@ var allowedTransports = map[string]struct{}{
 	"http":    {},
 }
 
+var allowedRuntimes = map[string]struct{}{
+	"":       {}, // empty = default (binary)
+	"binary": {},
+	"js":     {}, // JavaScript/TypeScript - Nupi provides the runtime
+}
+
 func validateAdapterSpec(spec *AdapterSpec, file string) error {
 	if strings.TrimSpace(spec.Slot) == "" {
 		return fmt.Errorf("adapter manifest %s missing required field: slot", file)
@@ -730,8 +737,14 @@ func validateAdapterSpec(spec *AdapterSpec, file string) error {
 		return fmt.Errorf("adapter manifest %s missing required field: mode", file)
 	}
 
+	runtime := strings.TrimSpace(spec.Entrypoint.Runtime)
 	transport := strings.TrimSpace(spec.Entrypoint.Transport)
 	command := strings.TrimSpace(spec.Entrypoint.Command)
+
+	// Validate runtime value (optional, defaults to binary)
+	if _, ok := allowedRuntimes[runtime]; !ok {
+		return fmt.Errorf("adapter manifest %s has invalid runtime %q (allowed: binary, js)", file, runtime)
+	}
 
 	// Transport is required (adapter-runner needs NUPI_ADAPTER_TRANSPORT)
 	if transport == "" {
