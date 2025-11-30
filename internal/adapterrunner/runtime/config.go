@@ -19,6 +19,7 @@ const (
 type Config struct {
 	Slot           string
 	Adapter        string
+	Runtime        string // "js" | "binary" (default: binary)
 	Command        string
 	Args           []string
 	AdapterConfig  string
@@ -40,9 +41,15 @@ func LoadConfigFromEnv() (Config, error) {
 		return strings.TrimSpace(os.Getenv(key))
 	}
 
+	runtime := get("NUPI_ADAPTER_RUNTIME")
+	if runtime == "" {
+		runtime = "binary" // default
+	}
+
 	cfg := Config{
 		Slot:           get("NUPI_ADAPTER_SLOT"),
 		Adapter:        get("NUPI_ADAPTER_ID"),
+		Runtime:        runtime,
 		Command:        get("NUPI_ADAPTER_COMMAND"),
 		AdapterConfig:  get("NUPI_ADAPTER_CONFIG"),
 		AdapterHome:    get("NUPI_ADAPTER_HOME"),

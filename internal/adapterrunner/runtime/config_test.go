@@ -77,3 +77,47 @@ func TestLoadConfigFromEnvMissingCommand(t *testing.T) {
 		t.Fatalf("expected missing command error, got %v", err)
 	}
 }
+
+func TestLoadConfigFromEnvRuntimeDefault(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script helper not supported on Windows")
+	}
+	tempDir := t.TempDir()
+	command := filepath.Join(tempDir, "adapter")
+	if err := os.WriteFile(command, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write command: %v", err)
+	}
+
+	withEnv(t, "NUPI_ADAPTER_COMMAND", command)
+	withEnv(t, "NUPI_ADAPTER_RUNTIME", "") // Not set
+
+	cfg, err := LoadConfigFromEnv()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.Runtime != "binary" {
+		t.Errorf("expected default runtime 'binary', got %q", cfg.Runtime)
+	}
+}
+
+func TestLoadConfigFromEnvRuntimeJS(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script helper not supported on Windows")
+	}
+	tempDir := t.TempDir()
+	command := filepath.Join(tempDir, "index.ts")
+	if err := os.WriteFile(command, []byte("console.log('hello')"), 0o644); err != nil {
+		t.Fatalf("write command: %v", err)
+	}
+
+	withEnv(t, "NUPI_ADAPTER_COMMAND", command)
+	withEnv(t, "NUPI_ADAPTER_RUNTIME", "js")
+
+	cfg, err := LoadConfigFromEnv()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.Runtime != "js" {
+		t.Errorf("expected runtime 'js', got %q", cfg.Runtime)
+	}
+}

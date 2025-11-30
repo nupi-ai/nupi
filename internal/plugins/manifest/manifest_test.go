@@ -477,6 +477,75 @@ spec:
 	}
 }
 
+func TestParseAdapterRejectsInvalidRuntime(t *testing.T) {
+	data := `apiVersion: nap.nupi.ai/v1alpha1
+kind: Plugin
+type: adapter
+metadata:
+  name: test
+  slug: test
+  catalog: ai.nupi
+  version: 0.0.1
+spec:
+  slot: stt
+  mode: local
+  entrypoint:
+    runtime: python
+    transport: process
+    command: ./adapter`
+
+	_, err := Parse([]byte(data))
+	if err == nil {
+		t.Fatalf("expected error for invalid runtime")
+	}
+	if !strings.Contains(err.Error(), "invalid runtime") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestParseAdapterAcceptsValidRuntimes(t *testing.T) {
+	tests := []struct {
+		name    string
+		runtime string
+	}{
+		{"empty (default binary)", ""},
+		{"binary", "binary"},
+		{"js", "js"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runtimeLine := ""
+			if tt.runtime != "" {
+				runtimeLine = "    runtime: " + tt.runtime + "\n"
+			}
+			data := `apiVersion: nap.nupi.ai/v1alpha1
+kind: Plugin
+type: adapter
+metadata:
+  name: test
+  slug: test
+  catalog: ai.nupi
+  version: 0.0.1
+spec:
+  slot: stt
+  mode: local
+  entrypoint:
+` + runtimeLine + `    transport: process
+    command: ./adapter`
+
+			m, err := Parse([]byte(data))
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			expectedRuntime := tt.runtime
+			if m.Adapter.Entrypoint.Runtime != expectedRuntime {
+				t.Errorf("runtime = %q, want %q", m.Adapter.Entrypoint.Runtime, expectedRuntime)
+			}
+		})
+	}
+}
+
 func TestDiscoverWithWarningsReturnsSkippedPlugins(t *testing.T) {
 	root := t.TempDir()
 
