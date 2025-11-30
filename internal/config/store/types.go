@@ -71,3 +71,19 @@ type TransportConfig struct {
 	GRPCPort       int
 	GRPCBinding    string
 }
+
+// PromptTemplate represents an AI prompt template stored in the database.
+type PromptTemplate struct {
+	EventType string // user_intent, session_output, history_summary, clarification
+	Content   string // Go text/template content
+	IsCustom  bool   // true if user modified (allows reset to defaults)
+	UpdatedAt string
+}
+
+// PromptEventType constants for prompt templates.
+const (
+	PromptEventUserIntent     = "user_intent"
+	PromptEventSessionOutput  = "session_output"
+	PromptEventHistorySummary = "history_summary"
+	PromptEventClarification  = "clarification"
+)

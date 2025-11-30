@@ -1,15 +1,48 @@
 package prompts
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 )
 
+// setupTestEngine creates a test store, seeds default templates, and returns a new engine.
+func setupTestEngine(t *testing.T) (*Engine, *store.Store) {
+	t.Helper()
+
+	// Create test store with temp database
+	s, err := store.Open(store.Options{
+		DBPath: t.TempDir() + "/test.db",
+	})
+	if err != nil {
+		t.Fatalf("failed to open test store: %v", err)
+	}
+
+	// Seed default templates
+	ctx := context.Background()
+	for eventType, content := range store.DefaultPromptTemplates() {
+		if err := s.SeedPromptTemplate(ctx, eventType, content); err != nil {
+			t.Fatalf("failed to seed template %s: %v", eventType, err)
+		}
+	}
+
+	// Create engine and load templates
+	e := New(s)
+	if err := e.LoadTemplates(ctx); err != nil {
+		t.Fatalf("failed to load templates: %v", err)
+	}
+
+	return e, s
+}
+
 func TestNew(t *testing.T) {
-	e := New()
+	e, s := setupTestEngine(t)
+	defer s.Close()
+
 	if e == nil {
 		t.Fatal("New() returned nil")
 	}
@@ -28,7 +61,8 @@ func TestNew(t *testing.T) {
 }
 
 func TestBuildPrompt_UserIntent(t *testing.T) {
-	e := New()
+	e, s := setupTestEngine(t)
+	defer s.Close()
 
 	req := BuildRequest{
 		EventType:   EventTypeUserIntent,
@@ -80,7 +114,8 @@ func TestBuildPrompt_UserIntent(t *testing.T) {
 }
 
 func TestBuildPrompt_SessionOutput(t *testing.T) {
-	e := New()
+	e, s := setupTestEngine(t)
+	defer s.Close()
 
 	req := BuildRequest{
 		EventType:     EventTypeSessionOutput,
@@ -100,7 +135,8 @@ func TestBuildPrompt_SessionOutput(t *testing.T) {
 }
 
 func TestBuildPrompt_HistorySummary(t *testing.T) {
-	e := New()
+	e, s := setupTestEngine(t)
+	defer s.Close()
 
 	req := BuildRequest{
 		EventType: EventTypeHistorySummary,
@@ -125,7 +161,8 @@ func TestBuildPrompt_HistorySummary(t *testing.T) {
 }
 
 func TestBuildPrompt_Clarification(t *testing.T) {
-	e := New()
+	e, s := setupTestEngine(t)
+	defer s.Close()
 
 	req := BuildRequest{
 		EventType:             EventTypeClarification,
@@ -148,7 +185,8 @@ func TestBuildPrompt_Clarification(t *testing.T) {
 }
 
 func TestBuildPrompt_UnknownEventType(t *testing.T) {
-	e := New()
+	e, s := setupTestEngine(t)
+	defer s.Close()
 
 	req := BuildRequest{
 		EventType:  EventType("unknown"),
@@ -162,7 +200,8 @@ func TestBuildPrompt_UnknownEventType(t *testing.T) {
 }
 
 func TestBuildPrompt_NoSession(t *testing.T) {
-	e := New()
+	e, s := setupTestEngine(t)
+	defer s.Close()
 
 	req := BuildRequest{
 		EventType:  EventTypeUserIntent,
@@ -189,13 +228,15 @@ func TestBuildPrompt_NoSession(t *testing.T) {
 }
 
 func TestSetTemplate(t *testing.T) {
-	e := New()
+	e, s := setupTestEngine(t)
+	defer s.Close()
 
 	customTemplate := `Custom system prompt for {{.current_tool}}
 ---USER---
 Custom user: {{.transcript}}`
 
-	err := e.SetTemplate(EventTypeUserIntent, customTemplate)
+	ctx := context.Background()
+	err := e.SetTemplate(ctx, EventTypeUserIntent, customTemplate)
 	if err != nil {
 		t.Fatalf("SetTemplate failed: %v", err)
 	}
@@ -220,25 +261,29 @@ Custom user: {{.transcript}}`
 }
 
 func TestSetTemplate_Invalid(t *testing.T) {
-	e := New()
+	e, s := setupTestEngine(t)
+	defer s.Close()
 
 	invalidTemplate := `{{.invalid_func unclosed`
 
-	err := e.SetTemplate(EventTypeUserIntent, invalidTemplate)
+	ctx := context.Background()
+	err := e.SetTemplate(ctx, EventTypeUserIntent, invalidTemplate)
 	if err == nil {
 		t.Error("expected error for invalid template")
 	}
 }
 
 func TestTruncateFunc(t *testing.T) {
-	e := New()
+	e, s := setupTestEngine(t)
+	defer s.Close()
 
 	// Create a template that uses truncate
 	tmpl := `{{truncate 10 .session_output}}
 ---USER---
 test`
 
-	err := e.SetTemplate(EventTypeSessionOutput, tmpl)
+	ctx := context.Background()
+	err := e.SetTemplate(ctx, EventTypeSessionOutput, tmpl)
 	if err != nil {
 		t.Fatalf("SetTemplate failed: %v", err)
 	}
@@ -255,5 +300,80 @@ test`
 
 	if len(resp.SystemPrompt) > 20 { // 10 chars + "..."
 		t.Errorf("truncate should limit output, got: %s", resp.SystemPrompt)
+	}
+}
+
+func TestResetTemplate(t *testing.T) {
+	e, s := setupTestEngine(t)
+	defer s.Close()
+
+	ctx := context.Background()
+
+	// First, set a custom template
+	customTemplate := `Custom template
+---USER---
+Custom`
+
+	if err := e.SetTemplate(ctx, EventTypeUserIntent, customTemplate); err != nil {
+		t.Fatalf("SetTemplate failed: %v", err)
+	}
+
+	// Reset it
+	if err := e.ResetTemplate(ctx, EventTypeUserIntent); err != nil {
+		t.Fatalf("ResetTemplate failed: %v", err)
+	}
+
+	// Build and check it's back to default
+	req := BuildRequest{
+		EventType:  EventTypeUserIntent,
+		Transcript: "test",
+	}
+
+	resp, err := e.BuildPrompt(req)
+	if err != nil {
+		t.Fatalf("BuildPrompt failed: %v", err)
+	}
+
+	if strings.Contains(resp.SystemPrompt, "Custom template") {
+		t.Error("should have reset to default template")
+	}
+	if !strings.Contains(resp.SystemPrompt, "Nupi") {
+		t.Error("should have default template mentioning Nupi")
+	}
+}
+
+func TestGetTemplate(t *testing.T) {
+	e, s := setupTestEngine(t)
+	defer s.Close()
+
+	ctx := context.Background()
+
+	// Get default template
+	content, isCustom, err := e.GetTemplate(ctx, EventTypeUserIntent)
+	if err != nil {
+		t.Fatalf("GetTemplate failed: %v", err)
+	}
+	if isCustom {
+		t.Error("default template should not be marked as custom")
+	}
+	if !strings.Contains(content, "Nupi") {
+		t.Error("content should contain default template")
+	}
+
+	// Set custom template
+	customTemplate := `Custom`
+	if err := s.SetPromptTemplate(ctx, string(EventTypeUserIntent), customTemplate); err != nil {
+		t.Fatalf("SetPromptTemplate failed: %v", err)
+	}
+
+	content, isCustom, err = e.GetTemplate(ctx, EventTypeUserIntent)
+	if err != nil {
+		t.Fatalf("GetTemplate failed: %v", err)
+	}
+	if !isCustom {
+		t.Error("should be marked as custom after modification")
+	}
+	if content != customTemplate {
+		t.Errorf("content mismatch: got %q, want %q", content, customTemplate)
 	}
 }
