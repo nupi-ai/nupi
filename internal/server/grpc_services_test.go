@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	adapters "github.com/nupi-ai/nupi/internal/plugins/adapters"
 	"github.com/nupi-ai/nupi/internal/pty"
+	"github.com/nupi-ai/nupi/internal/session"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -23,7 +25,46 @@ import (
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
+// skipIfNoPTY skips the test if PTY operations are not available
+func skipIfNoPTY(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("PTY tests not supported on Windows")
+	}
+	p := pty.New()
+	err := p.Start(pty.StartOptions{Command: "/bin/sh", Args: []string{"-c", "exit 0"}})
+	if err != nil {
+		msg := err.Error()
+		if strings.Contains(msg, "operation not permitted") ||
+			strings.Contains(msg, "permission denied") ||
+			strings.Contains(msg, "no such file or directory") {
+			t.Skipf("PTY not available: %v", err)
+		}
+	}
+	if p != nil {
+		p.Stop(100 * time.Millisecond)
+	}
+}
+
+// createSessionOrSkip creates a session or skips the test if PTY is not available
+func createSessionOrSkip(t *testing.T, sm *session.Manager, opts pty.StartOptions, attached bool) *session.Session {
+	t.Helper()
+	sess, err := sm.CreateSession(opts, attached)
+	if err != nil {
+		msg := err.Error()
+		if strings.Contains(msg, "operation not permitted") ||
+			strings.Contains(msg, "permission denied") ||
+			strings.Contains(msg, "no such file or directory") ||
+			strings.Contains(msg, "failed to start PTY") {
+			t.Skipf("PTY not available: %v", err)
+		}
+		t.Fatalf("create session: %v", err)
+	}
+	return sess
+}
+
 func TestSessionsServiceGetConversation(t *testing.T) {
+	skipIfNoPTY(t)
 	apiServer, sessionManager := newTestAPIServer(t)
 
 	opts := pty.StartOptions{
@@ -32,10 +73,7 @@ func TestSessionsServiceGetConversation(t *testing.T) {
 		Rows:    24,
 		Cols:    80,
 	}
-	sess, err := sessionManager.CreateSession(opts, false)
-	if err != nil {
-		t.Fatalf("create session: %v", err)
-	}
+	sess := createSessionOrSkip(t, sessionManager, opts, false)
 	defer sessionManager.KillSession(sess.ID)
 
 	now := time.Now().UTC()
@@ -83,6 +121,7 @@ func TestSessionsServiceGetConversation(t *testing.T) {
 }
 
 func TestSessionsServiceGetConversationPagination(t *testing.T) {
+	skipIfNoPTY(t)
 	apiServer, sessionManager := newTestAPIServer(t)
 
 	opts := pty.StartOptions{
@@ -91,10 +130,7 @@ func TestSessionsServiceGetConversationPagination(t *testing.T) {
 		Rows:    24,
 		Cols:    80,
 	}
-	sess, err := sessionManager.CreateSession(opts, false)
-	if err != nil {
-		t.Fatalf("create session: %v", err)
-	}
+	sess := createSessionOrSkip(t, sessionManager, opts, false)
 	defer sessionManager.KillSession(sess.ID)
 
 	now := time.Now().UTC()
@@ -362,6 +398,7 @@ func TestQuickstartServiceUpdateFailsWhenReferenceMissing(t *testing.T) {
 }
 
 func TestAudioServiceStreamAudioIn(t *testing.T) {
+	skipIfNoPTY(t)
 	apiServer, sessionManager := newTestAPIServer(t)
 	enableVoiceAdapters(t, apiServer.configStore)
 	bus := eventbus.New()
@@ -370,10 +407,7 @@ func TestAudioServiceStreamAudioIn(t *testing.T) {
 	sessionManager.UseEventBus(bus)
 
 	opts := pty.StartOptions{Command: "/bin/sh", Args: []string{"-c", "sleep 1"}, Rows: 24, Cols: 80}
-	sess, err := sessionManager.CreateSession(opts, false)
-	if err != nil {
-		t.Fatalf("create session: %v", err)
-	}
+	sess := createSessionOrSkip(t, sessionManager, opts, false)
 	defer sessionManager.KillSession(sess.ID)
 
 	service := newAudioService(apiServer)

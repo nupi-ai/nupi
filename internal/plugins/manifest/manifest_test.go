@@ -513,6 +513,51 @@ spec:
 	}
 }
 
+func TestParseAdapterJSRuntimeRequiresProcessTransport(t *testing.T) {
+	tests := []struct {
+		name      string
+		transport string
+		wantErr   bool
+	}{
+		{"js+process valid", "process", false},
+		{"js+grpc invalid", "grpc", true},
+		{"js+http invalid", "http", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data := `apiVersion: nap.nupi.ai/v1alpha1
+kind: Plugin
+type: adapter
+metadata:
+  name: test
+  slug: test
+  catalog: ai.nupi
+  version: 0.0.1
+spec:
+  slot: stt
+  entrypoint:
+    runtime: js
+    transport: ` + tt.transport + `
+    command: ./main.js`
+
+			_, err := Parse([]byte(data))
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for runtime:js + transport:%s", tt.transport)
+				}
+				if !strings.Contains(err.Error(), "runtime=js requires transport=process") {
+					t.Fatalf("unexpected error message: %v", err)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+			}
+		})
+	}
+}
+
 func TestDiscoverWithWarningsReturnsSkippedPlugins(t *testing.T) {
 	root := t.TempDir()
 

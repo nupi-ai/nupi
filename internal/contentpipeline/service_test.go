@@ -11,12 +11,23 @@ import (
 	"time"
 
 	"github.com/nupi-ai/nupi/internal/eventbus"
+	"github.com/nupi-ai/nupi/internal/jsrunner"
 	"github.com/nupi-ai/nupi/internal/plugins"
 )
 
-func bunAvailable() bool {
-	_, err := exec.LookPath("bun")
-	return err == nil
+// skipIfNoBun skips the test if the JS runtime is not available.
+// It first checks if the runtime is available via the standard resolver.
+// If not, it checks if bun is in PATH and sets NUPI_JS_RUNTIME to use it.
+func skipIfNoBun(t *testing.T) {
+	t.Helper()
+	if jsrunner.IsAvailable() {
+		return
+	}
+	bunPath, err := exec.LookPath("bun")
+	if err != nil {
+		t.Skip("JS runtime not available: not bundled and bun not in PATH")
+	}
+	t.Setenv("NUPI_JS_RUNTIME", bunPath)
 }
 
 func setHostScriptEnv(t *testing.T) {
@@ -73,9 +84,7 @@ func newPluginService(t *testing.T, baseDir string) *plugins.Service {
 }
 
 func TestContentPipelineTransformsOutput(t *testing.T) {
-	if !bunAvailable() {
-		t.Skip("bun not available")
-	}
+	skipIfNoBun(t)
 	setHostScriptEnv(t)
 
 	tmp := t.TempDir()
@@ -147,9 +156,7 @@ func TestContentPipelineTransformsOutput(t *testing.T) {
 }
 
 func TestContentPipelineEmitsErrors(t *testing.T) {
-	if !bunAvailable() {
-		t.Skip("bun not available")
-	}
+	skipIfNoBun(t)
 	setHostScriptEnv(t)
 
 	tmp := t.TempDir()

@@ -63,6 +63,8 @@ func (m *mockEventListener) hasEvent(eventType string) bool {
 
 // TestEventListenerNotifications tests that event listeners are properly notified
 func TestEventListenerNotifications(t *testing.T) {
+	skipIfNoPTY(t)
+
 	manager := NewManager()
 
 	// Add multiple listeners
@@ -87,6 +89,9 @@ func TestEventListenerNotifications(t *testing.T) {
 
 	sess, err := manager.CreateSession(opts, false)
 	if err != nil {
+		if isPTYError(err) {
+			t.Skipf("PTY not available: %v", err)
+		}
 		t.Fatalf("Failed to create session: %v", err)
 	}
 
@@ -130,6 +135,8 @@ func TestEventListenerNotifications(t *testing.T) {
 
 // TestProcessExitNotifications tests that process exit events are properly notified
 func TestProcessExitNotifications(t *testing.T) {
+	skipIfNoPTY(t)
+
 	manager := NewManager()
 
 	// Track process exit notifications
@@ -145,6 +152,9 @@ func TestProcessExitNotifications(t *testing.T) {
 
 	sess, err := manager.CreateSession(opts, false)
 	if err != nil {
+		if isPTYError(err) {
+			t.Skipf("PTY not available: %v", err)
+		}
 		t.Fatalf("Failed to create session: %v", err)
 	}
 
@@ -180,6 +190,8 @@ func TestProcessExitNotifications(t *testing.T) {
 
 // TestStatusChangeNotifications tests that status changes trigger notifications
 func TestStatusChangeNotifications(t *testing.T) {
+	skipIfNoPTY(t)
+
 	manager := NewManager()
 
 	statusChanges := []string{}
@@ -204,6 +216,9 @@ func TestStatusChangeNotifications(t *testing.T) {
 
 	sess, err := manager.CreateSession(opts, false)
 	if err != nil {
+		if isPTYError(err) {
+			t.Skipf("PTY not available: %v", err)
+		}
 		t.Fatalf("Failed to create session: %v", err)
 	}
 
@@ -245,6 +260,8 @@ func TestStatusChangeNotifications(t *testing.T) {
 
 // TestConcurrentEventListeners tests thread-safety with multiple concurrent listeners
 func TestConcurrentEventListeners(t *testing.T) {
+	skipIfNoPTY(t)
+
 	manager := NewManager()
 
 	// Track events from multiple concurrent listeners
@@ -280,6 +297,10 @@ func TestConcurrentEventListeners(t *testing.T) {
 
 			sess, err := manager.CreateSession(opts, false)
 			if err != nil {
+				// Skip PTY errors in goroutines (main test handles skip)
+				if isPTYError(err) {
+					return
+				}
 				t.Errorf("Failed to create session: %v", err)
 				return
 			}
@@ -306,6 +327,8 @@ func TestConcurrentEventListeners(t *testing.T) {
 
 // TestEventNotifierInterface tests the EventNotifier interface implementation
 func TestEventNotifierInterface(t *testing.T) {
+	skipIfNoPTY(t)
+
 	manager := NewManager()
 
 	// Create a session with a command that exits with specific code
@@ -318,6 +341,9 @@ func TestEventNotifierInterface(t *testing.T) {
 
 	sess, err := manager.CreateSession(opts, false)
 	if err != nil {
+		if isPTYError(err) {
+			t.Skipf("PTY not available: %v", err)
+		}
 		t.Fatalf("Failed to create session: %v", err)
 	}
 

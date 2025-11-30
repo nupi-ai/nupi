@@ -13,11 +13,12 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/nupi-ai/nupi/internal/jsrunner"
 )
 
 //go:embed host.js
@@ -117,13 +118,13 @@ func WithLogger(logger Logger) Option {
 
 // New starts a persistent Bun subprocess running the host script.
 // If hostScript is empty, uses the embedded host.js script.
-// If bunPath is empty, ensures Bun is available (downloading if necessary).
+// If bunPath is empty, resolves the JS runtime path from bundled location or PATH.
 func New(ctx context.Context, bunPath, hostScript string, opts ...Option) (*Runtime, error) {
 	if bunPath == "" {
 		var err error
-		bunPath, err = EnsureBun(ctx)
+		bunPath, err = jsrunner.GetRuntimePath()
 		if err != nil {
-			return nil, fmt.Errorf("jsruntime: ensure bun: %w", err)
+			return nil, fmt.Errorf("jsruntime: %w", err)
 		}
 	}
 
@@ -418,19 +419,9 @@ func (r *Runtime) Err() error {
 	return r.err
 }
 
-// resolveJSRuntime returns path to the JS runtime (Bun).
-func resolveJSRuntime() string {
-	// 1. Check NUPI_JS_RUNTIME env
-	if path := os.Getenv("NUPI_JS_RUNTIME"); path != "" {
-		return path
-	}
-	// 2. Check bundled location
-	if home := os.Getenv("NUPI_HOME"); home != "" {
-		bundled := filepath.Join(home, "bin", "bun")
-		if _, err := os.Stat(bundled); err == nil {
-			return bundled
-		}
-	}
-	// 3. Fall back to system bun
-	return "bun"
+// resolveJSRuntime returns path to the JS runtime.
+// Delegates to jsrunner package for consistent resolution across the codebase.
+// Returns error if runtime not found (no PATH fallback).
+func resolveJSRuntime() (string, error) {
+	return jsrunner.GetRuntimePath()
 }

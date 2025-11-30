@@ -8,11 +8,30 @@ import (
 	"runtime"
 	"testing"
 	"time"
+
+	"github.com/nupi-ai/nupi/internal/jsrunner"
 )
 
-func bunAvailable() bool {
-	_, err := exec.LookPath("bun")
-	return err == nil
+// skipIfNoBun skips the test if the JS runtime is not available.
+// It first checks if the runtime is available via the standard resolver.
+// If not, it checks if bun is in PATH and sets NUPI_JS_RUNTIME to use it.
+// This allows tests to run in dev environments where bun is installed globally.
+func skipIfNoBun(t *testing.T) {
+	t.Helper()
+
+	// First, check if runtime is available via standard resolution
+	if jsrunner.IsAvailable() {
+		return
+	}
+
+	// Fallback: check if bun is in PATH and use it via NUPI_JS_RUNTIME
+	bunPath, err := exec.LookPath("bun")
+	if err != nil {
+		t.Skip("JS runtime not available: not bundled and bun not in PATH")
+	}
+
+	// Set NUPI_JS_RUNTIME so the resolver finds it
+	t.Setenv("NUPI_JS_RUNTIME", bunPath)
 }
 
 func hostScriptPath(t *testing.T) string {
@@ -26,9 +45,7 @@ func hostScriptPath(t *testing.T) string {
 }
 
 func TestNewRuntime(t *testing.T) {
-	if !bunAvailable() {
-		t.Skip("bun not available")
-	}
+	skipIfNoBun(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -50,9 +67,7 @@ func TestNewRuntime(t *testing.T) {
 }
 
 func TestLoadPlugin(t *testing.T) {
-	if !bunAvailable() {
-		t.Skip("bun not available")
-	}
+	skipIfNoBun(t)
 
 	// Create a test plugin
 	tmpDir := t.TempDir()
@@ -99,9 +114,7 @@ module.exports = {
 }
 
 func TestCallFunction(t *testing.T) {
-	if !bunAvailable() {
-		t.Skip("bun not available")
-	}
+	skipIfNoBun(t)
 
 	// Create a test plugin with detect function
 	tmpDir := t.TempDir()
@@ -154,9 +167,7 @@ module.exports = {
 }
 
 func TestCallTransform(t *testing.T) {
-	if !bunAvailable() {
-		t.Skip("bun not available")
-	}
+	skipIfNoBun(t)
 
 	// Create a test pipeline cleaner plugin
 	tmpDir := t.TempDir()
@@ -213,9 +224,7 @@ module.exports = {
 }
 
 func TestShutdown(t *testing.T) {
-	if !bunAvailable() {
-		t.Skip("bun not available")
-	}
+	skipIfNoBun(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -243,9 +252,7 @@ func TestShutdown(t *testing.T) {
 }
 
 func TestCallTimeout(t *testing.T) {
-	if !bunAvailable() {
-		t.Skip("bun not available")
-	}
+	skipIfNoBun(t)
 
 	// Create a plugin with a slow function
 	tmpDir := t.TempDir()
@@ -287,9 +294,7 @@ module.exports = {
 }
 
 func TestCallUnloadedPlugin(t *testing.T) {
-	if !bunAvailable() {
-		t.Skip("bun not available")
-	}
+	skipIfNoBun(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
