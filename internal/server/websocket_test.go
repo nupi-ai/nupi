@@ -1,6 +1,7 @@
 package server
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,6 +16,24 @@ import (
 	"github.com/nupi-ai/nupi/internal/termresize"
 )
 
+// skipIfNoNetwork skips the test if network binding is not available
+// (e.g., in sandboxed environments without network access).
+func skipIfNoNetwork(t *testing.T) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		msg := err.Error()
+		if strings.Contains(msg, "operation not permitted") ||
+			strings.Contains(msg, "permission denied") ||
+			strings.Contains(msg, "bind") {
+			t.Skipf("Network binding not available: %v", err)
+		}
+	}
+	if ln != nil {
+		ln.Close()
+	}
+}
+
 func buildTestServer(t *testing.T, sessionManager *session.Manager) *Server {
 	resizeManager, err := termresize.NewManagerWithDefaults()
 	if err != nil {
@@ -25,6 +44,9 @@ func buildTestServer(t *testing.T, sessionManager *session.Manager) *Server {
 
 // TestWebSocketBroadcast tests that events are broadcast to all connected clients
 func TestWebSocketBroadcast(t *testing.T) {
+	skipIfNoPTY(t)
+	skipIfNoNetwork(t)
+
 	// Create session manager and WebSocket server
 	sessionManager := session.NewManager()
 	wsServer := buildTestServer(t, sessionManager)
@@ -119,6 +141,9 @@ func TestWebSocketBroadcast(t *testing.T) {
 
 // TestWebSocketGetClientCount tests thread-safe client counting
 func TestWebSocketGetClientCount(t *testing.T) {
+	skipIfNoPTY(t)
+	skipIfNoNetwork(t)
+
 	sessionManager := session.NewManager()
 	wsServer := buildTestServer(t, sessionManager)
 
@@ -189,6 +214,9 @@ func TestWebSocketGetClientCount(t *testing.T) {
 
 // TestWebSocketRaceConditions tests for race conditions with concurrent operations
 func TestWebSocketRaceConditions(t *testing.T) {
+	skipIfNoPTY(t)
+	skipIfNoNetwork(t)
+
 	sessionManager := session.NewManager()
 	wsServer := buildTestServer(t, sessionManager)
 
@@ -261,6 +289,9 @@ func TestWebSocketRaceConditions(t *testing.T) {
 
 // TestWebSocketSessionStatusBroadcast tests session status change broadcasts
 func TestWebSocketSessionStatusBroadcast(t *testing.T) {
+	skipIfNoPTY(t)
+	skipIfNoNetwork(t)
+
 	sessionManager := session.NewManager()
 	wsServer := buildTestServer(t, sessionManager)
 

@@ -750,6 +750,14 @@ func validateAdapterSpec(spec *AdapterSpec, file string) error {
 		return fmt.Errorf("adapter manifest %s has invalid transport %q (allowed: process, grpc, http)", file, transport)
 	}
 
+	// Runtime-transport combination validation
+	// runtime:js requires transport:process (JS adapters run via Nupi-provided runtime)
+	if runtime == "js" {
+		if transport != "process" {
+			return fmt.Errorf("adapter manifest %s: runtime=js requires transport=process (got %q)", file, transport)
+		}
+	}
+
 	// Transport-specific validation
 	switch transport {
 	case "process":

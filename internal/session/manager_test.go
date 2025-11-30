@@ -2,11 +2,50 @@ package session
 
 import (
 	"os"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/nupi-ai/nupi/internal/pty"
 )
+
+// skipIfNoPTY skips the test if PTY operations are not available
+// (e.g., in sandboxed environments, containers without /dev/ptmx access).
+func skipIfNoPTY(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("PTY tests not supported on Windows")
+	}
+	// Try to start a minimal PTY using /bin/sh to match actual test commands
+	p := pty.New()
+	err := p.Start(pty.StartOptions{Command: "/bin/sh", Args: []string{"-c", "exit 0"}})
+	if err != nil {
+		msg := err.Error()
+		if strings.Contains(msg, "operation not permitted") ||
+			strings.Contains(msg, "permission denied") ||
+			strings.Contains(msg, "no such file or directory") ||
+			strings.Contains(msg, "failed to start") {
+			t.Skipf("PTY not available in this environment: %v", err)
+		}
+		// Other errors might be real issues, don't skip
+	}
+	if p != nil {
+		p.Stop(100 * time.Millisecond)
+	}
+}
+
+// isPTYError checks if an error is PTY-related and should cause test skip
+func isPTYError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "operation not permitted") ||
+		strings.Contains(msg, "permission denied") ||
+		strings.Contains(msg, "no such file or directory") ||
+		strings.Contains(msg, "failed to start PTY")
+}
 
 type fakeSink struct{ data []byte }
 
@@ -16,6 +55,8 @@ func (f *fakeSink) Write(b []byte) error {
 }
 
 func TestManagerStatusTransitions(t *testing.T) {
+	skipIfNoPTY(t)
+
 	tmpHome := t.TempDir()
 	oldHome := os.Getenv("HOME")
 	if err := os.Setenv("HOME", tmpHome); err != nil {
@@ -30,6 +71,9 @@ func TestManagerStatusTransitions(t *testing.T) {
 	// Use a PTY wrapper that keeps running so detach can observe status
 	sess, err := m.CreateSession(pty.StartOptions{Command: "/bin/sh", Args: []string{"-c", "sleep 1"}}, false)
 	if err != nil {
+		if isPTYError(err) {
+			t.Skipf("PTY not available: %v", err)
+		}
 		t.Fatalf("CreateSession failed: %v", err)
 	}
 

@@ -7,11 +7,12 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/nupi-ai/nupi/internal/jsrunner"
 )
 
 // StartOptions customises how the adapter process is launched.
@@ -50,7 +51,10 @@ func Start(ctx context.Context, cfg Config, opts *StartOptions) (*AdapterProcess
 	args := cfg.Args
 	if cfg.Runtime == "js" {
 		// Use Nupi-provided JS runtime (currently Bun)
-		jsRuntime := resolveJSRuntime()
+		jsRuntime, err := resolveJSRuntime()
+		if err != nil {
+			return nil, fmt.Errorf("adapter-runner: %w", err)
+		}
 		args = append([]string{"run", command}, args...)
 		command = jsRuntime
 	}
@@ -201,22 +205,11 @@ func ExitCode(err error) int {
 }
 
 // resolveJSRuntime returns path to the JS runtime.
-// Currently uses Bun, but this is an implementation detail hidden from plugins.
+// Delegates to jsrunner package for consistent resolution across the codebase.
 // Plugins declare "runtime: js" and Nupi decides which runtime to use.
-func resolveJSRuntime() string {
-	// 1. Check NUPI_JS_RUNTIME env (for testing/override)
-	if path := os.Getenv("NUPI_JS_RUNTIME"); path != "" {
-		return path
-	}
-	// 2. Check bundled location in NUPI_HOME
-	if home := os.Getenv("NUPI_HOME"); home != "" {
-		bundled := filepath.Join(home, "bin", "bun")
-		if _, err := os.Stat(bundled); err == nil {
-			return bundled
-		}
-	}
-	// 3. Fall back to system bun (assumed in PATH)
-	return "bun"
+// Returns error if runtime not found (no PATH fallback).
+func resolveJSRuntime() (string, error) {
+	return jsrunner.GetRuntimePath()
 }
 
 func ensureDir(path string, perm os.FileMode) error {

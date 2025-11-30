@@ -2,8 +2,11 @@ package gateway
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"os"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +18,28 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 )
+
+// skipIfNoNetwork skips the test if network binding is not available
+// (e.g., in sandboxed environments without network access).
+func skipIfNoNetwork(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		// Windows might have different behavior, test separately
+		return
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		msg := err.Error()
+		if strings.Contains(msg, "operation not permitted") ||
+			strings.Contains(msg, "permission denied") ||
+			strings.Contains(msg, "bind") {
+			t.Skipf("Network binding not available: %v", err)
+		}
+	}
+	if ln != nil {
+		ln.Close()
+	}
+}
 
 type runtimeStub struct{}
 
@@ -59,6 +84,8 @@ func newGatewayTestAPIServer(t *testing.T) (*server.APIServer, *configstore.Stor
 }
 
 func TestGatewayStartLoopback(t *testing.T) {
+	skipIfNoNetwork(t)
+
 	apiServer, store := newGatewayTestAPIServer(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
