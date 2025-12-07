@@ -74,9 +74,6 @@ func TestGetInstancePaths(t *testing.T) {
 	if paths.BinDir != "/test/nupi/bin" {
 		t.Errorf("BinDir path incorrect: got %s, want /test/nupi/bin", paths.BinDir)
 	}
-	if paths.RunnerRoot != "/test/nupi/bin/adapter-runner" {
-		t.Errorf("RunnerRoot path incorrect: got %s, want /test/nupi/bin/adapter-runner", paths.RunnerRoot)
-	}
 }
 
 func TestGetInstancePathsAlwaysUsesDefault(t *testing.T) {

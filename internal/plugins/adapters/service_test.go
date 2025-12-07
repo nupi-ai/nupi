@@ -8,12 +8,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nupi-ai/nupi/internal/adapterrunner"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 )
 
 func TestServicePublishesStatusOnStart(t *testing.T) {
+	// Mock readiness so remote adapters don't try to actually connect
+	origReady := waitForAdapterReadyFn
+	waitForAdapterReadyFn = func(context.Context, string) error { return nil }
+	t.Cleanup(func() { waitForAdapterReadyFn = origReady })
+
 	store := &fakeBindingSource{
 		bindings: []configstore.AdapterBinding{
 			{
@@ -33,7 +37,6 @@ func TestServicePublishesStatusOnStart(t *testing.T) {
 	manager := NewManager(ManagerOptions{
 		Store:     store,
 		Adapters:  store,
-		Runner:    adapterrunner.NewManager(t.TempDir()),
 		Launcher:  launcher,
 		PluginDir: t.TempDir(),
 	})
@@ -69,6 +72,11 @@ func TestServicePublishesStatusOnStart(t *testing.T) {
 }
 
 func TestServicePublishesRestartOnConfigChange(t *testing.T) {
+	// Mock readiness so remote adapters don't try to actually connect
+	origReady := waitForAdapterReadyFn
+	waitForAdapterReadyFn = func(context.Context, string) error { return nil }
+	t.Cleanup(func() { waitForAdapterReadyFn = origReady })
+
 	store := &fakeBindingSource{
 		bindings: []configstore.AdapterBinding{
 			{
@@ -89,7 +97,6 @@ func TestServicePublishesRestartOnConfigChange(t *testing.T) {
 	manager := NewManager(ManagerOptions{
 		Store:     store,
 		Adapters:  store,
-		Runner:    adapterrunner.NewManager(t.TempDir()),
 		Launcher:  launcher,
 		PluginDir: t.TempDir(),
 	})
@@ -151,6 +158,8 @@ collect:
 }
 
 func TestServicePublishesErrorOnEnsureFailure(t *testing.T) {
+	// Use process transport to test launch failures
+	// (grpc transport doesn't launch a process, so launcher errors won't occur)
 	store := &fakeBindingSource{
 		bindings: []configstore.AdapterBinding{
 			{
@@ -163,15 +172,14 @@ func TestServicePublishesErrorOnEnsureFailure(t *testing.T) {
 	store.setAdapter(configstore.Adapter{ID: "adapter.tts.fail"})
 	store.setEndpoint(configstore.AdapterEndpoint{
 		AdapterID: "adapter.tts.fail",
-		Transport: "grpc",
-		Address:   "127.0.0.1:9600",
+		Transport: "process",
+		Command:   "./mock-adapter",
 	})
 	launcher := NewMockLauncher()
 	launcher.SetError(errors.New("launch failure"))
 	manager := NewManager(ManagerOptions{
 		Store:     store,
 		Adapters:  store,
-		Runner:    adapterrunner.NewManager(t.TempDir()),
 		Launcher:  launcher,
 		PluginDir: t.TempDir(),
 	})
@@ -203,6 +211,14 @@ func TestServicePublishesErrorOnEnsureFailure(t *testing.T) {
 }
 
 func TestServiceErrorCacheClearedOnRecovery(t *testing.T) {
+	// Use process transport to test launch failures
+	// (grpc transport doesn't launch a process, so launcher errors won't occur)
+
+	// Mock readiness to succeed immediately when process is launched
+	origReady := waitForAdapterReadyFn
+	waitForAdapterReadyFn = func(context.Context, string) error { return nil }
+	t.Cleanup(func() { waitForAdapterReadyFn = origReady })
+
 	store := &fakeBindingSource{
 		bindings: []configstore.AdapterBinding{
 			{
@@ -215,15 +231,14 @@ func TestServiceErrorCacheClearedOnRecovery(t *testing.T) {
 	store.setAdapter(configstore.Adapter{ID: "adapter.ai"})
 	store.setEndpoint(configstore.AdapterEndpoint{
 		AdapterID: "adapter.ai",
-		Transport: "grpc",
-		Address:   "127.0.0.1:9700",
+		Transport: "process",
+		Command:   "./mock-adapter",
 	})
 	launcher := NewMockLauncher()
 	launcher.SetError(errors.New("launch failure"))
 	manager := NewManager(ManagerOptions{
 		Store:     store,
 		Adapters:  store,
-		Runner:    adapterrunner.NewManager(t.TempDir()),
 		Launcher:  launcher,
 		PluginDir: t.TempDir(),
 	})
@@ -285,6 +300,11 @@ func TestServiceErrorCacheClearedOnRecovery(t *testing.T) {
 }
 
 func TestServiceOverviewStartStop(t *testing.T) {
+	// Mock readiness so remote adapters don't try to actually connect
+	origReady := waitForAdapterReadyFn
+	waitForAdapterReadyFn = func(context.Context, string) error { return nil }
+	t.Cleanup(func() { waitForAdapterReadyFn = origReady })
+
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "config.db")
 
@@ -316,7 +336,6 @@ func TestServiceOverviewStartStop(t *testing.T) {
 	manager := NewManager(ManagerOptions{
 		Store:     store,
 		Adapters:  store,
-		Runner:    adapterrunner.NewManager(t.TempDir()),
 		Launcher:  launcher,
 		PluginDir: t.TempDir(),
 	})

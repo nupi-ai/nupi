@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nupi-ai/nupi/internal/adapterrunner"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	manifestpkg "github.com/nupi-ai/nupi/internal/plugins/manifest"
 )
@@ -85,13 +84,12 @@ func (f *fakeBindingSource) GetAdapterEndpoint(ctx context.Context, adapterID st
 }
 
 func TestManagerEnsureStartsAdapters(t *testing.T) {
-	defer func(original func() (string, error)) {
-		allocateProcessAddressFn = original
-	}(allocateProcessAddressFn)
-	allocateProcessAddressFn = func() (string, error) {
-		return "127.0.0.1:60001", nil
-	}
+	// Mock readiness so remote adapters don't try to actually connect
+	origReady := waitForAdapterReadyFn
+	waitForAdapterReadyFn = func(context.Context, string) error { return nil }
+	t.Cleanup(func() { waitForAdapterReadyFn = origReady })
 
+	// Test grpc transport - no process is launched, adapter is remote
 	store := &fakeBindingSource{
 		bindings: []configstore.AdapterBinding{
 			{
@@ -108,17 +106,11 @@ func TestManagerEnsureStartsAdapters(t *testing.T) {
 		Transport: "grpc",
 		Address:   "127.0.0.1:9100",
 	})
-	defer func(original func() (string, error)) {
-		allocateProcessAddressFn = original
-	}(allocateProcessAddressFn)
-	allocateProcessAddressFn = func() (string, error) {
-		return "127.0.0.1:60001", nil
-	}
+
 	launcher := NewMockLauncher()
 	manager := NewManager(ManagerOptions{
 		Store:     store,
 		Adapters:  store,
-		Runner:    adapterrunner.NewManager(t.TempDir()),
 		Launcher:  launcher,
 		PluginDir: t.TempDir(),
 	})
@@ -126,32 +118,37 @@ func TestManagerEnsureStartsAdapters(t *testing.T) {
 	if err := manager.Ensure(context.Background()); err != nil {
 		t.Fatalf("Ensure returned error: %v", err)
 	}
+
+	// For grpc transport, no process should be launched - adapter is remote
 	records := launcher.Records()
-	if len(records) != 1 {
-		t.Fatalf("expected 1 launch call, got %d", len(records))
+	if len(records) != 0 {
+		t.Fatalf("expected 0 launch calls for grpc transport, got %d", len(records))
 	}
 
-	call := records[0]
-	if call.Binary != manager.runner.BinaryPath() {
-		t.Fatalf("unexpected binary path %q", call.Binary)
+	// But the adapter should be registered
+	running := manager.Running()
+	if len(running) != 1 {
+		t.Fatalf("expected 1 running adapter, got %d", len(running))
 	}
-	expectArgs := []string{"--slot", string(SlotAI), "--adapter", "adapter.ai"}
-	if len(call.Args) != len(expectArgs) {
-		t.Fatalf("unexpected args: %v", call.Args)
+	if running[0].AdapterID != "adapter.ai" {
+		t.Fatalf("unexpected adapter ID: %s", running[0].AdapterID)
 	}
-	for i, arg := range expectArgs {
-		if call.Args[i] != arg {
-			t.Fatalf("unexpected arg[%d]: %q (expected %q)", i, call.Args[i], arg)
-		}
+	if running[0].Runtime[RuntimeExtraTransport] != "grpc" {
+		t.Fatalf("expected grpc transport in runtime, got %s", running[0].Runtime[RuntimeExtraTransport])
+	}
+	if running[0].Runtime[RuntimeExtraAddress] != "127.0.0.1:9100" {
+		t.Fatalf("expected address in runtime, got %s", running[0].Runtime[RuntimeExtraAddress])
 	}
 
+	// Second Ensure should not change anything
 	if err := manager.Ensure(context.Background()); err != nil {
 		t.Fatalf("Ensure (second call) returned error: %v", err)
 	}
-	if len(launcher.Records()) != 1 {
-		t.Fatalf("expected no additional launches when configuration unchanged")
+	if len(launcher.Records()) != 0 {
+		t.Fatalf("expected no launches on second call")
 	}
 
+	// Removing binding should remove the adapter
 	store.mu.Lock()
 	store.bindings = nil
 	store.mu.Unlock()
@@ -160,8 +157,9 @@ func TestManagerEnsureStartsAdapters(t *testing.T) {
 		t.Fatalf("Ensure after removing bindings returned error: %v", err)
 	}
 
-	if launcher.StopCount(string(SlotAI)) != 1 {
-		t.Fatalf("expected handle to be stopped once")
+	running = manager.Running()
+	if len(running) != 0 {
+		t.Fatalf("expected 0 running adapters after removing binding, got %d", len(running))
 	}
 }
 
@@ -199,7 +197,6 @@ func TestManagerEnsureProcessTransportAllocFailure(t *testing.T) {
 	manager := NewManager(ManagerOptions{
 		Store:     store,
 		Adapters:  store,
-		Runner:    adapterrunner.NewManager(t.TempDir()),
 		Launcher:  launcher,
 		PluginDir: t.TempDir(),
 	})
@@ -252,7 +249,6 @@ func TestManagerEnsureProcessTransportReadyFailure(t *testing.T) {
 	manager := NewManager(ManagerOptions{
 		Store:     store,
 		Adapters:  store,
-		Runner:    adapterrunner.NewManager(t.TempDir()),
 		Launcher:  launcher,
 		PluginDir: t.TempDir(),
 	})
@@ -315,7 +311,6 @@ func TestManagerEnsureProcessTransportReallocatesPortOnRestart(t *testing.T) {
 	manager := NewManager(ManagerOptions{
 		Store:     store,
 		Adapters:  store,
-		Runner:    adapterrunner.NewManager(t.TempDir()),
 		Launcher:  launcher,
 		PluginDir: t.TempDir(),
 	})
@@ -400,7 +395,6 @@ func TestManagerEnsureProcessTransportAllocatesFreshPortAfterStop(t *testing.T) 
 	manager := NewManager(ManagerOptions{
 		Store:     store,
 		Adapters:  store,
-		Runner:    adapterrunner.NewManager(t.TempDir()),
 		Launcher:  launcher,
 		PluginDir: t.TempDir(),
 	})
@@ -507,7 +501,6 @@ spec:
 	manager := NewManager(ManagerOptions{
 		Store:     store,
 		Adapters:  store,
-		Runner:    adapterrunner.NewManager(filepath.Join(storeDir, "runner")),
 		Launcher:  launcher,
 		PluginDir: filepath.Join(storeDir, "plugins"),
 	})
@@ -524,6 +517,11 @@ spec:
 }
 
 func TestManagerEnsureUpdatesOnAdapterChange(t *testing.T) {
+	// Mock readiness so process adapters don't try to actually connect
+	origReady := waitForAdapterReadyFn
+	waitForAdapterReadyFn = func(context.Context, string) error { return nil }
+	t.Cleanup(func() { waitForAdapterReadyFn = origReady })
+
 	store := &fakeBindingSource{
 		bindings: []configstore.AdapterBinding{
 			{
@@ -537,19 +535,18 @@ func TestManagerEnsureUpdatesOnAdapterChange(t *testing.T) {
 	store.setAdapter(configstore.Adapter{ID: "adapter.tts.v2"})
 	store.setEndpoint(configstore.AdapterEndpoint{
 		AdapterID: "adapter.tts.v1",
-		Transport: "grpc",
-		Address:   "127.0.0.1:9200",
+		Transport: "process",
+		Command:   "./mock-adapter",
 	})
 	store.setEndpoint(configstore.AdapterEndpoint{
 		AdapterID: "adapter.tts.v2",
-		Transport: "grpc",
-		Address:   "127.0.0.1:9201",
+		Transport: "process",
+		Command:   "./mock-adapter",
 	})
 	launcher := NewMockLauncher()
 	manager := NewManager(ManagerOptions{
 		Store:     store,
 		Adapters:  store,
-		Runner:    adapterrunner.NewManager(t.TempDir()),
 		Launcher:  launcher,
 		PluginDir: t.TempDir(),
 	})
@@ -576,6 +573,11 @@ func TestManagerEnsureUpdatesOnAdapterChange(t *testing.T) {
 }
 
 func TestManagerEnsureConfigChange(t *testing.T) {
+	// Mock readiness so process adapters don't try to actually connect
+	origReady := waitForAdapterReadyFn
+	waitForAdapterReadyFn = func(context.Context, string) error { return nil }
+	t.Cleanup(func() { waitForAdapterReadyFn = origReady })
+
 	store := &fakeBindingSource{
 		bindings: []configstore.AdapterBinding{
 			{
@@ -589,14 +591,13 @@ func TestManagerEnsureConfigChange(t *testing.T) {
 	store.setAdapter(configstore.Adapter{ID: "adapter.ai"})
 	store.setEndpoint(configstore.AdapterEndpoint{
 		AdapterID: "adapter.ai",
-		Transport: "grpc",
-		Address:   "127.0.0.1:9300",
+		Transport: "process",
+		Command:   "./mock-adapter",
 	})
 	launcher := NewMockLauncher()
 	manager := NewManager(ManagerOptions{
 		Store:     store,
 		Adapters:  store,
-		Runner:    adapterrunner.NewManager(t.TempDir()),
 		Launcher:  launcher,
 		PluginDir: t.TempDir(),
 	})
@@ -624,7 +625,6 @@ func TestManagerEnsureConfigChange(t *testing.T) {
 
 func TestManagerEnsureMissingStore(t *testing.T) {
 	manager := NewManager(ManagerOptions{
-		Runner:    adapterrunner.NewManager(t.TempDir()),
 		PluginDir: t.TempDir(),
 	})
 	err := manager.Ensure(context.Background())
@@ -634,6 +634,11 @@ func TestManagerEnsureMissingStore(t *testing.T) {
 }
 
 func TestManagerStartAdapterConfiguresEnvironment(t *testing.T) {
+	// Mock readiness so process adapters don't try to actually connect
+	origReady := waitForAdapterReadyFn
+	waitForAdapterReadyFn = func(context.Context, string) error { return nil }
+	t.Cleanup(func() { waitForAdapterReadyFn = origReady })
+
 	ctx := context.Background()
 	tempDir := t.TempDir()
 	dbPath := filepath.Join(tempDir, "config.db")
@@ -655,9 +660,10 @@ metadata:
   slug: Example Adapter
 spec:
   slot: ai
-  mode: external
+  mode: local
   entrypoint:
-    transport: grpc
+    transport: process
+    command: serve
     listenEnv: ADAPTER_LISTEN_ADDR
   options:
     token:
@@ -686,8 +692,7 @@ spec:
 	}
 	endpoint := configstore.AdapterEndpoint{
 		AdapterID: adapter.ID,
-		Transport: "grpc",
-		Address:   "127.0.0.1:9500",
+		Transport: "process",
 		Command:   "serve",
 		Args:      []string{"--foo"},
 		Env: map[string]string{
@@ -703,7 +708,6 @@ spec:
 	manager := NewManager(ManagerOptions{
 		Store:     store,
 		Adapters:  store,
-		Runner:    adapterrunner.NewManager(filepath.Join(tempDir, "runner")),
 		Launcher:  launcher,
 		PluginDir: pluginDir,
 	})
@@ -773,11 +777,16 @@ spec:
 	if transport, ok := envLookup("NUPI_ADAPTER_TRANSPORT"); !ok || transport != endpoint.Transport {
 		t.Fatalf("expected transport %s, got %q", endpoint.Transport, transport)
 	}
-	if addr, ok := envLookup("NUPI_ADAPTER_ENDPOINT"); !ok || addr != endpoint.Address {
-		t.Fatalf("expected adapter endpoint %s, got %q", endpoint.Address, addr)
+	// For process transport, address is dynamically allocated
+	allocatedAddr, ok := envLookup("NUPI_ADAPTER_ENDPOINT")
+	if !ok || allocatedAddr == "" {
+		t.Fatalf("expected dynamically allocated adapter endpoint, got %q", allocatedAddr)
 	}
-	if listenAddr, ok := envLookup("ADAPTER_LISTEN_ADDR"); !ok || listenAddr != endpoint.Address {
-		t.Fatalf("expected ADAPTER_LISTEN_ADDR=%s, got %q", endpoint.Address, listenAddr)
+	if !strings.HasPrefix(allocatedAddr, "127.0.0.1:") {
+		t.Fatalf("expected localhost address, got %q", allocatedAddr)
+	}
+	if listenAddr, ok := envLookup("ADAPTER_LISTEN_ADDR"); !ok || listenAddr != allocatedAddr {
+		t.Fatalf("expected ADAPTER_LISTEN_ADDR=%s, got %q", allocatedAddr, listenAddr)
 	}
 	if cmd, ok := envLookup("NUPI_ADAPTER_COMMAND"); !ok || cmd != endpoint.Command {
 		t.Fatalf("expected command %s, got %q", endpoint.Command, cmd)
@@ -791,6 +800,11 @@ spec:
 }
 
 func TestManagerEnsureRestartsOnEndpointChange(t *testing.T) {
+	// Mock readiness so process adapters don't try to actually connect
+	origReady := waitForAdapterReadyFn
+	waitForAdapterReadyFn = func(context.Context, string) error { return nil }
+	t.Cleanup(func() { waitForAdapterReadyFn = origReady })
+
 	ctx := context.Background()
 	tempDir := t.TempDir()
 	dbPath := filepath.Join(tempDir, "config.db")
@@ -817,21 +831,21 @@ func TestManagerEnsureRestartsOnEndpointChange(t *testing.T) {
 	}
 	if err := store.UpsertAdapterEndpoint(ctx, configstore.AdapterEndpoint{
 		AdapterID: adapter.ID,
-		Transport: "grpc",
-		Address:   "127.0.0.1:9601",
+		Transport: "process",
+		Command:   "./mock-adapter",
 	}); err != nil {
 		t.Fatalf("upsert endpoint: %v", err)
 	}
 	if endpoint, err := store.GetAdapterEndpoint(ctx, adapter.ID); err != nil {
 		t.Fatalf("verify endpoint: %v", err)
-	} else if !strings.EqualFold(endpoint.Transport, "grpc") {
-		t.Fatalf("expected grpc transport, got %s", endpoint.Transport)
+	} else if !strings.EqualFold(endpoint.Transport, "process") {
+		t.Fatalf("expected process transport, got %s", endpoint.Transport)
 	}
 
 	initialEndpoint := configstore.AdapterEndpoint{
 		AdapterID: adapter.ID,
-		Transport: "grpc",
-		Address:   "127.0.0.1:9400",
+		Transport: "process",
+		Command:   "./mock-adapter-v1",
 	}
 	if err := store.UpsertAdapterEndpoint(ctx, initialEndpoint); err != nil {
 		t.Fatalf("upsert endpoint: %v", err)
@@ -841,7 +855,6 @@ func TestManagerEnsureRestartsOnEndpointChange(t *testing.T) {
 	manager := NewManager(ManagerOptions{
 		Store:     store,
 		Adapters:  store,
-		Runner:    adapterrunner.NewManager(filepath.Join(tempDir, "runner")),
 		Launcher:  launcher,
 		PluginDir: filepath.Join(tempDir, "plugins"),
 	})
@@ -855,8 +868,8 @@ func TestManagerEnsureRestartsOnEndpointChange(t *testing.T) {
 
 	updatedEndpoint := configstore.AdapterEndpoint{
 		AdapterID: adapter.ID,
-		Transport: "grpc",
-		Address:   "127.0.0.1:9501",
+		Transport: "process",
+		Command:   "./mock-adapter-v2",
 	}
 	if err := store.UpsertAdapterEndpoint(ctx, updatedEndpoint); err != nil {
 		t.Fatalf("update endpoint: %v", err)
@@ -874,6 +887,11 @@ func TestManagerEnsureRestartsOnEndpointChange(t *testing.T) {
 }
 
 func TestManagerEnsureRestartsOnManifestChange(t *testing.T) {
+	// Mock readiness so process adapters don't try to actually connect
+	origReady := waitForAdapterReadyFn
+	waitForAdapterReadyFn = func(context.Context, string) error { return nil }
+	t.Cleanup(func() { waitForAdapterReadyFn = origReady })
+
 	ctx := context.Background()
 	tempDir := t.TempDir()
 	dbPath := filepath.Join(tempDir, "config.db")
@@ -896,7 +914,8 @@ spec:
   slot: ai
   mode: local
   entrypoint:
-    transport: grpc
+    transport: process
+    command: ./mock-adapter
 `
 	adapter := configstore.Adapter{
 		ID:       "adapter.ai",
@@ -913,22 +932,21 @@ spec:
 	}
 	if err := store.UpsertAdapterEndpoint(ctx, configstore.AdapterEndpoint{
 		AdapterID: adapter.ID,
-		Transport: "grpc",
-		Address:   "127.0.0.1:9601",
+		Transport: "process",
+		Command:   "./mock-adapter",
 	}); err != nil {
 		t.Fatalf("upsert endpoint: %v", err)
 	}
 	if endpoint, err := store.GetAdapterEndpoint(ctx, adapter.ID); err != nil {
 		t.Fatalf("verify endpoint: %v", err)
-	} else if !strings.EqualFold(endpoint.Transport, "grpc") {
-		t.Fatalf("expected grpc transport, got %s", endpoint.Transport)
+	} else if !strings.EqualFold(endpoint.Transport, "process") {
+		t.Fatalf("expected process transport, got %s", endpoint.Transport)
 	}
 
 	launcher := NewMockLauncher()
 	manager := NewManager(ManagerOptions{
 		Store:     store,
 		Adapters:  store,
-		Runner:    adapterrunner.NewManager(filepath.Join(tempDir, "runner")),
 		Launcher:  launcher,
 		PluginDir: filepath.Join(tempDir, "plugins"),
 	})
@@ -951,7 +969,8 @@ spec:
   slot: ai
   mode: local
   entrypoint:
-    transport: grpc
+    transport: process
+    command: ./mock-adapter
   telemetry:
     stdout: true
 `
@@ -1011,7 +1030,6 @@ spec:
 	manager := NewManager(ManagerOptions{
 		Store:     source,
 		Adapters:  source,
-		Runner:    adapterrunner.NewManager(filepath.Join(tempDir, "runner")),
 		Launcher:  NewMockLauncher(),
 		PluginDir: filepath.Join(tempDir, "plugins"),
 	})
@@ -1113,7 +1131,6 @@ spec:
 	manager := NewManager(ManagerOptions{
 		Store:     store,
 		Adapters:  store,
-		Runner:    adapterrunner.NewManager(filepath.Join(tempDir, "runner")),
 		Launcher:  launcher,
 		PluginDir: filepath.Join(tempDir, "plugins"),
 	})
@@ -1340,7 +1357,6 @@ func TestMergeManifestEndpointRequiresAddressForNetworkTransports(t *testing.T) 
 
 func TestManagerStopAllStopsEveryInstance(t *testing.T) {
 	manager := NewManager(ManagerOptions{
-		Runner:   adapterrunner.NewManager(t.TempDir()),
 		Launcher: NewMockLauncher(),
 	})
 	manager.instances = map[Slot]*adapterInstance{
@@ -1400,7 +1416,6 @@ spec:
 	}
 
 	manager := NewManager(ManagerOptions{
-		Runner:    adapterrunner.NewManager(t.TempDir()),
 		Launcher:  NewMockLauncher(),
 		PluginDir: t.TempDir(),
 	})
@@ -1514,7 +1529,6 @@ spec:
 	}
 
 	manager := NewManager(ManagerOptions{
-		Runner:    adapterrunner.NewManager(filepath.Join(tempDir, "runner")),
 		Launcher:  NewMockLauncher(),
 		PluginDir: filepath.Join(tempDir, "plugins"),
 	})
@@ -1596,7 +1610,6 @@ spec:
 
 	pluginDir := filepath.Join(tempDir, "plugins")
 	manager := NewManager(ManagerOptions{
-		Runner:    adapterrunner.NewManager(filepath.Join(tempDir, "runner")),
 		Launcher:  launcher,
 		PluginDir: pluginDir,
 	})
@@ -1674,7 +1687,6 @@ func TestManagerEnsureBuiltinMockAdapterNoRunner(t *testing.T) {
 	manager := NewManager(ManagerOptions{
 		Store:    store,
 		Adapters: store,
-		Runner:   nil, // Intentionally nil
 	})
 
 	ctx := context.Background()
@@ -1726,7 +1738,6 @@ func TestManagerEnsureAllBuiltinMockAdapters(t *testing.T) {
 			manager := NewManager(ManagerOptions{
 				Store:    store,
 				Adapters: store,
-				Runner:   nil,
 			})
 
 			ctx := context.Background()

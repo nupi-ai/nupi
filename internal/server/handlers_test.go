@@ -27,7 +27,6 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/nupi-ai/nupi/internal/adapterrunner"
 	apihttp "github.com/nupi-ai/nupi/internal/api/http"
 	"github.com/nupi-ai/nupi/internal/audio/egress"
 	"github.com/nupi-ai/nupi/internal/audio/ingress"
@@ -1534,10 +1533,13 @@ func enableVoiceAdapters(t *testing.T, store *configstore.Store) {
 
 func newTestAdaptersService(t *testing.T, store *configstore.Store) *adapters.Service {
 	t.Helper()
+	// Mock readiness check so remote adapters don't actually try to connect
+	restore := adapters.SetReadinessChecker(func(context.Context, string) error { return nil })
+	t.Cleanup(restore)
+
 	manager := adapters.NewManager(adapters.ManagerOptions{
 		Store:    store,
 		Adapters: store,
-		Runner:   adapterrunner.NewManager(t.TempDir()),
 		Launcher: testAdapterLauncher{},
 	})
 	bus := eventbus.New()

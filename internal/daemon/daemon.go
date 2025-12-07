@@ -15,7 +15,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/nupi-ai/nupi/internal/adapterrunner"
 	"github.com/nupi-ai/nupi/internal/audio/barge"
 	"github.com/nupi-ai/nupi/internal/audio/egress"
 	"github.com/nupi-ai/nupi/internal/audio/ingress"
@@ -39,8 +38,7 @@ import (
 
 // Options groups dependencies required to construct a Daemon.
 type Options struct {
-	Store         *configstore.Store
-	RunnerManager *adapterrunner.Manager
+	Store *configstore.Store
 }
 
 // Daemon represents the main daemon process.
@@ -52,7 +50,6 @@ type Daemon struct {
 	runtimeInfo       *RuntimeInfo
 	lifecycle         *daemonruntime.Lifecycle
 	instancePaths     config.InstancePaths
-	runnerManager     *adapterrunner.Manager
 	eventBus          *eventbus.Bus
 	globalStore       *conversation.GlobalStore
 	ctx               context.Context
@@ -78,14 +75,6 @@ func New(opts Options) (*Daemon, error) {
 	sessionManager := session.NewManager()
 	sessionManager.UseEventBus(bus)
 	runtimeInfo := &RuntimeInfo{}
-
-	runnerManager := opts.RunnerManager
-	if runnerManager == nil {
-		runnerManager = adapterrunner.NewManager("")
-	}
-	if err := runnerManager.EnsureLayout(); err != nil {
-		log.Printf("[Daemon] adapter-runner layout error: %v", err)
-	}
 
 	transportCfg, err := opts.Store.GetTransportConfig(context.Background())
 	if err != nil {
@@ -116,7 +105,6 @@ func New(opts Options) (*Daemon, error) {
 
 	adapterManager := adapters.NewManager(adapters.ManagerOptions{
 		Store:     opts.Store,
-		Runner:    runnerManager,
 		Adapters:  opts.Store,
 		PluginDir: pluginService.PluginDir(),
 		Bus:       bus,
@@ -270,7 +258,6 @@ func New(opts Options) (*Daemon, error) {
 		runtimeInfo:    runtimeInfo,
 		lifecycle:      daemonruntime.NewLifecycle(),
 		instancePaths:  paths,
-		runnerManager:  runnerManager,
 		eventBus:       bus,
 		globalStore:    globalConversationStore,
 	}

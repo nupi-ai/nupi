@@ -58,8 +58,8 @@ func (m *MockLauncher) Launch(ctx context.Context, binary string, args []string,
 		Binary:     binary,
 		Args:       append([]string(nil), args...),
 		Env:        append([]string(nil), env...),
-		Slot:       slotFromArgs(args),
-		Adapter:    adapterFromArgs(args),
+		Slot:       slotFromEnv(env),
+		Adapter:    adapterFromEnv(env),
 		LaunchedAt: time.Now().UTC(),
 		StdoutNil:  stdout == nil,
 		StderrNil:  stderr == nil,
@@ -118,19 +118,19 @@ func (h *mockHandle) PID() int {
 	return h.pid
 }
 
-func slotFromArgs(args []string) string {
-	for i := 0; i < len(args); i++ {
-		if args[i] == "--slot" && i+1 < len(args) {
-			return args[i+1]
+func slotFromEnv(env []string) string {
+	for _, e := range env {
+		if strings.HasPrefix(e, "NUPI_ADAPTER_SLOT=") {
+			return strings.TrimPrefix(e, "NUPI_ADAPTER_SLOT=")
 		}
 	}
 	return ""
 }
 
-func adapterFromArgs(args []string) string {
-	for i := 0; i < len(args); i++ {
-		if args[i] == "--adapter" && i+1 < len(args) {
-			return args[i+1]
+func adapterFromEnv(env []string) string {
+	for _, e := range env {
+		if strings.HasPrefix(e, "NUPI_ADAPTER_ID=") {
+			return strings.TrimPrefix(e, "NUPI_ADAPTER_ID=")
 		}
 	}
 	return ""

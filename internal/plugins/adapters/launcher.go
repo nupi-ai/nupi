@@ -5,33 +5,43 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
+	"time"
 )
 
+// DefaultGracefulShutdownTimeout is the maximum time to wait for adapter process
+// to exit after SIGTERM before sending SIGKILL.
+const DefaultGracefulShutdownTimeout = 15 * time.Second
+
 var (
-	// ErrRunnerBinaryUnset indicates the adapter-runner binary path was not configured.
-	ErrRunnerBinaryUnset = errors.New("adapters: adapter-runner binary path is empty")
-	// ErrRunnerBinaryMissing indicates the adapter-runner binary does not exist.
-	ErrRunnerBinaryMissing = errors.New("adapters: adapter-runner binary not found")
+	// ErrAdapterBinaryUnset indicates the adapter binary path was not configured.
+	ErrAdapterBinaryUnset = errors.New("adapters: adapter binary path is empty")
+	// ErrAdapterBinaryMissing indicates the adapter binary does not exist.
+	ErrAdapterBinaryMissing = errors.New("adapters: adapter binary not found")
+	// ErrAdapterKilled indicates the adapter was forcefully killed after timeout.
+	ErrAdapterKilled = errors.New("adapters: adapter killed after graceful shutdown timeout")
 )
 
 type execLauncher struct{}
 
 func (execLauncher) Launch(ctx context.Context, binary string, args []string, env []string, stdout io.Writer, stderr io.Writer) (ProcessHandle, error) {
 	if strings.TrimSpace(binary) == "" {
-		return nil, ErrRunnerBinaryUnset
+		return nil, ErrAdapterBinaryUnset
 	}
 	if _, err := os.Stat(binary); err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("%w: %s", ErrRunnerBinaryMissing, binary)
+			return nil, fmt.Errorf("%w: %s", ErrAdapterBinaryMissing, binary)
 		}
-		return nil, fmt.Errorf("adapters: stat adapter-runner: %w", err)
+		return nil, fmt.Errorf("adapters: stat adapter binary: %w", err)
 	}
 
-	procCtx, cancel := context.WithCancel(context.Background())
-	cmd := exec.CommandContext(procCtx, binary, args...)
+	// Note: We don't use exec.CommandContext here because we need to control
+	// signal delivery for graceful shutdown (SIGTERM → SIGKILL).
+	cmd := exec.Command(binary, args...)
 	if stdout == nil {
 		cmd.Stdout = io.Discard
 	} else {
@@ -47,23 +57,20 @@ func (execLauncher) Launch(ctx context.Context, binary string, args []string, en
 	}
 
 	if err := cmd.Start(); err != nil {
-		cancel()
-		return nil, fmt.Errorf("adapters: start adapter-runner: %w", err)
+		return nil, fmt.Errorf("adapters: start adapter: %w", err)
 	}
 
 	handle := &execHandle{
-		cmd:    cmd,
-		cancel: cancel,
-		done:   make(chan error, 1),
+		cmd:  cmd,
+		done: make(chan error, 1),
 	}
 	go handle.wait()
 	return handle, nil
 }
 
 type execHandle struct {
-	cmd    *exec.Cmd
-	cancel context.CancelFunc
-	done   chan error
+	cmd  *exec.Cmd
+	done chan error
 }
 
 func (h *execHandle) wait() {
@@ -73,23 +80,96 @@ func (h *execHandle) wait() {
 }
 
 func (h *execHandle) Stop(ctx context.Context) error {
-	h.cancel()
+	return h.StopWithTimeout(ctx, DefaultGracefulShutdownTimeout)
+}
+
+// StopWithTimeout stops the adapter process with a custom graceful shutdown timeout.
+func (h *execHandle) StopWithTimeout(ctx context.Context, gracefulTimeout time.Duration) error {
+	if h.cmd.Process == nil {
+		return nil
+	}
+
+	pid := h.cmd.Process.Pid
+
+	// Check if process has already exited
 	select {
+	case err := <-h.done:
+		return normalizeExitError(err, false)
+	default:
+	}
+
+	// Send SIGTERM for graceful shutdown
+	if err := h.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		// Process may have already exited
+		if errors.Is(err, os.ErrProcessDone) {
+			select {
+			case err := <-h.done:
+				return normalizeExitError(err, false)
+			default:
+				return nil
+			}
+		}
+		// Fall through to SIGKILL if SIGTERM fails
+	}
+
+	// Respect context deadline if it's shorter than our timeout
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining < gracefulTimeout {
+			gracefulTimeout = remaining
+		}
+	}
+
+	gracefulTimer := time.NewTimer(gracefulTimeout)
+	defer gracefulTimer.Stop()
+
+	select {
+	case err := <-h.done:
+		return normalizeExitError(err, false)
+	case <-gracefulTimer.C:
+		log.Printf("[Adapters] adapter pid=%d did not exit within %v after SIGTERM, sending SIGKILL", pid, gracefulTimeout)
+	case <-ctx.Done():
+		log.Printf("[Adapters] context cancelled while stopping adapter pid=%d, sending SIGKILL", pid)
+	}
+
+	// Send SIGKILL
+	if err := h.cmd.Process.Kill(); err != nil {
+		if !errors.Is(err, os.ErrProcessDone) {
+			return fmt.Errorf("adapters: kill adapter: %w", err)
+		}
+	}
+
+	// Wait for process to finish after SIGKILL
+	select {
+	case err := <-h.done:
+		return normalizeExitError(err, true)
 	case <-ctx.Done():
 		return ctx.Err()
-	case err := <-h.done:
-		if err == nil {
-			return nil
-		}
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			return nil
-		}
-		if errors.Is(err, context.Canceled) {
-			return nil
-		}
-		return err
 	}
+}
+
+// normalizeExitError converts expected exit errors to appropriate return values.
+// If forceKilled is true, it returns ErrAdapterKilled to indicate the adapter
+// did not shut down gracefully and had to be killed.
+func normalizeExitError(err error, forceKilled bool) error {
+	if err == nil {
+		if forceKilled {
+			return ErrAdapterKilled
+		}
+		return nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		if forceKilled {
+			return ErrAdapterKilled
+		}
+		// Normal exit (even with non-zero status) during shutdown is ok
+		return nil
+	}
+	if errors.Is(err, context.Canceled) {
+		return nil
+	}
+	return err
 }
 
 func (h *execHandle) PID() int {
