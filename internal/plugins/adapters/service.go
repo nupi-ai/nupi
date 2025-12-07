@@ -123,7 +123,7 @@ func (s *Service) Start(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	s.cancel = cancel
 
-	if err := s.reconcile(runCtx); err != nil && !errors.Is(err, ErrBindingSourceNotConfigured) && !errors.Is(err, ErrRunnerManagerNotConfigured) {
+	if err := s.reconcile(runCtx); err != nil && !errors.Is(err, ErrBindingSourceNotConfigured) {
 		// Non-fatal errors are emitted on the bus; continue running to allow retries.
 	}
 

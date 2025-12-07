@@ -22,7 +22,6 @@ type InstancePaths struct {
 	TempDir     string // Temporary files directory
 	RunDir      string // Runtime assets directory
 	BinDir      string // Shared binaries directory (~/.nupi/bin)
-	RunnerRoot  string // Adapter-runner root directory
 	PipelineDir string // Pipeline cache/output directory (indexes)
 }
 
@@ -47,7 +46,6 @@ func GetInstancePaths(instanceName string) InstancePaths {
 		TempDir:     filepath.Join(instanceDir, "tmp"),
 		RunDir:      filepath.Join(instanceDir, "run"),
 		BinDir:      binDir,
-		RunnerRoot:  filepath.Join(binDir, "adapter-runner"),
 		PipelineDir: filepath.Join(instanceDir, "pipeline"),
 	}
 }

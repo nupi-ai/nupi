@@ -17,10 +17,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nupi-ai/nupi/internal/adapterrunner"
 	"github.com/nupi-ai/nupi/internal/config"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
+	"github.com/nupi-ai/nupi/internal/jsrunner"
 	"github.com/nupi-ai/nupi/internal/plugins/manifest"
 	"github.com/nupi-ai/nupi/internal/voice/slots"
 )
@@ -64,12 +64,12 @@ type AdapterDetailSource interface {
 	GetAdapterEndpoint(ctx context.Context, adapterID string) (configstore.AdapterEndpoint, error)
 }
 
-// ProcessLauncher abstracts process creation for adapter-runner.
+// ProcessLauncher abstracts process creation for adapters.
 type ProcessLauncher interface {
 	Launch(ctx context.Context, binary string, args []string, env []string, stdout io.Writer, stderr io.Writer) (ProcessHandle, error)
 }
 
-// ProcessHandle represents a running adapter-runner process.
+// ProcessHandle represents a running adapter process.
 type ProcessHandle interface {
 	Stop(ctx context.Context) error
 	PID() int
@@ -78,7 +78,6 @@ type ProcessHandle interface {
 // ManagerOptions configures the adapters manager.
 type ManagerOptions struct {
 	Store     BindingSource
-	Runner    *adapterrunner.Manager
 	Launcher  ProcessLauncher
 	Slots     []Slot
 	Adapters  AdapterDetailSource
@@ -90,7 +89,6 @@ type ManagerOptions struct {
 type Manager struct {
 	store         BindingSource
 	adapterSource AdapterDetailSource
-	runner        *adapterrunner.Manager
 	launcher      ProcessLauncher
 	pluginDir     string
 	bus           *eventbus.Bus
@@ -104,9 +102,10 @@ type Manager struct {
 type adapterInstance struct {
 	binding     Binding
 	handle      ProcessHandle
-	stdout      *adapterLogWriter
-	stderr      *adapterLogWriter
-	fingerprint string
+	stdout          *adapterLogWriter
+	stderr          *adapterLogWriter
+	fingerprint     string
+	shutdownTimeout time.Duration
 }
 
 type bindingPlan struct {
@@ -121,12 +120,18 @@ const adapterReadyTimeoutEnv = "NUPI_ADAPTER_READY_TIMEOUT"
 
 var allocateProcessAddressFn = allocateProcessAddress
 var waitForAdapterReadyFn = waitForAdapterReady
+var readinessCheckerMu sync.Mutex
+
+// getReadinessChecker safely retrieves the current readiness checker function.
+func getReadinessChecker() func(ctx context.Context, addr string) error {
+	readinessCheckerMu.Lock()
+	defer readinessCheckerMu.Unlock()
+	return waitForAdapterReadyFn
+}
 
 var (
 	// ErrBindingSourceNotConfigured indicates the manager was created without a store.
 	ErrBindingSourceNotConfigured = errors.New("adapters: binding source not configured")
-	// ErrRunnerManagerNotConfigured indicates adapter-runner manager is missing.
-	ErrRunnerManagerNotConfigured = errors.New("adapters: adapter-runner manager not configured")
 	errAdapterDetailsUnavailable  = errors.New("adapters: adapter details unavailable")
 )
 
@@ -135,7 +140,6 @@ func NewManager(opts ManagerOptions) *Manager {
 	manager := &Manager{
 		store:         opts.Store,
 		adapterSource: opts.Adapters,
-		runner:        opts.Runner,
 		launcher:      opts.Launcher,
 		pluginDir:     strings.TrimSpace(opts.PluginDir),
 		bus:           opts.Bus,
@@ -371,7 +375,7 @@ func (m *Manager) StopAll(ctx context.Context) error {
 
 func (m *Manager) startAdapter(ctx context.Context, plan bindingPlan) (*adapterInstance, error) {
 	// Handle builtin mock adapters without launching a process.
-	// These adapters are implemented in-process and don't require adapter-runner.
+	// These adapters are implemented in-process.
 	if IsBuiltinMockAdapter(plan.binding.AdapterID) {
 		log.Printf("[Adapters] configuring builtin mock adapter: %s", plan.binding.AdapterID)
 		plan.binding.Runtime = map[string]string{
@@ -384,10 +388,6 @@ func (m *Manager) startAdapter(ctx context.Context, plan bindingPlan) (*adapterI
 			fingerprint: plan.fingerprint,
 			// No handle - builtin mock runs in-process
 		}, nil
-	}
-
-	if m.runner == nil {
-		return nil, ErrRunnerManagerNotConfigured
 	}
 
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
@@ -416,9 +416,6 @@ func (m *Manager) startAdapter(ctx context.Context, plan bindingPlan) (*adapterI
 		return nil, err
 	}
 
-	binary := strings.TrimSpace(m.runner.BinaryPath())
-	args := []string{"--slot", string(plan.binding.Slot), "--adapter", plan.binding.AdapterID}
-
 	env = append(env,
 		"NUPI_ADAPTER_SLOT="+string(plan.binding.Slot),
 		"NUPI_ADAPTER_ID="+plan.binding.AdapterID,
@@ -428,6 +425,9 @@ func (m *Manager) startAdapter(ctx context.Context, plan bindingPlan) (*adapterI
 		adapterHome string
 		dataDir     string
 		cleanups    []func()
+		binary      string
+		args        []string
+		err         error
 	)
 	defer func() {
 		for i := len(cleanups) - 1; i >= 0; i-- {
@@ -459,12 +459,20 @@ func (m *Manager) startAdapter(ctx context.Context, plan bindingPlan) (*adapterI
 	}
 
 	readyTimeout := processReadyTimeout
+	shutdownTimeout := DefaultGracefulShutdownTimeout
 	if manifest != nil && manifest.Adapter != nil {
 		if v := strings.TrimSpace(manifest.Adapter.Entrypoint.ReadyTimeout); v != "" {
 			if parsed, err := time.ParseDuration(v); err == nil && parsed > 0 {
 				readyTimeout = parsed
 			} else {
 				log.Printf("[Adapters] invalid ready timeout %q for %s: %v", v, plan.binding.AdapterID, err)
+			}
+		}
+		if v := strings.TrimSpace(manifest.Adapter.Entrypoint.ShutdownTimeout); v != "" {
+			if parsed, err := time.ParseDuration(v); err == nil && parsed > 0 {
+				shutdownTimeout = parsed
+			} else {
+				log.Printf("[Adapters] invalid shutdown timeout %q for %s: %v", v, plan.binding.AdapterID, err)
 			}
 		}
 	}
@@ -482,6 +490,40 @@ func (m *Manager) startAdapter(ctx context.Context, plan bindingPlan) (*adapterI
 		return nil, err
 	}
 
+	// For non-process transports (grpc, http), the adapter is already running
+	// at a remote address. Short-circuit before creating any directories.
+	if transport != "process" {
+		addr := strings.TrimSpace(endpoint.Address)
+		if addr == "" {
+			return nil, fmt.Errorf("adapters: %s transport requires address for %s", transport, plan.binding.AdapterID)
+		}
+
+		// Verify remote adapter is reachable before marking as ready
+		readyCtx, cancel := context.WithTimeout(ctx, readyTimeout)
+		readyErr := getReadinessChecker()(readyCtx, addr)
+		cancel()
+		if readyErr != nil {
+			return nil, fmt.Errorf("adapters: remote adapter %s at %s not reachable: %w", plan.binding.AdapterID, addr, readyErr)
+		}
+
+		plan.binding.Runtime = map[string]string{
+			RuntimeExtraTransport: transport,
+			RuntimeExtraAddress:   addr,
+		}
+		plan.fingerprint = computePlanFingerprint(plan.binding, plan.manifest, plan.adapter.Manifest, plan.endpoint)
+		plan.binding.Fingerprint = plan.fingerprint
+
+		cleanups = nil // Don't clean up adapter home on success
+
+		return &adapterInstance{
+			binding:     plan.binding,
+			fingerprint: plan.fingerprint,
+			// No handle - remote adapter, not managed by us
+		}, nil
+	}
+
+	// Process transport - we launch the adapter locally
+	// Prepare adapter home and data directories
 	pluginRoot := m.pluginRoot()
 	if pluginRoot != "" {
 		slug := sanitizeAdapterSlug(manifest, plan.binding.AdapterID)
@@ -536,6 +578,12 @@ func (m *Manager) startAdapter(ctx context.Context, plan bindingPlan) (*adapterI
 
 	baseEnv := append([]string(nil), env...)
 
+	// Resolve the adapter command and args based on runtime type (binary vs js)
+	binary, args, err = m.resolveAdapterCommand(plan, adapterHome)
+	if err != nil {
+		return nil, err
+	}
+
 	if len(endpoint.Args) > 0 {
 		for _, arg := range endpoint.Args {
 			if strings.ContainsAny(arg, "\x00") {
@@ -572,7 +620,7 @@ func (m *Manager) startAdapter(ctx context.Context, plan bindingPlan) (*adapterI
 		if endpoint.Command != "" {
 			out = append(out, "NUPI_ADAPTER_COMMAND="+endpoint.Command)
 		}
-		// Pass runtime to adapter-runner (js requires Nupi-provided JS runtime)
+		// Pass runtime type to adapter (js adapters use bundled Bun runtime)
 		if manifest != nil && manifest.Adapter != nil {
 			runtime := strings.TrimSpace(manifest.Adapter.Entrypoint.Runtime)
 			if runtime == "" {
@@ -636,7 +684,7 @@ func (m *Manager) startAdapter(ctx context.Context, plan bindingPlan) (*adapterI
 
 		if transport == "process" {
 			readyCtx, cancel := context.WithTimeout(ctx, readyTimeout)
-			readyErr := waitForAdapterReadyFn(readyCtx, addr)
+			readyErr := getReadinessChecker()(readyCtx, addr)
 			cancel()
 			if readyErr != nil {
 				if stdoutLogger != nil {
@@ -661,23 +709,13 @@ func (m *Manager) startAdapter(ctx context.Context, plan bindingPlan) (*adapterI
 		plan.binding.Fingerprint = plan.fingerprint
 
 		return &adapterInstance{
-			binding:     plan.binding,
-			handle:      handle,
-			stdout:      stdoutLogger,
-			stderr:      stderrLogger,
-			fingerprint: plan.fingerprint,
+			binding:         plan.binding,
+			handle:          handle,
+			stdout:          stdoutLogger,
+			stderr:          stderrLogger,
+			fingerprint:     plan.fingerprint,
+			shutdownTimeout: shutdownTimeout,
 		}, nil
-	}
-
-	if transport != "process" {
-		if addr := strings.TrimSpace(endpoint.Address); addr != "" {
-			runtimeExtra[RuntimeExtraAddress] = addr
-		}
-		return launchAttempt(strings.TrimSpace(endpoint.Address))
-	}
-
-	if strings.TrimSpace(endpoint.Command) == "" {
-		return nil, fmt.Errorf("adapters: endpoint command required for process transport (%s)", plan.binding.AdapterID)
 	}
 
 	var lastErr error
@@ -712,7 +750,25 @@ func (m *Manager) stopAdapter(ctx context.Context, slot Slot, instance *adapterI
 	if instance.handle == nil {
 		return nil
 	}
-	if err := instance.handle.Stop(ctx); err != nil {
+
+	// Use instance-specific shutdown timeout if available and handle supports it
+	var err error
+	if instance.shutdownTimeout > 0 {
+		if h, ok := instance.handle.(*execHandle); ok {
+			err = h.StopWithTimeout(ctx, instance.shutdownTimeout)
+		} else {
+			err = instance.handle.Stop(ctx)
+		}
+	} else {
+		err = instance.handle.Stop(ctx)
+	}
+	if err != nil {
+		// ErrAdapterKilled means we intentionally killed the adapter after graceful timeout
+		// This is not an error for deliberate Stop operations - the adapter was stopped as requested
+		if errors.Is(err, ErrAdapterKilled) {
+			log.Printf("[Adapters] adapter %s did not exit gracefully, was killed after timeout", slot)
+			return nil
+		}
 		return fmt.Errorf("stop adapter %s: %w", slot, err)
 	}
 	return nil
@@ -1199,8 +1255,58 @@ func cloneStringMap(in map[string]string) map[string]string {
 	return out
 }
 
+// SetReadinessChecker allows tests to override the adapter readiness check function.
+// Call the returned function to restore the original behavior.
+// This should only be used in tests.
+func SetReadinessChecker(fn func(ctx context.Context, addr string) error) func() {
+	readinessCheckerMu.Lock()
+	original := waitForAdapterReadyFn
+	waitForAdapterReadyFn = fn
+	readinessCheckerMu.Unlock()
+	return func() {
+		readinessCheckerMu.Lock()
+		waitForAdapterReadyFn = original
+		readinessCheckerMu.Unlock()
+	}
+}
+
+// resolveAdapterCommand determines the binary and args to launch an adapter based on its runtime type.
+// For binary adapters, it runs the command directly.
+// For JS adapters, it runs the command via the bundled Bun runtime.
+func (m *Manager) resolveAdapterCommand(plan bindingPlan, adapterHome string) (string, []string, error) {
+	command := strings.TrimSpace(plan.endpoint.Command)
+	if command == "" {
+		return "", nil, fmt.Errorf("adapters: endpoint command required for %s", plan.binding.AdapterID)
+	}
+
+	// Resolve relative paths against adapter home
+	if !filepath.IsAbs(command) && adapterHome != "" {
+		command = filepath.Join(adapterHome, command)
+	}
+
+	// Check runtime type from manifest
+	runtime := "binary"
+	if plan.manifest != nil && plan.manifest.Adapter != nil {
+		if r := strings.TrimSpace(plan.manifest.Adapter.Entrypoint.Runtime); r != "" {
+			runtime = r
+		}
+	}
+
+	if runtime == "js" {
+		// JS adapter - run via bundled Bun runtime
+		bunPath, err := jsrunner.GetRuntimePath()
+		if err != nil {
+			return "", nil, fmt.Errorf("adapters: JS runtime not available for %s: %w", plan.binding.AdapterID, err)
+		}
+		return bunPath, append([]string{"run", command}, plan.endpoint.Args...), nil
+	}
+
+	// Binary adapter - run directly
+	return command, plan.endpoint.Args, nil
+}
+
 // IsBuiltinMockAdapter returns true if the adapter is a builtin mock
-// that runs in-process without requiring adapter-runner to launch a process.
+// that runs in-process without requiring a process to launch.
 // This function is exported for use by other packages (e.g., intentrouter bridge).
 func IsBuiltinMockAdapter(adapterID string) bool {
 	switch adapterID {

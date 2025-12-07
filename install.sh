@@ -72,11 +72,6 @@ if [ -z "$DOWNLOAD_URL" ]; then
             exit 1
         fi
         chmod +x "$INSTALL_DIR/nupi" "$INSTALL_DIR/nupid"
-        if ! go build -o "$INSTALL_DIR/adapter-runner" ./cmd/adapter-runner; then
-            echo -e "${RED}Error: failed to build adapter-runner from source.${NC}"
-            exit 1
-        fi
-        chmod +x "$INSTALL_DIR/adapter-runner"
         echo -e "${GREEN}✓ Installed binaries to $INSTALL_DIR${NC}"
         exit 0
     else
@@ -112,25 +107,12 @@ cp nupid "$INSTALL_DIR/nupid"
 chmod +x "$INSTALL_DIR/nupi"
 chmod +x "$INSTALL_DIR/nupid"
 
-if [ -f adapter-runner ]; then
-    cp adapter-runner "$INSTALL_DIR/adapter-runner"
-    chmod +x "$INSTALL_DIR/adapter-runner"
-else
-    echo -e "${YELLOW}Warning: adapter-runner binary missing from release, building locally...${NC}"
-    if ! go build -o "$INSTALL_DIR/adapter-runner" ./cmd/adapter-runner; then
-        echo -e "${RED}Error: failed to build adapter-runner from source.${NC}"
-        exit 1
-    fi
-    chmod +x "$INSTALL_DIR/adapter-runner"
-fi
-
 echo ""
 echo -e "${GREEN}✓ Nupi installed successfully!${NC}"
 echo ""
 echo -e "Installed binaries:"
-echo -e "  • ${GREEN}nupi${NC}           - CLI client"
-echo -e "  • ${GREEN}nupid${NC}          - Background daemon"
-echo -e "  • ${GREEN}adapter-runner${NC} - Adapter host for plugins"
+echo -e "  • ${GREEN}nupi${NC}  - CLI client"
+echo -e "  • ${GREEN}nupid${NC} - Background daemon"
 echo ""
 echo -e "Installation directory: ${GREEN}$INSTALL_DIR${NC}"
 echo ""

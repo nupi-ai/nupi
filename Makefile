@@ -58,10 +58,10 @@ PLATFORMS := darwin-arm64 darwin-amd64 linux-amd64 linux-arm64 windows-amd64
 DIST_DIR := dist
 RELEASE_DIR := releases
 
-.PHONY: all clean cli daemon adapter-runner app dev test help install download-bun release release-all $(addprefix release-,$(PLATFORMS))
+.PHONY: all clean cli daemon app dev test help install download-bun release release-all $(addprefix release-,$(PLATFORMS))
 
 # Default target
-all: cli daemon adapter-runner app
+all: cli daemon app
 	@echo "$(GREEN)✓ Build complete!$(NC)"
 
 # Build CLI binary
@@ -77,13 +77,6 @@ daemon:
 	@mkdir -p $(BINARY_DIR)
 	@go build $(GO_LDFLAGS) -o $(BINARY_DIR)/nupid ./cmd/nupid
 	@echo "$(GREEN)✓ Daemon built: $(BINARY_DIR)/nupid$(NC)"
-
-# Build adapter-runner binary
-adapter-runner:
-	@echo "$(YELLOW)Building adapter-runner...$(NC)"
-	@mkdir -p $(BINARY_DIR)
-	@go build $(GO_LDFLAGS) -o $(BINARY_DIR)/adapter-runner ./cmd/adapter-runner
-	@echo "$(GREEN)✓ Adapter-runner built: $(BINARY_DIR)/adapter-runner$(NC)"
 
 # Download Bun runtime for JS plugin execution
 download-bun:
@@ -131,15 +124,14 @@ test:
 
 # Install locally to ~/.nupi/ (no sudo required)
 # Note: host.js is now embedded in the daemon binary, no external files needed
-install: cli daemon adapter-runner
+# Note: adapter-runner has been removed - adapters are now launched directly
+install: cli daemon
 	@echo "$(YELLOW)Installing Nupi to ~/.nupi/...$(NC)"
 	@mkdir -p $(HOME)/.nupi/bin
 	@cp $(BINARY_DIR)/nupi $(HOME)/.nupi/bin/nupi
 	@cp $(BINARY_DIR)/nupid $(HOME)/.nupi/bin/nupid
 	@chmod +x $(HOME)/.nupi/bin/nupi
 	@chmod +x $(HOME)/.nupi/bin/nupid
-	@cp $(BINARY_DIR)/adapter-runner $(HOME)/.nupi/bin/adapter-runner
-	@chmod +x $(HOME)/.nupi/bin/adapter-runner
 	@# Copy Bun - required for JS adapter plugins
 	@if [ -f "$(BINARY_DIR)/bun" ]; then \
 		cp $(BINARY_DIR)/bun $(HOME)/.nupi/bin/bun && \
@@ -206,8 +198,6 @@ _release:
 	@GOOS=$(GOOS) GOARCH=$(GOARCH) go build $(GO_LDFLAGS) -o $(DIST_DIR)/$(PLATFORM)/bin/nupi$(EXE) ./cmd/nupi
 	@echo "  Building nupid..."
 	@GOOS=$(GOOS) GOARCH=$(GOARCH) go build $(GO_LDFLAGS) -o $(DIST_DIR)/$(PLATFORM)/bin/nupid$(EXE) ./cmd/nupid
-	@echo "  Building adapter-runner..."
-	@GOOS=$(GOOS) GOARCH=$(GOARCH) go build $(GO_LDFLAGS) -o $(DIST_DIR)/$(PLATFORM)/bin/adapter-runner$(EXE) ./cmd/adapter-runner
 	@# Download Bun for target platform
 	@echo "  Downloading Bun $(BUN_VERSION)..."
 	@./scripts/download-bun.sh $(PLATFORM) $(BUN_VERSION) $(DIST_DIR)/$(PLATFORM)/bin
@@ -243,7 +233,6 @@ help:
 	@echo "  $(GREEN)make$(NC)              - Build everything (CLI, daemon, and desktop app)"
 	@echo "  $(GREEN)make cli$(NC)          - Build only the CLI binary"
 	@echo "  $(GREEN)make daemon$(NC)       - Build only the daemon binary"
-	@echo "  $(GREEN)make adapter-runner$(NC) - Build only the adapter-runner binary"
 	@echo "  $(GREEN)make download-bun$(NC) - Download Bun $(BUN_VERSION) for current platform"
 	@echo "  $(GREEN)make app$(NC)          - Build the desktop application"
 	@echo "  $(GREEN)make dev$(NC)          - Run in development mode"
@@ -264,7 +253,6 @@ help:
 	@echo "Build outputs:"
 	@echo "  CLI:       $(BINARY_DIR)/nupi"
 	@echo "  Daemon:    $(BINARY_DIR)/nupid"
-	@echo "  Runner:    $(BINARY_DIR)/adapter-runner"
 	@echo "  Bun:       $(BINARY_DIR)/bun (after download-bun)"
 	@echo "  App:       $(APP_DIR)/src-tauri/target/release/bundle/"
 	@echo "  Releases:  $(RELEASE_DIR)/nupi-$(VERSION)-<platform>.tar.gz"

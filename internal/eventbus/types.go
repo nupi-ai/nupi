@@ -42,7 +42,7 @@ const (
 	SourceIntentRouterBridge Source = "intent_router_bridge"
 	SourcePluginService      Source = "plugin_service"
 	SourceAdaptersService    Source = "adapters_service"
-	SourceAdapterRunner      Source = "adapter_runner"
+	SourceAdapterProcess     Source = "adapter_process"
 	SourceAudioIngress       Source = "audio_ingress"
 	SourceAudioEgress        Source = "audio_egress"
 	SourceAudioSTT           Source = "audio_stt"
@@ -288,7 +288,7 @@ const (
 	AdapterHealthError    AdapterHealth = "error"
 )
 
-// AdapterStatusEvent informs about lifecycle status of adapter-runner adapters.
+// AdapterStatusEvent informs about lifecycle status of adapters.
 type AdapterStatusEvent struct {
 	AdapterID string
 	Slot      string

@@ -133,7 +133,7 @@ func (w *adapterLogWriter) publish(message string) {
 	}
 	w.bus.Publish(context.Background(), eventbus.Envelope{
 		Topic:     eventbus.TopicAdaptersLog,
-		Source:    eventbus.SourceAdapterRunner,
+		Source:    eventbus.SourceAdapterProcess,
 		Payload:   event,
 		Timestamp: now,
 	})
@@ -190,7 +190,7 @@ func (w *adapterLogWriter) reportDroppedMessages(now time.Time) {
 	}
 	w.bus.Publish(context.Background(), eventbus.Envelope{
 		Topic:     eventbus.TopicAdaptersLog,
-		Source:    eventbus.SourceAdapterRunner,
+		Source:    eventbus.SourceAdapterProcess,
 		Payload:   event,
 		Timestamp: now,
 	})

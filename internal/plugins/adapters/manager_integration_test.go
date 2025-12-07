@@ -12,14 +12,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nupi-ai/nupi/internal/adapterrunner"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 )
 
-func TestProcessAdapterLaunchesFromManifestViaRunner(t *testing.T) {
+// TestProcessAdapterLaunchesDirectly verifies that process-type adapters
+// are launched directly without the adapter-runner intermediary.
+func TestProcessAdapterLaunchesDirectly(t *testing.T) {
 	if testing.Short() {
-		t.Skip("skip adapter-runner integration in short mode")
+		t.Skip("skip adapter integration in short mode")
 	}
 
 	if ln, err := net.Listen("tcp", "127.0.0.1:0"); err != nil {
@@ -33,14 +34,6 @@ func TestProcessAdapterLaunchesFromManifestViaRunner(t *testing.T) {
 	pluginDir := filepath.Join(tempDir, "plugins")
 	if err := os.MkdirAll(pluginDir, 0o755); err != nil {
 		t.Fatalf("mkdir plugin dir: %v", err)
-	}
-
-	runnerBinary := filepath.Join(tempDir, binaryName("adapter-runner-test"))
-	buildAdapterRunnerBinary(t, runnerBinary)
-	runnerRoot := filepath.Join(tempDir, "runner-root")
-	runnerMgr := adapterrunner.NewManager(runnerRoot)
-	if err := runnerMgr.InstallFromFile(runnerBinary); err != nil {
-		t.Fatalf("install adapter-runner: %v", err)
 	}
 
 	adapterSlug := "plugin-stt-local-whisper"
@@ -99,10 +92,10 @@ spec:
 		t.Fatalf("set active adapter: %v", err)
 	}
 
+	// Create manager without adapter-runner - adapters are launched directly
 	manager := NewManager(ManagerOptions{
 		Store:     store,
 		Adapters:  store,
-		Runner:    runnerMgr,
 		PluginDir: pluginDir,
 		Slots:     []Slot{SlotSTT},
 	})
@@ -174,16 +167,6 @@ func waitForLogEvent(t *testing.T, sub *eventbus.Subscription, adapterID string)
 	}
 }
 
-func buildAdapterRunnerBinary(t *testing.T, output string) {
-	t.Helper()
-	cmd := exec.Command("go", "build", "-o", output, "./cmd/adapter-runner")
-	cmd.Dir = repoRoot(t)
-	cmd.Env = os.Environ()
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("build adapter-runner: %v (%s)", err, strings.TrimSpace(string(out)))
-	}
-}
-
 func buildMockAdapterBinary(t *testing.T, output string) {
 	t.Helper()
 	srcDir := t.TempDir()
@@ -226,15 +209,6 @@ func main() {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build mock adapter: %v (%s)", err, strings.TrimSpace(string(out)))
 	}
-}
-
-func repoRoot(t *testing.T) string {
-	t.Helper()
-	wd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	return filepath.Clean(filepath.Join(wd, "..", "..", ".."))
 }
 
 func binaryName(base string) string {

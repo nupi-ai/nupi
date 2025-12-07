@@ -57,13 +57,14 @@ type AdapterSpec struct {
 }
 
 type AdapterEntrypoint struct {
-	Runtime      string   `yaml:"runtime"`
-	Command      string   `yaml:"command"`
-	Args         []string `yaml:"args"`
-	Transport    string   `yaml:"transport"`
-	ListenEnv    string   `yaml:"listenEnv"`
-	WorkingDir   string   `yaml:"workingDir"`
-	ReadyTimeout string   `yaml:"readyTimeout"`
+	Runtime         string   `yaml:"runtime"`
+	Command         string   `yaml:"command"`
+	Args            []string `yaml:"args"`
+	Transport       string   `yaml:"transport"`
+	ListenEnv       string   `yaml:"listenEnv"`
+	WorkingDir      string   `yaml:"workingDir"`
+	ReadyTimeout    string   `yaml:"readyTimeout"`
+	ShutdownTimeout string   `yaml:"shutdownTimeout"`
 }
 
 type AdapterAssets struct {
@@ -740,7 +741,7 @@ func validateAdapterSpec(spec *AdapterSpec, file string) error {
 		return fmt.Errorf("adapter manifest %s has invalid runtime %q (allowed: binary, js)", file, runtime)
 	}
 
-	// Transport is required (adapter-runner needs NUPI_ADAPTER_TRANSPORT)
+	// Transport is required to determine how daemon launches or connects to the adapter
 	if transport == "" {
 		return fmt.Errorf("adapter manifest %s missing required field: entrypoint.transport", file)
 	}
