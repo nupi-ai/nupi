@@ -1,4 +1,4 @@
-package tooldetectors
+package toolhandlers
 
 import (
 	"context"
@@ -36,12 +36,12 @@ type DetectionResult struct {
 }
 
 // JSRuntimeFunc is a function that returns the current JS runtime.
-// Using a function allows the detector to always get the current runtime,
+// Using a function allows the handler to always get the current runtime,
 // even after a supervised restart.
 type JSRuntimeFunc func() *jsruntime.Runtime
 
-// ToolDetector manages tool detection for a session.
-type ToolDetector struct {
+// ToolHandler manages tool detection for a session.
+type ToolHandler struct {
 	sessionID   string
 	pluginDir   string
 	indexPath   string
@@ -68,39 +68,39 @@ type ToolDetector struct {
 	mu         sync.RWMutex
 }
 
-// DetectorOption configures a ToolDetector.
-type DetectorOption func(*ToolDetector)
+// HandlerOption configures a ToolHandler.
+type HandlerOption func(*ToolHandler)
 
 // WithContinuousMode enables continuous tool detection after initial detection.
-func WithContinuousMode(enabled bool) DetectorOption {
-	return func(d *ToolDetector) {
+func WithContinuousMode(enabled bool) HandlerOption {
+	return func(d *ToolHandler) {
 		d.continuousMode = enabled
 	}
 }
 
 // WithJSRuntime sets a static JS runtime for plugin execution.
 // Deprecated: Use WithJSRuntimeFunc for dynamic runtime that survives restarts.
-func WithJSRuntime(rt *jsruntime.Runtime) DetectorOption {
-	return func(d *ToolDetector) {
+func WithJSRuntime(rt *jsruntime.Runtime) HandlerOption {
+	return func(d *ToolHandler) {
 		d.jsRuntime = rt
 	}
 }
 
 // WithJSRuntimeFunc sets a function to get the current JS runtime.
-// This is preferred over WithJSRuntime as it allows the detector to
+// This is preferred over WithJSRuntime as it allows the handler to
 // get the current runtime even after a supervised restart.
-func WithJSRuntimeFunc(fn JSRuntimeFunc) DetectorOption {
-	return func(d *ToolDetector) {
+func WithJSRuntimeFunc(fn JSRuntimeFunc) HandlerOption {
+	return func(d *ToolHandler) {
 		d.runtimeFunc = fn
 	}
 }
 
-// NewToolDetector creates a new detector for a session.
-func NewToolDetector(sessionID, pluginDir string, opts ...DetectorOption) *ToolDetector {
-	d := &ToolDetector{
+// NewToolHandler creates a new handler for a session.
+func NewToolHandler(sessionID, pluginDir string, opts ...HandlerOption) *ToolHandler {
+	d := &ToolHandler{
 		sessionID:  sessionID,
 		pluginDir:  pluginDir,
-		indexPath:  filepath.Join(pluginDir, "detectors_index.json"),
+		indexPath:  filepath.Join(pluginDir, "handlers_index.json"),
 		plugins:    make(map[string]*JSPlugin),
 		buffer:     NewRingBuffer(),
 		eventChan:  make(chan ToolDetectedEvent, 1),
@@ -113,7 +113,7 @@ func NewToolDetector(sessionID, pluginDir string, opts ...DetectorOption) *ToolD
 }
 
 // getRuntime returns the current JS runtime, preferring runtimeFunc over static jsRuntime.
-func (d *ToolDetector) getRuntime() *jsruntime.Runtime {
+func (d *ToolHandler) getRuntime() *jsruntime.Runtime {
 	if d.runtimeFunc != nil {
 		return d.runtimeFunc()
 	}
@@ -121,7 +121,7 @@ func (d *ToolDetector) getRuntime() *jsruntime.Runtime {
 }
 
 // Initialize loads the plugin index.
-func (d *ToolDetector) Initialize() error {
+func (d *ToolHandler) Initialize() error {
 	index, err := LoadIndex(d.indexPath)
 	if err != nil {
 		return fmt.Errorf("failed to load index: %w", err)
@@ -131,7 +131,7 @@ func (d *ToolDetector) Initialize() error {
 }
 
 // OnSessionStart is called when a new session starts.
-func (d *ToolDetector) OnSessionStart(command string, args []string) error {
+func (d *ToolHandler) OnSessionStart(command string, args []string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -144,10 +144,10 @@ func (d *ToolDetector) OnSessionStart(command string, args []string) error {
 	}
 
 	if !exists || len(candidates) == 0 {
-		log.Printf("[Detector] No plugins found for command: %s (base: %s) - will fallback to all plugins", command, baseCommand)
+		log.Printf("[Handler] No plugins found for command: %s (base: %s) - will fallback to all plugins", command, baseCommand)
 	}
 
-	log.Printf("[Detector] Found %d candidate plugins for command '%s': %v",
+	log.Printf("[Handler] Found %d candidate plugins for command '%s': %v",
 		len(candidates), command, candidates)
 
 	rt := d.getRuntime()
@@ -162,7 +162,7 @@ func (d *ToolDetector) OnSessionStart(command string, args []string) error {
 			plugin, err = LoadPlugin(pluginPath)
 		}
 		if err != nil {
-			log.Printf("[Detector] Failed to load plugin %s: %v", pluginFile, err)
+			log.Printf("[Handler] Failed to load plugin %s: %v", pluginFile, err)
 			continue
 		}
 		d.plugins[pluginFile] = plugin
@@ -170,7 +170,7 @@ func (d *ToolDetector) OnSessionStart(command string, args []string) error {
 	}
 
 	if len(d.plugins) == 0 {
-		log.Printf("[Detector] No plugins loaded from command, will try all on first output")
+		log.Printf("[Handler] No plugins loaded from command, will try all on first output")
 	}
 
 	d.startTime = time.Now()
@@ -180,7 +180,7 @@ func (d *ToolDetector) OnSessionStart(command string, args []string) error {
 }
 
 // OnOutput is called when new output is received from the PTY.
-func (d *ToolDetector) OnOutput(data []byte) {
+func (d *ToolHandler) OnOutput(data []byte) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -196,7 +196,7 @@ func (d *ToolDetector) OnOutput(data []byte) {
 	// Enter throttle mode after 30s of operation
 	if !d.throttleMode && now.Sub(d.startTime) > 30*time.Second {
 		d.throttleMode = true
-		log.Printf("[Detector] Entering throttle mode after 30s")
+		log.Printf("[Handler] Entering throttle mode after 30s")
 	}
 
 	// Debounce: always wait at least 200ms between detection checks
@@ -217,7 +217,7 @@ func (d *ToolDetector) OnOutput(data []byte) {
 	output := d.buffer.String()
 
 	if len(d.plugins) == 0 {
-		log.Printf("[Detector] Loading all plugins as fallback")
+		log.Printf("[Handler] Loading all plugins as fallback")
 		d.loadAllPlugins()
 	}
 
@@ -234,7 +234,7 @@ func (d *ToolDetector) OnOutput(data []byte) {
 			if previousTool != "" && previousTool != result.plugin.Name {
 				// Enforce minimum 5s between tool_changed publications
 				if !d.lastToolChange.IsZero() && now.Sub(d.lastToolChange) < toolChangeMinInterval {
-					log.Printf("[Detector] Skipping tool change %s -> %s (rate limited, last change %v ago)",
+					log.Printf("[Handler] Skipping tool change %s -> %s (rate limited, last change %v ago)",
 						previousTool, result.plugin.Name, now.Sub(d.lastToolChange))
 					return
 				}
@@ -242,7 +242,7 @@ func (d *ToolDetector) OnOutput(data []byte) {
 				d.detectedTool = result.plugin.Name
 				d.detectedIcon = result.plugin.Icon
 				d.lastToolChange = now
-				log.Printf("[Detector] Tool changed for session %s: %s -> %s",
+				log.Printf("[Handler] Tool changed for session %s: %s -> %s",
 					d.sessionID, previousTool, result.plugin.Name)
 
 				select {
@@ -253,7 +253,7 @@ func (d *ToolDetector) OnOutput(data []byte) {
 					Timestamp:    time.Now(),
 				}:
 				default:
-					log.Printf("[Detector] Failed to emit change event (channel full)")
+					log.Printf("[Handler] Failed to emit change event (channel full)")
 				}
 				return
 			}
@@ -262,7 +262,7 @@ func (d *ToolDetector) OnOutput(data []byte) {
 			if previousTool == "" {
 				d.detectedTool = result.plugin.Name
 				d.detectedIcon = result.plugin.Icon
-				log.Printf("[Detector] Tool detected for session %s: %s", d.sessionID, result.plugin.Name)
+				log.Printf("[Handler] Tool detected for session %s: %s", d.sessionID, result.plugin.Name)
 
 				select {
 				case d.eventChan <- ToolDetectedEvent{
@@ -271,7 +271,7 @@ func (d *ToolDetector) OnOutput(data []byte) {
 					Timestamp: time.Now(),
 				}:
 				default:
-					log.Printf("[Detector] Failed to emit detection event (channel full)")
+					log.Printf("[Handler] Failed to emit detection event (channel full)")
 				}
 				return
 			}
@@ -290,7 +290,7 @@ func (d *ToolDetector) OnOutput(data []byte) {
 	}
 
 	if allFalse && len(d.candidates) > 0 && !d.allPluginsLoaded {
-		log.Printf("[Detector] All candidates returned false, trying ALL plugins as fallback")
+		log.Printf("[Handler] All candidates returned false, trying ALL plugins as fallback")
 		d.loadAllPlugins()
 
 		results = d.runParallelDetection(d.plugins, output)
@@ -301,7 +301,7 @@ func (d *ToolDetector) OnOutput(data []byte) {
 				if previousTool != "" && previousTool != result.plugin.Name {
 					// Enforce minimum 5s between tool_changed publications
 					if !d.lastToolChange.IsZero() && now.Sub(d.lastToolChange) < toolChangeMinInterval {
-						log.Printf("[Detector] Skipping tool change (fallback) %s -> %s (rate limited)",
+						log.Printf("[Handler] Skipping tool change (fallback) %s -> %s (rate limited)",
 							previousTool, result.plugin.Name)
 						return
 					}
@@ -309,7 +309,7 @@ func (d *ToolDetector) OnOutput(data []byte) {
 					d.detectedTool = result.plugin.Name
 					d.detectedIcon = result.plugin.Icon
 					d.lastToolChange = now
-					log.Printf("[Detector] Tool changed (fallback) for session %s: %s -> %s",
+					log.Printf("[Handler] Tool changed (fallback) for session %s: %s -> %s",
 						d.sessionID, previousTool, result.plugin.Name)
 
 					select {
@@ -320,7 +320,7 @@ func (d *ToolDetector) OnOutput(data []byte) {
 						Timestamp:    time.Now(),
 					}:
 					default:
-						log.Printf("[Detector] Failed to emit change event (channel full)")
+						log.Printf("[Handler] Failed to emit change event (channel full)")
 					}
 					return
 				}
@@ -328,7 +328,7 @@ func (d *ToolDetector) OnOutput(data []byte) {
 				if previousTool == "" {
 					d.detectedTool = result.plugin.Name
 					d.detectedIcon = result.plugin.Icon
-					log.Printf("[Detector] Tool detected (fallback) for session %s: %s", d.sessionID, result.plugin.Name)
+					log.Printf("[Handler] Tool detected (fallback) for session %s: %s", d.sessionID, result.plugin.Name)
 
 					select {
 					case d.eventChan <- ToolDetectedEvent{
@@ -337,7 +337,7 @@ func (d *ToolDetector) OnOutput(data []byte) {
 						Timestamp: time.Now(),
 					}:
 					default:
-						log.Printf("[Detector] Failed to emit detection event (channel full)")
+						log.Printf("[Handler] Failed to emit detection event (channel full)")
 					}
 					return
 				}
@@ -348,7 +348,7 @@ func (d *ToolDetector) OnOutput(data []byte) {
 	}
 }
 
-func (d *ToolDetector) runParallelDetection(plugins map[string]*JSPlugin, output string) []DetectionResult {
+func (d *ToolHandler) runParallelDetection(plugins map[string]*JSPlugin, output string) []DetectionResult {
 	if len(plugins) == 0 {
 		return nil
 	}
@@ -357,7 +357,7 @@ func (d *ToolDetector) runParallelDetection(plugins map[string]*JSPlugin, output
 	if rt == nil {
 		// Runtime not available - this can happen during startup or after a crash.
 		// Detection will be retried on next output.
-		log.Printf("[Detector] JS runtime not available, skipping detection for session %s", d.sessionID)
+		log.Printf("[Handler] JS runtime not available, skipping detection for session %s", d.sessionID)
 		return nil
 	}
 
@@ -385,7 +385,7 @@ func (d *ToolDetector) runParallelDetection(plugins map[string]*JSPlugin, output
 		select {
 		case result := <-results:
 			if result.error != nil {
-				log.Printf("[Detector] Plugin %s error: %v", result.filename, result.error)
+				log.Printf("[Handler] Plugin %s error: %v", result.filename, result.error)
 			}
 			if result.detected {
 				return []DetectionResult{result}
@@ -393,7 +393,7 @@ func (d *ToolDetector) runParallelDetection(plugins map[string]*JSPlugin, output
 			allResults = append(allResults, result)
 
 		case <-timeout:
-			log.Printf("[Detector] Collection timeout after 2s, got %d/%d results", i, len(plugins))
+			log.Printf("[Handler] Collection timeout after 2s, got %d/%d results", i, len(plugins))
 			return allResults
 		}
 	}
@@ -401,21 +401,21 @@ func (d *ToolDetector) runParallelDetection(plugins map[string]*JSPlugin, output
 	return allResults
 }
 
-func (d *ToolDetector) loadAllPlugins() {
+func (d *ToolHandler) loadAllPlugins() {
 	manifests, warnings := manifest.DiscoverWithWarnings(d.pluginDir)
 	for _, w := range warnings {
-		log.Printf("[Detector] skipped plugin in %s: %v", w.Dir, w.Err)
+		log.Printf("[Handler] skipped plugin in %s: %v", w.Dir, w.Err)
 	}
 
 	rt := d.getRuntime()
 	for _, mf := range manifests {
-		if mf.Type != manifest.PluginTypeToolDetector {
+		if mf.Type != manifest.PluginTypeToolHandler {
 			continue
 		}
 
 		mainPath, err := mf.MainPath()
 		if err != nil {
-			log.Printf("[Detector] Failed to evaluate manifest %s: %v", mf.Dir, err)
+			log.Printf("[Handler] Failed to evaluate manifest %s: %v", mf.Dir, err)
 			continue
 		}
 
@@ -436,18 +436,18 @@ func (d *ToolDetector) loadAllPlugins() {
 			plugin, err = LoadPlugin(mainPath)
 		}
 		if err != nil {
-			log.Printf("[Detector] Failed to load plugin %s: %v", relPath, err)
+			log.Printf("[Handler] Failed to load plugin %s: %v", relPath, err)
 			continue
 		}
 		d.plugins[relPath] = plugin
 	}
 
 	d.allPluginsLoaded = true
-	log.Printf("[Detector] Loaded %d plugins total", len(d.plugins))
+	log.Printf("[Handler] Loaded %d plugins total", len(d.plugins))
 }
 
 // StopDetection stops the detection process and closes the event channel.
-func (d *ToolDetector) StopDetection() {
+func (d *ToolHandler) StopDetection() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
@@ -462,49 +462,49 @@ func (d *ToolDetector) StopDetection() {
 		if d.changeChan != nil {
 			close(d.changeChan)
 		}
-		log.Printf("[Detector] Detection stopped, channels closed")
+		log.Printf("[Handler] Detection stopped, channels closed")
 	})
 }
 
 // GetDetectedTool returns the detected tool name, if any.
-func (d *ToolDetector) GetDetectedTool() string {
+func (d *ToolHandler) GetDetectedTool() string {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	return d.detectedTool
 }
 
 // GetDetectedIcon returns the detected tool's icon filename, if any.
-func (d *ToolDetector) GetDetectedIcon() string {
+func (d *ToolHandler) GetDetectedIcon() string {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	return d.detectedIcon
 }
 
 // EventChannel returns the channel for initial tool detection events.
-func (d *ToolDetector) EventChannel() <-chan ToolDetectedEvent {
+func (d *ToolHandler) EventChannel() <-chan ToolDetectedEvent {
 	return d.eventChan
 }
 
 // ChangeChannel returns the channel for tool change events.
-func (d *ToolDetector) ChangeChannel() <-chan ToolChangedEvent {
+func (d *ToolHandler) ChangeChannel() <-chan ToolChangedEvent {
 	return d.changeChan
 }
 
 // IsContinuousMode returns whether continuous detection is enabled.
-func (d *ToolDetector) IsContinuousMode() bool {
+func (d *ToolHandler) IsContinuousMode() bool {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	return d.continuousMode
 }
 
 // EnableContinuousMode enables or disables continuous detection at runtime.
-func (d *ToolDetector) EnableContinuousMode(enabled bool) {
+func (d *ToolHandler) EnableContinuousMode(enabled bool) {
 	d.mu.Lock()
 	d.continuousMode = enabled
 	d.mu.Unlock()
 	if enabled {
-		log.Printf("[Detector] Continuous mode enabled for session %s", d.sessionID)
+		log.Printf("[Handler] Continuous mode enabled for session %s", d.sessionID)
 	} else {
-		log.Printf("[Detector] Continuous mode disabled for session %s", d.sessionID)
+		log.Printf("[Handler] Continuous mode disabled for session %s", d.sessionID)
 	}
 }

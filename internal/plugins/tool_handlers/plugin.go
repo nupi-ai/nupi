@@ -1,4 +1,4 @@
-package tooldetectors
+package toolhandlers
 
 import (
 	"context"
@@ -41,7 +41,7 @@ func LoadPlugin(filePath string) (*JSPlugin, error) {
 	return plugin, nil
 }
 
-// LoadPluginWithRuntime loads a tool detector plugin and validates it via jsruntime.
+// LoadPluginWithRuntime loads a tool handler plugin and validates it via jsruntime.
 // Returns plugin metadata extracted by the JS runtime.
 // Fails if the plugin doesn't export a detect function.
 func LoadPluginWithRuntime(ctx context.Context, rt *jsruntime.Runtime, filePath string) (*JSPlugin, error) {
@@ -54,12 +54,12 @@ func LoadPluginWithRuntime(ctx context.Context, rt *jsruntime.Runtime, filePath 
 		RequireFunctions: []string{"detect"},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("tool detector: load %s: %w", filePath, err)
+		return nil, fmt.Errorf("tool handler: load %s: %w", filePath, err)
 	}
 
 	// Double-check the detect function exists
 	if !meta.HasDetect {
-		return nil, fmt.Errorf("tool detector: %s missing detect function", filePath)
+		return nil, fmt.Errorf("tool handler: %s missing detect function", filePath)
 	}
 
 	plugin := &JSPlugin{
@@ -85,7 +85,7 @@ func LoadPluginWithRuntime(ctx context.Context, rt *jsruntime.Runtime, filePath 
 // If the plugin is not loaded (e.g., after runtime restart), it will reload and retry once.
 func (p *JSPlugin) Detect(ctx context.Context, rt *jsruntime.Runtime, output string) (bool, error) {
 	if rt == nil {
-		return false, fmt.Errorf("tool detector %s: jsruntime not available", p.Name)
+		return false, fmt.Errorf("tool handler %s: jsruntime not available", p.Name)
 	}
 
 	result, err := p.callDetect(ctx, rt, output)
@@ -93,15 +93,15 @@ func (p *JSPlugin) Detect(ctx context.Context, rt *jsruntime.Runtime, output str
 		// If plugin not loaded, try to reload and retry once
 		if jsruntime.IsPluginNotLoadedError(err) {
 			if reloadErr := p.reload(ctx, rt); reloadErr != nil {
-				return false, fmt.Errorf("tool detector %s: reload failed: %w", p.Name, reloadErr)
+				return false, fmt.Errorf("tool handler %s: reload failed: %w", p.Name, reloadErr)
 			}
 			// Retry after reload
 			result, err = p.callDetect(ctx, rt, output)
 			if err != nil {
-				return false, fmt.Errorf("tool detector %s (after reload): %w", p.Name, err)
+				return false, fmt.Errorf("tool handler %s (after reload): %w", p.Name, err)
 			}
 		} else {
-			return false, fmt.Errorf("tool detector %s: %w", p.Name, err)
+			return false, fmt.Errorf("tool handler %s: %w", p.Name, err)
 		}
 	}
 
@@ -112,7 +112,7 @@ func (p *JSPlugin) Detect(ctx context.Context, rt *jsruntime.Runtime, output str
 	case nil:
 		return false, nil
 	default:
-		return false, fmt.Errorf("tool detector %s: unexpected result type %T", p.Name, result)
+		return false, fmt.Errorf("tool handler %s: unexpected result type %T", p.Name, result)
 	}
 }
 
@@ -131,7 +131,7 @@ func (p *JSPlugin) DetectIdleState(ctx context.Context, rt *jsruntime.Runtime, b
 	}
 
 	if rt == nil {
-		return nil, fmt.Errorf("tool detector %s: jsruntime not available", p.Name)
+		return nil, fmt.Errorf("tool handler %s: jsruntime not available", p.Name)
 	}
 
 	const timeout = 100 * time.Millisecond // fast check
@@ -144,17 +144,17 @@ func (p *JSPlugin) DetectIdleState(ctx context.Context, rt *jsruntime.Runtime, b
 		// If plugin not loaded, try to reload and retry once
 		if jsruntime.IsPluginNotLoadedError(err) {
 			if reloadErr := p.reload(ctx, rt); reloadErr != nil {
-				return nil, fmt.Errorf("tool detector %s: reload failed: %w", p.Name, reloadErr)
+				return nil, fmt.Errorf("tool handler %s: reload failed: %w", p.Name, reloadErr)
 			}
 			// Create fresh context for retry (original may be expired)
 			retryCtx, retryCancel := context.WithTimeout(ctx, timeout)
 			defer retryCancel()
 			result, err = rt.Call(retryCtx, p.FilePath, "detectIdleState", buffer)
 			if err != nil {
-				return nil, fmt.Errorf("tool detector %s (after reload): %w", p.Name, err)
+				return nil, fmt.Errorf("tool handler %s (after reload): %w", p.Name, err)
 			}
 		} else {
-			return nil, fmt.Errorf("tool detector %s: %w", p.Name, err)
+			return nil, fmt.Errorf("tool handler %s: %w", p.Name, err)
 		}
 	}
 
@@ -169,7 +169,7 @@ func (p *JSPlugin) Clean(ctx context.Context, rt *jsruntime.Runtime, output stri
 	}
 
 	if rt == nil {
-		return output, fmt.Errorf("tool detector %s: jsruntime not available", p.Name)
+		return output, fmt.Errorf("tool handler %s: jsruntime not available", p.Name)
 	}
 
 	const timeout = 1 * time.Second
@@ -182,17 +182,17 @@ func (p *JSPlugin) Clean(ctx context.Context, rt *jsruntime.Runtime, output stri
 		// If plugin not loaded, try to reload and retry once
 		if jsruntime.IsPluginNotLoadedError(err) {
 			if reloadErr := p.reload(ctx, rt); reloadErr != nil {
-				return output, fmt.Errorf("tool detector %s: reload failed: %w", p.Name, reloadErr)
+				return output, fmt.Errorf("tool handler %s: reload failed: %w", p.Name, reloadErr)
 			}
 			// Create fresh context for retry (original may be expired)
 			retryCtx, retryCancel := context.WithTimeout(ctx, timeout)
 			defer retryCancel()
 			result, err = rt.Call(retryCtx, p.FilePath, "clean", output)
 			if err != nil {
-				return output, fmt.Errorf("tool detector %s (after reload): %w", p.Name, err)
+				return output, fmt.Errorf("tool handler %s (after reload): %w", p.Name, err)
 			}
 		} else {
-			return output, fmt.Errorf("tool detector %s: %w", p.Name, err)
+			return output, fmt.Errorf("tool handler %s: %w", p.Name, err)
 		}
 	}
 
@@ -210,7 +210,7 @@ func (p *JSPlugin) ExtractEvents(ctx context.Context, rt *jsruntime.Runtime, out
 	}
 
 	if rt == nil {
-		return nil, fmt.Errorf("tool detector %s: jsruntime not available", p.Name)
+		return nil, fmt.Errorf("tool handler %s: jsruntime not available", p.Name)
 	}
 
 	const timeout = 2 * time.Second
@@ -223,17 +223,17 @@ func (p *JSPlugin) ExtractEvents(ctx context.Context, rt *jsruntime.Runtime, out
 		// If plugin not loaded, try to reload and retry once
 		if jsruntime.IsPluginNotLoadedError(err) {
 			if reloadErr := p.reload(ctx, rt); reloadErr != nil {
-				return nil, fmt.Errorf("tool detector %s: reload failed: %w", p.Name, reloadErr)
+				return nil, fmt.Errorf("tool handler %s: reload failed: %w", p.Name, reloadErr)
 			}
 			// Create fresh context for retry (original may be expired)
 			retryCtx, retryCancel := context.WithTimeout(ctx, timeout)
 			defer retryCancel()
 			result, err = rt.Call(retryCtx, p.FilePath, "extractEvents", output)
 			if err != nil {
-				return nil, fmt.Errorf("tool detector %s (after reload): %w", p.Name, err)
+				return nil, fmt.Errorf("tool handler %s (after reload): %w", p.Name, err)
 			}
 		} else {
-			return nil, fmt.Errorf("tool detector %s: %w", p.Name, err)
+			return nil, fmt.Errorf("tool handler %s: %w", p.Name, err)
 		}
 	}
 
@@ -340,7 +340,7 @@ func (p *JSPlugin) GetInfo() string {
 	return string(data)
 }
 
-// PluginIndex represents the auto-generated detectors_index.json.
+// PluginIndex represents the auto-generated handlers_index.json.
 type PluginIndex map[string][]string
 
 // LoadIndex loads the plugin index from file.

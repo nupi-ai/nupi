@@ -13,7 +13,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/jsruntime"
 	pipelinecleaners "github.com/nupi-ai/nupi/internal/plugins/pipeline_cleaners"
-	tooldetectors "github.com/nupi-ai/nupi/internal/plugins/tool_detectors"
+	toolhandlers "github.com/nupi-ai/nupi/internal/plugins/tool_handlers"
 )
 
 // Service transforms session output through optional pipeline plugins and
@@ -55,7 +55,7 @@ type lastSeenMeta struct {
 // PipelineProvider exposes access to pipeline plugins and JS runtime.
 type PipelineProvider interface {
 	PipelinePluginFor(name string) (*pipelinecleaners.PipelinePlugin, bool)
-	ToolDetectorPluginFor(name string) (*tooldetectors.JSPlugin, bool)
+	ToolHandlerPluginFor(name string) (*toolhandlers.JSPlugin, bool)
 	JSRuntime() *jsruntime.Runtime
 }
 
@@ -314,20 +314,20 @@ func (s *Service) handleSessionOutput(ctx context.Context, evt eventbus.SessionO
 		toolKey = toolName
 	}
 
-	// Get tool detector plugin for idle detection
-	var detector *tooldetectors.JSPlugin
+	// Get tool handler plugin for idle detection
+	var handler *toolhandlers.JSPlugin
 	if s.pluginsSvc != nil && toolKey != "" {
-		detector, _ = s.pluginsSvc.ToolDetectorPluginFor(toolKey)
+		handler, _ = s.pluginsSvc.ToolHandlerPluginFor(toolKey)
 	}
 
 	// Check if tool is in idle state (waiting for input)
-	if detector != nil && detector.HasDetectIdleState {
+	if handler != nil && handler.HasDetectIdleState {
 		rt := s.pluginsSvc.JSRuntime()
 		if rt != nil {
-			idleState, err := detector.DetectIdleState(ctx, rt, buf.Peek())
+			idleState, err := handler.DetectIdleState(ctx, rt, buf.Peek())
 			if err == nil && idleState != nil && idleState.IsIdle {
 				// Tool is waiting for input - flush and process
-				s.flushAndProcess(ctx, evt.SessionID, buf, detector, idleState, evt, toolName, toolID)
+				s.flushAndProcess(ctx, evt.SessionID, buf, handler, idleState, evt, toolName, toolID)
 				return
 			}
 		}
@@ -338,11 +338,11 @@ func (s *Service) handleSessionOutput(ctx context.Context, evt eventbus.SessionO
 	// Pass generation to detect race where new chunk arrives just as timer fires
 	currentGen := buf.Generation()
 	s.resetIdleTimer(evt.SessionID, buf, currentGen, func() {
-		idleState := &tooldetectors.IdleState{
+		idleState := &toolhandlers.IdleState{
 			IsIdle: true,
 			Reason: "timeout",
 		}
-		s.flushAndProcess(ctx, evt.SessionID, buf, detector, idleState, evt, toolName, toolID)
+		s.flushAndProcess(ctx, evt.SessionID, buf, handler, idleState, evt, toolName, toolID)
 	})
 }
 
@@ -414,18 +414,18 @@ func (s *Service) flushOnToolChange(ctx context.Context, sessionID string, oldTo
 		return
 	}
 
-	// Get detector for the OLD tool (we're processing its output)
+	// Get handler for the OLD tool (we're processing its output)
 	toolKey := oldTool.ID
 	if toolKey == "" {
 		toolKey = oldTool.Name
 	}
-	var detector *tooldetectors.JSPlugin
+	var handler *toolhandlers.JSPlugin
 	if s.pluginsSvc != nil && toolKey != "" {
-		detector, _ = s.pluginsSvc.ToolDetectorPluginFor(toolKey)
+		handler, _ = s.pluginsSvc.ToolHandlerPluginFor(toolKey)
 	}
 
 	// Create idle state for tool_change
-	idleState := &tooldetectors.IdleState{
+	idleState := &toolhandlers.IdleState{
 		IsIdle: true,
 		Reason: "tool_change",
 	}
@@ -447,7 +447,7 @@ func (s *Service) flushOnToolChange(ctx context.Context, sessionID string, oldTo
 	}
 
 	// Use normal processing pipeline with tool_changed flag
-	s.flushAndProcess(ctx, sessionID, buf, detector, idleState, evt, oldTool.Name, oldTool.ID)
+	s.flushAndProcess(ctx, sessionID, buf, handler, idleState, evt, oldTool.Name, oldTool.ID)
 }
 
 // cleanupSessionBuffer removes buffer, timer, and metadata for a session.
@@ -459,7 +459,7 @@ func (s *Service) cleanupSessionBuffer(sessionID string) {
 
 // flushAndProcess flushes the buffer and processes the output.
 // toolName and toolID are passed in frozen from handleSessionOutput to avoid race conditions.
-func (s *Service) flushAndProcess(ctx context.Context, sessionID string, buf *OutputBuffer, detector *tooldetectors.JSPlugin, idleState *tooldetectors.IdleState, evt eventbus.SessionOutputEvent, toolName, toolID string) {
+func (s *Service) flushAndProcess(ctx context.Context, sessionID string, buf *OutputBuffer, handler *toolhandlers.JSPlugin, idleState *toolhandlers.IdleState, evt eventbus.SessionOutputEvent, toolName, toolID string) {
 	// Cancel idle timer
 	s.cancelIdleTimer(sessionID)
 
@@ -500,19 +500,19 @@ func (s *Service) flushAndProcess(ctx context.Context, sessionID string, buf *Ou
 		rt = s.pluginsSvc.JSRuntime()
 	}
 
-	// Apply tool-specific cleaning via detector plugin
-	if detector != nil && detector.HasClean && rt != nil {
-		if cleaned, err := detector.Clean(ctx, rt, text); err == nil {
+	// Apply tool-specific cleaning via handler plugin
+	if handler != nil && handler.HasClean && rt != nil {
+		if cleaned, err := handler.Clean(ctx, rt, text); err == nil {
 			text = cleaned
 		} else {
 			log.Printf("[ContentPipeline] Clean error for session %s: %v", sessionID, err)
 		}
 	}
 
-	// Extract notable events via detector plugin
+	// Extract notable events via handler plugin
 	// Use flat fields to avoid JSON truncation in meta (512 rune limit per value)
-	if detector != nil && detector.HasExtractEvents && rt != nil {
-		events, err := detector.ExtractEvents(ctx, rt, text)
+	if handler != nil && handler.HasExtractEvents && rt != nil {
+		events, err := handler.ExtractEvents(ctx, rt, text)
 		if err != nil {
 			log.Printf("[ContentPipeline] ExtractEvents error for session %s: %v", sessionID, err)
 		} else if len(events) > 0 {

@@ -104,13 +104,13 @@ const (
 )
 
 var allowedAdapterTypes = map[string]struct{}{
-	"stt":          {},
-	"tts":          {},
-	"ai":           {},
-	"vad":          {},
-	"tunnel":       {},
-	"detector":     {},
-	"tool-cleaner": {},
+	"stt":              {},
+	"tts":              {},
+	"ai":               {},
+	"vad":              {},
+	"tunnel":           {},
+	"tool-handler":     {},
+	"pipeline-cleaner": {},
 }
 
 var allowedAdapterTransports = map[string]struct{}{
@@ -2129,7 +2129,7 @@ func (s *APIServer) handleAdaptersRegister(w http.ResponseWriter, r *http.Reques
 	adapterType := strings.TrimSpace(payload.Type)
 	if adapterType != "" {
 		if _, ok := allowedAdapterTypes[adapterType]; !ok {
-			http.Error(w, fmt.Sprintf("invalid adapter type: %s (expected: stt, tts, ai, vad, tunnel, detector, tool-cleaner)", adapterType), http.StatusBadRequest)
+			http.Error(w, fmt.Sprintf("invalid adapter type: %s (expected: stt, tts, ai, vad, tunnel, tool-handler, pipeline-cleaner)", adapterType), http.StatusBadRequest)
 			return
 		}
 	}

@@ -74,7 +74,7 @@ func TestLoadPlugin(t *testing.T) {
 	pluginPath := filepath.Join(tmpDir, "test-plugin.js")
 	pluginCode := `
 module.exports = {
-  name: "test-detector",
+  name: "test-handler",
   commands: ["npm", "node"],
   icon: "nodejs",
   detect: function(output) {
@@ -102,8 +102,8 @@ module.exports = {
 		t.Fatalf("LoadPlugin() error = %v", err)
 	}
 
-	if meta.Name != "test-detector" {
-		t.Errorf("Name = %q, want %q", meta.Name, "test-detector")
+	if meta.Name != "test-handler" {
+		t.Errorf("Name = %q, want %q", meta.Name, "test-handler")
 	}
 	if len(meta.Commands) != 2 || meta.Commands[0] != "npm" {
 		t.Errorf("Commands = %v, want [npm node]", meta.Commands)
@@ -118,10 +118,10 @@ func TestCallFunction(t *testing.T) {
 
 	// Create a test plugin with detect function
 	tmpDir := t.TempDir()
-	pluginPath := filepath.Join(tmpDir, "detector.js")
+	pluginPath := filepath.Join(tmpDir, "handler.js")
 	pluginCode := `
 module.exports = {
-  name: "npm-detector",
+  name: "npm-handler",
   commands: ["npm"],
   detect: function(output) {
     return output.includes("npm");

@@ -1,4 +1,4 @@
-package tooldetectors
+package toolhandlers
 
 import (
 	"context"
@@ -45,10 +45,10 @@ func TestJSPlugin_DetectIdleState(t *testing.T) {
 	skipIfNoBun(t)
 
 	tmpDir := t.TempDir()
-	pluginPath := filepath.Join(tmpDir, "idle-detector.js")
+	pluginPath := filepath.Join(tmpDir, "idle-handler.js")
 	pluginCode := `
 module.exports = {
-  name: "idle-detector",
+  name: "idle-handler",
   commands: ["test"],
   detect: function(output) {
     return output.includes("test");
@@ -144,7 +144,7 @@ func TestJSPlugin_DetectIdleState_Fallback(t *testing.T) {
 	pluginPath := filepath.Join(tmpDir, "no-idle.js")
 	pluginCode := `
 module.exports = {
-  name: "no-idle-detector",
+  name: "no-idle-handler",
   commands: ["test"],
   detect: function(output) {
     return true;
