@@ -594,19 +594,6 @@ func (s *Service) flushAndProcess(ctx context.Context, sessionID string, buf *Ou
 		}
 	}
 
-	// Summarize long outputs via detector plugin (threshold: 2000 chars)
-	const summarizeThreshold = 2000
-	if detector != nil && detector.HasSummarize && rt != nil && len(text) > summarizeThreshold {
-		summarized, err := detector.Summarize(ctx, rt, text)
-		if err != nil {
-			log.Printf("[ContentPipeline] Summarize error for session %s: %v", sessionID, err)
-		} else if summarized != text {
-			annotations["summarized"] = "true"
-			annotations["original_length"] = fmt.Sprintf("%d", len(text))
-			text = summarized
-		}
-	}
-
 	s.processedTotal.Add(1)
 	cleaned := eventbus.PipelineMessageEvent{
 		SessionID:   sessionID,

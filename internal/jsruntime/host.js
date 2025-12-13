@@ -74,7 +74,6 @@ async function loadPlugin(path, options = {}) {
       hasDetectIdleState: typeof pluginExports.detectIdleState === 'function',
       hasClean: typeof pluginExports.clean === 'function',
       hasExtractEvents: typeof pluginExports.extractEvents === 'function',
-      hasSummarize: typeof pluginExports.summarize === 'function',
     };
 
     for (const fnName of requireFunctions) {
