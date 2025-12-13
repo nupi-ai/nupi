@@ -1,4 +1,4 @@
-package tooldetectors
+package toolhandlers
 
 import (
 	"sync"

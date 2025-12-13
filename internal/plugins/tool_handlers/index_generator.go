@@ -1,4 +1,4 @@
-package tooldetectors
+package toolhandlers
 
 import (
 	"context"
@@ -12,7 +12,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/plugins/manifest"
 )
 
-// IndexGenerator creates detectors_index.json from detector plugin manifests.
+// IndexGenerator creates handlers_index.json from handler plugin manifests.
 type IndexGenerator struct {
 	pluginDir string
 	manifests []*manifest.Manifest
@@ -36,9 +36,9 @@ func NewIndexGeneratorWithRuntime(pluginDir string, manifests []*manifest.Manife
 	}
 }
 
-// Generate scans detector manifests and creates detectors_index.json.
+// Generate scans handler manifests and creates handlers_index.json.
 func (g *IndexGenerator) Generate() error {
-	indexPath := filepath.Join(g.pluginDir, "detectors_index.json")
+	indexPath := filepath.Join(g.pluginDir, "handlers_index.json")
 	log.Printf("[IndexGenerator] Generating index at: %s", indexPath)
 
 	if err := os.MkdirAll(g.pluginDir, 0o755); err != nil {
@@ -58,13 +58,13 @@ func (g *IndexGenerator) Generate() error {
 	successCount := 0
 
 	for _, mf := range manifests {
-		if mf.Type != manifest.PluginTypeToolDetector {
+		if mf.Type != manifest.PluginTypeToolHandler {
 			continue
 		}
 
 		mainPath, err := mf.MainPath()
 		if err != nil {
-			log.Printf("[IndexGenerator] Warning: skip detector %s: %v", mf.Dir, err)
+			log.Printf("[IndexGenerator] Warning: skip handler %s: %v", mf.Dir, err)
 			continue
 		}
 
@@ -94,7 +94,7 @@ func (g *IndexGenerator) Generate() error {
 		}
 
 		successCount++
-		log.Printf("[IndexGenerator] Detector %s registered with %d commands: %v",
+		log.Printf("[IndexGenerator] Handler %s registered with %d commands: %v",
 			relativePath, len(plugin.Commands), plugin.Commands)
 	}
 
@@ -108,7 +108,7 @@ func (g *IndexGenerator) Generate() error {
 	return nil
 }
 
-// ListPlugins returns information about all detector plugins.
+// ListPlugins returns information about all handler plugins.
 func (g *IndexGenerator) ListPlugins() ([]map[string]interface{}, error) {
 	manifests := g.manifests
 	if manifests == nil {
@@ -122,7 +122,7 @@ func (g *IndexGenerator) ListPlugins() ([]map[string]interface{}, error) {
 	var plugins []map[string]interface{}
 
 	for _, mf := range manifests {
-		if mf.Type != manifest.PluginTypeToolDetector {
+		if mf.Type != manifest.PluginTypeToolHandler {
 			continue
 		}
 

@@ -7,22 +7,22 @@ import (
 
 	"github.com/nupi-ai/nupi/internal/client"
 	manifestpkg "github.com/nupi-ai/nupi/internal/plugins/manifest"
-	tooldetectors "github.com/nupi-ai/nupi/internal/plugins/tool_detectors"
+	toolhandlers "github.com/nupi-ai/nupi/internal/plugins/tool_handlers"
 	"github.com/spf13/cobra"
 )
 
 // pluginsCmd represents the plugins command group
 var pluginsCmd = &cobra.Command{
 	Use:   "plugins",
-	Short: "Manage tool detection plugins",
-	Long:  `Commands for managing detector plugins used for AI tool detection.`,
+	Short: "Manage tool handler plugins",
+	Long:  `Commands for managing tool handler plugins used for AI tool handling.`,
 }
 
 // pluginsRebuildCmd rebuilds the plugin index
 var pluginsRebuildCmd = &cobra.Command{
 	Use:   "rebuild",
-	Short: "Rebuild the detector index",
-	Long:  `Scans detector plugins in the plugin directory and rebuilds the detectors_index.json file.`,
+	Short: "Rebuild the handler index",
+	Long:  `Scans tool handler plugins in the plugin directory and rebuilds the handlers_index.json file.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		pluginDir := getPluginDir()
 		fmt.Printf("Rebuilding plugin index in: %s\n", pluginDir)
@@ -32,7 +32,7 @@ var pluginsRebuildCmd = &cobra.Command{
 			return fmt.Errorf("discover manifests: %w", err)
 		}
 
-		generator := tooldetectors.NewIndexGenerator(pluginDir, manifests)
+		generator := toolhandlers.NewIndexGenerator(pluginDir, manifests)
 		if err := generator.Generate(); err != nil {
 			return fmt.Errorf("failed to generate index: %w", err)
 		}
@@ -45,8 +45,8 @@ var pluginsRebuildCmd = &cobra.Command{
 // pluginsListCmd lists all plugins
 var pluginsListCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List detector plugins",
-	Long:  `Shows information about detector plugins available in the current instance.`,
+	Short: "List tool handler plugins",
+	Long:  `Shows information about tool handler plugins available in the current instance.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		pluginDir := getPluginDir()
 
@@ -55,16 +55,16 @@ var pluginsListCmd = &cobra.Command{
 			return fmt.Errorf("discover manifests: %w", err)
 		}
 
-		generator := tooldetectors.NewIndexGenerator(pluginDir, manifests)
+		generator := toolhandlers.NewIndexGenerator(pluginDir, manifests)
 		plugins, err := generator.ListPlugins()
 		if err != nil {
 			return fmt.Errorf("failed to list plugins: %w", err)
 		}
 
 		if len(plugins) == 0 {
-			fmt.Println("No detector plugins found.")
+			fmt.Println("No tool handler plugins found.")
 			fmt.Printf("Plugin directory: %s\n", pluginDir)
-			fmt.Println("\nAdd detector plugins to this directory and run 'nupi plugins rebuild'.")
+			fmt.Println("\nAdd tool handler plugins to this directory and run 'nupi plugins rebuild'.")
 			return nil
 		}
 
@@ -141,8 +141,8 @@ or config change). For historical tracking, check daemon logs.`,
 // pluginsInfoCmd shows detailed plugin info
 var pluginsInfoCmd = &cobra.Command{
 	Use:   "info <slug>",
-	Short: "Show detector plugin information",
-	Long:  `Displays manifest metadata and exported details for the given detector plugin slug.`,
+	Short: "Show tool handler plugin information",
+	Long:  `Displays manifest metadata and exported details for the given tool handler plugin slug.`,
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		target := args[0]
@@ -168,8 +168,8 @@ var pluginsInfoCmd = &cobra.Command{
 		if selected == nil {
 			return fmt.Errorf("plugin %q not found", target)
 		}
-		if selected.Type != manifestpkg.PluginTypeToolDetector {
-			return fmt.Errorf("plugin %q is not a tool-detector", target)
+		if selected.Type != manifestpkg.PluginTypeToolHandler {
+			return fmt.Errorf("plugin %q is not a tool-handler", target)
 		}
 
 		mainPath, err := selected.MainPath()
@@ -182,7 +182,7 @@ var pluginsInfoCmd = &cobra.Command{
 			relMain = mainPath
 		}
 
-		plugin, err := tooldetectors.LoadPlugin(mainPath)
+		plugin, err := toolhandlers.LoadPlugin(mainPath)
 		if err != nil {
 			return fmt.Errorf("failed to load plugin: %w", err)
 		}

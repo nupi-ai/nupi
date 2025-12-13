@@ -53,13 +53,13 @@ var (
 
 var (
 	allowedAdapterSlots = map[string]struct{}{
-		"stt":          {},
-		"tts":          {},
-		"ai":           {},
-		"vad":          {},
-		"tunnel":       {},
-		"detector":     {},
-		"tool-cleaner": {},
+		"stt":              {},
+		"tts":              {},
+		"ai":               {},
+		"vad":              {},
+		"tunnel":           {},
+		"tool-handler":     {},
+		"pipeline-cleaner": {},
 	}
 	allowedEndpointTransports = map[string]struct{}{
 		"grpc":    {},
@@ -1664,7 +1664,7 @@ func adaptersRegister(cmd *cobra.Command, _ []string) error {
 	adapterType = strings.TrimSpace(adapterType)
 	if adapterType != "" {
 		if _, ok := allowedAdapterSlots[adapterType]; !ok {
-			return out.Error(fmt.Sprintf("invalid type %q (expected: stt, tts, ai, vad, tunnel, detector, tool-cleaner)", adapterType), errors.New("invalid adapter type"))
+			return out.Error(fmt.Sprintf("invalid type %q (expected: stt, tts, ai, vad, tunnel, tool-handler, pipeline-cleaner)", adapterType), errors.New("invalid adapter type"))
 		}
 	}
 

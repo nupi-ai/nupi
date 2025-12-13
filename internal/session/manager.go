@@ -12,7 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nupi-ai/nupi/internal/eventbus"
-	tooldetectors "github.com/nupi-ai/nupi/internal/plugins/tool_detectors"
+	toolhandlers "github.com/nupi-ai/nupi/internal/plugins/tool_handlers"
 	"github.com/nupi-ai/nupi/internal/pty"
 	"github.com/nupi-ai/nupi/internal/recording"
 )
@@ -40,7 +40,7 @@ type Session struct {
 	StartTime        time.Time
 	Status           Status
 	PTY              *pty.Wrapper
-	Detector         *tooldetectors.ToolDetector // Tool detection
+	Handler          *toolhandlers.ToolHandler // Tool handler
 	Inspect          bool                        // Whether inspection mode is enabled
 	RecordingEnabled bool                        // Whether asciicast recording is enabled
 
@@ -84,18 +84,18 @@ func (s *Session) CurrentStatus() Status {
 
 // GetDetectedTool returns the detected tool name, if any
 func (s *Session) GetDetectedTool() string {
-	if s.Detector == nil {
+	if s.Handler == nil {
 		return ""
 	}
-	return s.Detector.GetDetectedTool()
+	return s.Handler.GetDetectedTool()
 }
 
 // GetDetectedIcon returns the detected tool's icon filename, if any
 func (s *Session) GetDetectedIcon() string {
-	if s.Detector == nil {
+	if s.Handler == nil {
 		return ""
 	}
-	return s.Detector.GetDetectedIcon()
+	return s.Handler.GetDetectedIcon()
 }
 
 func (s *Session) nextOutputSequence() uint64 {
@@ -114,7 +114,7 @@ type Manager struct {
 	pluginDir      string           // Directory for tool detection plugins
 	recordingStore *recording.Store // Recording metadata store
 	eventBus       *eventbus.Bus
-	jsRuntimeFunc  tooldetectors.JSRuntimeFunc // Function to get JS runtime for tool detection
+	jsRuntimeFunc  toolhandlers.JSRuntimeFunc // Function to get JS runtime for tool detection
 }
 
 // NewManager creates a new session manager
@@ -155,9 +155,9 @@ func (m *Manager) UseEventBus(bus *eventbus.Bus) {
 	m.eventBus = bus
 }
 
-// SetJSRuntimeFunc sets the function to get the JS runtime for tool detection.
-// This allows detectors to always get the current runtime, even after restarts.
-func (m *Manager) SetJSRuntimeFunc(fn tooldetectors.JSRuntimeFunc) {
+// SetJSRuntimeFunc sets the function to get the JS runtime for tool handling.
+// This allows handlers to always get the current runtime, even after restarts.
+func (m *Manager) SetJSRuntimeFunc(fn toolhandlers.JSRuntimeFunc) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.jsRuntimeFunc = fn
@@ -249,32 +249,32 @@ func (m *Manager) CreateSession(opts pty.StartOptions, inspect bool) (*Session, 
 		}
 	}
 
-	// Set up tool detection with continuous mode for detecting tool changes
+	// Set up tool handler with continuous mode for detecting tool changes
 	if m.pluginDir != "" {
-		detectorOpts := []tooldetectors.DetectorOption{tooldetectors.WithContinuousMode(true)}
+		handlerOpts := []toolhandlers.HandlerOption{toolhandlers.WithContinuousMode(true)}
 		m.mu.RLock()
 		runtimeFunc := m.jsRuntimeFunc
 		m.mu.RUnlock()
 		if runtimeFunc != nil {
-			detectorOpts = append(detectorOpts, tooldetectors.WithJSRuntimeFunc(runtimeFunc))
+			handlerOpts = append(handlerOpts, toolhandlers.WithJSRuntimeFunc(runtimeFunc))
 		}
-		toolDetector := tooldetectors.NewToolDetector(sessionID, m.pluginDir, detectorOpts...)
-		if err := toolDetector.Initialize(); err != nil {
-			log.Printf("[Manager] Failed to initialize detector: %v", err)
+		toolHandler := toolhandlers.NewToolHandler(sessionID, m.pluginDir, handlerOpts...)
+		if err := toolHandler.Initialize(); err != nil {
+			log.Printf("[Manager] Failed to initialize handler: %v", err)
 		} else {
-			session.Detector = toolDetector
+			session.Handler = toolHandler
 
 			// Start detection
-			if err := toolDetector.OnSessionStart(opts.Command, opts.Args); err != nil {
+			if err := toolHandler.OnSessionStart(opts.Command, opts.Args); err != nil {
 				log.Printf("[Manager] Failed to start detection: %v", err)
 			}
 
 			// Monitor detection events (initial and changes)
-			go m.monitorDetection(session, toolDetector)
+			go m.monitorDetection(session, toolHandler)
 
-			// Add output sink for detection
-			ptyWrapper.AddSink(&detectorSink{
-				detector: toolDetector,
+			// Add output sink for handler
+			ptyWrapper.AddSink(&handlerSink{
+				handler: toolHandler,
 			})
 		}
 	}
@@ -313,9 +313,9 @@ func (m *Manager) monitorSession(session *Session) {
 		switch event.Type {
 		case "process_exited":
 			session.SetStatus(StatusStopped)
-			// Stop detection to clean up goroutines
-			if session.Detector != nil {
-				session.Detector.StopDetection()
+			// Stop handler to clean up goroutines
+			if session.Handler != nil {
+				session.Handler.StopDetection()
 			}
 			// Close inspection file if open
 			if session.inspectFile != nil {
@@ -541,20 +541,20 @@ func (m *Manager) CleanupStopped(olderThan time.Duration) int {
 	return removed
 }
 
-// detectorSink implements pty.OutputSink for tool detection
-type detectorSink struct {
-	detector *tooldetectors.ToolDetector
+// handlerSink implements pty.OutputSink for tool handling
+type handlerSink struct {
+	handler *toolhandlers.ToolHandler
 }
 
-func (d *detectorSink) Write(data []byte) error {
-	d.detector.OnOutput(data)
+func (h *handlerSink) Write(data []byte) error {
+	h.handler.OnOutput(data)
 	return nil
 }
 
-func (d *detectorSink) NotifyEvent(eventType string, exitCode int) {
-	// Detection stops on process exit
+func (h *handlerSink) NotifyEvent(eventType string, exitCode int) {
+	// Handler stops on process exit
 	if eventType == "process_exited" {
-		d.detector.StopDetection()
+		h.handler.StopDetection()
 	}
 }
 
@@ -590,9 +590,9 @@ func (s *eventBusSink) NotifyEvent(eventType string, exitCode int) {
 }
 
 // monitorDetection monitors tool detection events (initial and changes)
-func (m *Manager) monitorDetection(session *Session, toolDetector *tooldetectors.ToolDetector) {
-	eventChan := toolDetector.EventChannel()
-	changeChan := toolDetector.ChangeChannel()
+func (m *Manager) monitorDetection(session *Session, toolHandler *toolhandlers.ToolHandler) {
+	eventChan := toolHandler.EventChannel()
+	changeChan := toolHandler.ChangeChannel()
 
 	// Wait for initial tool detection
 	select {

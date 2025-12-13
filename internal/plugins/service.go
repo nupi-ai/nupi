@@ -12,7 +12,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/jsruntime"
 	"github.com/nupi-ai/nupi/internal/plugins/manifest"
 	pipelinecleaners "github.com/nupi-ai/nupi/internal/plugins/pipeline_cleaners"
-	tooldetectors "github.com/nupi-ai/nupi/internal/plugins/tool_detectors"
+	toolhandlers "github.com/nupi-ai/nupi/internal/plugins/tool_handlers"
 )
 
 // Service manages plugin assets and metadata for the daemon.
@@ -21,8 +21,8 @@ type Service struct {
 	pipelineIdx map[string]*pipelinecleaners.PipelinePlugin
 	pipelineMu  sync.RWMutex
 
-	toolDetectorIdx map[string]*tooldetectors.JSPlugin // tool name -> plugin
-	toolDetectorMu  sync.RWMutex
+	toolHandlerIdx map[string]*toolhandlers.JSPlugin // tool name -> plugin
+	toolHandlerMu  sync.RWMutex
 
 	supervisedRT   *jsruntime.SupervisedRuntime
 	supervisedRTMu sync.RWMutex
@@ -37,7 +37,7 @@ func NewService(instanceDir string) *Service {
 	return &Service{
 		pluginDir:       pluginDir,
 		pipelineIdx:     make(map[string]*pipelinecleaners.PipelinePlugin),
-		toolDetectorIdx: make(map[string]*tooldetectors.JSPlugin),
+		toolHandlerIdx: make(map[string]*toolhandlers.JSPlugin),
 	}
 }
 
@@ -134,39 +134,39 @@ func (s *Service) PipelinePluginFor(name string) (*pipelinecleaners.PipelinePlug
 	return plugin, ok
 }
 
-// LoadToolDetectorPlugins loads all tool detector plugins into memory.
+// LoadToolHandlerPlugins loads all tool handler plugins into memory.
 // This enables the content pipeline to use tool processor methods like
 // DetectIdleState, Clean, ExtractEvents, and Summarize.
-func (s *Service) LoadToolDetectorPlugins() error {
+func (s *Service) LoadToolHandlerPlugins() error {
 	manifests, warnings := manifest.DiscoverWithWarnings(s.pluginDir)
 	s.setWarnings(warnings)
-	return s.loadToolDetectorPlugins(manifests)
+	return s.loadToolHandlerPlugins(manifests)
 }
 
-func (s *Service) loadToolDetectorPlugins(manifests []*manifest.Manifest) error {
-	index := make(map[string]*tooldetectors.JSPlugin)
+func (s *Service) loadToolHandlerPlugins(manifests []*manifest.Manifest) error {
+	index := make(map[string]*toolhandlers.JSPlugin)
 
 	rt := s.runtime()
 
 	for _, mf := range manifests {
-		if mf.Type != manifest.PluginTypeToolDetector {
+		if mf.Type != manifest.PluginTypeToolHandler {
 			continue
 		}
 
 		mainPath, err := mf.MainPath()
 		if err != nil {
-			log.Printf("[Plugins] skip tool detector %s: %v", mf.Dir, err)
+			log.Printf("[Plugins] skip tool handler %s: %v", mf.Dir, err)
 			continue
 		}
 
-		var plugin *tooldetectors.JSPlugin
+		var plugin *toolhandlers.JSPlugin
 		if rt != nil {
-			plugin, err = tooldetectors.LoadPluginWithRuntime(context.Background(), rt, mainPath)
+			plugin, err = toolhandlers.LoadPluginWithRuntime(context.Background(), rt, mainPath)
 		} else {
-			plugin, err = tooldetectors.LoadPlugin(mainPath)
+			plugin, err = toolhandlers.LoadPlugin(mainPath)
 		}
 		if err != nil {
-			log.Printf("[Plugins] skip tool detector %s: %v", mainPath, err)
+			log.Printf("[Plugins] skip tool handler %s: %v", mainPath, err)
 			continue
 		}
 
@@ -190,27 +190,27 @@ func (s *Service) loadToolDetectorPlugins(manifests []*manifest.Manifest) error 
 		}
 	}
 
-	s.toolDetectorMu.Lock()
-	s.toolDetectorIdx = index
-	s.toolDetectorMu.Unlock()
+	s.toolHandlerMu.Lock()
+	s.toolHandlerIdx = index
+	s.toolHandlerMu.Unlock()
 
-	log.Printf("[Plugins] Loaded %d tool detector plugins", len(index))
+	log.Printf("[Plugins] Loaded %d tool handler plugins", len(index))
 	return nil
 }
 
-// ToolDetectorPluginFor returns a tool detector plugin matching the supplied tool name.
+// ToolHandlerPluginFor returns a tool handler plugin matching the supplied tool name.
 // The plugin can be used for idle detection, cleaning, event extraction, and summarization.
-func (s *Service) ToolDetectorPluginFor(name string) (*tooldetectors.JSPlugin, bool) {
-	s.toolDetectorMu.RLock()
-	defer s.toolDetectorMu.RUnlock()
+func (s *Service) ToolHandlerPluginFor(name string) (*toolhandlers.JSPlugin, bool) {
+	s.toolHandlerMu.RLock()
+	defer s.toolHandlerMu.RUnlock()
 
-	if len(s.toolDetectorIdx) == 0 {
+	if len(s.toolHandlerIdx) == 0 {
 		return nil, false
 	}
 
 	key := strings.TrimSpace(strings.ToLower(name))
 	if key != "" {
-		if plugin, ok := s.toolDetectorIdx[key]; ok {
+		if plugin, ok := s.toolHandlerIdx[key]; ok {
 			return plugin, true
 		}
 	}
@@ -230,7 +230,7 @@ func (s *Service) GenerateIndex() error {
 	}
 
 	// Use jsruntime-aware index generator when available
-	generator := tooldetectors.NewIndexGeneratorWithRuntime(s.pluginDir, manifests, s.runtime())
+	generator := toolhandlers.NewIndexGeneratorWithRuntime(s.pluginDir, manifests, s.runtime())
 	if err := generator.Generate(); err != nil {
 		return err
 	}
@@ -262,12 +262,12 @@ func (s *Service) Start(ctx context.Context) error {
 		log.Printf("[Plugins] pipeline load error: %v", err)
 	}
 
-	if err := s.loadToolDetectorPlugins(manifests); err != nil {
-		log.Printf("[Plugins] tool detector load error: %v", err)
+	if err := s.loadToolHandlerPlugins(manifests); err != nil {
+		log.Printf("[Plugins] tool handler load error: %v", err)
 	}
 
 	// Use jsruntime-aware index generator when available
-	generator := tooldetectors.NewIndexGeneratorWithRuntime(s.pluginDir, manifests, s.runtime())
+	generator := toolhandlers.NewIndexGeneratorWithRuntime(s.pluginDir, manifests, s.runtime())
 	if err := generator.Generate(); err != nil {
 		return err
 	}
@@ -313,8 +313,8 @@ func (s *Service) startJSRuntime(ctx context.Context) error {
 		if err := s.LoadPipelinePlugins(); err != nil {
 			log.Printf("[Plugins] Failed to reload pipeline plugins after restart: %v", err)
 		}
-		if err := s.LoadToolDetectorPlugins(); err != nil {
-			log.Printf("[Plugins] Failed to reload tool detector plugins after restart: %v", err)
+		if err := s.LoadToolHandlerPlugins(); err != nil {
+			log.Printf("[Plugins] Failed to reload tool handler plugins after restart: %v", err)
 		}
 		if err := s.GenerateIndex(); err != nil {
 			log.Printf("[Plugins] Failed to regenerate index after restart: %v", err)

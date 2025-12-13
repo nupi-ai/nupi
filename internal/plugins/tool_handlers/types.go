@@ -1,4 +1,4 @@
-package tooldetectors
+package toolhandlers
 
 // IdleState describes whether a tool is waiting for user input.
 type IdleState struct {

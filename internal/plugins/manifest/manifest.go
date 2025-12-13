@@ -22,7 +22,7 @@ const (
 	KindPlugin Kind = "Plugin"
 
 	PluginTypeAdapter         PluginType = "adapter"
-	PluginTypeToolDetector    PluginType = "tool-detector"
+	PluginTypeToolHandler     PluginType = "tool-handler"
 	PluginTypePipelineCleaner PluginType = "pipeline-cleaner"
 
 	manifestYAML = "plugin.yaml"
@@ -40,7 +40,7 @@ type Metadata struct {
 	Version     string `yaml:"version"`
 }
 
-type DetectorSpec struct {
+type HandlerSpec struct {
 	Main string `yaml:"main"`
 }
 
@@ -107,7 +107,7 @@ type Manifest struct {
 	Metadata   Metadata
 
 	Adapter         *AdapterSpec
-	Detector        *DetectorSpec
+	Handler         *HandlerSpec
 	PipelineCleaner *PipelineCleanerSpec
 }
 
@@ -124,11 +124,11 @@ func Parse(data []byte) (*Manifest, error) {
 
 func (m *Manifest) MainPath() (string, error) {
 	switch m.Type {
-	case PluginTypeToolDetector:
-		if m.Detector == nil {
-			return "", fmt.Errorf("detector manifest missing spec")
+	case PluginTypeToolHandler:
+		if m.Handler == nil {
+			return "", fmt.Errorf("handler manifest missing spec")
 		}
-		return filepath.Join(m.Dir, m.Detector.Main), nil
+		return filepath.Join(m.Dir, m.Handler.Main), nil
 	case PluginTypePipelineCleaner:
 		if m.PipelineCleaner == nil {
 			return "", fmt.Errorf("pipeline cleaner manifest missing spec")
@@ -277,7 +277,7 @@ func decodeManifest(data []byte, dir, file string) (*Manifest, error) {
 		return nil, fmt.Errorf("manifest %s missing type", file)
 	}
 	switch pluginType {
-	case PluginTypeAdapter, PluginTypeToolDetector, PluginTypePipelineCleaner:
+	case PluginTypeAdapter, PluginTypeToolHandler, PluginTypePipelineCleaner:
 	default:
 		return nil, fmt.Errorf("unsupported plugin type %q in %s", pluginType, file)
 	}
@@ -324,15 +324,15 @@ func decodeManifest(data []byte, dir, file string) (*Manifest, error) {
 			return nil, err
 		}
 		manifest.Adapter = &spec
-	case PluginTypeToolDetector:
-		var spec DetectorSpec
+	case PluginTypeToolHandler:
+		var spec HandlerSpec
 		if err := doc.Spec.Decode(&spec); err != nil {
-			return nil, fmt.Errorf("decode detector spec %s: %w", file, err)
+			return nil, fmt.Errorf("decode handler spec %s: %w", file, err)
 		}
 		if strings.TrimSpace(spec.Main) == "" {
 			spec.Main = "main.js"
 		}
-		manifest.Detector = &spec
+		manifest.Handler = &spec
 	case PluginTypePipelineCleaner:
 		var spec PipelineCleanerSpec
 		if err := doc.Spec.Decode(&spec); err != nil {

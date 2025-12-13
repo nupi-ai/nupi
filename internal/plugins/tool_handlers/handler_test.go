@@ -1,4 +1,4 @@
-package tooldetectors
+package toolhandlers
 
 import (
 	"testing"
@@ -13,10 +13,10 @@ func mockPlugin(name string) *JSPlugin {
 	}
 }
 
-func TestToolDetector_RateLimitingToolChanges(t *testing.T) {
-	d := NewToolDetector("test-session", "/tmp/plugins", WithContinuousMode(true))
+func TestToolHandler_RateLimitingToolChanges(t *testing.T) {
+	d := NewToolHandler("test-session", "/tmp/plugins", WithContinuousMode(true))
 
-	// Manually set up detector state for testing
+	// Manually set up handler state for testing
 	d.plugins = map[string]*JSPlugin{
 		"vim.js":    mockPlugin("vim"),
 		"python.js": mockPlugin("python"),
@@ -62,12 +62,12 @@ func TestToolDetector_RateLimitingToolChanges(t *testing.T) {
 	}
 }
 
-func TestToolDetector_FirstToolChangeNotRateLimited(t *testing.T) {
-	d := NewToolDetector("test-session", "/tmp/plugins", WithContinuousMode(true))
+func TestToolHandler_FirstToolChangeNotRateLimited(t *testing.T) {
+	d := NewToolHandler("test-session", "/tmp/plugins", WithContinuousMode(true))
 
 	// First tool change (lastToolChange is zero) should not be rate limited
 	if !d.lastToolChange.IsZero() {
-		t.Error("Expected lastToolChange to be zero for new detector")
+		t.Error("Expected lastToolChange to be zero for new handler")
 	}
 
 	// Simulate first detection setting up the state
@@ -86,8 +86,8 @@ func TestToolDetector_FirstToolChangeNotRateLimited(t *testing.T) {
 	}
 }
 
-func TestToolDetector_ChangeChannelReceivesEvents(t *testing.T) {
-	d := NewToolDetector("test-session", "/tmp/plugins", WithContinuousMode(true))
+func TestToolHandler_ChangeChannelReceivesEvents(t *testing.T) {
+	d := NewToolHandler("test-session", "/tmp/plugins", WithContinuousMode(true))
 
 	// Get the change channel
 	changeChan := d.ChangeChannel()
@@ -125,8 +125,8 @@ func TestToolDetector_ChangeChannelReceivesEvents(t *testing.T) {
 	}
 }
 
-func TestToolDetector_EventChannelReceivesFirstDetection(t *testing.T) {
-	d := NewToolDetector("test-session", "/tmp/plugins")
+func TestToolHandler_EventChannelReceivesFirstDetection(t *testing.T) {
+	d := NewToolHandler("test-session", "/tmp/plugins")
 
 	// Get the event channel
 	eventChan := d.EventChannel()
@@ -160,15 +160,15 @@ func TestToolDetector_EventChannelReceivesFirstDetection(t *testing.T) {
 	}
 }
 
-func TestToolDetector_ContinuousModeToggle(t *testing.T) {
+func TestToolHandler_ContinuousModeToggle(t *testing.T) {
 	// Test with continuous mode disabled (default)
-	d1 := NewToolDetector("test-session", "/tmp/plugins")
+	d1 := NewToolHandler("test-session", "/tmp/plugins")
 	if d1.IsContinuousMode() {
 		t.Error("Expected continuous mode to be disabled by default")
 	}
 
 	// Test with continuous mode enabled via option
-	d2 := NewToolDetector("test-session", "/tmp/plugins", WithContinuousMode(true))
+	d2 := NewToolHandler("test-session", "/tmp/plugins", WithContinuousMode(true))
 	if !d2.IsContinuousMode() {
 		t.Error("Expected continuous mode to be enabled")
 	}
@@ -185,8 +185,8 @@ func TestToolDetector_ContinuousModeToggle(t *testing.T) {
 	}
 }
 
-func TestToolDetector_GetDetectedTool(t *testing.T) {
-	d := NewToolDetector("test-session", "/tmp/plugins")
+func TestToolHandler_GetDetectedTool(t *testing.T) {
+	d := NewToolHandler("test-session", "/tmp/plugins")
 
 	// Initially empty
 	if tool := d.GetDetectedTool(); tool != "" {
@@ -208,11 +208,11 @@ func TestToolDetector_GetDetectedTool(t *testing.T) {
 	}
 }
 
-func TestToolDetector_RateLimitIntegration(t *testing.T) {
+func TestToolHandler_RateLimitIntegration(t *testing.T) {
 	// This test verifies the actual rate limiting logic path
-	d := NewToolDetector("test-session", "/tmp/plugins", WithContinuousMode(true))
+	d := NewToolHandler("test-session", "/tmp/plugins", WithContinuousMode(true))
 
-	// Set up detector state
+	// Set up handler state
 	d.mu.Lock()
 	d.detectedTool = "vim"
 	d.lastToolChange = time.Now() // Just changed

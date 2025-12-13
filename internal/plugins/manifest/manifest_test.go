@@ -608,7 +608,7 @@ func TestDiscoverFindsPluginsInCatalogStructure(t *testing.T) {
 	// Create catalog/slug directory structure with manifests
 	createPluginYAML(t, root, "builtin/adapter.stt.mock", adapterManifest("Mock STT", "adapter.stt.mock", "builtin", "stt"))
 	createPluginYAML(t, root, "ai/claude", adapterManifest("Claude AI", "claude", "ai", "ai"))
-	createPluginYAML(t, root, "tools/detector.git", toolDetectorManifest("Git Detector", "detector.git", "tools"))
+	createPluginYAML(t, root, "tools/handler.git", toolHandlerManifest("Git Handler", "handler.git", "tools"))
 
 	manifests, err := Discover(root)
 	if err != nil {
@@ -626,8 +626,8 @@ func TestDiscoverFindsPluginsInCatalogStructure(t *testing.T) {
 	if manifests[1].Metadata.Slug != "adapter.stt.mock" {
 		t.Fatalf("expected second manifest to be adapter.stt.mock, got %s", manifests[1].Metadata.Slug)
 	}
-	if manifests[2].Metadata.Slug != "detector.git" {
-		t.Fatalf("expected third manifest to be detector.git, got %s", manifests[2].Metadata.Slug)
+	if manifests[2].Metadata.Slug != "handler.git" {
+		t.Fatalf("expected third manifest to be handler.git, got %s", manifests[2].Metadata.Slug)
 	}
 }
 
@@ -787,9 +787,9 @@ func TestLoadFromDirReturnsErrorForMissingManifest(t *testing.T) {
 	}
 }
 
-func TestMainPathReturnsAbsolutePathForDetector(t *testing.T) {
+func TestMainPathReturnsAbsolutePathForHandler(t *testing.T) {
 	root := t.TempDir()
-	createPluginYAML(t, root, "tools/test", toolDetectorManifest("Test Detector", "test", "tools"))
+	createPluginYAML(t, root, "tools/test", toolHandlerManifest("Test Handler", "test", "tools"))
 
 	pluginDir := filepath.Join(root, "tools", "test")
 	mf, err := LoadFromDir(pluginDir)
@@ -847,7 +847,7 @@ func TestMainPathReturnsErrorForAdapter(t *testing.T) {
 
 func TestRelativeMainPathReturnsRelativePath(t *testing.T) {
 	root := t.TempDir()
-	createPluginYAML(t, root, "tools/test", toolDetectorManifest("Test", "test", "tools"))
+	createPluginYAML(t, root, "tools/test", toolHandlerManifest("Test", "test", "tools"))
 
 	pluginDir := filepath.Join(root, "tools", "test")
 	mf, err := LoadFromDir(pluginDir)
@@ -901,10 +901,10 @@ spec:
     transport: process`
 }
 
-func toolDetectorManifest(name, slug, catalog string) string {
+func toolHandlerManifest(name, slug, catalog string) string {
 	return `apiVersion: nap.nupi.ai/v1alpha1
 kind: Plugin
-type: tool-detector
+type: tool-handler
 metadata:
   name: ` + name + `
   slug: ` + slug + `
