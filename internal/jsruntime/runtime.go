@@ -74,7 +74,6 @@ type PluginMetadata struct {
 	HasDetectIdleState bool `json:"hasDetectIdleState"`
 	HasClean           bool `json:"hasClean"`
 	HasExtractEvents   bool `json:"hasExtractEvents"`
-	HasSummarize       bool `json:"hasSummarize"`
 }
 
 // HasFunction checks if a function exists in the plugin metadata.
@@ -90,8 +89,6 @@ func (m *PluginMetadata) HasFunction(name string) bool {
 		return m.HasClean
 	case "extractEvents":
 		return m.HasExtractEvents
-	case "summarize":
-		return m.HasSummarize
 	default:
 		return false
 	}

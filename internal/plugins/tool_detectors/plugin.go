@@ -22,7 +22,6 @@ type JSPlugin struct {
 	HasDetectIdleState bool `json:"-"`
 	HasClean           bool `json:"-"`
 	HasExtractEvents   bool `json:"-"`
-	HasSummarize       bool `json:"-"`
 }
 
 // LoadPlugin loads a JavaScript plugin from file.
@@ -71,7 +70,6 @@ func LoadPluginWithRuntime(ctx context.Context, rt *jsruntime.Runtime, filePath 
 		HasDetectIdleState: meta.HasDetectIdleState,
 		HasClean:           meta.HasClean,
 		HasExtractEvents:   meta.HasExtractEvents,
-		HasSummarize:       meta.HasSummarize,
 	}
 
 	// Read source for reference (may be needed for logging/debugging)
@@ -240,47 +238,6 @@ func (p *JSPlugin) ExtractEvents(ctx context.Context, rt *jsruntime.Runtime, out
 	}
 
 	return parseEvents(result)
-}
-
-// Summarize calls the plugin's summarize function for long outputs.
-// Returns the original output if summarize is not implemented.
-func (p *JSPlugin) Summarize(ctx context.Context, rt *jsruntime.Runtime, output string) (string, error) {
-	if !p.HasSummarize {
-		return output, nil // return original if not implemented
-	}
-
-	if rt == nil {
-		return output, fmt.Errorf("tool detector %s: jsruntime not available", p.Name)
-	}
-
-	const timeout = 2 * time.Second
-
-	callCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	result, err := rt.Call(callCtx, p.FilePath, "summarize", output)
-	if err != nil {
-		// If plugin not loaded, try to reload and retry once
-		if jsruntime.IsPluginNotLoadedError(err) {
-			if reloadErr := p.reload(ctx, rt); reloadErr != nil {
-				return output, fmt.Errorf("tool detector %s: reload failed: %w", p.Name, reloadErr)
-			}
-			// Create fresh context for retry (original may be expired)
-			retryCtx, retryCancel := context.WithTimeout(ctx, timeout)
-			defer retryCancel()
-			result, err = rt.Call(retryCtx, p.FilePath, "summarize", output)
-			if err != nil {
-				return output, fmt.Errorf("tool detector %s (after reload): %w", p.Name, err)
-			}
-		} else {
-			return output, fmt.Errorf("tool detector %s: %w", p.Name, err)
-		}
-	}
-
-	if s, ok := result.(string); ok {
-		return s, nil
-	}
-	return output, nil
 }
 
 // Process runs the full tool processing pipeline: detectIdleState, clean, extractEvents.
