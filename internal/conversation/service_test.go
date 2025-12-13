@@ -595,3 +595,250 @@ func TestConversationSessionlessIgnoredWithoutGlobalStore(t *testing.T) {
 		// Expected: no prompt published
 	}
 }
+
+func TestConversation_SessionOutputRateLimiting(t *testing.T) {
+	bus := eventbus.New()
+	svc := NewService(bus)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("start conversation: %v", err)
+	}
+	defer svc.Shutdown(context.Background())
+
+	promptSub := bus.Subscribe(eventbus.TopicConversationPrompt)
+	defer promptSub.Close()
+
+	// First notable event should trigger prompt
+	bus.Publish(context.Background(), eventbus.Envelope{
+		Topic:  eventbus.TopicPipelineCleaned,
+		Source: eventbus.SourceContentPipeline,
+		Payload: eventbus.PipelineMessageEvent{
+			SessionID:   "rate-limit-test",
+			Origin:      eventbus.OriginTool,
+			Text:        "first notable output",
+			Annotations: map[string]string{"notable": "true"},
+		},
+	})
+
+	select {
+	case env := <-promptSub.C():
+		prompt := env.Payload.(eventbus.ConversationPromptEvent)
+		if prompt.Metadata["event_type"] != "session_output" {
+			t.Fatalf("expected event_type=session_output, got %q", prompt.Metadata["event_type"])
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timeout waiting for first prompt (should trigger)")
+	}
+
+	// Second notable event immediately after should be blocked (within 2s)
+	bus.Publish(context.Background(), eventbus.Envelope{
+		Topic:  eventbus.TopicPipelineCleaned,
+		Source: eventbus.SourceContentPipeline,
+		Payload: eventbus.PipelineMessageEvent{
+			SessionID:   "rate-limit-test",
+			Origin:      eventbus.OriginTool,
+			Text:        "second notable output",
+			Annotations: map[string]string{"notable": "true"},
+		},
+	})
+
+	select {
+	case <-promptSub.C():
+		t.Fatal("second prompt should be blocked by rate limiting")
+	case <-time.After(200 * time.Millisecond):
+		// Expected: no prompt due to rate limiting
+	}
+
+	// Manually set last output time to past to simulate >2s elapsed
+	svc.lastSessionOutput.Store("rate-limit-test", time.Now().Add(-3*time.Second))
+
+	// Third notable event after rate limit should trigger
+	bus.Publish(context.Background(), eventbus.Envelope{
+		Topic:  eventbus.TopicPipelineCleaned,
+		Source: eventbus.SourceContentPipeline,
+		Payload: eventbus.PipelineMessageEvent{
+			SessionID:   "rate-limit-test",
+			Origin:      eventbus.OriginTool,
+			Text:        "third notable output",
+			Annotations: map[string]string{"notable": "true"},
+		},
+	})
+
+	select {
+	case env := <-promptSub.C():
+		prompt := env.Payload.(eventbus.ConversationPromptEvent)
+		if prompt.NewMessage.Text != "third notable output" {
+			t.Fatalf("expected third output text, got %q", prompt.NewMessage.Text)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timeout waiting for third prompt (should trigger after rate limit)")
+	}
+}
+
+func TestConversation_NotableTriggersAI(t *testing.T) {
+	bus := eventbus.New()
+	svc := NewService(bus)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("start conversation: %v", err)
+	}
+	defer svc.Shutdown(context.Background())
+
+	promptSub := bus.Subscribe(eventbus.TopicConversationPrompt)
+	defer promptSub.Close()
+
+	// Message without notable=true should NOT trigger prompt (unless from user)
+	bus.Publish(context.Background(), eventbus.Envelope{
+		Topic:  eventbus.TopicPipelineCleaned,
+		Source: eventbus.SourceContentPipeline,
+		Payload: eventbus.PipelineMessageEvent{
+			SessionID: "notable-test",
+			Origin:    eventbus.OriginTool,
+			Text:      "regular output without notable",
+		},
+	})
+
+	select {
+	case <-promptSub.C():
+		t.Fatal("should not publish prompt for non-notable tool output")
+	case <-time.After(100 * time.Millisecond):
+		// Expected: no prompt
+	}
+
+	// Message with notable=true SHOULD trigger prompt
+	bus.Publish(context.Background(), eventbus.Envelope{
+		Topic:  eventbus.TopicPipelineCleaned,
+		Source: eventbus.SourceContentPipeline,
+		Payload: eventbus.PipelineMessageEvent{
+			SessionID:   "notable-test",
+			Origin:      eventbus.OriginTool,
+			Text:        "error: compilation failed",
+			Annotations: map[string]string{"notable": "true", "severity": "error"},
+		},
+	})
+
+	select {
+	case env := <-promptSub.C():
+		prompt := env.Payload.(eventbus.ConversationPromptEvent)
+		if prompt.Metadata["event_type"] != "session_output" {
+			t.Fatalf("expected event_type=session_output, got %q", prompt.Metadata["event_type"])
+		}
+		if prompt.Metadata["notable"] != "true" {
+			t.Fatalf("expected notable=true in metadata")
+		}
+		if prompt.Metadata["severity"] != "error" {
+			t.Fatalf("expected severity=error in metadata")
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timeout waiting for notable prompt")
+	}
+}
+
+func TestConversation_SessionOutputMetadataPropagation(t *testing.T) {
+	bus := eventbus.New()
+	svc := NewService(bus)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("start conversation: %v", err)
+	}
+	defer svc.Shutdown(context.Background())
+
+	promptSub := bus.Subscribe(eventbus.TopicConversationPrompt)
+	defer promptSub.Close()
+
+	// Send notable message with full annotations
+	bus.Publish(context.Background(), eventbus.Envelope{
+		Topic:  eventbus.TopicPipelineCleaned,
+		Source: eventbus.SourceContentPipeline,
+		Payload: eventbus.PipelineMessageEvent{
+			SessionID: "metadata-test",
+			Origin:    eventbus.OriginTool,
+			Text:      "tool output text",
+			Annotations: map[string]string{
+				"notable":      "true",
+				"tool":         "TestTool",
+				"tool_id":      "test-tool",
+				"tool_changed": "true",
+				"idle_state":   "prompt",
+				"waiting_for":  "user_input",
+			},
+		},
+	})
+
+	select {
+	case env := <-promptSub.C():
+		prompt := env.Payload.(eventbus.ConversationPromptEvent)
+
+		// Verify event_type
+		if prompt.Metadata["event_type"] != "session_output" {
+			t.Errorf("expected event_type=session_output, got %q", prompt.Metadata["event_type"])
+		}
+
+		// Verify session_output field contains the turn text
+		if prompt.Metadata["session_output"] != "tool output text" {
+			t.Errorf("expected session_output=%q, got %q", "tool output text", prompt.Metadata["session_output"])
+		}
+
+		// Verify tool_changed propagation
+		if prompt.Metadata["tool_changed"] != "true" {
+			t.Errorf("expected tool_changed=true, got %q", prompt.Metadata["tool_changed"])
+		}
+
+		// Verify other metadata propagation
+		if prompt.Metadata["tool"] != "TestTool" {
+			t.Errorf("expected tool=TestTool, got %q", prompt.Metadata["tool"])
+		}
+		if prompt.Metadata["tool_id"] != "test-tool" {
+			t.Errorf("expected tool_id=test-tool, got %q", prompt.Metadata["tool_id"])
+		}
+		if prompt.Metadata["idle_state"] != "prompt" {
+			t.Errorf("expected idle_state=prompt, got %q", prompt.Metadata["idle_state"])
+		}
+		if prompt.Metadata["waiting_for"] != "user_input" {
+			t.Errorf("expected waiting_for=user_input, got %q", prompt.Metadata["waiting_for"])
+		}
+
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timeout waiting for prompt")
+	}
+}
+
+func TestConversation_RateLimitingCleanup(t *testing.T) {
+	bus := eventbus.New()
+	svc := NewService(bus)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("start conversation: %v", err)
+	}
+	defer svc.Shutdown(context.Background())
+
+	sessionID := "cleanup-test"
+
+	// Add a turn and trigger rate limiting
+	svc.lastSessionOutput.Store(sessionID, time.Now())
+
+	// Verify the entry exists
+	if _, ok := svc.lastSessionOutput.Load(sessionID); !ok {
+		t.Fatal("expected lastSessionOutput entry to exist")
+	}
+
+	// Clear session should remove the rate limiting entry
+	svc.clearSession(sessionID)
+
+	// Verify the entry is removed
+	if _, ok := svc.lastSessionOutput.Load(sessionID); ok {
+		t.Fatal("expected lastSessionOutput entry to be deleted after clearSession")
+	}
+}

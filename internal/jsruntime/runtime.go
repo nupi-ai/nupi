@@ -70,6 +70,31 @@ type PluginMetadata struct {
 	Icon         string   `json:"icon,omitempty"`
 	HasTransform bool     `json:"hasTransform"`
 	HasDetect    bool     `json:"hasDetect"`
+	// Tool processor capabilities (SESSION_OUTPUT flow)
+	HasDetectIdleState bool `json:"hasDetectIdleState"`
+	HasClean           bool `json:"hasClean"`
+	HasExtractEvents   bool `json:"hasExtractEvents"`
+	HasSummarize       bool `json:"hasSummarize"`
+}
+
+// HasFunction checks if a function exists in the plugin metadata.
+func (m *PluginMetadata) HasFunction(name string) bool {
+	switch name {
+	case "transform":
+		return m.HasTransform
+	case "detect":
+		return m.HasDetect
+	case "detectIdleState":
+		return m.HasDetectIdleState
+	case "clean":
+		return m.HasClean
+	case "extractEvents":
+		return m.HasExtractEvents
+	case "summarize":
+		return m.HasSummarize
+	default:
+		return false
+	}
 }
 
 // LoadPluginOptions configures plugin loading behavior.

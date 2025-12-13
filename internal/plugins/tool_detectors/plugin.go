@@ -11,13 +11,18 @@ import (
 	"github.com/nupi-ai/nupi/internal/jsruntime"
 )
 
-// JSPlugin represents a JavaScript plugin for tool detection.
+// JSPlugin represents a JavaScript plugin for tool detection and processing.
 type JSPlugin struct {
 	Name     string   `json:"name"`
 	Commands []string `json:"commands"`
 	Icon     string   `json:"icon,omitempty"`
 	FilePath string   `json:"-"`
 	Source   string   `json:"-"`
+	// Capability flags - set during load based on exported functions
+	HasDetectIdleState bool `json:"-"`
+	HasClean           bool `json:"-"`
+	HasExtractEvents   bool `json:"-"`
+	HasSummarize       bool `json:"-"`
 }
 
 // LoadPlugin loads a JavaScript plugin from file.
@@ -59,10 +64,14 @@ func LoadPluginWithRuntime(ctx context.Context, rt *jsruntime.Runtime, filePath 
 	}
 
 	plugin := &JSPlugin{
-		FilePath: filePath,
-		Name:     meta.Name,
-		Commands: meta.Commands,
-		Icon:     meta.Icon,
+		FilePath:           filePath,
+		Name:               meta.Name,
+		Commands:           meta.Commands,
+		Icon:               meta.Icon,
+		HasDetectIdleState: meta.HasDetectIdleState,
+		HasClean:           meta.HasClean,
+		HasExtractEvents:   meta.HasExtractEvents,
+		HasSummarize:       meta.HasSummarize,
 	}
 
 	// Read source for reference (may be needed for logging/debugging)
@@ -114,6 +123,241 @@ func (p *JSPlugin) callDetect(ctx context.Context, rt *jsruntime.Runtime, output
 	callCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
 	defer cancel()
 	return rt.Call(callCtx, p.FilePath, "detect", output)
+}
+
+// DetectIdleState calls the plugin's detectIdleState function.
+// Returns nil if function not implemented or tool is not idle.
+func (p *JSPlugin) DetectIdleState(ctx context.Context, rt *jsruntime.Runtime, buffer string) (*IdleState, error) {
+	if !p.HasDetectIdleState {
+		return nil, nil
+	}
+
+	if rt == nil {
+		return nil, fmt.Errorf("tool detector %s: jsruntime not available", p.Name)
+	}
+
+	const timeout = 100 * time.Millisecond // fast check
+
+	callCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	result, err := rt.Call(callCtx, p.FilePath, "detectIdleState", buffer)
+	if err != nil {
+		// If plugin not loaded, try to reload and retry once
+		if jsruntime.IsPluginNotLoadedError(err) {
+			if reloadErr := p.reload(ctx, rt); reloadErr != nil {
+				return nil, fmt.Errorf("tool detector %s: reload failed: %w", p.Name, reloadErr)
+			}
+			// Create fresh context for retry (original may be expired)
+			retryCtx, retryCancel := context.WithTimeout(ctx, timeout)
+			defer retryCancel()
+			result, err = rt.Call(retryCtx, p.FilePath, "detectIdleState", buffer)
+			if err != nil {
+				return nil, fmt.Errorf("tool detector %s (after reload): %w", p.Name, err)
+			}
+		} else {
+			return nil, fmt.Errorf("tool detector %s: %w", p.Name, err)
+		}
+	}
+
+	return parseIdleState(result)
+}
+
+// Clean calls the plugin's clean function if available.
+// Returns the original output if clean is not implemented.
+func (p *JSPlugin) Clean(ctx context.Context, rt *jsruntime.Runtime, output string) (string, error) {
+	if !p.HasClean {
+		return output, nil // passthrough if not implemented
+	}
+
+	if rt == nil {
+		return output, fmt.Errorf("tool detector %s: jsruntime not available", p.Name)
+	}
+
+	const timeout = 1 * time.Second
+
+	callCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	result, err := rt.Call(callCtx, p.FilePath, "clean", output)
+	if err != nil {
+		// If plugin not loaded, try to reload and retry once
+		if jsruntime.IsPluginNotLoadedError(err) {
+			if reloadErr := p.reload(ctx, rt); reloadErr != nil {
+				return output, fmt.Errorf("tool detector %s: reload failed: %w", p.Name, reloadErr)
+			}
+			// Create fresh context for retry (original may be expired)
+			retryCtx, retryCancel := context.WithTimeout(ctx, timeout)
+			defer retryCancel()
+			result, err = rt.Call(retryCtx, p.FilePath, "clean", output)
+			if err != nil {
+				return output, fmt.Errorf("tool detector %s (after reload): %w", p.Name, err)
+			}
+		} else {
+			return output, fmt.Errorf("tool detector %s: %w", p.Name, err)
+		}
+	}
+
+	if s, ok := result.(string); ok {
+		return s, nil
+	}
+	return output, nil
+}
+
+// ExtractEvents calls the plugin's extractEvents function if available.
+// Returns nil if not implemented.
+func (p *JSPlugin) ExtractEvents(ctx context.Context, rt *jsruntime.Runtime, output string) ([]Event, error) {
+	if !p.HasExtractEvents {
+		return nil, nil
+	}
+
+	if rt == nil {
+		return nil, fmt.Errorf("tool detector %s: jsruntime not available", p.Name)
+	}
+
+	const timeout = 2 * time.Second
+
+	callCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	result, err := rt.Call(callCtx, p.FilePath, "extractEvents", output)
+	if err != nil {
+		// If plugin not loaded, try to reload and retry once
+		if jsruntime.IsPluginNotLoadedError(err) {
+			if reloadErr := p.reload(ctx, rt); reloadErr != nil {
+				return nil, fmt.Errorf("tool detector %s: reload failed: %w", p.Name, reloadErr)
+			}
+			// Create fresh context for retry (original may be expired)
+			retryCtx, retryCancel := context.WithTimeout(ctx, timeout)
+			defer retryCancel()
+			result, err = rt.Call(retryCtx, p.FilePath, "extractEvents", output)
+			if err != nil {
+				return nil, fmt.Errorf("tool detector %s (after reload): %w", p.Name, err)
+			}
+		} else {
+			return nil, fmt.Errorf("tool detector %s: %w", p.Name, err)
+		}
+	}
+
+	return parseEvents(result)
+}
+
+// Summarize calls the plugin's summarize function for long outputs.
+// Returns the original output if summarize is not implemented.
+func (p *JSPlugin) Summarize(ctx context.Context, rt *jsruntime.Runtime, output string) (string, error) {
+	if !p.HasSummarize {
+		return output, nil // return original if not implemented
+	}
+
+	if rt == nil {
+		return output, fmt.Errorf("tool detector %s: jsruntime not available", p.Name)
+	}
+
+	const timeout = 2 * time.Second
+
+	callCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	result, err := rt.Call(callCtx, p.FilePath, "summarize", output)
+	if err != nil {
+		// If plugin not loaded, try to reload and retry once
+		if jsruntime.IsPluginNotLoadedError(err) {
+			if reloadErr := p.reload(ctx, rt); reloadErr != nil {
+				return output, fmt.Errorf("tool detector %s: reload failed: %w", p.Name, reloadErr)
+			}
+			// Create fresh context for retry (original may be expired)
+			retryCtx, retryCancel := context.WithTimeout(ctx, timeout)
+			defer retryCancel()
+			result, err = rt.Call(retryCtx, p.FilePath, "summarize", output)
+			if err != nil {
+				return output, fmt.Errorf("tool detector %s (after reload): %w", p.Name, err)
+			}
+		} else {
+			return output, fmt.Errorf("tool detector %s: %w", p.Name, err)
+		}
+	}
+
+	if s, ok := result.(string); ok {
+		return s, nil
+	}
+	return output, nil
+}
+
+// Process runs the full tool processing pipeline: detectIdleState, clean, extractEvents.
+// Returns ProcessorResult with all gathered information.
+// This is a convenience method that combines all processing steps.
+func (p *JSPlugin) Process(ctx context.Context, rt *jsruntime.Runtime, buffer string) (*ProcessorResult, error) {
+	result := &ProcessorResult{
+		Cleaned: buffer,
+	}
+
+	// Detect idle state
+	idleState, err := p.DetectIdleState(ctx, rt, buffer)
+	if err != nil {
+		return nil, fmt.Errorf("detectIdleState: %w", err)
+	}
+	result.IdleState = idleState
+
+	// Clean output
+	cleaned, err := p.Clean(ctx, rt, buffer)
+	if err != nil {
+		return nil, fmt.Errorf("clean: %w", err)
+	}
+	result.Cleaned = cleaned
+
+	// Extract events
+	events, err := p.ExtractEvents(ctx, rt, cleaned)
+	if err != nil {
+		return nil, fmt.Errorf("extractEvents: %w", err)
+	}
+	result.Events = events
+
+	return result, nil
+}
+
+// parseIdleState converts a JS result to IdleState.
+func parseIdleState(result any) (*IdleState, error) {
+	if result == nil {
+		return nil, nil
+	}
+
+	// Convert result to JSON and back to IdleState
+	data, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("marshal idle state: %w", err)
+	}
+
+	var state IdleState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return nil, fmt.Errorf("unmarshal idle state: %w", err)
+	}
+
+	// Return nil if not idle
+	if !state.IsIdle {
+		return nil, nil
+	}
+
+	return &state, nil
+}
+
+// parseEvents converts a JS result to []Event.
+func parseEvents(result any) ([]Event, error) {
+	if result == nil {
+		return nil, nil
+	}
+
+	// Convert result to JSON and back to []Event
+	data, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("marshal events: %w", err)
+	}
+
+	var events []Event
+	if err := json.Unmarshal(data, &events); err != nil {
+		return nil, fmt.Errorf("unmarshal events: %w", err)
+	}
+
+	return events, nil
 }
 
 // reload reloads the plugin into the runtime.

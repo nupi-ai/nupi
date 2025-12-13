@@ -30,6 +30,20 @@ func skipIfNoBun(t *testing.T) {
 	t.Setenv("NUPI_JS_RUNTIME", bunPath)
 }
 
+// waitForCondition polls until cond returns true or timeout expires.
+// Uses short polling interval (5ms) to minimize flakiness on slow CI.
+func waitForCondition(t *testing.T, timeout time.Duration, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timeout waiting for condition after %v", timeout)
+}
+
 func setHostScriptEnv(t *testing.T) {
 	t.Helper()
 	// Get the path to host.js relative to this test file
@@ -123,7 +137,11 @@ func TestContentPipelineTransformsOutput(t *testing.T) {
 		},
 	})
 
-	time.Sleep(50 * time.Millisecond)
+	// Wait for tool to be registered (poll instead of sleep for determinism)
+	waitForCondition(t, 500*time.Millisecond, func() bool {
+		_, ok := cp.toolBySession.Load("s1")
+		return ok
+	})
 
 	bus.Publish(context.Background(), eventbus.Envelope{
 		Topic:  eventbus.TopicSessionsOutput,
@@ -195,7 +213,11 @@ func TestContentPipelineEmitsErrors(t *testing.T) {
 		},
 	})
 
-	time.Sleep(50 * time.Millisecond)
+	// Wait for tool to be registered (poll instead of sleep for determinism)
+	waitForCondition(t, 500*time.Millisecond, func() bool {
+		_, ok := cp.toolBySession.Load("s2")
+		return ok
+	})
 
 	bus.Publish(context.Background(), eventbus.Envelope{
 		Topic:  eventbus.TopicSessionsOutput,
@@ -290,5 +312,261 @@ func TestContentPipelineHandlesTranscripts(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for cleaned transcript event")
+	}
+}
+
+func TestBufferOverflowAnnotation(t *testing.T) {
+	bus := eventbus.New()
+	cp := NewService(bus, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := cp.Start(ctx); err != nil {
+		t.Fatalf("start pipeline: %v", err)
+	}
+	defer cp.Shutdown(context.Background())
+
+	// Override the buffer with a small max size
+	smallBuf := NewOutputBufferWithOptions(WithMaxSize(100))
+	cp.buffers.Store("overflow-session", smallBuf)
+
+	cleanedSub := bus.Subscribe(eventbus.TopicPipelineCleaned)
+	defer cleanedSub.Close()
+
+	// Write more data than the buffer can hold
+	largeData := make([]byte, 200)
+	for i := range largeData {
+		largeData[i] = 'x'
+	}
+
+	bus.Publish(context.Background(), eventbus.Envelope{
+		Topic:  eventbus.TopicSessionsOutput,
+		Source: eventbus.SourceSessionManager,
+		Payload: eventbus.SessionOutputEvent{
+			SessionID: "overflow-session",
+			Sequence:  1,
+			Data:      largeData,
+		},
+	})
+
+	// Wait for idle timeout to trigger flush
+	select {
+	case env := <-cleanedSub.C():
+		msg, ok := env.Payload.(eventbus.PipelineMessageEvent)
+		if !ok {
+			t.Fatalf("unexpected payload type %T", env.Payload)
+		}
+		if msg.Annotations["buffer_truncated"] != "true" {
+			t.Errorf("expected buffer_truncated=true, got %v", msg.Annotations["buffer_truncated"])
+		}
+		// buffer_max_size should reflect the actual buffer's configured maxSize
+		if msg.Annotations["buffer_max_size"] != "100" {
+			t.Errorf("expected buffer_max_size=100, got %v", msg.Annotations["buffer_max_size"])
+		}
+		// Content should be truncated to last 100 bytes
+		if len(msg.Text) != 100 {
+			t.Errorf("expected text length 100, got %d", len(msg.Text))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for cleaned event with overflow annotations")
+	}
+}
+
+func TestToolChangeFlushesBuffer(t *testing.T) {
+	bus := eventbus.New()
+	cp := NewService(bus, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := cp.Start(ctx); err != nil {
+		t.Fatalf("start pipeline: %v", err)
+	}
+	defer cp.Shutdown(context.Background())
+
+	cleanedSub := bus.Subscribe(eventbus.TopicPipelineCleaned)
+	defer cleanedSub.Close()
+
+	// Set initial tool
+	bus.Publish(context.Background(), eventbus.Envelope{
+		Topic:  eventbus.TopicSessionsTool,
+		Source: eventbus.SourcePluginService,
+		Payload: eventbus.SessionToolEvent{
+			SessionID: "tool-change-session",
+			ToolID:    "tool-a",
+			ToolName:  "Tool A",
+		},
+	})
+
+	// Wait for tool to be registered (poll instead of sleep for determinism)
+	waitForCondition(t, 500*time.Millisecond, func() bool {
+		_, ok := cp.toolBySession.Load("tool-change-session")
+		return ok
+	})
+
+	// Write some output with Sequence and Mode
+	bus.Publish(context.Background(), eventbus.Envelope{
+		Topic:  eventbus.TopicSessionsOutput,
+		Source: eventbus.SourceSessionManager,
+		Payload: eventbus.SessionOutputEvent{
+			SessionID: "tool-change-session",
+			Sequence:  42,
+			Mode:      "test-mode",
+			Data:      []byte("output from tool A"),
+		},
+	})
+
+	// Wait for output to be buffered (poll instead of sleep for determinism)
+	waitForCondition(t, 500*time.Millisecond, func() bool {
+		if val, ok := cp.buffers.Load("tool-change-session"); ok {
+			buf := val.(*OutputBuffer)
+			return !buf.IsEmpty()
+		}
+		return false
+	})
+
+	// Change tool - should trigger flush of buffered content
+	bus.Publish(context.Background(), eventbus.Envelope{
+		Topic:  eventbus.TopicSessionsTool,
+		Source: eventbus.SourcePluginService,
+		Payload: eventbus.SessionToolEvent{
+			SessionID: "tool-change-session",
+			ToolID:    "tool-b",
+			ToolName:  "Tool B",
+		},
+	})
+
+	// Should get the flushed content from tool A
+	select {
+	case env := <-cleanedSub.C():
+		msg, ok := env.Payload.(eventbus.PipelineMessageEvent)
+		if !ok {
+			t.Fatalf("unexpected payload type %T", env.Payload)
+		}
+		// Verify Origin is set correctly - tool output must have OriginTool
+		if msg.Origin != eventbus.OriginTool {
+			t.Errorf("expected Origin=OriginTool, got %q", msg.Origin)
+		}
+		if msg.Annotations["tool_changed"] != "true" {
+			t.Errorf("expected tool_changed=true, got %v", msg.Annotations["tool_changed"])
+		}
+		if msg.Annotations["idle_state"] != "tool_change" {
+			t.Errorf("expected idle_state=tool_change, got %v", msg.Annotations["idle_state"])
+		}
+		if msg.Annotations["tool_id"] != "tool-a" {
+			t.Errorf("expected tool_id=tool-a, got %v", msg.Annotations["tool_id"])
+		}
+		if msg.Annotations["tool"] != "Tool A" {
+			t.Errorf("expected tool=Tool A, got %v", msg.Annotations["tool"])
+		}
+		if msg.Text != "output from tool A" {
+			t.Errorf("expected 'output from tool A', got %q", msg.Text)
+		}
+		// Verify Sequence propagation from last SessionOutputEvent
+		if msg.Sequence != 42 {
+			t.Errorf("expected Sequence=42 (from last SessionOutputEvent), got %d", msg.Sequence)
+		}
+		// Verify Mode propagation from last SessionOutputEvent (stored in annotations)
+		if msg.Annotations["mode"] != "test-mode" {
+			t.Errorf("expected mode=test-mode in annotations, got %q", msg.Annotations["mode"])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for tool change flush event")
+	}
+}
+
+func TestIdleTimeoutAnnotation(t *testing.T) {
+	bus := eventbus.New()
+	cp := NewService(bus, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := cp.Start(ctx); err != nil {
+		t.Fatalf("start pipeline: %v", err)
+	}
+	defer cp.Shutdown(context.Background())
+
+	cleanedSub := bus.Subscribe(eventbus.TopicPipelineCleaned)
+	defer cleanedSub.Close()
+
+	// Set tool
+	bus.Publish(context.Background(), eventbus.Envelope{
+		Topic:  eventbus.TopicSessionsTool,
+		Source: eventbus.SourcePluginService,
+		Payload: eventbus.SessionToolEvent{
+			SessionID: "idle-session",
+			ToolID:    "test-tool",
+			ToolName:  "Test Tool",
+		},
+	})
+
+	// Wait for tool to be registered (poll instead of sleep for determinism)
+	waitForCondition(t, 500*time.Millisecond, func() bool {
+		_, ok := cp.toolBySession.Load("idle-session")
+		return ok
+	})
+
+	// Write output
+	bus.Publish(context.Background(), eventbus.Envelope{
+		Topic:  eventbus.TopicSessionsOutput,
+		Source: eventbus.SourceSessionManager,
+		Payload: eventbus.SessionOutputEvent{
+			SessionID: "idle-session",
+			Sequence:  1,
+			Data:      []byte("some output"),
+		},
+	})
+
+	// Wait for idle timeout (DefaultIdleTimeout is 500ms)
+	select {
+	case env := <-cleanedSub.C():
+		msg, ok := env.Payload.(eventbus.PipelineMessageEvent)
+		if !ok {
+			t.Fatalf("unexpected payload type %T", env.Payload)
+		}
+		if msg.Annotations["idle_state"] != "timeout" {
+			t.Errorf("expected idle_state=timeout, got %v", msg.Annotations["idle_state"])
+		}
+		if msg.Text != "some output" {
+			t.Errorf("expected 'some output', got %q", msg.Text)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for idle flush event")
+	}
+}
+
+func TestEmptySessionIDIgnored(t *testing.T) {
+	// Test the guard directly without event bus for fully deterministic behavior
+	bus := eventbus.New()
+	cp := NewService(bus, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := cp.Start(ctx); err != nil {
+		t.Fatalf("start pipeline: %v", err)
+	}
+	defer cp.Shutdown(context.Background())
+
+	// Call handleSessionOutput directly with empty SessionID
+	// This is deterministic - no async event bus involved
+	cp.handleSessionOutput(ctx, eventbus.SessionOutputEvent{
+		SessionID: "", // Empty!
+		Sequence:  1,
+		Data:      []byte("should be ignored"),
+	})
+
+	// Verify immediately: no buffer was created for empty session ID
+	_, exists := cp.buffers.Load("")
+	if exists {
+		t.Fatal("buffer should not be created for empty SessionID")
+	}
+
+	// Verify no lastSeenMeta was stored for empty session ID
+	_, metaExists := cp.lastSeenBySession.Load("")
+	if metaExists {
+		t.Fatal("lastSeenMeta should not be stored for empty SessionID")
 	}
 }
