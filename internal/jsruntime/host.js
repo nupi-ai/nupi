@@ -70,6 +70,11 @@ async function loadPlugin(path, options = {}) {
     const exports_info = {
       hasTransform: typeof pluginExports.transform === 'function',
       hasDetect: typeof pluginExports.detect === 'function',
+      // Tool processor capabilities (SESSION_OUTPUT flow)
+      hasDetectIdleState: typeof pluginExports.detectIdleState === 'function',
+      hasClean: typeof pluginExports.clean === 'function',
+      hasExtractEvents: typeof pluginExports.extractEvents === 'function',
+      hasSummarize: typeof pluginExports.summarize === 'function',
     };
 
     for (const fnName of requireFunctions) {
@@ -108,9 +113,10 @@ async function callFunction(pluginPath, fnName, args, timeoutMs) {
   }
 
   // Call the function with provided arguments and timeout
+  // Bind `this` to plugin.exports so methods can call other methods (e.g., this.clean())
   const timeout = timeoutMs || DEFAULT_CALL_TIMEOUT_MS;
   const result = await withTimeout(
-    fn(...(args || [])),
+    fn.call(plugin.exports, ...(args || [])),
     timeout,
     `Plugin ${pluginPath}.${fnName} timed out`
   );

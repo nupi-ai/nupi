@@ -54,6 +54,9 @@ type Service struct {
 	detach    map[string]*time.Timer
 	toolCache map[string]string // sessionID -> current tool name
 
+	// Rate limiting for SESSION_OUTPUT events
+	lastSessionOutput sync.Map // sessionID -> time.Time
+
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 	subs   []*eventbus.Subscription
@@ -67,6 +70,9 @@ const (
 	maxMetadataKeyRunes   = 64
 	maxMetadataValueRunes = 512
 	maxMetadataTotalBytes = 8192
+
+	// Rate limiting for SESSION_OUTPUT events
+	sessionOutputMinInterval = 2 * time.Second
 )
 
 // NewService creates a conversation service bound to the provided bus.
@@ -302,6 +308,24 @@ func (s *Service) handlePipelineMessage(ts time.Time, msg eventbus.PipelineMessa
 	meta := newMetadataAccumulator(nil)
 	meta.merge(msg.Annotations)
 
+	// Determine event type BEFORE creating turn (to avoid mutating Meta after it's in history)
+	shouldTriggerAI := false
+	eventType := "user_intent"
+
+	if msg.Origin == eventbus.OriginUser {
+		shouldTriggerAI = true
+		eventType = "user_intent"
+	} else if msg.Annotations["notable"] == "true" {
+		// Tool output marked as notable by content pipeline
+		// Note: rate limiting check is deferred until after we have sessionID context
+		eventType = "session_output"
+	}
+
+	// Set event_type in meta BEFORE turn is added to history (prevents race condition)
+	if shouldTriggerAI || msg.Annotations["notable"] == "true" {
+		meta.merge(map[string]string{"event_type": eventType})
+	}
+
 	turn := eventbus.ConversationTurn{
 		Origin: msg.Origin,
 		Text:   msg.Text,
@@ -323,6 +347,11 @@ func (s *Service) handlePipelineMessage(ts time.Time, msg eventbus.PipelineMessa
 
 	s.cancelDetachCleanup(msg.SessionID)
 
+	// Check rate limiting for session_output (needs sessionID, so done here)
+	if eventType == "session_output" {
+		shouldTriggerAI = s.shouldTriggerSessionOutput(msg.SessionID)
+	}
+
 	var contextSnapshot []eventbus.ConversationTurn
 
 	s.mu.Lock()
@@ -337,9 +366,25 @@ func (s *Service) handlePipelineMessage(ts time.Time, msg eventbus.PipelineMessa
 	s.sessions[msg.SessionID] = history
 	s.mu.Unlock()
 
-	if msg.Origin == eventbus.OriginUser {
+	if shouldTriggerAI {
 		s.publishPrompt(msg.SessionID, contextSnapshot, turn)
 	}
+}
+
+// shouldTriggerSessionOutput checks rate limiting for SESSION_OUTPUT events.
+func (s *Service) shouldTriggerSessionOutput(sessionID string) bool {
+	now := time.Now()
+
+	if last, ok := s.lastSessionOutput.Load(sessionID); ok {
+		if lastTime, ok := last.(time.Time); ok {
+			if now.Sub(lastTime) < sessionOutputMinInterval {
+				return false // Too soon
+			}
+		}
+	}
+
+	s.lastSessionOutput.Store(sessionID, now)
+	return true
 }
 
 // validEventTypes are the event types supported by the prompts engine.
@@ -369,6 +414,13 @@ func (s *Service) publishPrompt(sessionID string, ctxTurns []eventbus.Conversati
 		case "input_source", "mode", "sessionless", "adapter", "language",
 			"model", "provider", "priority", "context_window":
 			metadata[key] = value
+		// SESSION_OUTPUT specific metadata (idle detection, events, buffer status)
+		case "notable", "idle_state", "waiting_for", "prompt_text",
+			"event_count", "event_title", "event_details", "event_action",
+			"summarized", "original_length",
+			"buffer_truncated", "buffer_max_size",
+			"tool_changed":
+			metadata[key] = value
 		}
 	}
 
@@ -391,6 +443,11 @@ func (s *Service) publishPrompt(sessionID string, ctxTurns []eventbus.Conversati
 		if !validEventTypes[eventType] {
 			// Invalid event_type, reset to default
 			metadata["event_type"] = "user_intent"
+		}
+		// For session_output events, populate session_output field with the turn text
+		// This is what the prompts engine template expects via {{.session_output}}
+		if eventType == "session_output" {
+			metadata["session_output"] = newTurn.Text
 		}
 	} else {
 		metadata["event_type"] = "user_intent"
@@ -428,6 +485,9 @@ func (s *Service) clearSession(sessionID string) {
 		delete(s.detach, sessionID)
 	}
 	s.mu.Unlock()
+
+	// Clean up rate limiting entry to prevent memory leaks
+	s.lastSessionOutput.Delete(sessionID)
 }
 
 // clearToolCache removes just the tool cache for a session without affecting

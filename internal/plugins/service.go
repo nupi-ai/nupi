@@ -21,6 +21,9 @@ type Service struct {
 	pipelineIdx map[string]*pipelinecleaners.PipelinePlugin
 	pipelineMu  sync.RWMutex
 
+	toolDetectorIdx map[string]*tooldetectors.JSPlugin // tool name -> plugin
+	toolDetectorMu  sync.RWMutex
+
 	supervisedRT   *jsruntime.SupervisedRuntime
 	supervisedRTMu sync.RWMutex
 
@@ -32,8 +35,9 @@ type Service struct {
 func NewService(instanceDir string) *Service {
 	pluginDir := filepath.Join(instanceDir, "plugins")
 	return &Service{
-		pluginDir:   pluginDir,
-		pipelineIdx: make(map[string]*pipelinecleaners.PipelinePlugin),
+		pluginDir:       pluginDir,
+		pipelineIdx:     make(map[string]*pipelinecleaners.PipelinePlugin),
+		toolDetectorIdx: make(map[string]*tooldetectors.JSPlugin),
 	}
 }
 
@@ -130,6 +134,90 @@ func (s *Service) PipelinePluginFor(name string) (*pipelinecleaners.PipelinePlug
 	return plugin, ok
 }
 
+// LoadToolDetectorPlugins loads all tool detector plugins into memory.
+// This enables the content pipeline to use tool processor methods like
+// DetectIdleState, Clean, ExtractEvents, and Summarize.
+func (s *Service) LoadToolDetectorPlugins() error {
+	manifests, warnings := manifest.DiscoverWithWarnings(s.pluginDir)
+	s.setWarnings(warnings)
+	return s.loadToolDetectorPlugins(manifests)
+}
+
+func (s *Service) loadToolDetectorPlugins(manifests []*manifest.Manifest) error {
+	index := make(map[string]*tooldetectors.JSPlugin)
+
+	rt := s.runtime()
+
+	for _, mf := range manifests {
+		if mf.Type != manifest.PluginTypeToolDetector {
+			continue
+		}
+
+		mainPath, err := mf.MainPath()
+		if err != nil {
+			log.Printf("[Plugins] skip tool detector %s: %v", mf.Dir, err)
+			continue
+		}
+
+		var plugin *tooldetectors.JSPlugin
+		if rt != nil {
+			plugin, err = tooldetectors.LoadPluginWithRuntime(context.Background(), rt, mainPath)
+		} else {
+			plugin, err = tooldetectors.LoadPlugin(mainPath)
+		}
+		if err != nil {
+			log.Printf("[Plugins] skip tool detector %s: %v", mainPath, err)
+			continue
+		}
+
+		if plugin.Name == "" && strings.TrimSpace(mf.Metadata.Name) != "" {
+			plugin.Name = mf.Metadata.Name
+		}
+
+		// Index by plugin name and commands
+		keys := []string{plugin.Name}
+		keys = append(keys, plugin.Commands...)
+		if len(keys) == 0 {
+			keys = append(keys, filepath.Base(mf.Dir))
+		}
+
+		for _, key := range keys {
+			key = strings.TrimSpace(strings.ToLower(key))
+			if key == "" {
+				continue
+			}
+			index[key] = plugin
+		}
+	}
+
+	s.toolDetectorMu.Lock()
+	s.toolDetectorIdx = index
+	s.toolDetectorMu.Unlock()
+
+	log.Printf("[Plugins] Loaded %d tool detector plugins", len(index))
+	return nil
+}
+
+// ToolDetectorPluginFor returns a tool detector plugin matching the supplied tool name.
+// The plugin can be used for idle detection, cleaning, event extraction, and summarization.
+func (s *Service) ToolDetectorPluginFor(name string) (*tooldetectors.JSPlugin, bool) {
+	s.toolDetectorMu.RLock()
+	defer s.toolDetectorMu.RUnlock()
+
+	if len(s.toolDetectorIdx) == 0 {
+		return nil, false
+	}
+
+	key := strings.TrimSpace(strings.ToLower(name))
+	if key != "" {
+		if plugin, ok := s.toolDetectorIdx[key]; ok {
+			return plugin, true
+		}
+	}
+
+	return nil, false
+}
+
 // GenerateIndex rebuilds the plugin detection index.
 func (s *Service) GenerateIndex() error {
 	manifests, warnings := manifest.DiscoverWithWarnings(s.pluginDir)
@@ -172,6 +260,10 @@ func (s *Service) Start(ctx context.Context) error {
 
 	if err := s.loadPipelinePlugins(manifests); err != nil {
 		log.Printf("[Plugins] pipeline load error: %v", err)
+	}
+
+	if err := s.loadToolDetectorPlugins(manifests); err != nil {
+		log.Printf("[Plugins] tool detector load error: %v", err)
 	}
 
 	// Use jsruntime-aware index generator when available
@@ -220,6 +312,9 @@ func (s *Service) startJSRuntime(ctx context.Context) error {
 		log.Printf("[Plugins] JS runtime restarted, reloading plugins...")
 		if err := s.LoadPipelinePlugins(); err != nil {
 			log.Printf("[Plugins] Failed to reload pipeline plugins after restart: %v", err)
+		}
+		if err := s.LoadToolDetectorPlugins(); err != nil {
+			log.Printf("[Plugins] Failed to reload tool detector plugins after restart: %v", err)
 		}
 		if err := s.GenerateIndex(); err != nil {
 			log.Printf("[Plugins] Failed to regenerate index after restart: %v", err)

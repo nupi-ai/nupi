@@ -42,6 +42,10 @@ type Service struct {
 	// Tool cache - tracks current tool per session for prompt context
 	toolCache map[string]string
 
+	// Smart session routing - tracks conversation context for session selection
+	conversationSession     string    // Last session that was discussed/targeted
+	conversationSessionTime time.Time // When it was last referenced
+
 	// Metrics - using atomic for thread-safe access
 	requestsTotal   uint64
 	requestsFailed  uint64
@@ -267,7 +271,72 @@ func (s *Service) clearToolCache(sessionID string) {
 	}
 	s.mu.Lock()
 	delete(s.toolCache, sessionID)
+	// Also clear conversation session if this was it
+	if s.conversationSession == sessionID {
+		s.conversationSession = ""
+	}
 	s.mu.Unlock()
+}
+
+// updateConversationSession tracks the session that was most recently referenced.
+// This helps with smart routing when the user speaks without specifying a session.
+func (s *Service) updateConversationSession(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	s.mu.Lock()
+	s.conversationSession = sessionID
+	s.conversationSessionTime = time.Now()
+	s.mu.Unlock()
+}
+
+// getConversationSession returns the most recently referenced session.
+// Returns empty if no session was referenced recently (within 5 minutes).
+func (s *Service) getConversationSession() string {
+	s.mu.RLock()
+	session := s.conversationSession
+	sessionTime := s.conversationSessionTime
+	s.mu.RUnlock()
+
+	// Consider session stale after 5 minutes of inactivity
+	if time.Since(sessionTime) > 5*time.Minute {
+		return ""
+	}
+	return session
+}
+
+// selectTargetSession determines which session to target for a prompt.
+// Uses smart routing based on:
+// 1. Explicit session ID from prompt
+// 2. Last conversation session (if recent)
+// 3. Single available session (if only one exists)
+// 4. Empty (AI will decide or clarify)
+func (s *Service) selectTargetSession(prompt eventbus.ConversationPromptEvent, provider SessionProvider) string {
+	// 1. If prompt already has sessionID, use it
+	if prompt.SessionID != "" {
+		return prompt.SessionID
+	}
+
+	// 2. Use last conversation session if recent
+	if lastSession := s.getConversationSession(); lastSession != "" {
+		// Verify session still exists
+		if provider != nil {
+			if err := provider.ValidateSession(lastSession); err == nil {
+				return lastSession
+			}
+		}
+	}
+
+	// 3. If only one session exists, use it
+	if provider != nil {
+		sessions := provider.ListSessionInfos()
+		if len(sessions) == 1 {
+			return sessions[0].ID
+		}
+	}
+
+	// 4. Return empty - AI will decide or ask for clarification
+	return ""
 }
 
 func (s *Service) consumeLifecycleEvents(ctx context.Context, sub *eventbus.Subscription) {
@@ -340,8 +409,8 @@ func (s *Service) handlePrompt(ctx context.Context, prompt eventbus.Conversation
 		return
 	}
 
-	// Execute the actions
-	s.executeActions(ctx, prompt, response, sessionProvider, commandExecutor)
+	// Execute the actions (pass targetSession from req for speak/clarify routing)
+	s.executeActions(ctx, prompt, response, sessionProvider, commandExecutor, req.SessionID)
 }
 
 func (s *Service) buildIntentRequest(prompt eventbus.ConversationPromptEvent, provider SessionProvider, engine PromptEngine) IntentRequest {
@@ -358,29 +427,41 @@ func (s *Service) buildIntentRequest(prompt eventbus.ConversationPromptEvent, pr
 		}
 	}
 
+	// Use smart session routing to determine target session
+	targetSession := s.selectTargetSession(prompt, provider)
+
 	// Extract current tool: check metadata first, then our cache, then session provider
 	var currentTool string
 	if tool, ok := prompt.Metadata["current_tool"]; ok {
 		currentTool = tool
-	} else if prompt.SessionID != "" {
+	} else if targetSession != "" {
 		// Check our local tool cache (updated by tool change events)
-		currentTool = s.getToolFromCache(prompt.SessionID)
+		currentTool = s.getToolFromCache(targetSession)
 	}
 	// Fallback to session provider if still empty
-	if currentTool == "" && provider != nil && prompt.SessionID != "" {
-		if info, found := provider.GetSessionInfo(prompt.SessionID); found {
+	if currentTool == "" && provider != nil && targetSession != "" {
+		if info, found := provider.GetSessionInfo(targetSession); found {
 			currentTool = info.Tool
 		}
 	}
 
 	req := IntentRequest{
 		PromptID:            prompt.PromptID,
-		SessionID:           prompt.SessionID,
+		SessionID:           targetSession,
 		EventType:           eventType,
 		Transcript:          prompt.NewMessage.Text,
 		ConversationHistory: prompt.Context,
 		CurrentTool:         currentTool,
 		Metadata:            prompt.Metadata,
+	}
+
+	// Add smart routing hint to metadata
+	if prompt.SessionID == "" && targetSession != "" {
+		if req.Metadata == nil {
+			req.Metadata = make(map[string]string)
+		}
+		req.Metadata["suggested_session"] = targetSession
+		req.Metadata["routing_hint"] = "conversation_context"
 	}
 
 	// Extract optional fields from metadata
@@ -403,7 +484,7 @@ func (s *Service) buildIntentRequest(prompt eventbus.ConversationPromptEvent, pr
 
 		buildReq := PromptBuildRequest{
 			EventType:             eventType,
-			SessionID:             prompt.SessionID,
+			SessionID:             targetSession, // Use smart-routed session, not original prompt.SessionID
 			Transcript:            prompt.NewMessage.Text,
 			History:               prompt.Context,
 			AvailableSessions:     sessions,
@@ -424,7 +505,7 @@ func (s *Service) buildIntentRequest(prompt eventbus.ConversationPromptEvent, pr
 	return req
 }
 
-func (s *Service) executeActions(ctx context.Context, prompt eventbus.ConversationPromptEvent, response *IntentResponse, sessionProvider SessionProvider, commandExecutor CommandExecutor) {
+func (s *Service) executeActions(ctx context.Context, prompt eventbus.ConversationPromptEvent, response *IntentResponse, sessionProvider SessionProvider, commandExecutor CommandExecutor, targetSession string) {
 	if response == nil || len(response.Actions) == 0 {
 		log.Printf("[IntentRouter] No actions from adapter for prompt %s", prompt.PromptID)
 		// Publish acknowledgment so UI knows the prompt was processed
@@ -440,10 +521,10 @@ func (s *Service) executeActions(ctx context.Context, prompt eventbus.Conversati
 			s.executeCommand(ctx, prompt, action, response, sessionProvider, commandExecutor)
 
 		case ActionSpeak:
-			s.executeSpeak(ctx, prompt, action)
+			s.executeSpeak(ctx, prompt, action, targetSession)
 
 		case ActionClarify:
-			s.executeClarify(ctx, prompt, action)
+			s.executeClarify(ctx, prompt, action, targetSession)
 
 		case ActionNoop:
 			log.Printf("[IntentRouter] Noop action for prompt %s", prompt.PromptID)
@@ -489,6 +570,9 @@ func (s *Service) executeCommand(ctx context.Context, prompt eventbus.Conversati
 
 	atomic.AddUint64(&s.commandsQueued, 1)
 
+	// Update conversation session tracking - this session is now the context
+	s.updateConversationSession(sessionRef)
+
 	// Publish confirmation with command metadata
 	s.publishReply(prompt.SessionID, prompt.PromptID, "", []eventbus.ConversationAction{
 		{
@@ -508,19 +592,25 @@ func (s *Service) executeCommand(ctx context.Context, prompt eventbus.Conversati
 	log.Printf("[IntentRouter] Queued command for session %s: %s", sessionRef, truncate(action.Command, 50))
 }
 
-func (s *Service) executeSpeak(ctx context.Context, prompt eventbus.ConversationPromptEvent, action IntentAction) {
+func (s *Service) executeSpeak(ctx context.Context, prompt eventbus.ConversationPromptEvent, action IntentAction, targetSession string) {
 	if s.bus == nil || action.Text == "" {
 		return
 	}
 
 	atomic.AddUint64(&s.speakEvents, 1)
 
+	// Use targetSession from smart routing (may differ from prompt.SessionID for sessionless prompts)
+	sessionID := targetSession
+	if sessionID == "" {
+		sessionID = prompt.SessionID // fallback to original if no target determined
+	}
+
 	// Publish speak event for TTS
 	s.bus.Publish(ctx, eventbus.Envelope{
 		Topic:  eventbus.TopicConversationSpeak,
 		Source: eventbus.SourceIntentRouter,
 		Payload: eventbus.ConversationSpeakEvent{
-			SessionID: prompt.SessionID,
+			SessionID: sessionID,
 			PromptID:  prompt.PromptID,
 			Text:      action.Text,
 			Metadata:  action.Metadata,
@@ -528,26 +618,32 @@ func (s *Service) executeSpeak(ctx context.Context, prompt eventbus.Conversation
 	})
 
 	// Also publish as conversation reply for history tracking
-	s.publishReply(prompt.SessionID, prompt.PromptID, action.Text, nil, map[string]string{
+	s.publishReply(sessionID, prompt.PromptID, action.Text, nil, map[string]string{
 		"status": "speak",
 	})
 
-	log.Printf("[IntentRouter] Speak action for session %s: %s", prompt.SessionID, truncate(action.Text, 50))
+	log.Printf("[IntentRouter] Speak action for session %s: %s", sessionID, truncate(action.Text, 50))
 }
 
-func (s *Service) executeClarify(ctx context.Context, prompt eventbus.ConversationPromptEvent, action IntentAction) {
+func (s *Service) executeClarify(ctx context.Context, prompt eventbus.ConversationPromptEvent, action IntentAction, targetSession string) {
 	if s.bus == nil || action.Text == "" {
 		return
 	}
 
 	atomic.AddUint64(&s.clarifications, 1)
 
+	// Use targetSession from smart routing (may differ from prompt.SessionID for sessionless prompts)
+	sessionID := targetSession
+	if sessionID == "" {
+		sessionID = prompt.SessionID // fallback to original if no target determined
+	}
+
 	// Publish speak event with clarification
 	s.bus.Publish(ctx, eventbus.Envelope{
 		Topic:  eventbus.TopicConversationSpeak,
 		Source: eventbus.SourceIntentRouter,
 		Payload: eventbus.ConversationSpeakEvent{
-			SessionID: prompt.SessionID,
+			SessionID: sessionID,
 			PromptID:  prompt.PromptID,
 			Text:      action.Text,
 			Metadata: map[string]string{
@@ -565,11 +661,11 @@ func (s *Service) executeClarify(ctx context.Context, prompt eventbus.Conversati
 			},
 		},
 	}
-	s.publishReply(prompt.SessionID, prompt.PromptID, action.Text, actions, map[string]string{
+	s.publishReply(sessionID, prompt.PromptID, action.Text, actions, map[string]string{
 		"status": "clarification",
 	})
 
-	log.Printf("[IntentRouter] Clarification requested for session %s: %s", prompt.SessionID, truncate(action.Text, 50))
+	log.Printf("[IntentRouter] Clarification requested for session %s: %s", sessionID, truncate(action.Text, 50))
 }
 
 func (s *Service) publishReply(sessionID, promptID, text string, actions []eventbus.ConversationAction, metadata map[string]string) {
