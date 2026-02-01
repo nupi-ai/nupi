@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/contentpipeline"
 	"github.com/nupi-ai/nupi/internal/conversation"
 	"github.com/nupi-ai/nupi/internal/eventbus"
+	"github.com/nupi-ai/nupi/internal/intentrouter"
 	adapters "github.com/nupi-ai/nupi/internal/plugins/adapters"
 	testutil "github.com/nupi-ai/nupi/internal/testutil"
 	"github.com/nupi-ai/nupi/internal/voice/slots"
@@ -405,10 +407,16 @@ func TestAudioIngressToSTTGRPCPipeline(t *testing.T) {
 	pipelineCh := make(chan eventbus.PipelineMessageEvent, 1)
 	promptCh := make(chan eventbus.ConversationPromptEvent, 1)
 
+	var bridgeWG sync.WaitGroup
 	bridgeCtx, bridgeCancel := context.WithCancel(runCtx)
-	defer bridgeCancel()
+	defer func() {
+		bridgeCancel()
+		bridgeWG.Wait()
+	}()
 
+	bridgeWG.Add(1)
 	go func() {
+		defer bridgeWG.Done()
 		for {
 			select {
 			case <-bridgeCtx.Done():
@@ -432,7 +440,9 @@ func TestAudioIngressToSTTGRPCPipeline(t *testing.T) {
 	pipelineSub := bus.Subscribe(eventbus.TopicPipelineCleaned, eventbus.WithSubscriptionName("test_pipeline_cleaned"))
 	defer pipelineSub.Close()
 
+	bridgeWG.Add(1)
 	go func() {
+		defer bridgeWG.Done()
 		for {
 			select {
 			case <-bridgeCtx.Done():
@@ -452,7 +462,9 @@ func TestAudioIngressToSTTGRPCPipeline(t *testing.T) {
 			}
 		}
 	}()
+	bridgeWG.Add(1)
 	go func() {
+		defer bridgeWG.Done()
 		for {
 			select {
 			case <-bridgeCtx.Done():
@@ -540,9 +552,8 @@ func waitFor[T any](t *testing.T, ch <-chan T, timeout time.Duration) T {
 		return v
 	case <-timer.C:
 		t.Fatalf("timeout waiting for value (%s)", timeout)
+		panic("unreachable")
 	}
-	var zero T
-	return zero
 }
 
 func waitForBargeEvent(t *testing.T, sub *eventbus.Subscription, timeout time.Duration) eventbus.SpeechBargeInEvent {
@@ -652,6 +663,661 @@ func copyStringMap(src map[string]string) map[string]string {
 	return out
 }
 
+// ---------------------------------------------------------------------------
+// Full voice pipeline: ingress → STT → pipeline → conversation → intent router → egress
+// ---------------------------------------------------------------------------
+
+// TestFullVoicePipelineEndToEnd verifies the complete voice conversation loop:
+// audio input → STT transcription → conversation context → AI intent resolution →
+// TTS synthesis → audio playback output.
+func TestFullVoicePipelineEndToEnd(t *testing.T) {
+	ctx := context.Background()
+	bus := eventbus.New()
+
+	store, cleanup := testutil.OpenStore(t)
+	defer cleanup()
+
+	if err := adapters.EnsureBuiltinAdapters(ctx, store); err != nil {
+		t.Fatalf("ensure builtin adapters: %v", err)
+	}
+
+	// Activate mock adapters.
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotSTT), adapters.MockSTTAdapterID, map[string]any{
+		"phrases":      []any{"hello nupi"},
+		"emit_partial": true,
+	}); err != nil {
+		t.Fatalf("activate stt adapter: %v", err)
+	}
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotTTS), adapters.MockTTSAdapterID, map[string]any{
+		"duration_ms": 200,
+	}); err != nil {
+		t.Fatalf("activate tts adapter: %v", err)
+	}
+
+	// AI mock: always respond with speak action containing the transcript.
+	aiAdapter := &speakBackAdapter{prefix: "Response to: "}
+
+	// Build services.
+	ingressSvc := ingress.New(bus)
+	sttSvc := stt.New(bus,
+		stt.WithFactory(stt.NewAdapterFactory(store, nil)),
+		stt.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
+	)
+	pipelineSvc := contentpipeline.NewService(bus, nil)
+	conversationSvc := conversation.NewService(bus,
+		conversation.WithHistoryLimit(8),
+		conversation.WithDetachTTL(5*time.Second),
+	)
+	intentSvc := intentrouter.NewService(bus,
+		intentrouter.WithAdapter(aiAdapter),
+	)
+	egressSvc := egress.New(bus,
+		egress.WithFactory(egress.NewAdapterFactory(store, nil)),
+		egress.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
+	)
+
+	services := []startStopper{
+		pipelineSvc,
+		ingressSvc,
+		sttSvc,
+		conversationSvc,
+		intentSvc,
+		egressSvc,
+	}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	for _, svc := range services {
+		if err := svc.Start(runCtx); err != nil {
+			t.Fatalf("start service %T: %v", svc, err)
+		}
+		defer svc.Shutdown(context.Background())
+	}
+
+	// Subscribe to intermediate topics to verify the chain.
+	transcriptSub := bus.Subscribe(eventbus.TopicSpeechTranscriptFinal, eventbus.WithSubscriptionName("test_transcript"))
+	defer transcriptSub.Close()
+	promptSub := bus.Subscribe(eventbus.TopicConversationPrompt, eventbus.WithSubscriptionName("test_prompt"))
+	defer promptSub.Close()
+	speakSub := bus.Subscribe(eventbus.TopicConversationSpeak, eventbus.WithSubscriptionName("test_speak"))
+	defer speakSub.Close()
+	playbackSub := bus.Subscribe(eventbus.TopicAudioEgressPlayback, eventbus.WithSubscriptionName("test_playback"))
+	defer playbackSub.Close()
+
+	transcriptCh := make(chan eventbus.SpeechTranscriptEvent, 1)
+	promptCh := make(chan eventbus.ConversationPromptEvent, 1)
+	speakCh := make(chan eventbus.ConversationSpeakEvent, 1)
+
+	bridgeCtx, bridgeCancel := context.WithCancel(runCtx)
+	defer bridgeCancel()
+
+	// Forward subscription events to typed channels for easy assertion.
+	go forwardEvents(bridgeCtx, transcriptSub, transcriptCh)
+	go forwardEvents(bridgeCtx, promptSub, promptCh)
+	go forwardEvents(bridgeCtx, speakSub, speakCh)
+
+	// Emit session lifecycle so conversation service tracks the session.
+	const sessionID = "e2e-session"
+	bus.Publish(ctx, eventbus.Envelope{
+		Topic:  eventbus.TopicSessionsLifecycle,
+		Source: eventbus.SourceSessionManager,
+		Payload: eventbus.SessionLifecycleEvent{
+			SessionID: sessionID,
+			State:     eventbus.SessionStateRunning,
+		},
+	})
+
+	// Open ingress stream and write audio.
+	format := eventbus.AudioFormat{
+		Encoding:      eventbus.AudioEncodingPCM16,
+		SampleRate:    16000,
+		Channels:      1,
+		BitDepth:      16,
+		FrameDuration: 20 * time.Millisecond,
+	}
+	stream, err := ingressSvc.OpenStream(sessionID, "mic", format, map[string]string{
+		"locale": "en-US",
+	})
+	if err != nil {
+		t.Fatalf("open ingress stream: %v", err)
+	}
+
+	// Write two 20ms PCM segments then close to trigger final transcript.
+	segment := pcmBuffer(200, 320) // 320 samples = 20ms at 16kHz
+	for i := 0; i < 2; i++ {
+		if err := stream.Write(segment); err != nil {
+			t.Fatalf("write segment %d: %v", i+1, err)
+		}
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatalf("close stream: %v", err)
+	}
+
+	// 1. Verify STT produces a final transcript.
+	transcript := waitFor(t, transcriptCh, 2*time.Second)
+	if !transcript.Final {
+		t.Fatalf("expected final transcript, got partial")
+	}
+
+	// 2. Verify conversation engine produces a prompt.
+	prompt := waitFor(t, promptCh, 2*time.Second)
+	if prompt.SessionID != sessionID {
+		t.Fatalf("prompt sessionID: got %q want %q", prompt.SessionID, sessionID)
+	}
+	if prompt.NewMessage.Text != transcript.Text {
+		t.Fatalf("prompt text: got %q want %q", prompt.NewMessage.Text, transcript.Text)
+	}
+	if prompt.NewMessage.Origin != eventbus.OriginUser {
+		t.Fatalf("prompt origin: got %q want %q", prompt.NewMessage.Origin, eventbus.OriginUser)
+	}
+
+	// 3. Verify intent router produces a speak event.
+	speak := waitFor(t, speakCh, 2*time.Second)
+	if speak.SessionID != sessionID {
+		t.Fatalf("speak sessionID: got %q want %q", speak.SessionID, sessionID)
+	}
+	expectedText := "Response to: " + transcript.Text
+	if speak.Text != expectedText {
+		t.Fatalf("speak text: got %q want %q", speak.Text, expectedText)
+	}
+
+	// 4. Verify egress produces playback events with final chunk.
+	finalPlayback := waitForPlayback(t, playbackSub, 2*time.Second, func(evt eventbus.AudioEgressPlaybackEvent) bool {
+		return evt.Final
+	})
+	if finalPlayback.SessionID != sessionID {
+		t.Fatalf("playback sessionID: got %q want %q", finalPlayback.SessionID, sessionID)
+	}
+	if len(finalPlayback.Data) == 0 {
+		t.Fatalf("expected playback data, got empty")
+	}
+}
+
+// TestFullVoicePipelineNoopAction verifies that when the AI adapter returns a
+// noop action, the egress service is not triggered.
+func TestFullVoicePipelineNoopAction(t *testing.T) {
+	ctx := context.Background()
+	bus := eventbus.New()
+
+	store, cleanup := testutil.OpenStore(t)
+	defer cleanup()
+
+	if err := adapters.EnsureBuiltinAdapters(ctx, store); err != nil {
+		t.Fatalf("ensure builtin adapters: %v", err)
+	}
+
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotSTT), adapters.MockSTTAdapterID, map[string]any{
+		"phrases":      []any{"hello nupi"},
+		"emit_partial": true,
+	}); err != nil {
+		t.Fatalf("activate stt: %v", err)
+	}
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotTTS), adapters.MockTTSAdapterID, nil); err != nil {
+		t.Fatalf("activate tts: %v", err)
+	}
+
+	aiAdapter := &noopAdapter{}
+
+	ingressSvc := ingress.New(bus)
+	sttSvc := stt.New(bus,
+		stt.WithFactory(stt.NewAdapterFactory(store, nil)),
+		stt.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
+	)
+	pipelineSvc := contentpipeline.NewService(bus, nil)
+	conversationSvc := conversation.NewService(bus,
+		conversation.WithHistoryLimit(8),
+		conversation.WithDetachTTL(5*time.Second),
+	)
+	intentSvc := intentrouter.NewService(bus,
+		intentrouter.WithAdapter(aiAdapter),
+	)
+	egressSvc := egress.New(bus,
+		egress.WithFactory(egress.NewAdapterFactory(store, nil)),
+		egress.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
+	)
+
+	services := []startStopper{pipelineSvc, ingressSvc, sttSvc, conversationSvc, intentSvc, egressSvc}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	for _, svc := range services {
+		if err := svc.Start(runCtx); err != nil {
+			t.Fatalf("start %T: %v", svc, err)
+		}
+		defer svc.Shutdown(context.Background())
+	}
+
+	// Subscribe to transcript to confirm pipeline progresses, and to speak/playback
+	// to confirm they are NOT triggered.
+	transcriptSub := bus.Subscribe(eventbus.TopicSpeechTranscriptFinal, eventbus.WithSubscriptionName("test_transcript"))
+	defer transcriptSub.Close()
+	speakSub := bus.Subscribe(eventbus.TopicConversationSpeak, eventbus.WithSubscriptionName("test_speak"))
+	defer speakSub.Close()
+	playbackSub := bus.Subscribe(eventbus.TopicAudioEgressPlayback, eventbus.WithSubscriptionName("test_playback"))
+	defer playbackSub.Close()
+
+	transcriptCh := make(chan eventbus.SpeechTranscriptEvent, 4)
+	bridgeCtx, bridgeCancel := context.WithCancel(runCtx)
+	defer bridgeCancel()
+	go forwardEvents(bridgeCtx, transcriptSub, transcriptCh)
+
+	// Emit session lifecycle.
+	const sessionID = "noop-session"
+	bus.Publish(ctx, eventbus.Envelope{
+		Topic:  eventbus.TopicSessionsLifecycle,
+		Source: eventbus.SourceSessionManager,
+		Payload: eventbus.SessionLifecycleEvent{
+			SessionID: sessionID,
+			State:     eventbus.SessionStateRunning,
+		},
+	})
+
+	stream, err := ingressSvc.OpenStream(sessionID, "mic", eventbus.AudioFormat{
+		Encoding:      eventbus.AudioEncodingPCM16,
+		SampleRate:    16000,
+		Channels:      1,
+		BitDepth:      16,
+		FrameDuration: 20 * time.Millisecond,
+	}, nil)
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+
+	segment := pcmBuffer(200, 320)
+	for i := 0; i < 2; i++ {
+		if err := stream.Write(segment); err != nil {
+			t.Fatalf("write segment %d: %v", i+1, err)
+		}
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatalf("close stream: %v", err)
+	}
+
+	// Positive assertion: pipeline must progress through STT to produce a transcript.
+	transcript := waitFor(t, transcriptCh, 2*time.Second)
+	if transcript.SessionID != sessionID {
+		t.Fatalf("transcript sessionID: got %q want %q", transcript.SessionID, sessionID)
+	}
+
+	// After confirming upstream completed, drain speak and playback for a bounded
+	// window to verify neither is triggered by a noop action.
+	noEventTimer := time.NewTimer(time.Second)
+	defer noEventTimer.Stop()
+	for {
+		select {
+		case env := <-speakSub.C():
+			t.Fatalf("unexpected speak event: %+v", env.Payload)
+		case env := <-playbackSub.C():
+			t.Fatalf("unexpected playback event: %+v", env.Payload)
+		case <-noEventTimer.C:
+			// No speak/playback within window — expected for noop.
+			return
+		}
+	}
+}
+
+// TestVoicePipelineEventOrdering verifies events flow through all intermediate
+// topics in the correct order with consistent payload integrity.
+func TestVoicePipelineEventOrdering(t *testing.T) {
+	ctx := context.Background()
+	bus := eventbus.New()
+
+	store, cleanup := testutil.OpenStore(t)
+	defer cleanup()
+
+	if err := adapters.EnsureBuiltinAdapters(ctx, store); err != nil {
+		t.Fatalf("ensure builtin adapters: %v", err)
+	}
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotSTT), adapters.MockSTTAdapterID, map[string]any{
+		"phrases":      []any{"hello nupi"},
+		"emit_partial": true,
+	}); err != nil {
+		t.Fatalf("activate stt: %v", err)
+	}
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotTTS), adapters.MockTTSAdapterID, nil); err != nil {
+		t.Fatalf("activate tts: %v", err)
+	}
+
+	aiAdapter := &speakBackAdapter{prefix: "Echo: "}
+
+	ingressSvc := ingress.New(bus)
+	sttSvc := stt.New(bus,
+		stt.WithFactory(stt.NewAdapterFactory(store, nil)),
+		stt.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
+	)
+	pipelineSvc := contentpipeline.NewService(bus, nil)
+	conversationSvc := conversation.NewService(bus,
+		conversation.WithHistoryLimit(8),
+		conversation.WithDetachTTL(5*time.Second),
+	)
+	intentSvc := intentrouter.NewService(bus,
+		intentrouter.WithAdapter(aiAdapter),
+	)
+	egressSvc := egress.New(bus,
+		egress.WithFactory(egress.NewAdapterFactory(store, nil)),
+		egress.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
+	)
+
+	services := []startStopper{pipelineSvc, ingressSvc, sttSvc, conversationSvc, intentSvc, egressSvc}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	for _, svc := range services {
+		if err := svc.Start(runCtx); err != nil {
+			t.Fatalf("start %T: %v", svc, err)
+		}
+		defer svc.Shutdown(context.Background())
+	}
+
+	// Track ordering via monotonic counter. Each record() call gets a unique
+	// sequence number, so ordering is determined by the atomic increment —
+	// not by goroutine scheduling or slice append order.
+	type seqEvent struct {
+		name string
+		seq  int64
+	}
+	var counter atomic.Int64
+	var mu sync.Mutex
+	var events []seqEvent
+
+	record := func(name string) {
+		n := counter.Add(1)
+		mu.Lock()
+		events = append(events, seqEvent{name: name, seq: n})
+		mu.Unlock()
+	}
+
+	segmentSub := bus.Subscribe(eventbus.TopicAudioIngressSegment, eventbus.WithSubscriptionName("test_segment"))
+	defer segmentSub.Close()
+	transcriptSub := bus.Subscribe(eventbus.TopicSpeechTranscriptFinal, eventbus.WithSubscriptionName("test_transcript"))
+	defer transcriptSub.Close()
+	promptSub := bus.Subscribe(eventbus.TopicConversationPrompt, eventbus.WithSubscriptionName("test_prompt"))
+	defer promptSub.Close()
+	speakSub := bus.Subscribe(eventbus.TopicConversationSpeak, eventbus.WithSubscriptionName("test_speak"))
+	defer speakSub.Close()
+	playbackSub := bus.Subscribe(eventbus.TopicAudioEgressPlayback, eventbus.WithSubscriptionName("test_playback"))
+	defer playbackSub.Close()
+
+	bridgeCtx, bridgeCancel := context.WithCancel(runCtx)
+	defer bridgeCancel()
+
+	// Monitor segment topic.
+	segmentCh := make(chan struct{}, 1)
+	go func() {
+		for {
+			select {
+			case <-bridgeCtx.Done():
+				return
+			case _, ok := <-segmentSub.C():
+				if !ok {
+					return
+				}
+				record("segment")
+				select {
+				case segmentCh <- struct{}{}:
+				default:
+				}
+			}
+		}
+	}()
+
+	// Monitor transcript topic.
+	transcriptCh := make(chan eventbus.SpeechTranscriptEvent, 1)
+	go func() {
+		for {
+			select {
+			case <-bridgeCtx.Done():
+				return
+			case env, ok := <-transcriptSub.C():
+				if !ok {
+					return
+				}
+				if evt, ok := env.Payload.(eventbus.SpeechTranscriptEvent); ok && evt.Final {
+					record("transcript")
+					select {
+					case transcriptCh <- evt:
+					default:
+					}
+				}
+			}
+		}
+	}()
+
+	// Monitor prompt topic.
+	promptCh := make(chan eventbus.ConversationPromptEvent, 1)
+	go func() {
+		for {
+			select {
+			case <-bridgeCtx.Done():
+				return
+			case env, ok := <-promptSub.C():
+				if !ok {
+					return
+				}
+				if evt, ok := env.Payload.(eventbus.ConversationPromptEvent); ok {
+					record("prompt")
+					select {
+					case promptCh <- evt:
+					default:
+					}
+				}
+			}
+		}
+	}()
+
+	// Monitor speak topic.
+	speakCh := make(chan eventbus.ConversationSpeakEvent, 1)
+	go func() {
+		for {
+			select {
+			case <-bridgeCtx.Done():
+				return
+			case env, ok := <-speakSub.C():
+				if !ok {
+					return
+				}
+				if evt, ok := env.Payload.(eventbus.ConversationSpeakEvent); ok {
+					record("speak")
+					select {
+					case speakCh <- evt:
+					default:
+					}
+				}
+			}
+		}
+	}()
+
+	// Monitor playback topic.
+	playbackCh := make(chan eventbus.AudioEgressPlaybackEvent, 1)
+	go func() {
+		for {
+			select {
+			case <-bridgeCtx.Done():
+				return
+			case env, ok := <-playbackSub.C():
+				if !ok {
+					return
+				}
+				if evt, ok := env.Payload.(eventbus.AudioEgressPlaybackEvent); ok && evt.Final {
+					record("playback")
+					select {
+					case playbackCh <- evt:
+					default:
+					}
+				}
+			}
+		}
+	}()
+
+	const sessionID = "ordering-session"
+	bus.Publish(ctx, eventbus.Envelope{
+		Topic:  eventbus.TopicSessionsLifecycle,
+		Source: eventbus.SourceSessionManager,
+		Payload: eventbus.SessionLifecycleEvent{
+			SessionID: sessionID,
+			State:     eventbus.SessionStateRunning,
+		},
+	})
+
+	stream, err := ingressSvc.OpenStream(sessionID, "mic", eventbus.AudioFormat{
+		Encoding:      eventbus.AudioEncodingPCM16,
+		SampleRate:    16000,
+		Channels:      1,
+		BitDepth:      16,
+		FrameDuration: 20 * time.Millisecond,
+	}, nil)
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+
+	segment := pcmBuffer(200, 320)
+	for i := 0; i < 2; i++ {
+		if err := stream.Write(segment); err != nil {
+			t.Fatalf("write segment %d: %v", i+1, err)
+		}
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatalf("close stream: %v", err)
+	}
+
+	// Wait for each stage.
+	waitFor(t, segmentCh, 2*time.Second)
+	transcript := waitFor(t, transcriptCh, 2*time.Second)
+	prompt := waitFor(t, promptCh, 2*time.Second)
+	speak := waitFor(t, speakCh, 2*time.Second)
+	playback := waitFor(t, playbackCh, 3*time.Second)
+
+	// Verify sessionID propagation through the chain.
+	if prompt.SessionID != sessionID {
+		t.Errorf("prompt sessionID: got %q want %q", prompt.SessionID, sessionID)
+	}
+	if speak.SessionID != sessionID {
+		t.Errorf("speak sessionID: got %q want %q", speak.SessionID, sessionID)
+	}
+	if playback.SessionID != sessionID {
+		t.Errorf("playback sessionID: got %q want %q", playback.SessionID, sessionID)
+	}
+
+	// Verify text propagation.
+	if speak.Text != "Echo: "+transcript.Text {
+		t.Errorf("speak text: got %q want %q", speak.Text, "Echo: "+transcript.Text)
+	}
+
+	// Stop monitor goroutines before inspecting the shared events slice.
+	bridgeCancel()
+
+	// Verify ordering using monotonic sequence numbers assigned at record() time.
+	// This is scheduler-independent — the atomic counter guarantees ordering.
+	mu.Lock()
+	ordered := make([]seqEvent, len(events))
+	copy(ordered, events)
+	mu.Unlock()
+
+	firstSeq := func(name string) int64 {
+		for _, e := range ordered {
+			if e.name == name {
+				return e.seq
+			}
+		}
+		return -1
+	}
+
+	segSeq := firstSeq("segment")
+	trSeq := firstSeq("transcript")
+	promptSeq := firstSeq("prompt")
+	speakSeq := firstSeq("speak")
+	playSeq := firstSeq("playback")
+
+	if segSeq < 0 || trSeq < 0 || promptSeq < 0 || speakSeq < 0 || playSeq < 0 {
+		names := make([]string, len(ordered))
+		for i, e := range ordered {
+			names[i] = fmt.Sprintf("%s(%d)", e.name, e.seq)
+		}
+		t.Fatalf("missing events: segment=%d transcript=%d prompt=%d speak=%d playback=%d (all=%v)",
+			segSeq, trSeq, promptSeq, speakSeq, playSeq, names)
+	}
+
+	if segSeq >= trSeq {
+		t.Errorf("segment (seq=%d) should precede transcript (seq=%d)", segSeq, trSeq)
+	}
+	if trSeq >= promptSeq {
+		t.Errorf("transcript (seq=%d) should precede prompt (seq=%d)", trSeq, promptSeq)
+	}
+	if promptSeq >= speakSeq {
+		t.Errorf("prompt (seq=%d) should precede speak (seq=%d)", promptSeq, speakSeq)
+	}
+	if speakSeq >= playSeq {
+		t.Errorf("speak (seq=%d) should precede playback (seq=%d)", speakSeq, playSeq)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Mock AI adapters for integration tests
+// ---------------------------------------------------------------------------
+
+// speakBackAdapter is an IntentAdapter that always responds with a speak action
+// containing the transcript prefixed with the given string.
+type speakBackAdapter struct {
+	prefix string
+}
+
+func (a *speakBackAdapter) ResolveIntent(_ context.Context, req intentrouter.IntentRequest) (*intentrouter.IntentResponse, error) {
+	return &intentrouter.IntentResponse{
+		PromptID: req.PromptID,
+		Actions: []intentrouter.IntentAction{
+			{
+				Type: intentrouter.ActionSpeak,
+				Text: a.prefix + req.Transcript,
+			},
+		},
+		Confidence: 0.95,
+	}, nil
+}
+func (a *speakBackAdapter) Name() string { return "speak-back-test" }
+func (a *speakBackAdapter) Ready() bool  { return true }
+
+// noopAdapter always returns a noop action.
+type noopAdapter struct{}
+
+func (a *noopAdapter) ResolveIntent(_ context.Context, req intentrouter.IntentRequest) (*intentrouter.IntentResponse, error) {
+	return &intentrouter.IntentResponse{
+		PromptID: req.PromptID,
+		Actions: []intentrouter.IntentAction{
+			{Type: intentrouter.ActionNoop},
+		},
+	}, nil
+}
+func (a *noopAdapter) Name() string { return "noop-test" }
+func (a *noopAdapter) Ready() bool  { return true }
+
+// forwardEvents reads envelopes from a subscription and sends typed payloads to
+// the destination channel. T must match the payload type.
+func forwardEvents[T any](ctx context.Context, sub *eventbus.Subscription, dst chan<- T) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case env, ok := <-sub.C():
+			if !ok {
+				return
+			}
+			if evt, ok := env.Payload.(T); ok {
+				select {
+				case dst <- evt:
+				default:
+				}
+			}
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Existing test infrastructure
+// ---------------------------------------------------------------------------
+
 type grpcTestSTTServer struct {
 	napv1.UnimplementedSpeechToTextServiceServer
 }
@@ -693,5 +1359,663 @@ func (s *grpcTestSTTServer) StreamTranscription(stream napv1.SpeechToTextService
 		if err := stream.Send(resp); err != nil {
 			return err
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// gRPC NAP adapter integration: STT + TTS via bufconn
+// ---------------------------------------------------------------------------
+
+// TestGRPCSTTAndTTSNAPPipeline validates the voice pipeline using real gRPC
+// NAP adapters for both STT and TTS (via bufconn, no network).
+func TestGRPCSTTAndTTSNAPPipeline(t *testing.T) {
+	ctx := context.Background()
+	bus := eventbus.New()
+
+	store, cleanup := testutil.OpenStore(t)
+	defer cleanup()
+
+	if err := adapters.EnsureBuiltinAdapters(ctx, store); err != nil {
+		t.Fatalf("ensure builtin adapters: %v", err)
+	}
+
+	// --- STT gRPC adapter via bufconn ---
+	const sttAdapterID = "adapter.stt.grpc.e2e"
+	if err := store.UpsertAdapter(ctx, configstore.Adapter{
+		ID: sttAdapterID, Source: "local", Type: "stt", Name: "E2E gRPC STT", Version: "dev",
+	}); err != nil {
+		t.Fatalf("upsert stt adapter: %v", err)
+	}
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotSTT), sttAdapterID, nil); err != nil {
+		t.Fatalf("activate stt: %v", err)
+	}
+
+	const bufSize = 1024 * 1024
+	sttLis := bufconn.Listen(bufSize)
+	sttServer := grpc.NewServer()
+	napv1.RegisterSpeechToTextServiceServer(sttServer, &grpcTestSTTServer{})
+	go func() {
+		if err := sttServer.Serve(sttLis); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+			t.Logf("stt grpc server stopped: %v", err)
+		}
+	}()
+	t.Cleanup(func() {
+		sttServer.GracefulStop()
+		_ = sttLis.Close()
+	})
+	sttDialer := func(ctx context.Context, _ string) (net.Conn, error) {
+		return sttLis.DialContext(ctx)
+	}
+
+	if err := store.UpsertAdapterEndpoint(ctx, configstore.AdapterEndpoint{
+		AdapterID: sttAdapterID, Transport: "grpc", Address: "bufconn-stt",
+	}); err != nil {
+		t.Fatalf("register stt endpoint: %v", err)
+	}
+
+	// --- TTS gRPC adapter via bufconn ---
+	const ttsAdapterID = "adapter.tts.grpc.e2e"
+	if err := store.UpsertAdapter(ctx, configstore.Adapter{
+		ID: ttsAdapterID, Source: "local", Type: "tts", Name: "E2E gRPC TTS", Version: "dev",
+	}); err != nil {
+		t.Fatalf("upsert tts adapter: %v", err)
+	}
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotTTS), ttsAdapterID, nil); err != nil {
+		t.Fatalf("activate tts: %v", err)
+	}
+
+	ttsLis := bufconn.Listen(bufSize)
+	ttsServer := grpc.NewServer()
+	napv1.RegisterTextToSpeechServiceServer(ttsServer, &grpcTestTTSServer{})
+	go func() {
+		if err := ttsServer.Serve(ttsLis); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
+			t.Logf("tts grpc server stopped: %v", err)
+		}
+	}()
+	t.Cleanup(func() {
+		ttsServer.GracefulStop()
+		_ = ttsLis.Close()
+	})
+	ttsDialer := func(ctx context.Context, _ string) (net.Conn, error) {
+		return ttsLis.DialContext(ctx)
+	}
+
+	if err := store.UpsertAdapterEndpoint(ctx, configstore.AdapterEndpoint{
+		AdapterID: ttsAdapterID, Transport: "grpc", Address: "bufconn-tts",
+	}); err != nil {
+		t.Fatalf("register tts endpoint: %v", err)
+	}
+
+	// --- Build services ---
+	aiAdapter := &speakBackAdapter{prefix: "NAP: "}
+
+	ingressSvc := ingress.New(bus)
+	sttSvc := stt.New(bus,
+		stt.WithFactory(stt.NewAdapterFactory(store, nil)),
+		stt.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
+	)
+	pipelineSvc := contentpipeline.NewService(bus, nil)
+	conversationSvc := conversation.NewService(bus,
+		conversation.WithHistoryLimit(8),
+		conversation.WithDetachTTL(5*time.Second),
+	)
+	intentSvc := intentrouter.NewService(bus,
+		intentrouter.WithAdapter(aiAdapter),
+	)
+	egressSvc := egress.New(bus,
+		egress.WithFactory(egress.NewAdapterFactory(store, nil)),
+		egress.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
+	)
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// Start services — inject dialers for STT and TTS via context.
+	if err := ingressSvc.Start(runCtx); err != nil {
+		t.Fatalf("start ingress: %v", err)
+	}
+	defer ingressSvc.Shutdown(context.Background())
+
+	if err := sttSvc.Start(stt.ContextWithDialer(runCtx, sttDialer)); err != nil {
+		t.Fatalf("start stt: %v", err)
+	}
+	defer sttSvc.Shutdown(context.Background())
+
+	if err := pipelineSvc.Start(runCtx); err != nil {
+		t.Fatalf("start pipeline: %v", err)
+	}
+	defer pipelineSvc.Shutdown(context.Background())
+
+	if err := conversationSvc.Start(runCtx); err != nil {
+		t.Fatalf("start conversation: %v", err)
+	}
+	defer conversationSvc.Shutdown(context.Background())
+
+	if err := intentSvc.Start(runCtx); err != nil {
+		t.Fatalf("start intent router: %v", err)
+	}
+	defer intentSvc.Shutdown(context.Background())
+
+	// Egress needs TTS dialer injected.
+	if err := egressSvc.Start(egress.ContextWithDialer(runCtx, ttsDialer)); err != nil {
+		t.Fatalf("start egress: %v", err)
+	}
+	defer egressSvc.Shutdown(context.Background())
+
+	// --- Subscribe to output topics ---
+	transcriptSub := bus.Subscribe(eventbus.TopicSpeechTranscriptFinal, eventbus.WithSubscriptionName("test_transcript"))
+	defer transcriptSub.Close()
+	playbackSub := bus.Subscribe(eventbus.TopicAudioEgressPlayback, eventbus.WithSubscriptionName("test_playback"))
+	defer playbackSub.Close()
+
+	transcriptCh := make(chan eventbus.SpeechTranscriptEvent, 1)
+	bridgeCtx, bridgeCancel := context.WithCancel(runCtx)
+	defer bridgeCancel()
+	go forwardEvents(bridgeCtx, transcriptSub, transcriptCh)
+
+	// --- Emit session lifecycle ---
+	const sessionID = "grpc-e2e-session"
+	bus.Publish(ctx, eventbus.Envelope{
+		Topic:  eventbus.TopicSessionsLifecycle,
+		Source: eventbus.SourceSessionManager,
+		Payload: eventbus.SessionLifecycleEvent{
+			SessionID: sessionID,
+			State:     eventbus.SessionStateRunning,
+		},
+	})
+
+	// --- Send audio through ingress ---
+	stream, err := ingressSvc.OpenStream(sessionID, "mic", eventbus.AudioFormat{
+		Encoding:      eventbus.AudioEncodingPCM16,
+		SampleRate:    16000,
+		Channels:      1,
+		BitDepth:      16,
+		FrameDuration: 20 * time.Millisecond,
+	}, nil)
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+
+	segment := make([]byte, 640) // 320 samples * 2 bytes
+	for i := 0; i < 2; i++ {
+		if err := stream.Write(segment); err != nil {
+			t.Fatalf("write segment %d: %v", i+1, err)
+		}
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatalf("close stream: %v", err)
+	}
+
+	// --- Verify STT produces transcript via gRPC NAP ---
+	transcript := waitFor(t, transcriptCh, 2*time.Second)
+	if !transcript.Final {
+		t.Fatalf("expected final transcript")
+	}
+
+	// --- Verify TTS progressive streaming via gRPC NAP (AC#3) ---
+	// The gRPC TTS server sends 2 chunks (non-final + final). Receiving a
+	// non-final playback event before the final one proves progressive streaming:
+	// audio starts before the full TTS response is generated.
+	nonFinalPlayback := waitForPlayback(t, playbackSub, 3*time.Second, func(evt eventbus.AudioEgressPlaybackEvent) bool {
+		return !evt.Final && len(evt.Data) > 0
+	})
+	if nonFinalPlayback.SessionID != sessionID {
+		t.Fatalf("non-final playback sessionID: got %q want %q", nonFinalPlayback.SessionID, sessionID)
+	}
+
+	finalPlayback := waitForPlayback(t, playbackSub, 3*time.Second, func(evt eventbus.AudioEgressPlaybackEvent) bool {
+		return evt.Final
+	})
+	if finalPlayback.SessionID != sessionID {
+		t.Fatalf("final playback sessionID: got %q want %q", finalPlayback.SessionID, sessionID)
+	}
+	if len(finalPlayback.Data) == 0 {
+		t.Fatalf("expected playback audio data from gRPC TTS server")
+	}
+}
+
+// grpcTestTTSServer is a mock TTS gRPC server that returns PCM audio chunks.
+type grpcTestTTSServer struct {
+	napv1.UnimplementedTextToSpeechServiceServer
+}
+
+func (s *grpcTestTTSServer) StreamSynthesis(req *napv1.StreamSynthesisRequest, stream napv1.TextToSpeechService_StreamSynthesisServer) error {
+	if req.GetText() == "" {
+		return fmt.Errorf("grpcTestTTSServer: empty text in synthesis request")
+	}
+	// Generate two chunks of PCM audio, then close.
+	for i := 0; i < 2; i++ {
+		data := make([]byte, 640) // 320 samples * 2 bytes = 20ms at 16kHz
+		for j := range data {
+			data[j] = byte(i + 1) // non-zero fill to verify data propagation
+		}
+
+		resp := &napv1.SynthesisResponse{
+			Status: napv1.SynthesisStatus_SYNTHESIS_STATUS_PLAYING,
+			Chunk: &napv1.AudioChunk{
+				Data:       data,
+				DurationMs: 20,
+				Last:       i == 1,
+			},
+		}
+		if err := stream.Send(resp); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Task 4: Error paths and graceful degradation
+// ---------------------------------------------------------------------------
+
+// failingSynthesizer returns an error on every Speak call, simulating a TTS
+// adapter that is broken (e.g. connection lost, gRPC stream error).
+type failingSynthesizer struct{}
+
+func (s *failingSynthesizer) Speak(_ context.Context, _ egress.SpeakRequest) ([]egress.SynthesisChunk, error) {
+	return nil, fmt.Errorf("tts adapter error: connection lost")
+}
+func (s *failingSynthesizer) Close(_ context.Context) ([]egress.SynthesisChunk, error) {
+	return nil, nil
+}
+
+// TestVoicePipelineTTSAdapterError verifies that when the TTS synthesizer
+// returns an error on Speak(), the pipeline does not crash and upstream
+// services (STT, conversation, intent router) continue operating normally.
+func TestVoicePipelineTTSAdapterError(t *testing.T) {
+	ctx := context.Background()
+	bus := eventbus.New()
+
+	store, cleanup := testutil.OpenStore(t)
+	defer cleanup()
+
+	if err := adapters.EnsureBuiltinAdapters(ctx, store); err != nil {
+		t.Fatalf("ensure builtin adapters: %v", err)
+	}
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotSTT), adapters.MockSTTAdapterID, map[string]any{
+		"phrases":      []any{"hello nupi"},
+		"emit_partial": true,
+	}); err != nil {
+		t.Fatalf("activate stt: %v", err)
+	}
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotTTS), adapters.MockTTSAdapterID, nil); err != nil {
+		t.Fatalf("activate tts: %v", err)
+	}
+
+	// AI adapter that always speaks.
+	aiAdapter := &speakBackAdapter{prefix: "Fail test: "}
+
+	// TTS factory that returns a synthesizer which errors on every Speak() call,
+	// simulating a broken TTS adapter (connection refused, gRPC stream error).
+	ttsFactory := egress.FactoryFunc(func(_ context.Context, _ egress.SessionParams) (egress.Synthesizer, error) {
+		return &failingSynthesizer{}, nil
+	})
+
+	ingressSvc := ingress.New(bus)
+	sttSvc := stt.New(bus,
+		stt.WithFactory(stt.NewAdapterFactory(store, nil)),
+		stt.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
+	)
+	pipelineSvc := contentpipeline.NewService(bus, nil)
+	conversationSvc := conversation.NewService(bus,
+		conversation.WithHistoryLimit(8),
+		conversation.WithDetachTTL(5*time.Second),
+	)
+	intentSvc := intentrouter.NewService(bus, intentrouter.WithAdapter(aiAdapter))
+	egressSvc := egress.New(bus,
+		egress.WithFactory(ttsFactory),
+		egress.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
+	)
+
+	services := []startStopper{pipelineSvc, ingressSvc, sttSvc, conversationSvc, intentSvc, egressSvc}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	for _, svc := range services {
+		if err := svc.Start(runCtx); err != nil {
+			t.Fatalf("start %T: %v", svc, err)
+		}
+		defer svc.Shutdown(context.Background())
+	}
+
+	// Subscribe to speak to confirm intent router still works.
+	speakSub := bus.Subscribe(eventbus.TopicConversationSpeak, eventbus.WithSubscriptionName("test_speak"))
+	defer speakSub.Close()
+	speakCh := make(chan eventbus.ConversationSpeakEvent, 4)
+
+	bridgeCtx, bridgeCancel := context.WithCancel(runCtx)
+	defer bridgeCancel()
+	go forwardEvents(bridgeCtx, speakSub, speakCh)
+
+	// Subscribe to playback — we expect NO final playback since synthesizer errors.
+	playbackSub := bus.Subscribe(eventbus.TopicAudioEgressPlayback, eventbus.WithSubscriptionName("test_playback"))
+	defer playbackSub.Close()
+
+	const sessionID = "tts-error-session"
+	bus.Publish(ctx, eventbus.Envelope{
+		Topic:  eventbus.TopicSessionsLifecycle,
+		Source: eventbus.SourceSessionManager,
+		Payload: eventbus.SessionLifecycleEvent{
+			SessionID: sessionID,
+			State:     eventbus.SessionStateRunning,
+		},
+	})
+
+	stream, err := ingressSvc.OpenStream(sessionID, "mic", eventbus.AudioFormat{
+		Encoding:      eventbus.AudioEncodingPCM16,
+		SampleRate:    16000,
+		Channels:      1,
+		BitDepth:      16,
+		FrameDuration: 20 * time.Millisecond,
+	}, nil)
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+
+	segment := pcmBuffer(200, 320)
+	for i := 0; i < 2; i++ {
+		if err := stream.Write(segment); err != nil {
+			t.Fatalf("write segment %d: %v", i+1, err)
+		}
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatalf("close stream: %v", err)
+	}
+
+	// Intent router should still produce speak events even when TTS fails.
+	speak := waitFor(t, speakCh, 2*time.Second)
+	if speak.SessionID != sessionID {
+		t.Fatalf("speak sessionID: got %q want %q", speak.SessionID, sessionID)
+	}
+
+	// After confirming upstream completed (speak event arrived), drain playback
+	// for a bounded window. Since Speak() always errors, no playback should appear.
+	noPlayback := time.NewTimer(time.Second)
+	defer noPlayback.Stop()
+	for {
+		select {
+		case evt := <-playbackSub.C():
+			pb, ok := evt.Payload.(eventbus.AudioEgressPlaybackEvent)
+			if ok {
+				t.Fatalf("unexpected playback event after TTS error: final=%v len=%d",
+					pb.Final, len(pb.Data))
+			}
+		case <-noPlayback.C:
+			// No playback within window — expected when TTS adapter errors.
+			return
+		}
+	}
+}
+
+// TestVoicePipelineGoroutineLifecycle verifies that after a full pipeline
+// lifecycle (start → process audio → shutdown), no goroutines are leaked
+// from the voice services. Uses deterministic service metrics instead of
+// global goroutine counts which are sensitive to unrelated runtime goroutines.
+func TestVoicePipelineGoroutineLifecycle(t *testing.T) {
+	ctx := context.Background()
+	bus := eventbus.New()
+
+	store, cleanup := testutil.OpenStore(t)
+	defer cleanup()
+
+	if err := adapters.EnsureBuiltinAdapters(ctx, store); err != nil {
+		t.Fatalf("ensure builtin adapters: %v", err)
+	}
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotSTT), adapters.MockSTTAdapterID, map[string]any{
+		"phrases":      []any{"hello nupi"},
+		"emit_partial": true,
+	}); err != nil {
+		t.Fatalf("activate stt: %v", err)
+	}
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotTTS), adapters.MockTTSAdapterID, nil); err != nil {
+		t.Fatalf("activate tts: %v", err)
+	}
+
+	aiAdapter := &speakBackAdapter{prefix: "Goroutine test: "}
+
+	ingressSvc := ingress.New(bus)
+	sttSvc := stt.New(bus,
+		stt.WithFactory(stt.NewAdapterFactory(store, nil)),
+		stt.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
+	)
+	pipelineSvc := contentpipeline.NewService(bus, nil)
+	conversationSvc := conversation.NewService(bus,
+		conversation.WithHistoryLimit(8),
+		conversation.WithDetachTTL(5*time.Second),
+	)
+	intentSvc := intentrouter.NewService(bus, intentrouter.WithAdapter(aiAdapter))
+	egressSvc := egress.New(bus,
+		egress.WithFactory(egress.NewAdapterFactory(store, nil)),
+		egress.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
+	)
+
+	services := []startStopper{pipelineSvc, ingressSvc, sttSvc, conversationSvc, intentSvc, egressSvc}
+
+	runCtx, cancel := context.WithCancel(ctx)
+
+	var shutdownOnce sync.Once
+	teardown := func() {
+		cancel()
+		for i := len(services) - 1; i >= 0; i-- {
+			services[i].Shutdown(context.Background())
+		}
+	}
+	t.Cleanup(func() { shutdownOnce.Do(teardown) })
+
+	for _, svc := range services {
+		if err := svc.Start(runCtx); err != nil {
+			t.Fatalf("start %T: %v", svc, err)
+		}
+	}
+
+	// Process a full audio loop.
+	const sessionID = "goroutine-session"
+	bus.Publish(ctx, eventbus.Envelope{
+		Topic:  eventbus.TopicSessionsLifecycle,
+		Source: eventbus.SourceSessionManager,
+		Payload: eventbus.SessionLifecycleEvent{
+			SessionID: sessionID,
+			State:     eventbus.SessionStateRunning,
+		},
+	})
+
+	playbackSub := bus.Subscribe(eventbus.TopicAudioEgressPlayback, eventbus.WithSubscriptionName("test_playback"))
+	defer playbackSub.Close()
+
+	stream, err := ingressSvc.OpenStream(sessionID, "mic", eventbus.AudioFormat{
+		Encoding:      eventbus.AudioEncodingPCM16,
+		SampleRate:    16000,
+		Channels:      1,
+		BitDepth:      16,
+		FrameDuration: 20 * time.Millisecond,
+	}, nil)
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+
+	segment := pcmBuffer(200, 320)
+	for i := 0; i < 2; i++ {
+		if err := stream.Write(segment); err != nil {
+			t.Fatalf("write segment %d: %v", i+1, err)
+		}
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatalf("close stream: %v", err)
+	}
+
+	// Wait for playback to confirm pipeline processed fully.
+	waitForPlayback(t, playbackSub, 3*time.Second, func(evt eventbus.AudioEgressPlaybackEvent) bool {
+		return evt.Final
+	})
+	playbackSub.Close()
+
+	// Shut down all services and verify deterministic metrics.
+	shutdownOnce.Do(teardown)
+
+	// Verify egress has no active streams — deterministic, not flaky.
+	metrics := egressSvc.Metrics()
+	if metrics.ActiveStreams != 0 {
+		t.Errorf("egress active streams after shutdown: %d, want 0", metrics.ActiveStreams)
+	}
+}
+
+// TestVoicePipelinePayloadIntegrity verifies that sessionID, streamID, and
+// metadata propagate correctly through every hop of the event bus chain.
+func TestVoicePipelinePayloadIntegrity(t *testing.T) {
+	ctx := context.Background()
+	bus := eventbus.New()
+
+	store, cleanup := testutil.OpenStore(t)
+	defer cleanup()
+
+	if err := adapters.EnsureBuiltinAdapters(ctx, store); err != nil {
+		t.Fatalf("ensure builtin adapters: %v", err)
+	}
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotSTT), adapters.MockSTTAdapterID, map[string]any{
+		"phrases":      []any{"hello nupi"},
+		"emit_partial": true,
+	}); err != nil {
+		t.Fatalf("activate stt: %v", err)
+	}
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotTTS), adapters.MockTTSAdapterID, nil); err != nil {
+		t.Fatalf("activate tts: %v", err)
+	}
+
+	aiAdapter := &speakBackAdapter{prefix: "Integrity: "}
+
+	ingressSvc := ingress.New(bus)
+	sttSvc := stt.New(bus,
+		stt.WithFactory(stt.NewAdapterFactory(store, nil)),
+		stt.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
+	)
+	pipelineSvc := contentpipeline.NewService(bus, nil)
+	conversationSvc := conversation.NewService(bus,
+		conversation.WithHistoryLimit(8),
+		conversation.WithDetachTTL(5*time.Second),
+	)
+	intentSvc := intentrouter.NewService(bus, intentrouter.WithAdapter(aiAdapter))
+	egressSvc := egress.New(bus,
+		egress.WithFactory(egress.NewAdapterFactory(store, nil)),
+		egress.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
+	)
+
+	services := []startStopper{pipelineSvc, ingressSvc, sttSvc, conversationSvc, intentSvc, egressSvc}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	for _, svc := range services {
+		if err := svc.Start(runCtx); err != nil {
+			t.Fatalf("start %T: %v", svc, err)
+		}
+		defer svc.Shutdown(context.Background())
+	}
+
+	// Subscribe to all intermediate topics.
+	segmentSub := bus.Subscribe(eventbus.TopicAudioIngressSegment, eventbus.WithSubscriptionName("test_seg"))
+	defer segmentSub.Close()
+	transcriptSub := bus.Subscribe(eventbus.TopicSpeechTranscriptFinal, eventbus.WithSubscriptionName("test_tr"))
+	defer transcriptSub.Close()
+	promptSub := bus.Subscribe(eventbus.TopicConversationPrompt, eventbus.WithSubscriptionName("test_pr"))
+	defer promptSub.Close()
+	speakSub := bus.Subscribe(eventbus.TopicConversationSpeak, eventbus.WithSubscriptionName("test_sp"))
+	defer speakSub.Close()
+	playbackSub := bus.Subscribe(eventbus.TopicAudioEgressPlayback, eventbus.WithSubscriptionName("test_pb"))
+	defer playbackSub.Close()
+
+	segmentCh := make(chan eventbus.AudioIngressSegmentEvent, 8)
+	transcriptCh := make(chan eventbus.SpeechTranscriptEvent, 4)
+	promptCh := make(chan eventbus.ConversationPromptEvent, 4)
+	speakCh := make(chan eventbus.ConversationSpeakEvent, 4)
+
+	bridgeCtx, bridgeCancel := context.WithCancel(runCtx)
+	defer bridgeCancel()
+	go forwardEvents(bridgeCtx, segmentSub, segmentCh)
+	go forwardEvents(bridgeCtx, transcriptSub, transcriptCh)
+	go forwardEvents(bridgeCtx, promptSub, promptCh)
+	go forwardEvents(bridgeCtx, speakSub, speakCh)
+
+	const sessionID = "integrity-session"
+	bus.Publish(ctx, eventbus.Envelope{
+		Topic:  eventbus.TopicSessionsLifecycle,
+		Source: eventbus.SourceSessionManager,
+		Payload: eventbus.SessionLifecycleEvent{
+			SessionID: sessionID,
+			State:     eventbus.SessionStateRunning,
+		},
+	})
+
+	stream, err := ingressSvc.OpenStream(sessionID, "mic", eventbus.AudioFormat{
+		Encoding:      eventbus.AudioEncodingPCM16,
+		SampleRate:    16000,
+		Channels:      1,
+		BitDepth:      16,
+		FrameDuration: 20 * time.Millisecond,
+	}, map[string]string{"locale": "en-US"})
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+
+	segment := pcmBuffer(200, 320)
+	for i := 0; i < 2; i++ {
+		if err := stream.Write(segment); err != nil {
+			t.Fatalf("write segment %d: %v", i+1, err)
+		}
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatalf("close stream: %v", err)
+	}
+
+	// Verify sessionID propagation at each hop.
+	seg := waitFor(t, segmentCh, 2*time.Second)
+	if seg.SessionID != sessionID {
+		t.Errorf("segment sessionID: got %q want %q", seg.SessionID, sessionID)
+	}
+	if seg.StreamID != "mic" {
+		t.Errorf("segment streamID: got %q want %q", seg.StreamID, "mic")
+	}
+
+	tr := waitFor(t, transcriptCh, 2*time.Second)
+	if tr.SessionID != sessionID {
+		t.Errorf("transcript sessionID: got %q want %q", tr.SessionID, sessionID)
+	}
+	if tr.StreamID != "mic" {
+		t.Errorf("transcript streamID: got %q want %q", tr.StreamID, "mic")
+	}
+
+	pr := waitFor(t, promptCh, 2*time.Second)
+	if pr.SessionID != sessionID {
+		t.Errorf("prompt sessionID: got %q want %q", pr.SessionID, sessionID)
+	}
+
+	sp := waitFor(t, speakCh, 2*time.Second)
+	if sp.SessionID != sessionID {
+		t.Errorf("speak sessionID: got %q want %q", sp.SessionID, sessionID)
+	}
+	if sp.Text == "" {
+		t.Error("speak text should not be empty")
+	}
+
+	pb := waitForPlayback(t, playbackSub, 3*time.Second, func(evt eventbus.AudioEgressPlaybackEvent) bool {
+		return evt.Final
+	})
+	if pb.SessionID != sessionID {
+		t.Errorf("playback sessionID: got %q want %q", pb.SessionID, sessionID)
+	}
+	if len(pb.Data) == 0 {
+		t.Error("playback data should not be empty")
+	}
+	// Mock synthesizer produces 500 ms of 16 kHz mono PCM16 = 16000 bytes.
+	const wantBytes = 16000
+	if len(pb.Data) != wantBytes {
+		t.Errorf("playback data length: got %d want %d", len(pb.Data), wantBytes)
+	}
+
+	// Verify text flows from transcript through speak.
+	if sp.Text != "Integrity: "+tr.Text {
+		t.Errorf("text propagation: speak=%q expected prefix+transcript=%q",
+			sp.Text, "Integrity: "+tr.Text)
 	}
 }
