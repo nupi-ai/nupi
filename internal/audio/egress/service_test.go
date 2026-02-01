@@ -31,7 +31,7 @@ func TestServicePublishesPlayback(t *testing.T) {
 	}
 
 	svc := New(bus,
-		WithFactory(NewAdapterFactory(store)),
+		WithFactory(NewAdapterFactory(store, nil)),
 		WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
 	)
 	if err := svc.Start(ctx); err != nil {
@@ -80,7 +80,7 @@ func TestServiceBuffersUntilAdapterAvailable(t *testing.T) {
 	}
 
 	svc := New(bus,
-		WithFactory(NewAdapterFactory(store)),
+		WithFactory(NewAdapterFactory(store, nil)),
 		WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
 	)
 	if err := svc.Start(ctx); err != nil {

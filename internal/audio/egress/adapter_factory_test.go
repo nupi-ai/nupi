@@ -27,7 +27,7 @@ func TestAdapterFactoryReturnsMockSynthesizer(t *testing.T) {
 		t.Fatalf("set active adapter: %v", err)
 	}
 
-	factory := NewAdapterFactory(store)
+	factory := NewAdapterFactory(store, nil)
 	synth, err := factory.Create(ctx, SessionParams{
 		SessionID: "sess",
 		StreamID:  slots.TTS,
@@ -71,7 +71,7 @@ func TestAdapterFactoryReturnsErrorOnConfigParseFailure(t *testing.T) {
 		t.Fatalf("corrupt config: %v", err)
 	}
 
-	factory := NewAdapterFactory(store)
+	factory := NewAdapterFactory(store, nil)
 	_, err = factory.Create(ctx, SessionParams{
 		SessionID: "sess",
 		StreamID:  slots.TTS,
@@ -86,7 +86,7 @@ func TestAdapterFactoryReturnsUnavailableWhenAdapterMissing(t *testing.T) {
 	store, cleanup := testutil.OpenStore(t)
 	defer cleanup()
 
-	factory := NewAdapterFactory(store)
+	factory := NewAdapterFactory(store, nil)
 	_, err := factory.Create(ctx, SessionParams{
 		SessionID: "sess",
 		StreamID:  slots.TTS,
