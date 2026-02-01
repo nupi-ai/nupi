@@ -116,7 +116,7 @@ func New(opts Options) (*Daemon, error) {
 	audioSTTService := stt.New(bus, stt.WithFactory(stt.NewAdapterFactory(opts.Store, adaptersService)))
 	audioVADService := vad.New(bus, vad.WithFactory(vad.NewAdapterFactory(opts.Store)))
 	audioBargeService := barge.New(bus)
-	audioEgressService := egress.New(bus, egress.WithFactory(egress.NewAdapterFactory(opts.Store)))
+	audioEgressService := egress.New(bus, egress.WithFactory(egress.NewAdapterFactory(opts.Store, adaptersService)))
 
 	// Global conversation store for sessionless ("bezpańskie") messages
 	globalConversationStore := conversation.NewGlobalStore()

@@ -73,7 +73,7 @@ func TestVoicePipelineEndToEndWithBarge(t *testing.T) {
 		barge.WithQuietPeriod(0),
 	)
 
-	ttsFactory := egress.NewAdapterFactory(store)
+	ttsFactory := egress.NewAdapterFactory(store, nil)
 	streamingFactory := egress.FactoryFunc(func(ctx context.Context, params egress.SessionParams) (egress.Synthesizer, error) {
 		synth, err := ttsFactory.Create(ctx, params)
 		if err != nil {
