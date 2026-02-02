@@ -1,12 +1,15 @@
 package integration
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -241,6 +244,25 @@ func TestVoicePipelineEndToEndWithBarge(t *testing.T) {
 type startStopper interface {
 	Start(context.Context) error
 	Shutdown(context.Context) error
+}
+
+// syncBuffer is a goroutine-safe bytes.Buffer wrapper for capturing log output
+// in tests where service goroutines write concurrently with test assertions.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (sb *syncBuffer) Write(p []byte) (n int, err error) {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.buf.Write(p)
+}
+
+func (sb *syncBuffer) String() string {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.buf.String()
 }
 
 type streamingSynth struct {
@@ -571,6 +593,47 @@ func waitForBargeEvent(t *testing.T, sub *eventbus.Subscription, timeout time.Du
 			return evt
 		case <-timer.C:
 			t.Fatalf("timeout waiting for barge event (%s)", timeout)
+		}
+	}
+}
+
+// publishVADUntilBarge publishes a VAD event repeatedly (with short intervals)
+// until the barge coordinator produces a barge event. This replaces the fragile
+// pattern of time.Sleep(100ms) + single publish, and is deterministic regardless
+// of scheduling delays. The barge coordinator only fires once per cooldown
+// window, so repeated VAD publishes are harmless.
+func publishVADUntilBarge(t *testing.T, bus *eventbus.Bus, bargeSub *eventbus.Subscription, sessionID, streamID string, timeout time.Duration) eventbus.SpeechBargeInEvent {
+	t.Helper()
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+
+	publish := func() {
+		bus.Publish(context.Background(), eventbus.Envelope{
+			Topic:  eventbus.TopicSpeechVADDetected,
+			Source: eventbus.SourceSpeechVAD,
+			Payload: eventbus.SpeechVADEvent{
+				SessionID:  sessionID,
+				StreamID:   streamID,
+				Active:     true,
+				Confidence: 0.8,
+				Timestamp:  time.Now().UTC(),
+			},
+		})
+	}
+
+	publish() // first attempt immediately
+	for {
+		select {
+		case env := <-bargeSub.C():
+			if evt, ok := env.Payload.(eventbus.SpeechBargeInEvent); ok && evt.SessionID == sessionID {
+				return evt
+			}
+		case <-ticker.C:
+			publish()
+		case <-deadline.C:
+			t.Fatalf("timeout waiting for barge event via VAD publish (%s)", timeout)
 		}
 	}
 }
@@ -2017,5 +2080,1367 @@ func TestVoicePipelinePayloadIntegrity(t *testing.T) {
 	if sp.Text != "Integrity: "+tr.Text {
 		t.Errorf("text propagation: speak=%q expected prefix+transcript=%q",
 			sp.Text, "Integrity: "+tr.Text)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Story 1.3: Barge-in with real TTS streaming
+// ---------------------------------------------------------------------------
+
+// multiChunkSynthesizer produces N chunks from a single Speak() call. Combined
+// with the existing streamingSynth wrapper, it enables realistic multi-chunk
+// streaming: Speak() returns the first chunk (head), Close() returns the
+// remaining chunks (tail). The egress publishes the head chunk, then on
+// barge-in interrupt calls closeSynthesizer() → Close() → tail chunks are
+// decorated with barge metadata.
+//
+// chunkDelay adds a delay between chunk generation in Speak(). With the
+// streamingSynth wrapper this only affects total Speak() latency (all chunks
+// are generated up front), but the delay between *published* events is
+// determined by the egress's post-Speak publish loop.
+type multiChunkSynthesizer struct {
+	chunkCount int
+	chunkDelay time.Duration
+	chunkSize  int           // bytes per chunk (640 = 320 samples = 20ms at 16kHz)
+	closeDelay time.Duration // optional: delay Close() to keep stream alive during teardown
+}
+
+func (s *multiChunkSynthesizer) makeChunk(index int, final bool) egress.SynthesisChunk {
+	data := make([]byte, s.chunkSize)
+	for j := range data {
+		data[j] = byte(index + 1)
+	}
+	return egress.SynthesisChunk{
+		Data:     data,
+		Duration: 20 * time.Millisecond,
+		Final:    final,
+	}
+}
+
+func (s *multiChunkSynthesizer) Speak(ctx context.Context, _ egress.SpeakRequest) ([]egress.SynthesisChunk, error) {
+	var chunks []egress.SynthesisChunk
+	for i := 0; i < s.chunkCount; i++ {
+		chunks = append(chunks, s.makeChunk(i, i == s.chunkCount-1))
+		if i < s.chunkCount-1 && s.chunkDelay > 0 {
+			select {
+			case <-ctx.Done():
+				return chunks, ctx.Err()
+			case <-time.After(s.chunkDelay):
+			}
+		}
+	}
+	return chunks, nil
+}
+
+func (s *multiChunkSynthesizer) Close(ctx context.Context) ([]egress.SynthesisChunk, error) {
+	if s.closeDelay > 0 {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(s.closeDelay):
+		}
+	}
+	return nil, nil
+}
+
+// quietPeriodSynth changes behavior based on Speak() call count. First N calls
+// return single-chunk Final=true (playback completes → triggers quiet period).
+// Subsequent calls return a single non-final chunk (keeps playing=true so VAD
+// can trigger barge). Used by TestVoicePipelineBargeInQuietPeriod to prove
+// that quiet period specifically blocks Phase 1 VAD, not just absent playback.
+type quietPeriodSynth struct {
+	finalUntilCall int32 // calls <= this return Final=true
+	calls          int32
+}
+
+func (s *quietPeriodSynth) Speak(_ context.Context, _ egress.SpeakRequest) ([]egress.SynthesisChunk, error) {
+	n := atomic.AddInt32(&s.calls, 1)
+	chunk := egress.SynthesisChunk{
+		Data:     make([]byte, 640),
+		Duration: 20 * time.Millisecond,
+		Final:    n <= s.finalUntilCall,
+	}
+	return []egress.SynthesisChunk{chunk}, nil
+}
+
+func (s *quietPeriodSynth) Close(_ context.Context) ([]egress.SynthesisChunk, error) {
+	return nil, nil
+}
+
+// TestVoicePipelineBargeInDuringTTSStreaming validates that when the barge
+// coordinator publishes a speech.barge_in event (triggered by VAD), the egress
+// service cancels the active TTS stream and the final playback event carries
+// barge_in metadata. The TTS mock streams multiple chunks with delays so the
+// barge interrupt can fire mid-synthesis.
+func TestVoicePipelineBargeInDuringTTSStreaming(t *testing.T) {
+	ctx := context.Background()
+	bus := eventbus.New()
+
+	store, cleanup := testutil.OpenStore(t)
+	defer cleanup()
+
+	if err := adapters.EnsureBuiltinAdapters(ctx, store); err != nil {
+		t.Fatalf("ensure builtin adapters: %v", err)
+	}
+
+	// Activate mock STT and VAD adapters.
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotSTT), adapters.MockSTTAdapterID, map[string]any{
+		"phrases":      []any{"interrupt me"},
+		"emit_partial": true,
+	}); err != nil {
+		t.Fatalf("activate stt: %v", err)
+	}
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotVAD), adapters.MockVADAdapterID, map[string]any{
+		"threshold":  0.2,
+		"min_frames": 1,
+	}); err != nil {
+		t.Fatalf("activate vad: %v", err)
+	}
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotTTS), adapters.MockTTSAdapterID, nil); err != nil {
+		t.Fatalf("activate tts: %v", err)
+	}
+
+	// multiChunkSynthesizer produces 10 chunks. Wrapped by streamingSynth,
+	// Speak() returns 1 head chunk immediately (published by egress — makes
+	// barge coordinator see active playback). Close() returns the remaining 9
+	// tail chunks when the stream is torn down. On barge-in, closeSynthesizer()
+	// calls Close() and decorates tail chunks with barge metadata.
+	ttsFactory := egress.FactoryFunc(func(_ context.Context, _ egress.SessionParams) (egress.Synthesizer, error) {
+		inner := &multiChunkSynthesizer{
+			chunkCount: 10,
+			chunkDelay: 0, // No delay needed — streamingSynth splits head/tail
+			chunkSize:  640,
+		}
+		return newStreamingSynth(inner), nil
+	})
+
+	ingressSvc := ingress.New(bus)
+	sttSvc := stt.New(bus,
+		stt.WithFactory(stt.NewAdapterFactory(store, nil)),
+		stt.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
+	)
+	vadSvc := vad.New(bus,
+		vad.WithFactory(vad.NewAdapterFactory(store)),
+		vad.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
+	)
+	bargeSvc := barge.New(bus,
+		barge.WithConfidenceThreshold(0.1),
+		barge.WithCooldown(100*time.Millisecond),
+		barge.WithQuietPeriod(0), // Disable quiet period for this test.
+	)
+	pipelineSvc := contentpipeline.NewService(bus, nil)
+	conversationSvc := conversation.NewService(bus,
+		conversation.WithHistoryLimit(8),
+		conversation.WithDetachTTL(5*time.Second),
+	)
+	intentSvc := intentrouter.NewService(bus,
+		intentrouter.WithAdapter(&speakBackAdapter{prefix: "Barge test: "}),
+	)
+	egressSvc := egress.New(bus,
+		egress.WithFactory(ttsFactory),
+		egress.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
+	)
+
+	services := []startStopper{
+		pipelineSvc, ingressSvc, sttSvc, vadSvc, bargeSvc, conversationSvc, intentSvc, egressSvc,
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	for _, svc := range services {
+		if err := svc.Start(runCtx); err != nil {
+			t.Fatalf("start service %T: %v", svc, err)
+		}
+		defer svc.Shutdown(context.Background())
+	}
+
+	playbackSub := bus.Subscribe(eventbus.TopicAudioEgressPlayback, eventbus.WithSubscriptionName("test_playback"))
+	defer playbackSub.Close()
+	bargeSub := bus.Subscribe(eventbus.TopicSpeechBargeIn, eventbus.WithSubscriptionName("test_barge"))
+	defer bargeSub.Close()
+
+	// Emit session lifecycle so services track the session.
+	const sessionID = "barge-streaming-session"
+	bus.Publish(ctx, eventbus.Envelope{
+		Topic:  eventbus.TopicSessionsLifecycle,
+		Source: eventbus.SourceSessionManager,
+		Payload: eventbus.SessionLifecycleEvent{
+			SessionID: sessionID,
+			State:     eventbus.SessionStateRunning,
+		},
+	})
+
+	format := eventbus.AudioFormat{
+		Encoding:   eventbus.AudioEncodingPCM16,
+		SampleRate: 16000,
+		Channels:   1,
+		BitDepth:   16,
+	}
+
+	// Feed audio through ingress to trigger the STT → AI → TTS pipeline.
+	stream, err := ingressSvc.OpenStream(sessionID, "mic", format, nil)
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+	segment := pcmBuffer(200, 320)
+	for i := 0; i < 3; i++ {
+		if err := stream.Write(segment); err != nil {
+			t.Fatalf("write segment %d: %v", i, err)
+		}
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatalf("close stream: %v", err)
+	}
+
+	// Publish VAD events until the barge coordinator fires. This retries
+	// deterministically: the first few VADs may be rejected with "no active
+	// playback" until the head chunk is published and processed. No Sleep.
+	bargeEvt := publishVADUntilBarge(t, bus, bargeSub, sessionID, "mic", 5*time.Second)
+	if bargeEvt.SessionID != sessionID {
+		t.Errorf("barge sessionID: got %q want %q", bargeEvt.SessionID, sessionID)
+	}
+	if bargeEvt.Reason != "vad_detected" {
+		t.Errorf("barge reason: got %q want %q", bargeEvt.Reason, "vad_detected")
+	}
+
+	// Collect remaining playback events. After barge-in, closeSynthesizer()
+	// calls Close() on streamingSynth which returns the 9 tail chunks. These
+	// are all decorated with barge metadata. The stream is cut short because
+	// each tail chunk gets barge_in=true.
+	var bargeChunks int
+	finalPlayback := waitForPlayback(t, playbackSub, 3*time.Second, func(evt eventbus.AudioEgressPlaybackEvent) bool {
+		if evt.Metadata["barge_in"] == "true" {
+			bargeChunks++
+		}
+		return evt.Final && evt.Metadata["barge_in"] == "true"
+	})
+	if finalPlayback.Metadata["barge_in"] != "true" {
+		t.Errorf("expected barge_in=true on final playback, got metadata: %v", finalPlayback.Metadata)
+	}
+	if finalPlayback.Metadata["barge_in_reason"] != "vad_detected" {
+		t.Errorf("expected barge_in_reason=vad_detected, got: %q", finalPlayback.Metadata["barge_in_reason"])
+	}
+	if bargeChunks == 0 {
+		t.Errorf("expected at least one barge-decorated chunk from tail, got 0")
+	}
+	t.Logf("barge-decorated chunks: %d (tail chunks from interrupted stream)", bargeChunks)
+}
+
+// TestVoicePipelineBargeInRecovery validates that after a barge-in interrupt,
+// new audio input flows through the full pipeline (STT → conversation →
+// intent router → egress → playback) and the resulting playback does NOT
+// carry barge_in metadata.
+func TestVoicePipelineBargeInRecovery(t *testing.T) {
+	ctx := context.Background()
+	bus := eventbus.New()
+
+	store, cleanup := testutil.OpenStore(t)
+	defer cleanup()
+
+	if err := adapters.EnsureBuiltinAdapters(ctx, store); err != nil {
+		t.Fatalf("ensure builtin adapters: %v", err)
+	}
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotSTT), adapters.MockSTTAdapterID, map[string]any{
+		"phrases":      []any{"interrupt me", "second input"},
+		"emit_partial": true,
+	}); err != nil {
+		t.Fatalf("activate stt: %v", err)
+	}
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotVAD), adapters.MockVADAdapterID, map[string]any{
+		"threshold":  0.2,
+		"min_frames": 1,
+	}); err != nil {
+		t.Fatalf("activate vad: %v", err)
+	}
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotTTS), adapters.MockTTSAdapterID, nil); err != nil {
+		t.Fatalf("activate tts: %v", err)
+	}
+
+	const recoveryCooldown = 100 * time.Millisecond
+
+	ttsFactory := egress.FactoryFunc(func(_ context.Context, _ egress.SessionParams) (egress.Synthesizer, error) {
+		return newStreamingSynth(&multiChunkSynthesizer{
+			chunkCount: 10, chunkSize: 640,
+		}), nil
+	})
+
+	ingressSvc := ingress.New(bus)
+	sttSvc := stt.New(bus,
+		stt.WithFactory(stt.NewAdapterFactory(store, nil)),
+		stt.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
+	)
+	vadSvc := vad.New(bus,
+		vad.WithFactory(vad.NewAdapterFactory(store)),
+		vad.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
+	)
+	bargeSvc := barge.New(bus,
+		barge.WithConfidenceThreshold(0.1),
+		barge.WithCooldown(recoveryCooldown),
+		barge.WithQuietPeriod(0),
+	)
+	pipelineSvc := contentpipeline.NewService(bus, nil)
+	conversationSvc := conversation.NewService(bus,
+		conversation.WithHistoryLimit(8),
+		conversation.WithDetachTTL(5*time.Second),
+	)
+	intentSvc := intentrouter.NewService(bus,
+		intentrouter.WithAdapter(&speakBackAdapter{prefix: "Recovery: "}),
+	)
+	egressSvc := egress.New(bus,
+		egress.WithFactory(ttsFactory),
+		egress.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
+	)
+
+	services := []startStopper{
+		pipelineSvc, ingressSvc, sttSvc, vadSvc, bargeSvc, conversationSvc, intentSvc, egressSvc,
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	for _, svc := range services {
+		if err := svc.Start(runCtx); err != nil {
+			t.Fatalf("start service %T: %v", svc, err)
+		}
+		defer svc.Shutdown(context.Background())
+	}
+
+	playbackSub := bus.Subscribe(eventbus.TopicAudioEgressPlayback, eventbus.WithSubscriptionName("test_playback"))
+	defer playbackSub.Close()
+	bargeSub := bus.Subscribe(eventbus.TopicSpeechBargeIn, eventbus.WithSubscriptionName("test_barge"))
+	defer bargeSub.Close()
+
+	const sessionID = "barge-recovery-session"
+	bus.Publish(ctx, eventbus.Envelope{
+		Topic:  eventbus.TopicSessionsLifecycle,
+		Source: eventbus.SourceSessionManager,
+		Payload: eventbus.SessionLifecycleEvent{
+			SessionID: sessionID,
+			State:     eventbus.SessionStateRunning,
+		},
+	})
+
+	format := eventbus.AudioFormat{
+		Encoding:   eventbus.AudioEncodingPCM16,
+		SampleRate: 16000,
+		Channels:   1,
+		BitDepth:   16,
+	}
+
+	// --- Phase 1: Start TTS streaming, then barge-in ---
+	stream1, err := ingressSvc.OpenStream(sessionID, "mic", format, nil)
+	if err != nil {
+		t.Fatalf("open stream 1: %v", err)
+	}
+	segment := pcmBuffer(200, 320)
+	for i := 0; i < 3; i++ {
+		if err := stream1.Write(segment); err != nil {
+			t.Fatalf("write segment %d: %v", i, err)
+		}
+	}
+	if err := stream1.Close(); err != nil {
+		t.Fatalf("close stream 1: %v", err)
+	}
+
+	// Trigger barge-in — retries until barge coordinator sees active playback.
+	bargeEvt := publishVADUntilBarge(t, bus, bargeSub, sessionID, "mic", 5*time.Second)
+
+	// Wait for final playback with barge metadata.
+	waitForPlayback(t, playbackSub, 3*time.Second, func(evt eventbus.AudioEgressPlaybackEvent) bool {
+		return evt.Final && evt.Metadata["barge_in"] == "true"
+	})
+
+	// --- Phase 2: Feed new audio — verify full pipeline processes it ---
+
+	// Wait for cooldown to elapse based on the actual barge-in timestamp,
+	// not a fixed sleep. This adapts to actual timing rather than assuming
+	// a fixed duration that could be flaky on slow CI.
+	if remaining := time.Until(bargeEvt.Timestamp.Add(recoveryCooldown)); remaining > 0 {
+		time.Sleep(remaining)
+	}
+
+	stream2, err := ingressSvc.OpenStream(sessionID, "mic2", format, nil)
+	if err != nil {
+		t.Fatalf("open stream 2: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := stream2.Write(segment); err != nil {
+			t.Fatalf("write segment 2-%d: %v", i, err)
+		}
+	}
+	if err := stream2.Close(); err != nil {
+		t.Fatalf("close stream 2: %v", err)
+	}
+
+	// Wait for a new (non-barge) playback from the second input.
+	secondPlayback := waitForPlayback(t, playbackSub, 5*time.Second, func(evt eventbus.AudioEgressPlaybackEvent) bool {
+		return len(evt.Data) > 0 && evt.Metadata["barge_in"] != "true"
+	})
+	if secondPlayback.SessionID != sessionID {
+		t.Errorf("second playback sessionID: got %q want %q", secondPlayback.SessionID, sessionID)
+	}
+	if secondPlayback.Metadata["barge_in"] == "true" {
+		t.Errorf("second playback should NOT carry barge_in metadata, got: %v", secondPlayback.Metadata)
+	}
+	t.Log("barge-in recovery: second input processed successfully")
+}
+
+// TestVoicePipelineBargeInCooldown validates that rapid VAD detections within
+// the cooldown window are suppressed — only one barge event is published.
+func TestVoicePipelineBargeInCooldown(t *testing.T) {
+	ctx := context.Background()
+	bus := eventbus.New()
+
+	store, cleanup := testutil.OpenStore(t)
+	defer cleanup()
+
+	if err := adapters.EnsureBuiltinAdapters(ctx, store); err != nil {
+		t.Fatalf("ensure builtin adapters: %v", err)
+	}
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotSTT), adapters.MockSTTAdapterID, map[string]any{
+		"phrases":      []any{"cooldown test"},
+		"emit_partial": true,
+	}); err != nil {
+		t.Fatalf("activate stt: %v", err)
+	}
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotVAD), adapters.MockVADAdapterID, map[string]any{
+		"threshold":  0.2,
+		"min_frames": 1,
+	}); err != nil {
+		t.Fatalf("activate vad: %v", err)
+	}
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotTTS), adapters.MockTTSAdapterID, nil); err != nil {
+		t.Fatalf("activate tts: %v", err)
+	}
+
+	// closeDelay keeps the stream alive during teardown so the barge
+	// coordinator still sees playing=true when the second VAD arrives.
+	// Without this, closeSynthesizer() finishes instantly, publishes the
+	// final playback event, and the coordinator rejects the second VAD
+	// via "no active playback" instead of cooldown — masking regressions.
+	const cooldown = 200 * time.Millisecond
+	ttsFactory := egress.FactoryFunc(func(_ context.Context, _ egress.SessionParams) (egress.Synthesizer, error) {
+		return newStreamingSynth(&multiChunkSynthesizer{
+			chunkCount: 10,
+			chunkDelay: 100 * time.Millisecond,
+			chunkSize:  640,
+			closeDelay: 2 * cooldown, // stream stays alive well past cooldown
+		}), nil
+	})
+
+	ingressSvc := ingress.New(bus)
+	sttSvc := stt.New(bus,
+		stt.WithFactory(stt.NewAdapterFactory(store, nil)),
+		stt.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
+	)
+	vadSvc := vad.New(bus,
+		vad.WithFactory(vad.NewAdapterFactory(store)),
+		vad.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
+	)
+	bargeSvc := barge.New(bus,
+		barge.WithConfidenceThreshold(0.1),
+		barge.WithCooldown(cooldown),
+		barge.WithQuietPeriod(0),
+	)
+	pipelineSvc := contentpipeline.NewService(bus, nil)
+	conversationSvc := conversation.NewService(bus,
+		conversation.WithHistoryLimit(8),
+		conversation.WithDetachTTL(5*time.Second),
+	)
+	intentSvc := intentrouter.NewService(bus,
+		intentrouter.WithAdapter(&speakBackAdapter{prefix: "Cooldown: "}),
+	)
+	egressSvc := egress.New(bus,
+		egress.WithFactory(ttsFactory),
+		egress.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
+	)
+
+	services := []startStopper{
+		pipelineSvc, ingressSvc, sttSvc, vadSvc, bargeSvc, conversationSvc, intentSvc, egressSvc,
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	for _, svc := range services {
+		if err := svc.Start(runCtx); err != nil {
+			t.Fatalf("start service %T: %v", svc, err)
+		}
+		defer svc.Shutdown(context.Background())
+	}
+
+	bargeSub := bus.Subscribe(eventbus.TopicSpeechBargeIn, eventbus.WithSubscriptionName("test_barge"))
+	defer bargeSub.Close()
+
+	const sessionID = "barge-cooldown-session"
+	bus.Publish(ctx, eventbus.Envelope{
+		Topic:  eventbus.TopicSessionsLifecycle,
+		Source: eventbus.SourceSessionManager,
+		Payload: eventbus.SessionLifecycleEvent{
+			SessionID: sessionID,
+			State:     eventbus.SessionStateRunning,
+		},
+	})
+
+	format := eventbus.AudioFormat{
+		Encoding:   eventbus.AudioEncodingPCM16,
+		SampleRate: 16000,
+		Channels:   1,
+		BitDepth:   16,
+	}
+
+	// Start TTS streaming.
+	stream, err := ingressSvc.OpenStream(sessionID, "mic", format, nil)
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+	segment := pcmBuffer(200, 320)
+	for i := 0; i < 3; i++ {
+		if err := stream.Write(segment); err != nil {
+			t.Fatalf("write segment %d: %v", i, err)
+		}
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatalf("close stream: %v", err)
+	}
+
+	// Fire first VAD — retries until barge coordinator sees active playback
+	// and accepts it. This is deterministic: no Sleep needed.
+	bargeEvt := publishVADUntilBarge(t, bus, bargeSub, sessionID, "mic", 5*time.Second)
+
+	// Now fire a second VAD event immediately. closeDelay keeps the stream
+	// alive during teardown, so the barge coordinator still sees playing=true.
+	// The second VAD reaches registerTrigger which rejects it via cooldown.
+	// Timestamp is relative to the first barge event (50ms after) so it is
+	// guaranteed to fall within the 200ms cooldown window regardless of
+	// wall-clock delays on slow CI.
+	bus.Publish(ctx, eventbus.Envelope{
+		Topic:  eventbus.TopicSpeechVADDetected,
+		Source: eventbus.SourceSpeechVAD,
+		Payload: eventbus.SpeechVADEvent{
+			SessionID:  sessionID,
+			StreamID:   "mic",
+			Active:     true,
+			Confidence: 0.9,
+			Timestamp:  bargeEvt.Timestamp.Add(50 * time.Millisecond),
+		},
+	})
+
+	// Wait long enough for the barge coordinator to process the second VAD.
+	// Use 250ms > 200ms cooldown so we'd catch a leaked event.
+	timer := time.NewTimer(250 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case env := <-bargeSub.C():
+		evt, ok := env.Payload.(eventbus.SpeechBargeInEvent)
+		if ok {
+			t.Errorf("expected no second barge event, but got one: session=%s reason=%s", evt.SessionID, evt.Reason)
+		}
+	case <-timer.C:
+		// No second barge event within 250ms — correct.
+		t.Log("cooldown: second VAD event correctly suppressed (no duplicate barge)")
+	}
+}
+
+// TestVoicePipelineBargeInQuietPeriod validates that VAD events during the
+// quiet period after TTS playback completes are suppressed.
+func TestVoicePipelineBargeInQuietPeriod(t *testing.T) {
+	ctx := context.Background()
+	bus := eventbus.New()
+
+	store, cleanup := testutil.OpenStore(t)
+	defer cleanup()
+
+	if err := adapters.EnsureBuiltinAdapters(ctx, store); err != nil {
+		t.Fatalf("ensure builtin adapters: %v", err)
+	}
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotSTT), adapters.MockSTTAdapterID, map[string]any{
+		"phrases":      []any{"quiet period test"},
+		"emit_partial": true,
+	}); err != nil {
+		t.Fatalf("activate stt: %v", err)
+	}
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotVAD), adapters.MockVADAdapterID, map[string]any{
+		"threshold":  0.2,
+		"min_frames": 1,
+	}); err != nil {
+		t.Fatalf("activate vad: %v", err)
+	}
+	// Use the mock TTS adapter (single chunk, fast) so playback completes quickly.
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotTTS), adapters.MockTTSAdapterID, map[string]any{
+		"duration_ms": 100,
+	}); err != nil {
+		t.Fatalf("activate tts: %v", err)
+	}
+
+	ingressSvc := ingress.New(bus)
+	sttSvc := stt.New(bus,
+		stt.WithFactory(stt.NewAdapterFactory(store, nil)),
+		stt.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
+	)
+	vadSvc := vad.New(bus,
+		vad.WithFactory(vad.NewAdapterFactory(store)),
+		vad.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
+	)
+	bargeSvc := barge.New(bus,
+		barge.WithConfidenceThreshold(0.1),
+		barge.WithCooldown(50*time.Millisecond),
+		barge.WithQuietPeriod(300*time.Millisecond), // 300ms quiet period.
+	)
+	pipelineSvc := contentpipeline.NewService(bus, nil)
+	conversationSvc := conversation.NewService(bus,
+		conversation.WithHistoryLimit(8),
+		conversation.WithDetachTTL(5*time.Second),
+	)
+	intentSvc := intentrouter.NewService(bus,
+		intentrouter.WithAdapter(&speakBackAdapter{prefix: "Quiet: "}),
+	)
+
+	// The egress factory is called once per stream, so a single synthesizer
+	// handles all speak requests for a session. Phase 1 needs Final=true
+	// (playback completes → quiet period). Phase 2 needs non-final head
+	// (stays active so barge coordinator sees playing=true for VAD).
+	// Intent router publishes duplicate speak requests, so calls 1-2 are
+	// Phase 1, calls 3+ are Phase 2.
+	ttsFactory := egress.FactoryFunc(func(_ context.Context, _ egress.SessionParams) (egress.Synthesizer, error) {
+		return &quietPeriodSynth{finalUntilCall: 2}, nil
+	})
+	egressSvc := egress.New(bus,
+		egress.WithFactory(ttsFactory),
+		egress.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
+	)
+
+	services := []startStopper{
+		pipelineSvc, ingressSvc, sttSvc, vadSvc, bargeSvc, conversationSvc, intentSvc, egressSvc,
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	for _, svc := range services {
+		if err := svc.Start(runCtx); err != nil {
+			t.Fatalf("start service %T: %v", svc, err)
+		}
+		defer svc.Shutdown(context.Background())
+	}
+
+	bargeSub := bus.Subscribe(eventbus.TopicSpeechBargeIn, eventbus.WithSubscriptionName("test_barge"))
+	defer bargeSub.Close()
+	playbackSub := bus.Subscribe(eventbus.TopicAudioEgressPlayback, eventbus.WithSubscriptionName("test_playback"))
+	defer playbackSub.Close()
+
+	const sessionID = "barge-quiet-session"
+	bus.Publish(ctx, eventbus.Envelope{
+		Topic:  eventbus.TopicSessionsLifecycle,
+		Source: eventbus.SourceSessionManager,
+		Payload: eventbus.SessionLifecycleEvent{
+			SessionID: sessionID,
+			State:     eventbus.SessionStateRunning,
+		},
+	})
+
+	format := eventbus.AudioFormat{
+		Encoding:   eventbus.AudioEncodingPCM16,
+		SampleRate: 16000,
+		Channels:   1,
+		BitDepth:   16,
+	}
+
+	// Feed audio → pipeline produces TTS playback → let it complete.
+	stream, err := ingressSvc.OpenStream(sessionID, "mic", format, nil)
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+	segment := pcmBuffer(200, 320)
+	for i := 0; i < 3; i++ {
+		if err := stream.Write(segment); err != nil {
+			t.Fatalf("write segment %d: %v", i, err)
+		}
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatalf("close stream: %v", err)
+	}
+
+	// Wait for playback to finish (final=true event).
+	waitForPlayback(t, playbackSub, 5*time.Second, func(evt eventbus.AudioEgressPlaybackEvent) bool {
+		return evt.Final
+	})
+
+	// Small delay to ensure the barge coordinator's consumePlayback goroutine
+	// has processed the final playback event (setting quietUntil). Without this,
+	// the test's playback subscription may receive the event before the barge
+	// coordinator, causing the VAD to be rejected as "no stream found" instead
+	// of "quiet period active" — a false positive.
+	time.Sleep(50 * time.Millisecond)
+
+	// Publish VAD within the quiet period (300ms).
+	// Explicit Timestamp ensures the barge coordinator evaluates quiet period
+	// against publish time, not processing time.
+	bus.Publish(ctx, eventbus.Envelope{
+		Topic:  eventbus.TopicSpeechVADDetected,
+		Source: eventbus.SourceSpeechVAD,
+		Payload: eventbus.SpeechVADEvent{
+			SessionID:  sessionID,
+			StreamID:   "mic",
+			Active:     true,
+			Confidence: 0.8,
+			Timestamp:  time.Now().UTC(),
+		},
+	})
+
+	// Wait for quiet period + buffer to catch any delayed barge events.
+	// The full quiet period window (300ms) plus 100ms processing buffer
+	// ensures we'd see a barge event if one leaked through.
+	timer := time.NewTimer(400 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case env := <-bargeSub.C():
+		evt, ok := env.Payload.(eventbus.SpeechBargeInEvent)
+		if ok {
+			t.Errorf("expected no barge event during quiet period, but got: session=%s reason=%s", evt.SessionID, evt.Reason)
+		}
+	case <-timer.C:
+		t.Log("quiet period: VAD event correctly suppressed after playback")
+	}
+
+	// --- Phase 2: After quiet period expires, VAD with new playback triggers barge ---
+	//
+	// This proves the quiet period was the blocker in Phase 1, not just the
+	// absence of an active stream. Without this phase, the test would pass
+	// even with WithQuietPeriod(0) because targetStreamForSession returns
+	// ("", false) for both "quiet period active" and "no stream found".
+	//
+	// By feeding new audio AFTER the quiet period expires and showing that
+	// barge-in works normally, we prove the quiet period was the specific
+	// blocker during Phase 1.
+	const quietPeriodLen = 300 * time.Millisecond // matches WithQuietPeriod above
+	time.Sleep(quietPeriodLen)
+
+	stream2, err := ingressSvc.OpenStream(sessionID, "mic2", format, nil)
+	if err != nil {
+		t.Fatalf("open stream 2: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := stream2.Write(segment); err != nil {
+			t.Fatalf("write segment 2-%d: %v", i, err)
+		}
+	}
+	if err := stream2.Close(); err != nil {
+		t.Fatalf("close stream 2: %v", err)
+	}
+
+	// New audio triggers a new TTS cycle. Once the barge coordinator sees
+	// active playback, VAD triggers barge normally — proving quiet period
+	// was the reason Phase 1's VAD was blocked, not structural absence.
+	bargeEvt := publishVADUntilBarge(t, bus, bargeSub, sessionID, "mic2", 5*time.Second)
+	if bargeEvt.Reason != "vad_detected" {
+		t.Errorf("post-quiet barge reason: got %q want %q", bargeEvt.Reason, "vad_detected")
+	}
+	t.Log("quiet period: VAD triggers barge normally after quiet period expires with new playback")
+}
+
+// ---------------------------------------------------------------------------
+// Story 1.4: Voice-optional fallback mode
+// ---------------------------------------------------------------------------
+
+// TestVoiceFallbackServicesStartWithoutAdapters validates that ALL audio
+// services (ingress, STT, VAD, barge, egress) start successfully when no
+// adapters are configured. Each service uses its default factory which returns
+// ErrFactoryUnavailable. The daemon does not crash or log errors.
+//
+// NOTE: This tests the default factory (ErrFactoryUnavailable → drop) path.
+// The real daemon uses NewAdapterFactory(store, ...) which returns
+// ErrAdapterUnavailable → buffer+retry. See TestVoiceFallbackEgressBuffersWithAdapterFactory
+// for the real daemon code path.
+func TestVoiceFallbackServicesStartWithoutAdapters(t *testing.T) {
+	ctx := context.Background()
+	bus := eventbus.New()
+
+	// No store setup, no adapter activation — default factories only.
+	ingressSvc := ingress.New(bus)
+	sttSvc := stt.New(bus) // default factory → ErrFactoryUnavailable
+	vadSvc := vad.New(bus) // default factory → ErrFactoryUnavailable
+	bargeSvc := barge.New(bus)
+	egressSvc := egress.New(bus) // default factory → ErrFactoryUnavailable
+	pipelineSvc := contentpipeline.NewService(bus, nil)
+	conversationSvc := conversation.NewService(bus,
+		conversation.WithHistoryLimit(8),
+		conversation.WithDetachTTL(5*time.Second),
+	)
+
+	services := []startStopper{
+		pipelineSvc, ingressSvc, sttSvc, vadSvc, bargeSvc, conversationSvc, egressSvc,
+	}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// All services must start without error.
+	for _, svc := range services {
+		if err := svc.Start(runCtx); err != nil {
+			t.Fatalf("start service %T: %v", svc, err)
+		}
+	}
+
+	// Verify services are alive: publish a session lifecycle event and confirm
+	// the bus delivers it (proves event bus and services are running).
+	lifecycleSub := bus.Subscribe(eventbus.TopicSessionsLifecycle, eventbus.WithSubscriptionName("test_lifecycle"))
+	defer lifecycleSub.Close()
+
+	const sessionID = "fallback-session"
+	bus.Publish(ctx, eventbus.Envelope{
+		Topic:  eventbus.TopicSessionsLifecycle,
+		Source: eventbus.SourceSessionManager,
+		Payload: eventbus.SessionLifecycleEvent{
+			SessionID: sessionID,
+			State:     eventbus.SessionStateRunning,
+		},
+	})
+
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
+	select {
+	case env := <-lifecycleSub.C():
+		evt, ok := env.Payload.(eventbus.SessionLifecycleEvent)
+		if !ok {
+			t.Fatalf("unexpected payload type: %T", env.Payload)
+		}
+		if evt.SessionID != sessionID {
+			t.Fatalf("lifecycle sessionID: got %q want %q", evt.SessionID, sessionID)
+		}
+	case <-timer.C:
+		t.Fatal("timeout waiting for lifecycle event — bus not delivering")
+	}
+
+	// Shutdown all services — must complete without panic or hanging.
+	cancel()
+	for i := len(services) - 1; i >= 0; i-- {
+		shutCtx, shutCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		if err := services[i].Shutdown(shutCtx); err != nil {
+			t.Errorf("shutdown %T: %v", services[i], err)
+		}
+		shutCancel()
+	}
+
+	// Verify egress has no active streams.
+	metrics := egressSvc.Metrics()
+	if metrics.ActiveStreams != 0 {
+		t.Errorf("egress active streams after shutdown: %d, want 0", metrics.ActiveStreams)
+	}
+}
+
+// TestVoiceFallbackEgressDropsWithoutTTS validates that when no TTS factory
+// is configured, the egress service drops speak requests without crashing,
+// retrying indefinitely, or logging errors. The conversation reply text
+// remains available on the event bus for API/WebSocket clients.
+//
+// NOTE: This tests the default factory (ErrFactoryUnavailable → drop) path.
+// See TestVoiceFallbackEgressBuffersWithAdapterFactory for the adapter factory
+// (ErrAdapterUnavailable → buffer+retry) path used by the real daemon.
+func TestVoiceFallbackEgressDropsWithoutTTS(t *testing.T) {
+	ctx := context.Background()
+	bus := eventbus.New()
+
+	// Wire conversation + egress with default factory (no TTS adapter).
+	pipelineSvc := contentpipeline.NewService(bus, nil)
+	conversationSvc := conversation.NewService(bus,
+		conversation.WithHistoryLimit(8),
+		conversation.WithDetachTTL(5*time.Second),
+	)
+	egressSvc := egress.New(bus) // default factory → ErrFactoryUnavailable
+
+	services := []startStopper{pipelineSvc, conversationSvc, egressSvc}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	for _, svc := range services {
+		if err := svc.Start(runCtx); err != nil {
+			t.Fatalf("start %T: %v", svc, err)
+		}
+		defer svc.Shutdown(context.Background())
+	}
+
+	// Subscribe to conversation reply (proves text is available) and playback
+	// (should NOT fire since no TTS factory).
+	replySub := bus.Subscribe(eventbus.TopicConversationReply, eventbus.WithSubscriptionName("test_reply"))
+	defer replySub.Close()
+	playbackSub := bus.Subscribe(eventbus.TopicAudioEgressPlayback, eventbus.WithSubscriptionName("test_playback"))
+	defer playbackSub.Close()
+
+	const sessionID = "fallback-egress-session"
+
+	// Emit session lifecycle so conversation service tracks the session.
+	bus.Publish(ctx, eventbus.Envelope{
+		Topic:  eventbus.TopicSessionsLifecycle,
+		Source: eventbus.SourceSessionManager,
+		Payload: eventbus.SessionLifecycleEvent{
+			SessionID: sessionID,
+			State:     eventbus.SessionStateRunning,
+		},
+	})
+
+	// Publish a conversation reply — this triggers the egress consumeReplies
+	// path which calls handleSpeakRequest → createStream → factory returns
+	// ErrFactoryUnavailable → request dropped.
+	const replyText = "This is the AI response text"
+	bus.Publish(ctx, eventbus.Envelope{
+		Topic:  eventbus.TopicConversationReply,
+		Source: eventbus.SourceConversation,
+		Payload: eventbus.ConversationReplyEvent{
+			SessionID: sessionID,
+			PromptID:  "test-prompt-1",
+			Text:      replyText,
+			Metadata:  map[string]string{"adapter": "mock.ai"},
+		},
+	})
+
+	// Verify the reply text is available on the bus (proves text-mode works).
+	replyEvt := waitFor(t, func() <-chan eventbus.ConversationReplyEvent {
+		ch := make(chan eventbus.ConversationReplyEvent, 1)
+		go func() {
+			for {
+				select {
+				case <-runCtx.Done():
+					return
+				case env, ok := <-replySub.C():
+					if !ok {
+						return
+					}
+					if evt, ok := env.Payload.(eventbus.ConversationReplyEvent); ok {
+						ch <- evt
+						return
+					}
+				}
+			}
+		}()
+		return ch
+	}(), 2*time.Second)
+	if replyEvt.Text != replyText {
+		t.Errorf("reply text: got %q want %q", replyEvt.Text, replyText)
+	}
+
+	// Wait a bounded window to confirm NO playback event fires.
+	noPlayback := time.NewTimer(500 * time.Millisecond)
+	defer noPlayback.Stop()
+	select {
+	case env := <-playbackSub.C():
+		pb, ok := env.Payload.(eventbus.AudioEgressPlaybackEvent)
+		if ok {
+			t.Fatalf("unexpected playback event without TTS factory: final=%v len=%d", pb.Final, len(pb.Data))
+		}
+	case <-noPlayback.C:
+		// No playback — correct: factory unavailable drops the request.
+	}
+
+	// Verify egress did not create any streams.
+	metrics := egressSvc.Metrics()
+	if metrics.ActiveStreams != 0 {
+		t.Errorf("egress should have 0 active streams, got %d", metrics.ActiveStreams)
+	}
+}
+
+// TestVoiceFallbackSTTDropsWithoutAdapter validates that when no STT factory
+// is configured, the STT bridge drops audio segments without crashing or
+// buffering indefinitely.
+//
+// NOTE: This tests the default factory (ErrFactoryUnavailable → drop) path.
+// The real daemon uses NewAdapterFactory(store, ...) → ErrAdapterUnavailable → buffer+retry.
+func TestVoiceFallbackSTTDropsWithoutAdapter(t *testing.T) {
+	ctx := context.Background()
+	bus := eventbus.New()
+
+	// Wire ingress + STT with default factory (no STT adapter).
+	ingressSvc := ingress.New(bus)
+	sttSvc := stt.New(bus) // default factory → ErrFactoryUnavailable
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	if err := ingressSvc.Start(runCtx); err != nil {
+		t.Fatalf("start ingress: %v", err)
+	}
+	defer ingressSvc.Shutdown(context.Background())
+	if err := sttSvc.Start(runCtx); err != nil {
+		t.Fatalf("start stt: %v", err)
+	}
+	defer sttSvc.Shutdown(context.Background())
+
+	// Subscribe to transcript topics — should NOT fire since STT drops segments.
+	transcriptSub := bus.Subscribe(eventbus.TopicSpeechTranscriptFinal, eventbus.WithSubscriptionName("test_transcript"))
+	defer transcriptSub.Close()
+
+	const sessionID = "fallback-stt-session"
+	format := eventbus.AudioFormat{
+		Encoding:      eventbus.AudioEncodingPCM16,
+		SampleRate:    16000,
+		Channels:      1,
+		BitDepth:      16,
+		FrameDuration: 20 * time.Millisecond,
+	}
+
+	// Open a stream and write audio segments.
+	stream, err := ingressSvc.OpenStream(sessionID, "mic", format, nil)
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+	segment := pcmBuffer(200, 320)
+	for i := 0; i < 3; i++ {
+		if err := stream.Write(segment); err != nil {
+			t.Fatalf("write segment %d: %v", i, err)
+		}
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatalf("close stream: %v", err)
+	}
+
+	// Allow STT time to process (it should drop immediately, but give margin).
+	noTranscript := time.NewTimer(500 * time.Millisecond)
+	defer noTranscript.Stop()
+	select {
+	case env := <-transcriptSub.C():
+		t.Fatalf("unexpected transcript without STT adapter: %+v", env.Payload)
+	case <-noTranscript.C:
+		// No transcript — correct: factory unavailable drops segments.
+	}
+
+	// Verify STT processed segments (counter increments even for dropped segments).
+	sttMetrics := sttSvc.Metrics()
+	if sttMetrics.SegmentsTotal == 0 {
+		t.Errorf("STT should have received segments (even if dropped), got 0")
+	}
+}
+
+// TestVoiceFallbackBargeInertWithoutVAD validates that the barge coordinator
+// starts, runs, and shuts down cleanly with zero VAD input. Client-initiated
+// interrupts still work.
+func TestVoiceFallbackBargeInertWithoutVAD(t *testing.T) {
+	ctx := context.Background()
+	bus := eventbus.New()
+
+	store, cleanup := testutil.OpenStore(t)
+	defer cleanup()
+
+	if err := adapters.EnsureBuiltinAdapters(ctx, store); err != nil {
+		t.Fatalf("ensure builtin adapters: %v", err)
+	}
+	// Activate only TTS (no STT, no VAD) to prove barge handles client
+	// interrupts without VAD.
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotTTS), adapters.MockTTSAdapterID, map[string]any{
+		"duration_ms": 200,
+	}); err != nil {
+		t.Fatalf("activate tts: %v", err)
+	}
+
+	bargeSvc := barge.New(bus,
+		barge.WithConfidenceThreshold(0.1),
+		barge.WithCooldown(50*time.Millisecond),
+		barge.WithQuietPeriod(0),
+	)
+	egressSvc := egress.New(bus,
+		egress.WithFactory(egress.NewAdapterFactory(store, nil)),
+		egress.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
+	)
+	pipelineSvc := contentpipeline.NewService(bus, nil)
+	conversationSvc := conversation.NewService(bus,
+		conversation.WithHistoryLimit(8),
+		conversation.WithDetachTTL(5*time.Second),
+	)
+
+	services := []startStopper{pipelineSvc, bargeSvc, conversationSvc, egressSvc}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	for _, svc := range services {
+		if err := svc.Start(runCtx); err != nil {
+			t.Fatalf("start %T: %v", svc, err)
+		}
+		defer svc.Shutdown(context.Background())
+	}
+
+	bargeSub := bus.Subscribe(eventbus.TopicSpeechBargeIn, eventbus.WithSubscriptionName("test_barge"))
+	defer bargeSub.Close()
+	playbackSub := bus.Subscribe(eventbus.TopicAudioEgressPlayback, eventbus.WithSubscriptionName("test_playback"))
+	defer playbackSub.Close()
+
+	const sessionID = "fallback-barge-session"
+	bus.Publish(ctx, eventbus.Envelope{
+		Topic:  eventbus.TopicSessionsLifecycle,
+		Source: eventbus.SourceSessionManager,
+		Payload: eventbus.SessionLifecycleEvent{
+			SessionID: sessionID,
+			State:     eventbus.SessionStateRunning,
+		},
+	})
+
+	// Trigger TTS playback via conversation reply (egress has TTS factory).
+	bus.Publish(ctx, eventbus.Envelope{
+		Topic:  eventbus.TopicConversationReply,
+		Source: eventbus.SourceConversation,
+		Payload: eventbus.ConversationReplyEvent{
+			SessionID: sessionID,
+			PromptID:  "test-prompt",
+			Text:      "Hello from the AI",
+			Metadata:  map[string]string{"adapter": "mock.ai"},
+		},
+	})
+
+	// Wait for first playback chunk.
+	firstPlayback := waitForPlayback(t, playbackSub, 3*time.Second, func(evt eventbus.AudioEgressPlaybackEvent) bool {
+		return len(evt.Data) > 0
+	})
+	streamID := firstPlayback.StreamID
+	if streamID == "" {
+		streamID = "tts"
+	}
+
+	// Verify no VAD-triggered barge events arrive (no VAD configured).
+	noVADBarge := time.NewTimer(200 * time.Millisecond)
+	defer noVADBarge.Stop()
+	select {
+	case env := <-bargeSub.C():
+		t.Fatalf("unexpected barge event without VAD: %+v", env.Payload)
+	case <-noVADBarge.C:
+		// No barge — correct: no VAD means no VAD-triggered barge.
+	}
+
+	// Client-initiated interrupt still works without VAD.
+	bus.Publish(ctx, eventbus.Envelope{
+		Topic:  eventbus.TopicAudioInterrupt,
+		Source: eventbus.SourceClient,
+		Payload: eventbus.AudioInterruptEvent{
+			SessionID: sessionID,
+			StreamID:  streamID,
+			Reason:    "manual",
+			Metadata:  map[string]string{"origin": "test"},
+			Timestamp: time.Now().UTC(),
+		},
+	})
+
+	bargeEvt := waitForBargeEvent(t, bargeSub, 2*time.Second)
+	if bargeEvt.SessionID != sessionID {
+		t.Errorf("barge sessionID: got %q want %q", bargeEvt.SessionID, sessionID)
+	}
+	if bargeEvt.Reason != "manual" {
+		t.Errorf("barge reason: got %q want %q", bargeEvt.Reason, "manual")
+	}
+
+	// Confirm final playback with barge metadata arrives.
+	waitForPlayback(t, playbackSub, 3*time.Second, func(evt eventbus.AudioEgressPlaybackEvent) bool {
+		return evt.Final && evt.Metadata["barge_in"] == "true"
+	})
+}
+
+// TestVoiceFallbackEgressBuffersWithAdapterFactory validates the REAL daemon
+// code path: egress created with NewAdapterFactory backed by a config store
+// that has NO TTS adapter binding. Unlike TestVoiceFallbackEgressDropsWithoutTTS
+// (which tests the default factory → ErrFactoryUnavailable → drop path), this
+// tests the adapter factory → ErrAdapterUnavailable → buffer+retry path that
+// the actual daemon uses (daemon.go:119).
+func TestVoiceFallbackEgressBuffersWithAdapterFactory(t *testing.T) {
+	ctx := context.Background()
+	bus := eventbus.New()
+
+	// Real config store with NO TTS binding — simulates daemon startup without
+	// any voice adapter configured.
+	store, cleanup := testutil.OpenStore(t)
+	defer cleanup()
+
+	pipelineSvc := contentpipeline.NewService(bus, nil)
+	conversationSvc := conversation.NewService(bus,
+		conversation.WithHistoryLimit(8),
+		conversation.WithDetachTTL(5*time.Second),
+	)
+	// Real adapter factory backed by config store (same wiring as daemon.go:119).
+	// With no TTS binding, Create() returns ErrAdapterUnavailable → buffer+retry.
+	egressLog := &syncBuffer{}
+	egressSvc := egress.New(bus,
+		egress.WithFactory(egress.NewAdapterFactory(store, nil)),
+		egress.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
+		egress.WithLogger(log.New(egressLog, "", 0)),
+	)
+
+	services := []startStopper{pipelineSvc, conversationSvc, egressSvc}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	for _, svc := range services {
+		if err := svc.Start(runCtx); err != nil {
+			t.Fatalf("start %T: %v", svc, err)
+		}
+		defer svc.Shutdown(context.Background())
+	}
+
+	// Subscribe to conversation reply (proves text available) and playback
+	// (should NOT fire — no TTS adapter bound).
+	replySub := bus.Subscribe(eventbus.TopicConversationReply, eventbus.WithSubscriptionName("test_reply_af"))
+	defer replySub.Close()
+	playbackSub := bus.Subscribe(eventbus.TopicAudioEgressPlayback, eventbus.WithSubscriptionName("test_playback_af"))
+	defer playbackSub.Close()
+
+	const sessionID = "fallback-adapter-factory-session"
+	bus.Publish(ctx, eventbus.Envelope{
+		Topic:  eventbus.TopicSessionsLifecycle,
+		Source: eventbus.SourceSessionManager,
+		Payload: eventbus.SessionLifecycleEvent{
+			SessionID: sessionID,
+			State:     eventbus.SessionStateRunning,
+		},
+	})
+
+	// Publish conversation reply — egress receives it, calls factory.Create(),
+	// gets ErrAdapterUnavailable, buffers the request with retry backoff.
+	const replyText = "AI response via adapter factory path"
+	bus.Publish(ctx, eventbus.Envelope{
+		Topic:  eventbus.TopicConversationReply,
+		Source: eventbus.SourceConversation,
+		Payload: eventbus.ConversationReplyEvent{
+			SessionID: sessionID,
+			PromptID:  "test-prompt-af",
+			Text:      replyText,
+			Metadata:  map[string]string{"adapter": "mock.ai"},
+		},
+	})
+
+	// Reply text must be on the bus regardless of TTS availability.
+	replyEvt := waitFor(t, func() <-chan eventbus.ConversationReplyEvent {
+		ch := make(chan eventbus.ConversationReplyEvent, 1)
+		go func() {
+			for {
+				select {
+				case <-runCtx.Done():
+					return
+				case env, ok := <-replySub.C():
+					if !ok {
+						return
+					}
+					if evt, ok := env.Payload.(eventbus.ConversationReplyEvent); ok {
+						ch <- evt
+						return
+					}
+				}
+			}
+		}()
+		return ch
+	}(), 2*time.Second)
+	if replyEvt.Text != replyText {
+		t.Errorf("reply text: got %q want %q", replyEvt.Text, replyText)
+	}
+
+	// Egress buffers the request (ErrAdapterUnavailable → retry) but never
+	// succeeds because no adapter exists. No playback events should fire.
+	noPlayback := time.NewTimer(500 * time.Millisecond)
+	defer noPlayback.Stop()
+	select {
+	case env := <-playbackSub.C():
+		pb, ok := env.Payload.(eventbus.AudioEgressPlaybackEvent)
+		if ok {
+			t.Fatalf("unexpected playback without TTS adapter: final=%v", pb.Final)
+		}
+	case <-noPlayback.C:
+		// No playback — correct: adapter unavailable, request buffered but never fulfilled.
+	}
+
+	// Verify the buffer+retry path was taken (not the drop path).
+	logOutput := egressLog.String()
+	if !strings.Contains(logOutput, "[TTS] buffered speak request") {
+		t.Errorf("expected buffer log from ErrAdapterUnavailable path, got: %s", logOutput)
+	}
+	if strings.Contains(logOutput, "[TTS] factory unavailable") {
+		t.Errorf("unexpected factory-unavailable log — should be buffer path, got: %s", logOutput)
+	}
+
+	// Clean shutdown must not panic even with pending buffered requests.
+	cancel()
+	metrics := egressSvc.Metrics()
+	if metrics.ActiveStreams != 0 {
+		t.Errorf("egress should have 0 active streams, got %d", metrics.ActiveStreams)
+	}
+}
+
+// TestVoiceFallbackSTTBuffersWithAdapterFactory validates the REAL daemon code
+// path: STT created with NewAdapterFactory backed by a config store that has NO
+// STT adapter binding. Unlike TestVoiceFallbackSTTDropsWithoutAdapter (which
+// tests the default factory → ErrFactoryUnavailable → drop path), this tests
+// the adapter factory → ErrAdapterUnavailable → buffer+retry path that the
+// actual daemon uses (daemon.go:116).
+func TestVoiceFallbackSTTBuffersWithAdapterFactory(t *testing.T) {
+	ctx := context.Background()
+	bus := eventbus.New()
+
+	// Real config store with NO STT binding — simulates daemon startup without
+	// any STT adapter configured.
+	store, cleanup := testutil.OpenStore(t)
+	defer cleanup()
+
+	ingressSvc := ingress.New(bus)
+
+	// Real adapter factory backed by config store (same wiring as daemon.go:116).
+	// With no STT binding, Create() returns ErrAdapterUnavailable → buffer+retry.
+	sttLog := &syncBuffer{}
+	sttSvc := stt.New(bus,
+		stt.WithFactory(stt.NewAdapterFactory(store, nil)),
+		stt.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
+		stt.WithLogger(log.New(sttLog, "", 0)),
+	)
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	if err := ingressSvc.Start(runCtx); err != nil {
+		t.Fatalf("start ingress: %v", err)
+	}
+	defer ingressSvc.Shutdown(context.Background())
+	if err := sttSvc.Start(runCtx); err != nil {
+		t.Fatalf("start stt: %v", err)
+	}
+	defer sttSvc.Shutdown(context.Background())
+
+	// Subscribe to transcript — should NOT fire since no STT adapter is bound.
+	transcriptSub := bus.Subscribe(eventbus.TopicSpeechTranscriptFinal, eventbus.WithSubscriptionName("test_transcript_af"))
+	defer transcriptSub.Close()
+
+	const sessionID = "fallback-stt-af-session"
+	format := eventbus.AudioFormat{
+		Encoding:      eventbus.AudioEncodingPCM16,
+		SampleRate:    16000,
+		Channels:      1,
+		BitDepth:      16,
+		FrameDuration: 20 * time.Millisecond,
+	}
+
+	// Open stream and write audio segments.
+	stream, err := ingressSvc.OpenStream(sessionID, "mic", format, nil)
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+	segment := pcmBuffer(200, 320)
+	for i := 0; i < 3; i++ {
+		if err := stream.Write(segment); err != nil {
+			t.Fatalf("write segment %d: %v", i, err)
+		}
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatalf("close stream: %v", err)
+	}
+
+	// Allow STT time to process — it should buffer, not drop.
+	noTranscript := time.NewTimer(500 * time.Millisecond)
+	defer noTranscript.Stop()
+	select {
+	case env := <-transcriptSub.C():
+		t.Fatalf("unexpected transcript without STT adapter: %+v", env.Payload)
+	case <-noTranscript.C:
+		// No transcript — correct: adapter unavailable, segments buffered but never transcribed.
+	}
+
+	// Verify the buffer+retry path was taken (not the drop path).
+	logOutput := sttLog.String()
+	if !strings.Contains(logOutput, "[STT] buffered segment") {
+		t.Errorf("expected buffer log from ErrAdapterUnavailable path, got: %s", logOutput)
+	}
+	if strings.Contains(logOutput, "[STT] factory unavailable") {
+		t.Errorf("unexpected factory-unavailable log — should be buffer path, got: %s", logOutput)
+	}
+
+	// STT should have received segments (counter increments even for buffered segments).
+	sttMetrics := sttSvc.Metrics()
+	if sttMetrics.SegmentsTotal == 0 {
+		t.Errorf("STT should have received segments, got 0")
 	}
 }

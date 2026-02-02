@@ -106,6 +106,60 @@ func TestVoiceReadinessActiveAdapters(t *testing.T) {
 	}
 }
 
+// TestVoiceReadinessPartialConfig verifies VoiceReadiness when only STT is
+// configured (no TTS). Capture should be enabled, playback disabled, and
+// issues should only report TTS-related problems.
+func TestVoiceReadinessPartialConfig(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "config.db")
+	store, err := Open(Options{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Only configure STT — no TTS.
+	if err := store.UpsertAdapter(ctx, Adapter{
+		ID:     "adapter.stt.mock",
+		Source: "builtin",
+		Type:   "stt",
+		Name:   "Mock STT",
+	}); err != nil {
+		t.Fatalf("upsert stt adapter: %v", err)
+	}
+	if err := store.SetActiveAdapter(ctx, slots.STT, "adapter.stt.mock", nil); err != nil {
+		t.Fatalf("activate stt: %v", err)
+	}
+
+	readiness, err := store.VoiceReadiness(ctx)
+	if err != nil {
+		t.Fatalf("voice readiness: %v", err)
+	}
+	if !readiness.CaptureEnabled {
+		t.Fatalf("expected capture to be enabled (STT active)")
+	}
+	if readiness.PlaybackEnabled {
+		t.Fatalf("expected playback to be disabled (no TTS)")
+	}
+
+	// Issues should only reference TTS slot.
+	for _, issue := range readiness.Issues {
+		if issue.Slot == slots.STT {
+			t.Fatalf("unexpected STT issue when STT is active: %+v", issue)
+		}
+		if issue.Slot != slots.TTS {
+			t.Fatalf("unexpected slot in issues: %+v", issue)
+		}
+	}
+	if len(readiness.Issues) == 0 {
+		t.Fatalf("expected TTS issues to be reported")
+	}
+}
+
 func TestVoiceReadinessInactiveBinding(t *testing.T) {
 	t.Parallel()
 
