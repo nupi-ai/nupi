@@ -28,7 +28,7 @@ var (
 
 type execLauncher struct{}
 
-func (execLauncher) Launch(ctx context.Context, binary string, args []string, env []string, stdout io.Writer, stderr io.Writer) (ProcessHandle, error) {
+func (execLauncher) Launch(ctx context.Context, binary string, args []string, env []string, stdout io.Writer, stderr io.Writer, workingDir string) (ProcessHandle, error) {
 	if strings.TrimSpace(binary) == "" {
 		return nil, ErrAdapterBinaryUnset
 	}
@@ -42,6 +42,9 @@ func (execLauncher) Launch(ctx context.Context, binary string, args []string, en
 	// Note: We don't use exec.CommandContext here because we need to control
 	// signal delivery for graceful shutdown (SIGTERM → SIGKILL).
 	cmd := exec.Command(binary, args...)
+	if workingDir != "" {
+		cmd.Dir = workingDir
+	}
 	if stdout == nil {
 		cmd.Stdout = io.Discard
 	} else {

@@ -15,6 +15,7 @@ type LaunchRecord struct {
 	Binary     string
 	Args       []string
 	Env        []string
+	WorkingDir string
 	Slot       string
 	Adapter    string
 	LaunchedAt time.Time
@@ -47,7 +48,7 @@ func (m *MockLauncher) SetError(err error) {
 }
 
 // Launch records adapter metadata and returns a controllable handle.
-func (m *MockLauncher) Launch(ctx context.Context, binary string, args []string, env []string, stdout io.Writer, stderr io.Writer) (ProcessHandle, error) {
+func (m *MockLauncher) Launch(ctx context.Context, binary string, args []string, env []string, stdout io.Writer, stderr io.Writer, workingDir string) (ProcessHandle, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.err != nil {
@@ -58,6 +59,7 @@ func (m *MockLauncher) Launch(ctx context.Context, binary string, args []string,
 		Binary:     binary,
 		Args:       append([]string(nil), args...),
 		Env:        append([]string(nil), env...),
+		WorkingDir: workingDir,
 		Slot:       slotFromEnv(env),
 		Adapter:    adapterFromEnv(env),
 		LaunchedAt: time.Now().UTC(),

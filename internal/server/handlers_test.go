@@ -1548,7 +1548,7 @@ func newTestAdaptersService(t *testing.T, store *configstore.Store) *adapters.Se
 
 type testAdapterLauncher struct{}
 
-func (testAdapterLauncher) Launch(context.Context, string, []string, []string, io.Writer, io.Writer) (adapters.ProcessHandle, error) {
+func (testAdapterLauncher) Launch(context.Context, string, []string, []string, io.Writer, io.Writer, string) (adapters.ProcessHandle, error) {
 	return testAdapterHandle{}, nil
 }
 
