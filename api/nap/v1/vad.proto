@@ -1,0 +1,45 @@
+syntax = "proto3";
+
+package nupi.nap.v1;
+
+option go_package = "github.com/nupi-ai/nupi/api/nap/v1;napv1";
+
+import "nap/v1/stt.proto";
+import "google/protobuf/timestamp.proto";
+
+// SpeechEventType classifies voice activity transitions detected by the adapter.
+enum SpeechEventType {
+  SPEECH_EVENT_TYPE_UNSPECIFIED = 0;
+  SPEECH_EVENT_TYPE_START = 1;
+  SPEECH_EVENT_TYPE_END = 2;
+  SPEECH_EVENT_TYPE_ONGOING = 3;
+}
+
+// DetectSpeechRequest carries a single chunk of PCM audio for voice activity analysis.
+message DetectSpeechRequest {
+  bytes pcm_data = 1;
+  AudioFormat format = 2;
+  google.protobuf.Timestamp timestamp = 3;
+  string session_id = 4;
+  string stream_id = 5;
+  string config_json = 6;
+}
+
+// SpeechEvent reports a voice activity detection result.
+// The event implicitly belongs to the same session/stream as the originating
+// DetectSpeechRequest — each bidirectional stream serves exactly one session.
+message SpeechEvent {
+  SpeechEventType type = 1;
+  float confidence = 2;
+  google.protobuf.Timestamp timestamp = 3;
+  // Adapter-specific diagnostics (e.g. "energy", "threshold", "model").
+  map<string, string> metadata = 4;
+}
+
+// VoiceActivityDetectionService exposes the NAP contract for VAD adapters.
+// Each DetectSpeech stream maps 1:1 to a session-stream pair. Closing the
+// client send-side (half-close) signals end of audio; the adapter must flush
+// any pending state and emit a final SPEECH_EVENT_TYPE_END before closing its side.
+service VoiceActivityDetectionService {
+  rpc DetectSpeech(stream DetectSpeechRequest) returns (stream SpeechEvent);
+}
