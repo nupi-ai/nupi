@@ -142,8 +142,10 @@ spec:
 func newTestPluginService(t *testing.T, baseDir string) *plugins.Service {
 	t.Helper()
 	svc := plugins.NewService(baseDir)
-	// Start the service to initialize jsruntime
-	if err := svc.Start(context.Background()); err != nil {
+	// Start the service to initialize jsruntime (with timeout to avoid hanging on slow Bun startup)
+	startCtx, startCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer startCancel()
+	if err := svc.Start(startCtx); err != nil {
 		t.Fatalf("start plugin service: %v", err)
 	}
 	t.Cleanup(func() {
