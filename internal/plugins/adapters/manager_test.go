@@ -1783,3 +1783,231 @@ func TestIsBuiltinMockAdapter(t *testing.T) {
 		}
 	}
 }
+
+func TestStartAdapterWorkingDirResolution(t *testing.T) {
+	originalAlloc := allocateProcessAddressFn
+	t.Cleanup(func() { allocateProcessAddressFn = originalAlloc })
+	var portCounter int
+	allocateProcessAddressFn = func() (string, error) {
+		portCounter++
+		return fmt.Sprintf("127.0.0.1:%d", 56000+portCounter), nil
+	}
+
+	originalReady := waitForAdapterReadyFn
+	t.Cleanup(func() { waitForAdapterReadyFn = originalReady })
+	waitForAdapterReadyFn = func(context.Context, string) error { return nil }
+
+	baseManifestYAML := `
+apiVersion: nap.nupi.ai/v1alpha1
+kind: Plugin
+type: adapter
+metadata:
+  name: WD Test
+spec:
+  slot: ai
+  mode: local
+  entrypoint:
+    command: ./bin/mock
+    transport: process
+`
+
+	t.Run("explicit relative workingDir resolved against manifest.Dir", func(t *testing.T) {
+		manifest, err := manifestpkg.Parse([]byte(baseManifestYAML))
+		if err != nil {
+			t.Fatalf("parse manifest: %v", err)
+		}
+		manifest.Dir = "/tmp/plugins/my-plugin"
+		manifest.Adapter.Entrypoint.WorkingDir = "runtime"
+
+		launcher := NewMockLauncher()
+		manager := NewManager(ManagerOptions{
+			Launcher:  launcher,
+			PluginDir: t.TempDir(),
+		})
+
+		plan := bindingPlan{
+			binding:  Binding{Slot: SlotAI, AdapterID: "adapter.wd-test"},
+			adapter:  configstore.Adapter{ID: "adapter.wd-test", Manifest: baseManifestYAML},
+			manifest: manifest,
+			endpoint: configstore.AdapterEndpoint{Transport: "process", Command: "./bin/mock"},
+		}
+
+		if _, err := manager.startAdapter(context.Background(), plan); err != nil {
+			t.Fatalf("startAdapter: %v", err)
+		}
+
+		records := launcher.Records()
+		if len(records) != 1 {
+			t.Fatalf("expected 1 launch, got %d", len(records))
+		}
+		want := filepath.Join("/tmp/plugins/my-plugin", "runtime")
+		if records[0].WorkingDir != want {
+			t.Errorf("workingDir = %q, want %q", records[0].WorkingDir, want)
+		}
+	})
+
+	t.Run("explicit absolute workingDir used as-is", func(t *testing.T) {
+		manifest, err := manifestpkg.Parse([]byte(baseManifestYAML))
+		if err != nil {
+			t.Fatalf("parse manifest: %v", err)
+		}
+		manifest.Dir = "/tmp/plugins/my-plugin"
+		manifest.Adapter.Entrypoint.WorkingDir = "/opt/custom-dir"
+
+		launcher := NewMockLauncher()
+		manager := NewManager(ManagerOptions{
+			Launcher:  launcher,
+			PluginDir: t.TempDir(),
+		})
+
+		plan := bindingPlan{
+			binding:  Binding{Slot: SlotAI, AdapterID: "adapter.wd-abs"},
+			adapter:  configstore.Adapter{ID: "adapter.wd-abs", Manifest: baseManifestYAML},
+			manifest: manifest,
+			endpoint: configstore.AdapterEndpoint{Transport: "process", Command: "./bin/mock"},
+		}
+
+		if _, err := manager.startAdapter(context.Background(), plan); err != nil {
+			t.Fatalf("startAdapter: %v", err)
+		}
+
+		records := launcher.Records()
+		if len(records) != 1 {
+			t.Fatalf("expected 1 launch, got %d", len(records))
+		}
+		if records[0].WorkingDir != "/opt/custom-dir" {
+			t.Errorf("workingDir = %q, want %q", records[0].WorkingDir, "/opt/custom-dir")
+		}
+	})
+
+	t.Run("no workingDir defaults to plugin root directory", func(t *testing.T) {
+		manifest, err := manifestpkg.Parse([]byte(baseManifestYAML))
+		if err != nil {
+			t.Fatalf("parse manifest: %v", err)
+		}
+		manifest.Dir = "/tmp/plugins/my-plugin"
+		// WorkingDir empty — should default to manifest.Dir (plugin root)
+
+		launcher := NewMockLauncher()
+		manager := NewManager(ManagerOptions{
+			Launcher:  launcher,
+			PluginDir: t.TempDir(),
+		})
+
+		plan := bindingPlan{
+			binding:  Binding{Slot: SlotAI, AdapterID: "adapter.wd-empty"},
+			adapter:  configstore.Adapter{ID: "adapter.wd-empty", Manifest: baseManifestYAML},
+			manifest: manifest,
+			endpoint: configstore.AdapterEndpoint{Transport: "process", Command: "./bin/mock"},
+		}
+
+		if _, err := manager.startAdapter(context.Background(), plan); err != nil {
+			t.Fatalf("startAdapter: %v", err)
+		}
+
+		records := launcher.Records()
+		if len(records) != 1 {
+			t.Fatalf("expected 1 launch, got %d", len(records))
+		}
+		if records[0].WorkingDir != "/tmp/plugins/my-plugin" {
+			t.Errorf("workingDir = %q, want %q", records[0].WorkingDir, "/tmp/plugins/my-plugin")
+		}
+	})
+
+	t.Run("no manifest inherits daemon cwd", func(t *testing.T) {
+		launcher := NewMockLauncher()
+		manager := NewManager(ManagerOptions{
+			Launcher:  launcher,
+			PluginDir: t.TempDir(),
+		})
+
+		plan := bindingPlan{
+			binding:  Binding{Slot: SlotAI, AdapterID: "adapter.wd-nodir"},
+			adapter:  configstore.Adapter{ID: "adapter.wd-nodir"},
+			manifest: nil,
+			endpoint: configstore.AdapterEndpoint{Transport: "process", Command: "./bin/mock"},
+		}
+
+		if _, err := manager.startAdapter(context.Background(), plan); err != nil {
+			t.Fatalf("startAdapter: %v", err)
+		}
+
+		records := launcher.Records()
+		if len(records) != 1 {
+			t.Fatalf("expected 1 launch, got %d", len(records))
+		}
+		if records[0].WorkingDir != "" {
+			t.Errorf("workingDir = %q, want empty (inherit daemon cwd)", records[0].WorkingDir)
+		}
+	})
+
+	t.Run("relative workingDir with empty manifest.Dir stays relative", func(t *testing.T) {
+		manifest, err := manifestpkg.Parse([]byte(baseManifestYAML))
+		if err != nil {
+			t.Fatalf("parse manifest: %v", err)
+		}
+		manifest.Dir = "" // no plugin root directory
+		manifest.Adapter.Entrypoint.WorkingDir = "runtime"
+
+		launcher := NewMockLauncher()
+		manager := NewManager(ManagerOptions{
+			Launcher:  launcher,
+			PluginDir: t.TempDir(),
+		})
+
+		plan := bindingPlan{
+			binding:  Binding{Slot: SlotAI, AdapterID: "adapter.wd-relnodir"},
+			adapter:  configstore.Adapter{ID: "adapter.wd-relnodir", Manifest: baseManifestYAML},
+			manifest: manifest,
+			endpoint: configstore.AdapterEndpoint{Transport: "process", Command: "./bin/mock"},
+		}
+
+		if _, err := manager.startAdapter(context.Background(), plan); err != nil {
+			t.Fatalf("startAdapter: %v", err)
+		}
+
+		records := launcher.Records()
+		if len(records) != 1 {
+			t.Fatalf("expected 1 launch, got %d", len(records))
+		}
+		// Relative path stays relative when manifest.Dir is empty
+		if records[0].WorkingDir != "runtime" {
+			t.Errorf("workingDir = %q, want %q", records[0].WorkingDir, "runtime")
+		}
+	})
+
+	t.Run("dot workingDir resolves to manifest.Dir", func(t *testing.T) {
+		manifest, err := manifestpkg.Parse([]byte(baseManifestYAML))
+		if err != nil {
+			t.Fatalf("parse manifest: %v", err)
+		}
+		manifest.Dir = "/tmp/plugins/vad-silero"
+		manifest.Adapter.Entrypoint.WorkingDir = "."
+
+		launcher := NewMockLauncher()
+		manager := NewManager(ManagerOptions{
+			Launcher:  launcher,
+			PluginDir: t.TempDir(),
+		})
+
+		plan := bindingPlan{
+			binding:  Binding{Slot: SlotAI, AdapterID: "adapter.wd-dot"},
+			adapter:  configstore.Adapter{ID: "adapter.wd-dot", Manifest: baseManifestYAML},
+			manifest: manifest,
+			endpoint: configstore.AdapterEndpoint{Transport: "process", Command: "./bin/mock"},
+		}
+
+		if _, err := manager.startAdapter(context.Background(), plan); err != nil {
+			t.Fatalf("startAdapter: %v", err)
+		}
+
+		records := launcher.Records()
+		if len(records) != 1 {
+			t.Fatalf("expected 1 launch, got %d", len(records))
+		}
+		want := "/tmp/plugins/vad-silero"
+		if records[0].WorkingDir != want {
+			t.Errorf("workingDir = %q, want %q", records[0].WorkingDir, want)
+		}
+	})
+}

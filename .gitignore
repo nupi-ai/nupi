@@ -15,3 +15,12 @@ cover.out
 coverage.out
 coverage.html
 *.coverprofile
+
+# Test binaries
+*.test
+
+# Build artifacts
+dist/
+
+# Local agent config
+.claude/settings.local.json

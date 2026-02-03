@@ -65,8 +65,10 @@ type AdapterDetailSource interface {
 }
 
 // ProcessLauncher abstracts process creation for adapters.
+// The binary parameter must be an absolute path; relative paths are not
+// resolved against workingDir (os.Stat and exec run in the caller's cwd).
 type ProcessLauncher interface {
-	Launch(ctx context.Context, binary string, args []string, env []string, stdout io.Writer, stderr io.Writer) (ProcessHandle, error)
+	Launch(ctx context.Context, binary string, args []string, env []string, stdout io.Writer, stderr io.Writer, workingDir string) (ProcessHandle, error)
 }
 
 // ProcessHandle represents a running adapter process.
@@ -612,6 +614,20 @@ func (m *Manager) startAdapter(ctx context.Context, plan bindingPlan) (*adapterI
 		}
 	}
 
+	// Resolve working directory for adapter process.
+	// Priority: explicit workingDir from manifest > plugin root directory > inherit daemon cwd.
+	var workingDir string
+	if manifest != nil && manifest.Adapter != nil {
+		if wd := strings.TrimSpace(manifest.Adapter.Entrypoint.WorkingDir); wd != "" {
+			if !filepath.IsAbs(wd) && manifest.Dir != "" {
+				wd = filepath.Join(manifest.Dir, wd)
+			}
+			workingDir = wd
+		} else if manifest.Dir != "" {
+			workingDir = manifest.Dir
+		}
+	}
+
 	appendAddressEnv := func(envIn []string, addr string) []string {
 		out := append([]string(nil), envIn...)
 		if endpoint.Transport != "" {
@@ -665,7 +681,7 @@ func (m *Manager) startAdapter(ctx context.Context, plan bindingPlan) (*adapterI
 			}
 		}
 
-		handle, err := m.launcher.Launch(ctx, binary, args, envAttempt, stdoutWriter, stderrWriter)
+		handle, err := m.launcher.Launch(ctx, binary, args, envAttempt, stdoutWriter, stderrWriter, workingDir)
 		if err != nil {
 			if stdoutLogger != nil {
 				stdoutLogger.Close()
