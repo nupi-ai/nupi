@@ -1075,21 +1075,18 @@ func TestVoicePipelineEventOrdering(t *testing.T) {
 		defer svc.Shutdown(context.Background())
 	}
 
-	// Track ordering via monotonic counter. Each record() call gets a unique
-	// sequence number, so ordering is determined by the atomic increment —
-	// not by goroutine scheduling or slice append order.
+	// Track ordering via envelope timestamps set at publish time (bus.go:125).
+	// This reflects actual event ordering rather than goroutine observation order.
 	type seqEvent struct {
 		name string
-		seq  int64
+		ts   time.Time
 	}
-	var counter atomic.Int64
 	var mu sync.Mutex
 	var events []seqEvent
 
-	record := func(name string) {
-		n := counter.Add(1)
+	record := func(name string, ts time.Time) {
 		mu.Lock()
-		events = append(events, seqEvent{name: name, seq: n})
+		events = append(events, seqEvent{name: name, ts: ts})
 		mu.Unlock()
 	}
 
@@ -1114,11 +1111,11 @@ func TestVoicePipelineEventOrdering(t *testing.T) {
 			select {
 			case <-bridgeCtx.Done():
 				return
-			case _, ok := <-segmentSub.C():
+			case env, ok := <-segmentSub.C():
 				if !ok {
 					return
 				}
-				record("segment")
+				record("segment", env.Timestamp)
 				select {
 				case segmentCh <- struct{}{}:
 				default:
@@ -1139,7 +1136,7 @@ func TestVoicePipelineEventOrdering(t *testing.T) {
 					return
 				}
 				if evt, ok := env.Payload.(eventbus.SpeechTranscriptEvent); ok && evt.Final {
-					record("transcript")
+					record("transcript", env.Timestamp)
 					select {
 					case transcriptCh <- evt:
 					default:
@@ -1161,7 +1158,7 @@ func TestVoicePipelineEventOrdering(t *testing.T) {
 					return
 				}
 				if evt, ok := env.Payload.(eventbus.ConversationPromptEvent); ok {
-					record("prompt")
+					record("prompt", env.Timestamp)
 					select {
 					case promptCh <- evt:
 					default:
@@ -1183,7 +1180,7 @@ func TestVoicePipelineEventOrdering(t *testing.T) {
 					return
 				}
 				if evt, ok := env.Payload.(eventbus.ConversationSpeakEvent); ok {
-					record("speak")
+					record("speak", env.Timestamp)
 					select {
 					case speakCh <- evt:
 					default:
@@ -1205,7 +1202,7 @@ func TestVoicePipelineEventOrdering(t *testing.T) {
 					return
 				}
 				if evt, ok := env.Payload.(eventbus.AudioEgressPlaybackEvent); ok && evt.Final {
-					record("playback")
+					record("playback", env.Timestamp)
 					select {
 					case playbackCh <- evt:
 					default:
@@ -1272,48 +1269,48 @@ func TestVoicePipelineEventOrdering(t *testing.T) {
 	// Stop monitor goroutines before inspecting the shared events slice.
 	bridgeCancel()
 
-	// Verify ordering using monotonic sequence numbers assigned at record() time.
-	// This is scheduler-independent — the atomic counter guarantees ordering.
+	// Verify ordering using envelope timestamps assigned at publish time (bus.go:125).
+	// This reflects actual event publish order, not goroutine observation order.
 	mu.Lock()
 	ordered := make([]seqEvent, len(events))
 	copy(ordered, events)
 	mu.Unlock()
 
-	firstSeq := func(name string) int64 {
+	firstTS := func(name string) time.Time {
 		for _, e := range ordered {
 			if e.name == name {
-				return e.seq
+				return e.ts
 			}
 		}
-		return -1
+		return time.Time{}
 	}
 
-	segSeq := firstSeq("segment")
-	trSeq := firstSeq("transcript")
-	promptSeq := firstSeq("prompt")
-	speakSeq := firstSeq("speak")
-	playSeq := firstSeq("playback")
+	segTS := firstTS("segment")
+	trTS := firstTS("transcript")
+	promptTS := firstTS("prompt")
+	speakTS := firstTS("speak")
+	playTS := firstTS("playback")
 
-	if segSeq < 0 || trSeq < 0 || promptSeq < 0 || speakSeq < 0 || playSeq < 0 {
+	if segTS.IsZero() || trTS.IsZero() || promptTS.IsZero() || speakTS.IsZero() || playTS.IsZero() {
 		names := make([]string, len(ordered))
 		for i, e := range ordered {
-			names[i] = fmt.Sprintf("%s(%d)", e.name, e.seq)
+			names[i] = fmt.Sprintf("%s(%s)", e.name, e.ts.Format(time.RFC3339Nano))
 		}
-		t.Fatalf("missing events: segment=%d transcript=%d prompt=%d speak=%d playback=%d (all=%v)",
-			segSeq, trSeq, promptSeq, speakSeq, playSeq, names)
+		t.Fatalf("missing events: segment=%v transcript=%v prompt=%v speak=%v playback=%v (all=%v)",
+			segTS, trTS, promptTS, speakTS, playTS, names)
 	}
 
-	if segSeq >= trSeq {
-		t.Errorf("segment (seq=%d) should precede transcript (seq=%d)", segSeq, trSeq)
+	if !segTS.Before(trTS) {
+		t.Errorf("segment (%s) should precede transcript (%s)", segTS.Format(time.RFC3339Nano), trTS.Format(time.RFC3339Nano))
 	}
-	if trSeq >= promptSeq {
-		t.Errorf("transcript (seq=%d) should precede prompt (seq=%d)", trSeq, promptSeq)
+	if !trTS.Before(promptTS) {
+		t.Errorf("transcript (%s) should precede prompt (%s)", trTS.Format(time.RFC3339Nano), promptTS.Format(time.RFC3339Nano))
 	}
-	if promptSeq >= speakSeq {
-		t.Errorf("prompt (seq=%d) should precede speak (seq=%d)", promptSeq, speakSeq)
+	if !promptTS.Before(speakTS) {
+		t.Errorf("prompt (%s) should precede speak (%s)", promptTS.Format(time.RFC3339Nano), speakTS.Format(time.RFC3339Nano))
 	}
-	if speakSeq >= playSeq {
-		t.Errorf("speak (seq=%d) should precede playback (seq=%d)", speakSeq, playSeq)
+	if !speakTS.Before(playTS) {
+		t.Errorf("speak (%s) should precede playback (%s)", speakTS.Format(time.RFC3339Nano), playTS.Format(time.RFC3339Nano))
 	}
 }
 

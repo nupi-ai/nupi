@@ -210,6 +210,7 @@ func (g *GlobalStore) Start() {
 		return // Already running
 	}
 	g.cancel = make(chan struct{})
+	cancelCh := g.cancel
 	g.mu.Unlock()
 
 	// Prune interval is half the TTL (minimum 30 seconds)
@@ -226,7 +227,7 @@ func (g *GlobalStore) Start() {
 
 		for {
 			select {
-			case <-g.cancel:
+			case <-cancelCh:
 				return
 			case <-ticker.C:
 				g.Prune()

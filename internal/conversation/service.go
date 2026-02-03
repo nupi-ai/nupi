@@ -556,10 +556,10 @@ func (s *Service) Slice(sessionID string, offset, limit int) (int, []eventbus.Co
 	}
 
 	window := history[offset:end]
-	s.mu.RUnlock()
-
 	out := make([]eventbus.ConversationTurn, len(window))
 	copy(out, window)
+	s.mu.RUnlock()
+
 	return total, out
 }
 
