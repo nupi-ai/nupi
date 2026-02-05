@@ -114,7 +114,7 @@ func New(opts Options) (*Daemon, error) {
 	pipelineService := contentpipeline.NewService(bus, pluginService, contentpipeline.WithMetricsInterval(30*time.Second))
 	audioIngressService := ingress.New(bus)
 	audioSTTService := stt.New(bus, stt.WithFactory(stt.NewAdapterFactory(opts.Store, adaptersService)))
-	audioVADService := vad.New(bus, vad.WithFactory(vad.NewAdapterFactory(opts.Store)))
+	audioVADService := vad.New(bus, vad.WithFactory(vad.NewAdapterFactory(opts.Store, adaptersService)))
 	audioBargeService := barge.New(bus)
 	audioEgressService := egress.New(bus, egress.WithFactory(egress.NewAdapterFactory(opts.Store, adaptersService)))
 
