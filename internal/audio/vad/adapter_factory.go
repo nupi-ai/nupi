@@ -98,7 +98,7 @@ func (m adapterFactory) Create(ctx context.Context, params SessionParams) (Analy
 		if address == "" {
 			addr, err := m.lookupRuntimeAddress(ctx, adapterID)
 			if err != nil {
-				return nil, fmt.Errorf("%w: %v", ErrAdapterUnavailable, err)
+				return nil, err
 			}
 			address = addr
 		}
@@ -117,7 +117,7 @@ func (m adapterFactory) lookupRuntimeAddress(ctx context.Context, adapterID stri
 
 	statuses, err := m.runtime.Overview(ctxLookup)
 	if err != nil {
-		return "", fmt.Errorf("vad: fetch adapter runtime: %w", err)
+		return "", fmt.Errorf("vad: fetch adapter runtime: %w: %w", err, ErrAdapterUnavailable)
 	}
 
 	var (
@@ -143,7 +143,7 @@ func (m adapterFactory) lookupRuntimeAddress(ctx context.Context, adapterID stri
 		return "", fmt.Errorf("vad: process adapter %s has duplicate runtime entries", adapterID)
 	}
 	if match {
-		return "", fmt.Errorf("vad: process adapter %s awaiting runtime address", adapterID)
+		return "", fmt.Errorf("vad: process adapter %s awaiting runtime address: %w", adapterID, ErrAdapterUnavailable)
 	}
-	return "", fmt.Errorf("vad: process adapter %s not running", adapterID)
+	return "", fmt.Errorf("vad: process adapter %s not running: %w", adapterID, ErrAdapterUnavailable)
 }

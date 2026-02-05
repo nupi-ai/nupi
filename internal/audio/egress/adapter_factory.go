@@ -98,7 +98,7 @@ func (m adapterFactory) Create(ctx context.Context, params SessionParams) (Synth
 		if address == "" {
 			addr, err := m.lookupRuntimeAddress(ctx, adapterID)
 			if err != nil {
-				return nil, fmt.Errorf("%w: %v", ErrAdapterUnavailable, err)
+				return nil, err
 			}
 			address = addr
 		}
@@ -117,7 +117,7 @@ func (m adapterFactory) lookupRuntimeAddress(ctx context.Context, adapterID stri
 
 	statuses, err := m.runtime.Overview(ctxLookup)
 	if err != nil {
-		return "", fmt.Errorf("tts: fetch adapter runtime for %s (%v): %w", adapterID, err, ErrAdapterUnavailable)
+		return "", fmt.Errorf("tts: fetch adapter runtime: %w: %w", err, ErrAdapterUnavailable)
 	}
 
 	var (
