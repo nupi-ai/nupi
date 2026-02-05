@@ -100,7 +100,7 @@ func (m adapterFactory) Create(ctx context.Context, params SessionParams) (Trans
 		if address == "" {
 			addr, err := m.lookupRuntimeAddress(ctx, activeAdapter)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("%w: %v", ErrAdapterUnavailable, err)
 			}
 			address = addr
 		}

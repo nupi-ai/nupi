@@ -273,7 +273,7 @@ func TestAdapterFactoryProcessTransportUsesRuntimeAddress(t *testing.T) {
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("listen: %v", err)
+		t.Skipf("tcp listen unavailable (sandboxed environment?): %v", err)
 	}
 	server := grpc.NewServer()
 	napv1.RegisterSpeechToTextServiceServer(server, &mockSTTServer{})
@@ -372,6 +372,51 @@ func TestAdapterFactoryProcessTransportUsesRuntimeAddress(t *testing.T) {
 
 func strPtr(value string) *string {
 	return &value
+}
+
+func TestAdapterFactoryProcessTransportPendingReturnsUnavailable(t *testing.T) {
+	ctx := context.Background()
+	store, cleanup := testutil.OpenStore(t)
+	defer cleanup()
+
+	const adapterID = "adapter.stt.pending"
+	if err := store.UpsertAdapter(ctx, configstore.Adapter{
+		ID:      adapterID,
+		Source:  "local",
+		Type:    "stt",
+		Name:    "Pending STT",
+		Version: "dev",
+	}); err != nil {
+		t.Fatalf("upsert adapter: %v", err)
+	}
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotSTT), adapterID, nil); err != nil {
+		t.Fatalf("set active adapter: %v", err)
+	}
+	if err := store.UpsertAdapterEndpoint(ctx, configstore.AdapterEndpoint{
+		AdapterID: adapterID,
+		Transport: "process",
+		Command:   "serve",
+	}); err != nil {
+		t.Fatalf("upsert endpoint: %v", err)
+	}
+
+	// Runtime reports adapter present but no address yet (still starting).
+	runtime := runtimeSourceStub{statuses: []adapters.BindingStatus{
+		{
+			AdapterID: strPtr(adapterID),
+			Status:    configstore.BindingStatusActive,
+			Runtime:   nil,
+		},
+	}}
+
+	factory := NewAdapterFactory(store, runtime)
+	_, err := factory.Create(ctx, SessionParams{
+		SessionID: "sess",
+		StreamID:  "mic",
+	})
+	if !errors.Is(err, ErrAdapterUnavailable) {
+		t.Fatalf("expected ErrAdapterUnavailable for pending process adapter, got: %v", err)
+	}
 }
 
 func TestAdapterFactoryLookupRuntimeWithoutSource(t *testing.T) {
