@@ -69,7 +69,7 @@ func TestVoicePipelineEndToEndWithBarge(t *testing.T) {
 		stt.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
 	)
 	vadSvc := vad.New(bus,
-		vad.WithFactory(vad.NewAdapterFactory(store)),
+		vad.WithFactory(vad.NewAdapterFactory(store, nil)),
 		vad.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
 	)
 	bargeSvc := barge.New(bus,
@@ -2217,7 +2217,7 @@ func TestVoicePipelineBargeInDuringTTSStreaming(t *testing.T) {
 		stt.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
 	)
 	vadSvc := vad.New(bus,
-		vad.WithFactory(vad.NewAdapterFactory(store)),
+		vad.WithFactory(vad.NewAdapterFactory(store, nil)),
 		vad.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
 	)
 	bargeSvc := barge.New(bus,
@@ -2366,7 +2366,7 @@ func TestVoicePipelineBargeInRecovery(t *testing.T) {
 		stt.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
 	)
 	vadSvc := vad.New(bus,
-		vad.WithFactory(vad.NewAdapterFactory(store)),
+		vad.WithFactory(vad.NewAdapterFactory(store, nil)),
 		vad.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
 	)
 	bargeSvc := barge.New(bus,
@@ -2528,7 +2528,7 @@ func TestVoicePipelineBargeInCooldown(t *testing.T) {
 		stt.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
 	)
 	vadSvc := vad.New(bus,
-		vad.WithFactory(vad.NewAdapterFactory(store)),
+		vad.WithFactory(vad.NewAdapterFactory(store, nil)),
 		vad.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
 	)
 	bargeSvc := barge.New(bus,
@@ -2671,7 +2671,7 @@ func TestVoicePipelineBargeInQuietPeriod(t *testing.T) {
 		stt.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
 	)
 	vadSvc := vad.New(bus,
-		vad.WithFactory(vad.NewAdapterFactory(store)),
+		vad.WithFactory(vad.NewAdapterFactory(store, nil)),
 		vad.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
 	)
 	bargeSvc := barge.New(bus,

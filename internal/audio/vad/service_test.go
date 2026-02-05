@@ -34,7 +34,7 @@ func TestVADServiceEmitsDetections(t *testing.T) {
 		t.Fatalf("activate vad adapter: %v", err)
 	}
 
-	svc := New(bus, WithFactory(NewAdapterFactory(store)), WithRetryDelays(10*time.Millisecond, 50*time.Millisecond))
+	svc := New(bus, WithFactory(NewAdapterFactory(store, nil)), WithRetryDelays(10*time.Millisecond, 50*time.Millisecond))
 	if err := svc.Start(ctx); err != nil {
 		t.Fatalf("start service: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestVADServiceBuffersUntilAdapterAvailable(t *testing.T) {
 		t.Fatalf("ensure adapters: %v", err)
 	}
 
-	svc := New(bus, WithFactory(NewAdapterFactory(store)), WithRetryDelays(10*time.Millisecond, 50*time.Millisecond))
+	svc := New(bus, WithFactory(NewAdapterFactory(store, nil)), WithRetryDelays(10*time.Millisecond, 50*time.Millisecond))
 	if err := svc.Start(ctx); err != nil {
 		t.Fatalf("start service: %v", err)
 	}
