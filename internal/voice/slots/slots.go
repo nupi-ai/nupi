@@ -4,4 +4,5 @@ package slots
 const (
 	STT = "stt"
 	TTS = "tts"
+	VAD = "vad"
 )
