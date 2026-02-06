@@ -30,7 +30,7 @@ func LookupRuntimeAddress(ctx context.Context, runtime AdapterRuntimeSource, ada
 
 	statuses, err := runtime.Overview(ctxLookup)
 	if err != nil {
-		return "", fmt.Errorf("%s: fetch adapter runtime: %w: %w", prefix, err, errUnavailable)
+		return "", fmt.Errorf("%s: fetch adapter runtime for %s: %w: %w", prefix, adapterID, err, errUnavailable)
 	}
 
 	var (

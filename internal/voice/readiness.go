@@ -8,8 +8,15 @@ import (
 	"github.com/nupi-ai/nupi/internal/voice/slots"
 )
 
-// VoiceSlots are the adapter slots required for full voice pipeline operation.
-var VoiceSlots = []string{slots.STT, slots.TTS, slots.VAD}
+// voiceSlots are the adapter slots required for full voice pipeline operation.
+var voiceSlots = []string{slots.STT, slots.TTS, slots.VAD}
+
+// VoiceSlots returns the adapter slots required for full voice pipeline operation.
+func VoiceSlots() []string {
+	out := make([]string, len(voiceSlots))
+	copy(out, voiceSlots)
+	return out
+}
 
 // SlotStatus reports the availability of a single voice adapter slot.
 type SlotStatus struct {
@@ -62,7 +69,7 @@ func CheckReadiness(ctx context.Context, store *configstore.Store) (ReadinessRep
 	}
 
 	var report ReadinessReport
-	for _, slot := range VoiceSlots {
+	for _, slot := range voiceSlots {
 		s := SlotStatus{Slot: slot}
 		if adapterID, ok := active[slot]; ok {
 			s.Available = true

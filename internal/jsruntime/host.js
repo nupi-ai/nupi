@@ -3,6 +3,9 @@
 // Receives JSON-RPC commands via stdin, responds via stdout
 // Supports: loadPlugin, call, shutdown
 
+const { readSync, readFileSync } = require('node:fs');
+const { StringDecoder } = require('node:string_decoder');
+
 // Redirect console.log/warn/error to stderr to prevent plugin logging
 // from corrupting the JSON-RPC protocol on stdout
 const originalConsole = { ...console };
@@ -48,9 +51,8 @@ const plugins = new Map();
 
 async function loadPlugin(path, options = {}) {
   try {
-    // Read file content
-    const file = Bun.file(path);
-    const source = await file.text();
+    // Read file content synchronously to avoid Bun async stdin buffering issues
+    const source = readFileSync(path, 'utf8');
 
     // Create a module-like environment
     const exports = {};
@@ -168,45 +170,55 @@ async function handleRequest(req) {
   }
 }
 
-// Main loop - read JSON lines from stdin
-const decoder = new TextDecoder();
-const encoder = new TextEncoder();
+// Synchronous stdin line reader.
+// Bun's async stdin APIs (stream, events, for-await) buffer pipe data and
+// only deliver it on EOF, which breaks the JSON-RPC protocol when the Go
+// host keeps the pipe open. Using fs.readSync on fd 0 avoids this issue.
+// StringDecoder handles multi-byte UTF-8 characters split across reads.
+const _stdinBuf = Buffer.alloc(65536);
+const _stdinDecoder = new StringDecoder('utf8');
+let _stdinLeftover = '';
 
-async function main() {
-  const reader = Bun.stdin.stream().getReader();
-  let buffer = '';
-
+function readLine() {
   while (true) {
-    const { done, value } = await reader.read();
-
-    if (done) {
-      // stdin closed, exit gracefully
-      break;
+    const idx = _stdinLeftover.indexOf('\n');
+    if (idx !== -1) {
+      const line = _stdinLeftover.slice(0, idx).trim();
+      _stdinLeftover = _stdinLeftover.slice(idx + 1);
+      if (line) return line;
+      continue;
     }
+    let n;
+    try {
+      n = readSync(0, _stdinBuf);
+    } catch (err) {
+      throw new Error('stdin read error: ' + (err.message || err));
+    }
+    if (n === 0) return null; // EOF
+    _stdinLeftover += _stdinDecoder.write(_stdinBuf.subarray(0, n));
+  }
+}
 
-    buffer += decoder.decode(value, { stream: true });
+// Main loop - read JSON lines from stdin synchronously, handle async
+async function main() {
+  while (true) {
+    const line = readLine();
+    if (line === null) break;
 
-    // Process complete lines
-    let newlineIdx;
-    while ((newlineIdx = buffer.indexOf('\n')) !== -1) {
-      const line = buffer.slice(0, newlineIdx).trim();
-      buffer = buffer.slice(newlineIdx + 1);
-
-      if (!line) continue;
-
-      try {
-        const req = JSON.parse(line);
-        const resp = await handleRequest(req);
-        sendResponse(resp);
-      } catch (err) {
-        // Invalid JSON, send error response
-        sendResponse({ id: 0, error: `Invalid request: ${err.message}` });
-      }
+    try {
+      const req = JSON.parse(line);
+      const resp = await handleRequest(req);
+      sendResponse(resp);
+    } catch (err) {
+      // Invalid JSON, send error response
+      sendResponse({ id: 0, error: `Invalid request: ${err.message}` });
     }
   }
 }
 
-main().catch(err => {
+main().then(() => {
+  process.exit(0);
+}).catch(err => {
   process.stderr.write('[host.js] Fatal: ' + err.message + '\n');
   process.exit(1);
 });

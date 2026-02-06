@@ -3,6 +3,7 @@ package intentrouter
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 
 // mockAdaptersController implements AdaptersController for testing.
 type mockAdaptersController struct {
+	mu              sync.Mutex
 	statuses        []adapters.BindingStatus
 	err             error
 	customLookup    func(ctx context.Context) ([]adapters.BindingStatus, error)
@@ -21,20 +23,55 @@ type mockAdaptersController struct {
 }
 
 func (m *mockAdaptersController) Overview(ctx context.Context) ([]adapters.BindingStatus, error) {
-	if m.customLookup != nil {
-		return m.customLookup(ctx)
+	m.mu.Lock()
+	fn := m.customLookup
+	if fn != nil {
+		m.mu.Unlock()
+		return fn(ctx)
 	}
 	if m.err != nil {
+		m.mu.Unlock()
 		return nil, m.err
 	}
-	return m.statuses, nil
+	// Return a copy to prevent data races on the caller side.
+	out := make([]adapters.BindingStatus, len(m.statuses))
+	copy(out, m.statuses)
+	m.mu.Unlock()
+	return out, nil
 }
 
 func (m *mockAdaptersController) ManifestOptions(ctx context.Context, adapterID string) (map[string]manifest.AdapterOption, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.manifestErr != nil {
 		return nil, m.manifestErr
 	}
 	return m.manifestOptions, nil
+}
+
+// setConfig updates the Config field for the first binding status entry.
+func (m *mockAdaptersController) setConfig(config string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.statuses) > 0 {
+		m.statuses[0].Config = config
+	}
+}
+
+// setUpdatedAt updates the UpdatedAt field for the first binding status entry.
+func (m *mockAdaptersController) setUpdatedAt(updatedAt string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.statuses) > 0 {
+		m.statuses[0].UpdatedAt = updatedAt
+	}
+}
+
+// setCustomLookup replaces the custom lookup function.
+func (m *mockAdaptersController) setCustomLookup(fn func(ctx context.Context) ([]adapters.BindingStatus, error)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.customLookup = fn
 }
 
 // waitForCondition polls until condition returns true or timeout.
@@ -832,7 +869,7 @@ func TestAdapterBridgeReconfiguresOnEveryReady(t *testing.T) {
 	bridge.mu.Unlock()
 
 	// Simulate config change in DB (controller returns new config)
-	controller.statuses[0].Config = `{"model": "v2"}`
+	controller.setConfig(`{"model": "v2"}`)
 
 	// Second READY event immediately (no debounce - always reconfigures)
 	bus.Publish(ctx, eventbus.Envelope{
@@ -1435,7 +1472,7 @@ func TestAdapterBridgeCircuitBreakerResetOnAdapterChange(t *testing.T) {
 	}
 
 	// Now switch controller to succeed
-	controller.customLookup = nil
+	controller.setCustomLookup(nil)
 
 	// Now switch to a different adapter (mock adapter)
 	// This should reset circuit breaker and process immediately
@@ -1731,7 +1768,7 @@ func TestAdapterBridgeCircuitBreakerResetOnConfigChange(t *testing.T) {
 
 	// Update config in controller (same adapter/address, new UpdatedAt)
 	newUpdatedAt := "2025-01-02T00:00:00Z" // Config was updated
-	controller.statuses[0].UpdatedAt = newUpdatedAt
+	controller.setUpdatedAt(newUpdatedAt)
 
 	// Publish READY with same adapter and address
 	bus.Publish(ctx, eventbus.Envelope{
@@ -1823,7 +1860,7 @@ func TestAdapterBridgeConfigHashFallback(t *testing.T) {
 	bridge.mu.Unlock()
 
 	// Update config in controller (same adapter/address, different config JSON)
-	controller.statuses[0].Config = `{"key":"value2"}` // Different value = different hash
+	controller.setConfig(`{"key":"value2"}`) // Different value = different hash
 
 	// Publish READY - should detect config change via hash
 	bus.Publish(ctx, eventbus.Envelope{
