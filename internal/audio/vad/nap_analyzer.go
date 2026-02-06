@@ -55,6 +55,9 @@ func newNAPAnalyzer(ctx context.Context, params SessionParams, endpoint configst
 	}
 	conn, err := grpc.DialContext(ctx, address, dialOpts...)
 	if err != nil {
+		if s, ok := status.FromError(err); ok && s.Code() == codes.Unavailable {
+			return nil, fmt.Errorf("vad: dial adapter %s: %w: %w", endpoint.AdapterID, err, ErrAdapterUnavailable)
+		}
 		return nil, fmt.Errorf("vad: dial adapter %s: %w", endpoint.AdapterID, err)
 	}
 
@@ -64,6 +67,9 @@ func newNAPAnalyzer(ctx context.Context, params SessionParams, endpoint configst
 	if err != nil {
 		cancel()
 		conn.Close()
+		if s, ok := status.FromError(err); ok && s.Code() == codes.Unavailable {
+			return nil, fmt.Errorf("vad: open detect speech stream: %w: %w", err, ErrAdapterUnavailable)
+		}
 		return nil, fmt.Errorf("vad: open detect speech stream: %w", err)
 	}
 
@@ -82,7 +88,9 @@ func newNAPAnalyzer(ctx context.Context, params SessionParams, endpoint configst
 	if len(params.Config) > 0 {
 		raw, err := json.Marshal(params.Config)
 		if err != nil {
-			a.Close(context.Background())
+			closeCtx, closeCancel := context.WithTimeout(context.Background(), 2*time.Second)
+			a.Close(closeCtx)
+			closeCancel()
 			return nil, fmt.Errorf("vad: marshal adapter config: %w", err)
 		}
 		configJSON = string(raw)
@@ -96,7 +104,12 @@ func newNAPAnalyzer(ctx context.Context, params SessionParams, endpoint configst
 	}
 
 	if err := stream.Send(initReq); err != nil {
-		a.Close(context.Background())
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		a.Close(closeCtx)
+		closeCancel()
+		if s, ok := status.FromError(err); ok && s.Code() == codes.Unavailable {
+			return nil, fmt.Errorf("vad: send init request: %w: %w", err, ErrAdapterUnavailable)
+		}
 		return nil, fmt.Errorf("vad: send init request: %w", err)
 	}
 
@@ -140,6 +153,9 @@ func (a *napAnalyzer) OnSegment(_ context.Context, segment eventbus.AudioIngress
 	}
 
 	if err := a.stream.Send(req); err != nil {
+		if s, ok := status.FromError(err); ok && s.Code() == codes.Unavailable {
+			return nil, fmt.Errorf("vad: send segment: %w: %w", err, ErrAdapterUnavailable)
+		}
 		return nil, fmt.Errorf("vad: send segment: %w", err)
 	}
 
@@ -155,7 +171,7 @@ func (a *napAnalyzer) Close(ctx context.Context) ([]Detection, error) {
 	if err := a.conn.Close(); err != nil {
 		return detections, fmt.Errorf("vad: close connection: %w", err)
 	}
-	if err := a.drainError(); err != nil {
+	if err := a.drainError(); err != nil && !errors.Is(err, ErrAdapterUnavailable) {
 		return detections, err
 	}
 	return detections, nil
@@ -241,8 +257,10 @@ func (a *napAnalyzer) drainError() error {
 		}
 		if s, ok := status.FromError(err); ok {
 			switch s.Code() {
-			case codes.Canceled, codes.Unavailable:
+			case codes.Canceled:
 				return nil
+			case codes.Unavailable:
+				return fmt.Errorf("vad: receive speech event: %w: %w", err, ErrAdapterUnavailable)
 			}
 		}
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {

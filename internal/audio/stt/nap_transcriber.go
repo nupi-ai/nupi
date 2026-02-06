@@ -55,6 +55,9 @@ func newNAPTranscriber(ctx context.Context, params SessionParams, endpoint confi
 	}
 	conn, err := grpc.DialContext(ctx, address, dialOpts...)
 	if err != nil {
+		if s, ok := status.FromError(err); ok && s.Code() == codes.Unavailable {
+			return nil, fmt.Errorf("stt: dial adapter %s: %w: %w", endpoint.AdapterID, err, ErrAdapterUnavailable)
+		}
 		return nil, fmt.Errorf("stt: dial adapter %s: %w", endpoint.AdapterID, err)
 	}
 
@@ -64,6 +67,9 @@ func newNAPTranscriber(ctx context.Context, params SessionParams, endpoint confi
 	if err != nil {
 		cancel()
 		conn.Close()
+		if s, ok := status.FromError(err); ok && s.Code() == codes.Unavailable {
+			return nil, fmt.Errorf("stt: open transcription stream: %w: %w", err, ErrAdapterUnavailable)
+		}
 		return nil, fmt.Errorf("stt: open transcription stream: %w", err)
 	}
 
@@ -82,7 +88,9 @@ func newNAPTranscriber(ctx context.Context, params SessionParams, endpoint confi
 	if len(params.Config) > 0 {
 		raw, err := json.Marshal(params.Config)
 		if err != nil {
-			t.Close(context.Background())
+			closeCtx, closeCancel := context.WithTimeout(context.Background(), 2*time.Second)
+			t.Close(closeCtx)
+			closeCancel()
 			return nil, fmt.Errorf("stt: marshal adapter config: %w", err)
 		}
 		configJSON = string(raw)
@@ -97,7 +105,12 @@ func newNAPTranscriber(ctx context.Context, params SessionParams, endpoint confi
 	}
 
 	if err := stream.Send(initReq); err != nil {
-		t.Close(context.Background())
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		t.Close(closeCtx)
+		closeCancel()
+		if s, ok := status.FromError(err); ok && s.Code() == codes.Unavailable {
+			return nil, fmt.Errorf("stt: send init request: %w: %w", err, ErrAdapterUnavailable)
+		}
 		return nil, fmt.Errorf("stt: send init request: %w", err)
 	}
 
@@ -160,6 +173,9 @@ func (t *napTranscriber) OnSegment(ctx context.Context, segment eventbus.AudioIn
 	}
 
 	if err := t.stream.Send(req); err != nil {
+		if s, ok := status.FromError(err); ok && s.Code() == codes.Unavailable {
+			return nil, fmt.Errorf("stt: send segment: %w: %w", err, ErrAdapterUnavailable)
+		}
 		return nil, fmt.Errorf("stt: send segment: %w", err)
 	}
 
@@ -181,7 +197,7 @@ func (t *napTranscriber) Close(ctx context.Context) ([]Transcription, error) {
 	if err := t.conn.Close(); err != nil {
 		return transcripts, fmt.Errorf("stt: close connection: %w", err)
 	}
-	if err := t.drainError(); err != nil {
+	if err := t.drainError(); err != nil && !errors.Is(err, ErrAdapterUnavailable) {
 		return transcripts, err
 	}
 	return transcripts, nil
@@ -270,8 +286,10 @@ func (t *napTranscriber) drainError() error {
 		}
 		if s, ok := status.FromError(err); ok {
 			switch s.Code() {
-			case codes.Canceled, codes.Unavailable:
+			case codes.Canceled:
 				return nil
+			case codes.Unavailable:
+				return fmt.Errorf("stt: receive transcript: %w: %w", err, ErrAdapterUnavailable)
 			}
 		}
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {

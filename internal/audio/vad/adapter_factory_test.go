@@ -11,11 +11,14 @@ import (
 	"time"
 
 	napv1 "github.com/nupi-ai/nupi/api/nap/v1"
+	"github.com/nupi-ai/nupi/internal/audio/adapterutil"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/plugins/adapters"
 	testutil "github.com/nupi-ai/nupi/internal/testutil"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	grpcstatus "google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 )
 
@@ -482,8 +485,12 @@ func TestAdapterFactoryProcessTransportPendingReturnsUnavailable(t *testing.T) {
 
 func TestAdapterFactoryLookupRuntimeWithoutSource(t *testing.T) {
 	factory := adapterFactory{runtime: nil}
-	if _, err := factory.lookupRuntimeAddress(context.Background(), "adapter.process"); err == nil {
+	_, err := factory.lookupRuntimeAddress(context.Background(), "adapter.process")
+	if err == nil {
 		t.Fatalf("expected error due to missing runtime metadata")
+	}
+	if errors.Is(err, ErrAdapterUnavailable) {
+		t.Fatalf("missing runtime metadata should NOT be ErrAdapterUnavailable")
 	}
 }
 
@@ -502,8 +509,11 @@ func TestAdapterFactoryLookupRuntimeTimeout(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected context deadline exceeded, got %v", err)
 	}
-	if elapsed := time.Since(start); elapsed < runtimeLookupTimeout {
-		t.Fatalf("expected lookup to last at least %v, got %v", runtimeLookupTimeout, elapsed)
+	if !errors.Is(err, ErrAdapterUnavailable) {
+		t.Fatalf("timeout should be ErrAdapterUnavailable (transient), got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed < adapterutil.RuntimeLookupTimeout {
+		t.Fatalf("expected lookup to last at least %v, got %v", adapterutil.RuntimeLookupTimeout, elapsed)
 	}
 }
 
@@ -522,6 +532,9 @@ func TestAdapterFactoryLookupRuntimePendingAddress(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error when runtime address missing")
 	}
+	if !errors.Is(err, ErrAdapterUnavailable) {
+		t.Fatalf("awaiting address should be ErrAdapterUnavailable (transient), got %v", err)
+	}
 	if !strings.Contains(err.Error(), "awaiting runtime address") {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -539,6 +552,9 @@ func TestAdapterFactoryLookupRuntimeAdapterNotRunning(t *testing.T) {
 	_, err := factory.lookupRuntimeAddress(context.Background(), "adapter.process")
 	if err == nil {
 		t.Fatalf("expected error when adapter not running")
+	}
+	if !errors.Is(err, ErrAdapterUnavailable) {
+		t.Fatalf("not running should be ErrAdapterUnavailable (transient), got %v", err)
 	}
 	if !strings.Contains(err.Error(), "not running") {
 		t.Fatalf("unexpected error: %v", err)
@@ -560,6 +576,36 @@ func TestAdapterFactoryLookupRuntimeDuplicateStatuses(t *testing.T) {
 	_, err := factory.lookupRuntimeAddress(context.Background(), "adapter.process")
 	if err == nil {
 		t.Fatalf("expected error due to duplicate runtime entries")
+	}
+	if errors.Is(err, ErrAdapterUnavailable) {
+		t.Fatalf("duplicate entries should NOT be ErrAdapterUnavailable")
+	}
+	if !strings.Contains(err.Error(), "duplicate runtime entries") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestAdapterFactoryLookupRuntimeDuplicateWithAddress(t *testing.T) {
+	factory := adapterFactory{
+		runtime: runtimeSourceStub{statuses: []adapters.BindingStatus{
+			{
+				AdapterID: strPtr("adapter.process"),
+				Runtime: &adapters.RuntimeStatus{
+					Extra: map[string]string{adapters.RuntimeExtraAddress: "127.0.0.1:9000"},
+				},
+			},
+			{
+				AdapterID: strPtr("adapter.process"),
+			},
+		}},
+	}
+
+	_, err := factory.lookupRuntimeAddress(context.Background(), "adapter.process")
+	if err == nil {
+		t.Fatalf("expected error due to duplicate runtime entries even when address present")
+	}
+	if errors.Is(err, ErrAdapterUnavailable) {
+		t.Fatalf("duplicate entries should NOT be ErrAdapterUnavailable")
 	}
 	if !strings.Contains(err.Error(), "duplicate runtime entries") {
 		t.Fatalf("unexpected error: %v", err)
@@ -593,6 +639,35 @@ func (b blockingRuntimeSource) Overview(ctx context.Context) ([]adapters.Binding
 
 func strPtr(value string) *string {
 	return &value
+}
+
+func TestNAPAnalyzerUnavailableWrapsError(t *testing.T) {
+	// Dialer that refuses connections, simulating an unreachable adapter process.
+	dialer := func(ctx context.Context, _ string) (net.Conn, error) {
+		return nil, fmt.Errorf("connection refused")
+	}
+	ctx := ContextWithDialer(context.Background(), dialer)
+
+	_, err := newNAPAnalyzer(ctx, SessionParams{
+		SessionID: "sess",
+		StreamID:  "mic",
+		Format: eventbus.AudioFormat{
+			Encoding:   eventbus.AudioEncodingPCM16,
+			SampleRate: 16000,
+			Channels:   1,
+			BitDepth:   16,
+		},
+	}, configstore.AdapterEndpoint{
+		AdapterID: "adapter.vad.test",
+		Transport: "grpc",
+		Address:   "bufconn",
+	})
+	if err == nil {
+		t.Fatalf("expected error from unavailable adapter")
+	}
+	if !errors.Is(err, ErrAdapterUnavailable) {
+		t.Fatalf("expected ErrAdapterUnavailable, got: %v", err)
+	}
 }
 
 type mockVADServer struct {
@@ -659,5 +734,101 @@ func (s *mockVADServerAllEvents) DetectSpeech(stream napv1.VoiceActivityDetectio
 				return err
 			}
 		}
+	}
+}
+
+// mockVADServerPartialCrash sends one START event for the first data chunk then
+// returns codes.Unavailable, simulating an adapter crash mid-stream.
+type mockVADServerPartialCrash struct {
+	napv1.UnimplementedVoiceActivityDetectionServiceServer
+}
+
+func (s *mockVADServerPartialCrash) DetectSpeech(stream napv1.VoiceActivityDetectionService_DetectSpeechServer) error {
+	for {
+		req, err := stream.Recv()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
+		}
+		if len(req.GetPcmData()) == 0 {
+			continue
+		}
+
+		// Send one START event then crash.
+		_ = stream.Send(&napv1.SpeechEvent{
+			Type:       napv1.SpeechEventType_SPEECH_EVENT_TYPE_START,
+			Confidence: 0.9,
+		})
+		return grpcstatus.Error(codes.Unavailable, "adapter process crashed")
+	}
+}
+
+func TestNAPAnalyzerMidStreamUnavailableReportsError(t *testing.T) {
+	bufListener := bufconn.Listen(1024 * 1024)
+	server := grpc.NewServer()
+	napv1.RegisterVoiceActivityDetectionServiceServer(server, &mockVADServerPartialCrash{})
+	go server.Serve(bufListener)
+	t.Cleanup(func() {
+		server.GracefulStop()
+	})
+
+	dialer := func(ctx context.Context, _ string) (net.Conn, error) {
+		return bufListener.DialContext(ctx)
+	}
+
+	ctx := ContextWithDialer(context.Background(), dialer)
+	params := SessionParams{
+		SessionID: "sess",
+		StreamID:  "mic",
+		Format: eventbus.AudioFormat{
+			Encoding:      eventbus.AudioEncodingPCM16,
+			SampleRate:    16000,
+			Channels:      1,
+			BitDepth:      16,
+			FrameDuration: 20 * time.Millisecond,
+		},
+	}
+
+	analyzer, err := newNAPAnalyzer(ctx, params, configstore.AdapterEndpoint{
+		AdapterID: "adapter.vad.crash",
+		Transport: "grpc",
+		Address:   "bufconn",
+	})
+	if err != nil {
+		t.Fatalf("create analyzer: %v", err)
+	}
+
+	segment := eventbus.AudioIngressSegmentEvent{
+		SessionID: "sess",
+		StreamID:  "mic",
+		Sequence:  1,
+		Format:    params.Format,
+		Data:      make([]byte, 640),
+		Duration:  20 * time.Millisecond,
+		First:     true,
+		Last:      true,
+		StartedAt: time.Now().UTC(),
+		EndedAt:   time.Now().UTC().Add(20 * time.Millisecond),
+	}
+
+	// Send a segment; the mock replies with one START then crashes.
+	// With Last=true, the grace-period wait gives the receiver time to capture
+	// the Unavailable error in errCh before drainError checks it.
+	_, segErr := analyzer.OnSegment(ctx, segment)
+	if segErr == nil {
+		// If timing prevented detection, a brief sleep + retry should surface it.
+		time.Sleep(30 * time.Millisecond)
+		_, segErr = analyzer.OnSegment(ctx, segment)
+	}
+	if !errors.Is(segErr, ErrAdapterUnavailable) {
+		t.Fatalf("expected ErrAdapterUnavailable from mid-stream crash, got: %v", segErr)
+	}
+
+	// Close suppresses ErrAdapterUnavailable during intentional teardown.
+	_, closeErr := analyzer.Close(ctx)
+	if closeErr != nil {
+		t.Fatalf("unexpected close error: %v", closeErr)
 	}
 }
