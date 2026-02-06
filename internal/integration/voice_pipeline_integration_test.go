@@ -3469,7 +3469,9 @@ func waitForVADEvent(t *testing.T, sub *eventbus.Subscription, timeout time.Dura
 }
 
 // phaseAnalyzer wraps a VAD analyzer to fail with ErrAdapterUnavailable when
-// the phase flag is set to 1. Used by TestVADMidStreamRecovery.
+// the phase flag is set to 1. During failure, it returns a partial detection
+// alongside the error to exercise the NAP partial-results contract (the service
+// must publish these before triggering recovery). Used by TestVADMidStreamRecovery.
 type phaseAnalyzer struct {
 	inner vad.Analyzer
 	phase *atomic.Int32
@@ -3477,7 +3479,9 @@ type phaseAnalyzer struct {
 
 func (a *phaseAnalyzer) OnSegment(ctx context.Context, seg eventbus.AudioIngressSegmentEvent) ([]vad.Detection, error) {
 	if a.phase.Load() == 1 {
-		return nil, vad.ErrAdapterUnavailable
+		// Return partial detection alongside error — mirrors real adapters that
+		// may flush buffered state when they detect their backend is failing.
+		return []vad.Detection{{Active: true, Confidence: 0.5}}, vad.ErrAdapterUnavailable
 	}
 	return a.inner.OnSegment(ctx, seg)
 }
@@ -4183,13 +4187,23 @@ func TestVADMidStreamRecovery(t *testing.T) {
 	})
 	t.Logf("phase 1: VAD detected, confidence=%f", vadEvt.Confidence)
 
-	// Phase 2: Unavailable. OnSegment fails → analyzer nilled → Create fails.
+	// Phase 2: Unavailable. OnSegment returns partial detection + error.
+	// The VAD service MUST publish the partial detection before closing the
+	// broken analyzer (AC #6: "partial results from the failing call are
+	// published before recovery").
 	phase.Store(1)
 	for i := 0; i < 3; i++ {
 		if err := stream.Write(loudSegment); err != nil {
 			t.Fatalf("phase 2 write %d: %v", i, err)
 		}
 	}
+
+	// Verify partial detection published during failure (confidence=0.5 from phaseAnalyzer).
+	partialEvt := waitForVADEvent(t, vadSub, 2*time.Second, func(evt eventbus.SpeechVADEvent) bool {
+		return evt.Active && evt.SessionID == sessionID && evt.Confidence > 0.4 && evt.Confidence < 0.6
+	})
+	t.Logf("phase 2: partial detection published during failure, confidence=%f", partialEvt.Confidence)
+
 	// Wait for the VAD service to process failure and attempt reconnection.
 	// factoryFailCount >= 1 means the service has nilled out the broken
 	// analyzer and tried factory.Create, confirming the failure path completed.
@@ -4222,5 +4236,100 @@ func TestVADMidStreamRecovery(t *testing.T) {
 
 	if err := stream.Close(); err != nil {
 		t.Fatalf("close stream: %v", err)
+	}
+}
+
+// TestVADNoStaleStateAcrossSessions verifies that different sessions get
+// independent VAD analyzers — state from session A does not leak to session B.
+// The mock VAD adapter only emits Active=true on a false→true transition, so
+// if stale "active" state leaked from session A to B, session B's first loud
+// audio would NOT trigger a detection. (AC #2: "no stale VAD state leaks
+// between sessions")
+func TestVADNoStaleStateAcrossSessions(t *testing.T) {
+	ctx := context.Background()
+	bus := eventbus.New()
+
+	store, cleanup := testutil.OpenStore(t)
+	defer cleanup()
+
+	if err := adapters.EnsureBuiltinAdapters(ctx, store); err != nil {
+		t.Fatalf("ensure builtin adapters: %v", err)
+	}
+
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotVAD), adapters.MockVADAdapterID, map[string]any{
+		"threshold":  0.1,
+		"min_frames": 1,
+	}); err != nil {
+		t.Fatalf("activate vad: %v", err)
+	}
+
+	ingressSvc := ingress.New(bus)
+	vadSvc := vad.New(bus,
+		vad.WithFactory(vad.NewAdapterFactory(store, nil)),
+		vad.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
+	)
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	if err := ingressSvc.Start(runCtx); err != nil {
+		t.Fatalf("start ingress: %v", err)
+	}
+	defer ingressSvc.Shutdown(context.Background())
+	if err := vadSvc.Start(runCtx); err != nil {
+		t.Fatalf("start vad: %v", err)
+	}
+	defer vadSvc.Shutdown(context.Background())
+
+	vadSub := bus.Subscribe(eventbus.TopicSpeechVADDetected, eventbus.WithSubscriptionName("test_vad"))
+	defer vadSub.Close()
+
+	format := eventbus.AudioFormat{
+		Encoding:      eventbus.AudioEncodingPCM16,
+		SampleRate:    16000,
+		Channels:      1,
+		BitDepth:      16,
+		FrameDuration: 20 * time.Millisecond,
+	}
+
+	loudSegment := pcmBuffer(5000, 320)
+
+	// Session A: Feed loud audio → VAD detects Active (analyzer's lastState becomes true).
+	const sessionA = "vad-stale-a"
+	streamA, err := ingressSvc.OpenStream(sessionA, "mic", format, nil)
+	if err != nil {
+		t.Fatalf("open stream A: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := streamA.Write(loudSegment); err != nil {
+			t.Fatalf("session A write %d: %v", i, err)
+		}
+	}
+	waitForVADEvent(t, vadSub, 2*time.Second, func(evt eventbus.SpeechVADEvent) bool {
+		return evt.Active && evt.SessionID == sessionA
+	})
+	t.Log("session A: VAD Active detected")
+	if err := streamA.Close(); err != nil {
+		t.Fatalf("close stream A: %v", err)
+	}
+
+	// Session B: New session, feed loud audio. If session A's active state leaked,
+	// session B's analyzer would already have lastState=true and the false→true
+	// transition would NOT fire — causing a timeout here.
+	const sessionB = "vad-stale-b"
+	streamB, err := ingressSvc.OpenStream(sessionB, "mic", format, nil)
+	if err != nil {
+		t.Fatalf("open stream B: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := streamB.Write(loudSegment); err != nil {
+			t.Fatalf("session B write %d: %v", i, err)
+		}
+	}
+	waitForVADEvent(t, vadSub, 2*time.Second, func(evt eventbus.SpeechVADEvent) bool {
+		return evt.Active && evt.SessionID == sessionB
+	})
+	t.Log("session B: VAD Active detected — no stale state from session A")
+	if err := streamB.Close(); err != nil {
+		t.Fatalf("close stream B: %v", err)
 	}
 }
