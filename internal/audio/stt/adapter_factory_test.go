@@ -11,6 +11,7 @@ import (
 	"time"
 
 	napv1 "github.com/nupi-ai/nupi/api/nap/v1"
+	"github.com/nupi-ai/nupi/internal/audio/adapterutil"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/plugins/adapters"
@@ -421,8 +422,12 @@ func TestAdapterFactoryProcessTransportPendingReturnsUnavailable(t *testing.T) {
 
 func TestAdapterFactoryLookupRuntimeWithoutSource(t *testing.T) {
 	factory := adapterFactory{runtime: nil}
-	if _, err := factory.lookupRuntimeAddress(context.Background(), "adapter.process"); err == nil {
+	_, err := factory.lookupRuntimeAddress(context.Background(), "adapter.process")
+	if err == nil {
 		t.Fatalf("expected error due to missing runtime metadata")
+	}
+	if errors.Is(err, ErrAdapterUnavailable) {
+		t.Fatalf("missing runtime metadata should NOT be ErrAdapterUnavailable")
 	}
 }
 
@@ -441,8 +446,11 @@ func TestAdapterFactoryLookupRuntimeTimeout(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected context deadline exceeded, got %v", err)
 	}
-	if elapsed := time.Since(start); elapsed < runtimeLookupTimeout {
-		t.Fatalf("expected lookup to last at least %v, got %v", runtimeLookupTimeout, elapsed)
+	if !errors.Is(err, ErrAdapterUnavailable) {
+		t.Fatalf("timeout should be ErrAdapterUnavailable (transient), got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed < adapterutil.RuntimeLookupTimeout {
+		t.Fatalf("expected lookup to last at least %v, got %v", adapterutil.RuntimeLookupTimeout, elapsed)
 	}
 }
 
@@ -461,6 +469,9 @@ func TestAdapterFactoryLookupRuntimePendingAddress(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error when runtime address missing")
 	}
+	if !errors.Is(err, ErrAdapterUnavailable) {
+		t.Fatalf("awaiting address should be ErrAdapterUnavailable (transient), got %v", err)
+	}
 	if !strings.Contains(err.Error(), "awaiting runtime address") {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -478,6 +489,9 @@ func TestAdapterFactoryLookupRuntimeAdapterNotRunning(t *testing.T) {
 	_, err := factory.lookupRuntimeAddress(context.Background(), "adapter.process")
 	if err == nil {
 		t.Fatalf("expected error when adapter not running")
+	}
+	if !errors.Is(err, ErrAdapterUnavailable) {
+		t.Fatalf("not running should be ErrAdapterUnavailable (transient), got %v", err)
 	}
 	if !strings.Contains(err.Error(), "not running") {
 		t.Fatalf("unexpected error: %v", err)
@@ -500,8 +514,67 @@ func TestAdapterFactoryLookupRuntimeDuplicateStatuses(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error due to duplicate runtime entries")
 	}
+	if errors.Is(err, ErrAdapterUnavailable) {
+		t.Fatalf("duplicate entries should NOT be ErrAdapterUnavailable")
+	}
 	if !strings.Contains(err.Error(), "duplicate runtime entries") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestAdapterFactoryLookupRuntimeDuplicateWithAddress(t *testing.T) {
+	factory := adapterFactory{
+		runtime: runtimeSourceStub{statuses: []adapters.BindingStatus{
+			{
+				AdapterID: strPtr("adapter.process"),
+				Runtime: &adapters.RuntimeStatus{
+					Extra: map[string]string{adapters.RuntimeExtraAddress: "127.0.0.1:9000"},
+				},
+			},
+			{
+				AdapterID: strPtr("adapter.process"),
+			},
+		}},
+	}
+
+	_, err := factory.lookupRuntimeAddress(context.Background(), "adapter.process")
+	if err == nil {
+		t.Fatalf("expected error due to duplicate runtime entries even when address present")
+	}
+	if errors.Is(err, ErrAdapterUnavailable) {
+		t.Fatalf("duplicate entries should NOT be ErrAdapterUnavailable")
+	}
+	if !strings.Contains(err.Error(), "duplicate runtime entries") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestNAPTranscriberUnavailableWrapsError(t *testing.T) {
+	// Dialer that refuses connections, simulating an unreachable adapter process.
+	dialer := func(ctx context.Context, _ string) (net.Conn, error) {
+		return nil, fmt.Errorf("connection refused")
+	}
+	ctx := ContextWithDialer(context.Background(), dialer)
+
+	_, err := newNAPTranscriber(ctx, SessionParams{
+		SessionID: "sess",
+		StreamID:  "mic",
+		Format: eventbus.AudioFormat{
+			Encoding:   eventbus.AudioEncodingPCM16,
+			SampleRate: 16000,
+			Channels:   1,
+			BitDepth:   16,
+		},
+	}, configstore.AdapterEndpoint{
+		AdapterID: "adapter.stt.test",
+		Transport: "grpc",
+		Address:   "bufconn",
+	})
+	if err == nil {
+		t.Fatalf("expected error from unavailable adapter")
+	}
+	if !errors.Is(err, ErrAdapterUnavailable) {
+		t.Fatalf("expected ErrAdapterUnavailable, got: %v", err)
 	}
 }
 

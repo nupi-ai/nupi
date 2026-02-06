@@ -3,12 +3,14 @@ package egress
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"strings"
 	"testing"
 	"time"
 
 	napv1 "github.com/nupi-ai/nupi/api/nap/v1"
+	"github.com/nupi-ai/nupi/internal/audio/adapterutil"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/plugins/adapters"
@@ -512,6 +514,27 @@ func TestAdapterFactoryRuntimeLookupErrors(t *testing.T) {
 		}
 	})
 
+	t.Run("duplicate entries with address is still duplicate error", func(t *testing.T) {
+		factory := adapterFactory{
+			runtime: runtimeSourceStub{statuses: []adapters.BindingStatus{
+				{
+					AdapterID: strPtr("adapter.tts"),
+					Runtime: &adapters.RuntimeStatus{
+						Extra: map[string]string{adapters.RuntimeExtraAddress: "127.0.0.1:9000"},
+					},
+				},
+				{AdapterID: strPtr("adapter.tts")},
+			}},
+		}
+		_, err := factory.lookupRuntimeAddress(context.Background(), "adapter.tts")
+		if err == nil {
+			t.Fatalf("expected error due to duplicate runtime entries even when address present")
+		}
+		if errors.Is(err, ErrAdapterUnavailable) {
+			t.Fatalf("duplicate entries should NOT be ErrAdapterUnavailable")
+		}
+	})
+
 	t.Run("nil runtime", func(t *testing.T) {
 		factory := adapterFactory{runtime: nil}
 		_, err := factory.lookupRuntimeAddress(context.Background(), "adapter.tts")
@@ -820,6 +843,82 @@ func TestNAPSynthesizerMetadataOnlyWhenNoAudioChunks(t *testing.T) {
 	}
 }
 
+func TestNAPSynthesizerSpeakRecvUnavailableWrapsError(t *testing.T) {
+	srv := &partialUnavailableTTSServer{}
+	_, dialer := startMockTTSServer(t, srv)
+	ctx := ContextWithDialer(context.Background(), dialer)
+
+	synth, err := newNAPSynthesizer(ctx, SessionParams{
+		SessionID: "sess",
+		StreamID:  slots.TTS,
+	}, configstore.AdapterEndpoint{
+		AdapterID: "adapter.tts.test",
+		Transport: "grpc",
+		Address:   "bufconn",
+	})
+	if err != nil {
+		t.Fatalf("create synthesizer: %v", err)
+	}
+	defer synth.Close(context.Background())
+
+	_, err = synth.Speak(ctx, SpeakRequest{Text: "test"})
+	if err == nil {
+		t.Fatalf("expected error from mid-stream unavailable")
+	}
+	if !errors.Is(err, ErrAdapterUnavailable) {
+		t.Fatalf("expected ErrAdapterUnavailable, got: %v", err)
+	}
+}
+
+// partialUnavailableTTSServer sends one chunk then returns codes.Unavailable,
+// simulating an adapter crash mid-synthesis.
+type partialUnavailableTTSServer struct {
+	napv1.UnimplementedTextToSpeechServiceServer
+}
+
+func (s *partialUnavailableTTSServer) StreamSynthesis(_ *napv1.StreamSynthesisRequest, stream napv1.TextToSpeechService_StreamSynthesisServer) error {
+	_ = stream.Send(&napv1.SynthesisResponse{
+		Status: napv1.SynthesisStatus_SYNTHESIS_STATUS_PLAYING,
+		Chunk: &napv1.AudioChunk{
+			Data: []byte{1, 2}, Sequence: 1, DurationMs: 10, First: true, Last: false,
+		},
+	})
+	return grpcstatus.Error(codes.Unavailable, "adapter process crashed")
+}
+
+func TestNAPSynthesizerSpeakUnavailableWrapsError(t *testing.T) {
+	// Dialer that refuses connections, simulating an unreachable adapter process.
+	dialer := func(ctx context.Context, _ string) (net.Conn, error) {
+		return nil, fmt.Errorf("connection refused")
+	}
+	ctx := ContextWithDialer(context.Background(), dialer)
+
+	synth, err := newNAPSynthesizer(ctx, SessionParams{
+		SessionID: "sess",
+		StreamID:  slots.TTS,
+	}, configstore.AdapterEndpoint{
+		AdapterID: "adapter.tts.test",
+		Transport: "grpc",
+		Address:   "bufconn",
+	})
+	if err != nil {
+		// Dial may fail immediately in some gRPC versions.
+		if !errors.Is(err, ErrAdapterUnavailable) {
+			t.Fatalf("expected ErrAdapterUnavailable from dial, got: %v", err)
+		}
+		return
+	}
+	defer synth.Close(context.Background())
+
+	_, err = synth.Speak(ctx, SpeakRequest{Text: "test"})
+	if err == nil {
+		t.Fatalf("expected error from unavailable adapter")
+	}
+	if !errors.Is(err, ErrAdapterUnavailable) {
+		t.Fatalf("expected ErrAdapterUnavailable, got: %v", err)
+	}
+}
+
 func TestNAPSynthesizerEnforceFinalOnStreamEnd(t *testing.T) {
 	srv := &mockTTSServer{
 		chunks: []*napv1.SynthesisResponse{
@@ -916,8 +1015,8 @@ func TestAdapterFactoryRuntimeLookupTimeout(t *testing.T) {
 	if !strings.Contains(err.Error(), "deadline") {
 		t.Fatalf("expected deadline info in error message, got %v", err)
 	}
-	if elapsed := time.Since(start); elapsed < runtimeLookupTimeout {
-		t.Fatalf("expected lookup to last at least %v, got %v", runtimeLookupTimeout, elapsed)
+	if elapsed := time.Since(start); elapsed < adapterutil.RuntimeLookupTimeout {
+		t.Fatalf("expected lookup to last at least %v, got %v", adapterutil.RuntimeLookupTimeout, elapsed)
 	}
 }
 

@@ -5,23 +5,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
+	"github.com/nupi-ai/nupi/internal/audio/adapterutil"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	adapters "github.com/nupi-ai/nupi/internal/plugins/adapters"
 )
 
 // AdapterRuntimeSource exposes runtime status for adapters.
-type AdapterRuntimeSource interface {
-	Overview(ctx context.Context) ([]adapters.BindingStatus, error)
-}
+type AdapterRuntimeSource = adapterutil.AdapterRuntimeSource
 
 type adapterFactory struct {
 	store   *configstore.Store
 	runtime AdapterRuntimeSource
 }
-
-const runtimeLookupTimeout = time.Second
 
 // NewAdapterFactory creates a factory based on adapter bindings stored in config.Store.
 func NewAdapterFactory(store *configstore.Store, runtime AdapterRuntimeSource) Factory {
@@ -111,41 +107,5 @@ func (m adapterFactory) Create(ctx context.Context, params SessionParams) (Trans
 }
 
 func (m adapterFactory) lookupRuntimeAddress(ctx context.Context, adapterID string) (string, error) {
-	if m.runtime == nil {
-		return "", fmt.Errorf("stt: process adapter %s missing runtime metadata", adapterID)
-	}
-	ctxLookup, cancel := context.WithTimeout(ctx, runtimeLookupTimeout)
-	defer cancel()
-
-	statuses, err := m.runtime.Overview(ctxLookup)
-	if err != nil {
-		return "", fmt.Errorf("stt: fetch adapter runtime: %w: %w", err, ErrAdapterUnavailable)
-	}
-
-	var (
-		match    bool
-		multiple bool
-	)
-	for _, status := range statuses {
-		if status.AdapterID == nil || strings.TrimSpace(*status.AdapterID) != adapterID {
-			continue
-		}
-		if match {
-			multiple = true
-		}
-		match = true
-		if status.Runtime == nil || len(status.Runtime.Extra) == 0 {
-			continue
-		}
-		if addr := strings.TrimSpace(status.Runtime.Extra[adapters.RuntimeExtraAddress]); addr != "" {
-			return addr, nil
-		}
-	}
-	if multiple {
-		return "", fmt.Errorf("stt: process adapter %s has duplicate runtime entries", adapterID)
-	}
-	if match {
-		return "", fmt.Errorf("stt: process adapter %s awaiting runtime address: %w", adapterID, ErrAdapterUnavailable)
-	}
-	return "", fmt.Errorf("stt: process adapter %s not running: %w", adapterID, ErrAdapterUnavailable)
+	return adapterutil.LookupRuntimeAddress(ctx, m.runtime, adapterID, "stt", ErrAdapterUnavailable)
 }

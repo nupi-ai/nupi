@@ -40,13 +40,16 @@ func newNAPSynthesizer(ctx context.Context, params SessionParams, endpoint confi
 	}
 
 	dialOpts := []grpc.DialOption{
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithTransportCredentials(insecure.NewCredentials()), // TODO(#NAP-TLS): wire TLS credentials for remote adapters
 	}
 	if dialer := dialerFromContext(ctx); dialer != nil {
 		dialOpts = append(dialOpts, grpc.WithContextDialer(dialer))
 	}
 	conn, err := grpc.DialContext(ctx, address, dialOpts...)
 	if err != nil {
+		if s, ok := status.FromError(err); ok && s.Code() == codes.Unavailable {
+			return nil, fmt.Errorf("tts: dial adapter %s: %w: %w", endpoint.AdapterID, err, ErrAdapterUnavailable)
+		}
 		return nil, fmt.Errorf("tts: dial adapter %s: %w", endpoint.AdapterID, err)
 	}
 
@@ -79,6 +82,9 @@ func (s *napSynthesizer) Speak(ctx context.Context, req SpeakRequest) ([]Synthes
 
 	stream, err := client.StreamSynthesis(ctx, grpcReq)
 	if err != nil {
+		if st, ok := status.FromError(err); ok && st.Code() == codes.Unavailable {
+			return nil, fmt.Errorf("tts: open synthesis stream: %w: %w", err, ErrAdapterUnavailable)
+		}
 		return nil, fmt.Errorf("tts: open synthesis stream: %w", err)
 	}
 
@@ -98,6 +104,9 @@ func (s *napSynthesizer) Speak(ctx context.Context, req SpeakRequest) ([]Synthes
 				}
 				// Server-side cancel — not initiated by us, treat as real error.
 				return chunks, fmt.Errorf("tts: receive synthesis chunk: %w", err)
+			}
+			if st, ok := status.FromError(err); ok && st.Code() == codes.Unavailable {
+				return chunks, fmt.Errorf("tts: receive synthesis chunk: %w: %w", err, ErrAdapterUnavailable)
 			}
 			return chunks, fmt.Errorf("tts: receive synthesis chunk: %w", err)
 		}
