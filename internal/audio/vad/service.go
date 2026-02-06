@@ -505,14 +505,39 @@ func (st *stream) run() {
 }
 
 func (st *stream) handleSegment(segment eventbus.AudioIngressSegmentEvent) {
-	detections, err := st.analyzer.OnSegment(st.ctx, segment)
-	if err != nil {
-		st.service.logger.Printf("[VAD] analyze segment session=%s stream=%s failed: %v", st.sessionID, st.streamID, err)
-		return
+	if st.analyzer == nil {
+		params := SessionParams{
+			SessionID: st.sessionID,
+			StreamID:  st.streamID,
+			Format:    segment.Format,
+			Metadata:  copyMetadata(segment.Metadata),
+		}
+		analyzer, err := st.service.factory.Create(st.ctx, params)
+		if err != nil {
+			if !errors.Is(err, ErrAdapterUnavailable) {
+				st.service.logger.Printf("[VAD] reconnect analyzer session=%s stream=%s: %v", st.sessionID, st.streamID, err)
+			}
+			return
+		}
+		st.analyzer = analyzer
+		st.service.logger.Printf("[VAD] analyzer reconnected session=%s stream=%s", st.sessionID, st.streamID)
 	}
 
+	detections, err := st.analyzer.OnSegment(st.ctx, segment)
+
+	// Publish any detections returned alongside the error — the NAP
+	// contract allows partial results + error (see nap_analyzer.go:162).
 	for _, det := range detections {
 		st.service.publishDetection(st.sessionID, st.streamID, segment, det)
+	}
+
+	if err != nil {
+		if errors.Is(err, ErrAdapterUnavailable) {
+			st.service.logger.Printf("[VAD] analyzer unavailable session=%s stream=%s, will retry: %v", st.sessionID, st.streamID, err)
+			st.closeAnalyzerForRecovery("adapter unavailable")
+			return
+		}
+		st.service.logger.Printf("[VAD] analyze segment session=%s stream=%s failed: %v", st.sessionID, st.streamID, err)
 	}
 }
 
@@ -534,6 +559,19 @@ func (st *stream) wait(ctx context.Context) {
 	case <-done:
 	case <-ctx.Done():
 	}
+}
+
+func (st *stream) closeAnalyzerForRecovery(reason string) {
+	if st.analyzer == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err := st.analyzer.Close(ctx)
+	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		st.service.logger.Printf("[VAD] close broken analyzer session=%s stream=%s (%s): %v", st.sessionID, st.streamID, reason, err)
+	}
+	st.analyzer = nil
 }
 
 func (st *stream) closeAnalyzer(reason string) {

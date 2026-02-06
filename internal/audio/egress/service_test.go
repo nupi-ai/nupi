@@ -2,6 +2,8 @@ package egress
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -260,6 +262,133 @@ func TestServiceMetricsActiveStreams(t *testing.T) {
 	}
 }
 
+func TestServiceRebuffersOnSpeakUnavailable(t *testing.T) {
+	bus := eventbus.New()
+
+	var (
+		mu       sync.Mutex
+		attempts int
+	)
+
+	factory := FactoryFunc(func(ctx context.Context, params SessionParams) (Synthesizer, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		attempts++
+		if attempts == 1 {
+			return &unavailableSynth{}, nil
+		}
+		return &noopSynth{}, nil
+	})
+
+	svc := New(
+		bus,
+		WithFactory(factory),
+		WithRetryDelays(5*time.Millisecond, 20*time.Millisecond),
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("start service: %v", err)
+	}
+	defer svc.Shutdown(context.Background())
+
+	playbackSub := bus.Subscribe(eventbus.TopicAudioEgressPlayback)
+	defer playbackSub.Close()
+
+	bus.Publish(context.Background(), eventbus.Envelope{
+		Topic: eventbus.TopicConversationSpeak,
+		Payload: eventbus.ConversationSpeakEvent{
+			SessionID: "sess-rebuffer",
+			Text:      "hello rebuffered",
+		},
+	})
+
+	evt := receivePlayback(t, playbackSub)
+	if evt.SessionID != "sess-rebuffer" {
+		t.Fatalf("unexpected session id: %s", evt.SessionID)
+	}
+
+	mu.Lock()
+	a := attempts
+	mu.Unlock()
+	if a < 2 {
+		t.Fatalf("expected at least 2 factory attempts, got %d", a)
+	}
+}
+
+func TestServiceRetryDropsPendingOnPermanentError(t *testing.T) {
+	bus := eventbus.New()
+
+	var (
+		mu       sync.Mutex
+		attempts int
+	)
+
+	permanentErr := errors.New("duplicate runtime entries")
+	factory := FactoryFunc(func(ctx context.Context, params SessionParams) (Synthesizer, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		attempts++
+		if attempts == 1 {
+			return nil, ErrAdapterUnavailable
+		}
+		return nil, permanentErr
+	})
+
+	svc := New(
+		bus,
+		WithFactory(factory),
+		WithRetryDelays(5*time.Millisecond, 20*time.Millisecond),
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("start service: %v", err)
+	}
+	defer svc.Shutdown(context.Background())
+
+	bus.Publish(context.Background(), eventbus.Envelope{
+		Topic: eventbus.TopicConversationSpeak,
+		Payload: eventbus.ConversationSpeakEvent{
+			SessionID: "sess-perm",
+			Text:      "permanent fail",
+		},
+	})
+
+	// Poll until the retry fires and hits the permanent error.
+	deadline := time.After(time.Second)
+	for {
+		svc.pendingMu.Lock()
+		pending := len(svc.pending)
+		svc.pendingMu.Unlock()
+		if pending == 0 {
+			mu.Lock()
+			a := attempts
+			mu.Unlock()
+			if a >= 2 {
+				break
+			}
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for pending queue to be dropped on permanent error")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+}
+
+type unavailableSynth struct{}
+
+func (u *unavailableSynth) Speak(context.Context, SpeakRequest) ([]SynthesisChunk, error) {
+	return nil, fmt.Errorf("tts: open synthesis stream: %w: %w", errors.New("connection refused"), ErrAdapterUnavailable)
+}
+
+func (u *unavailableSynth) Close(context.Context) ([]SynthesisChunk, error) {
+	return nil, nil
+}
+
 type noopSynth struct{}
 
 func (n *noopSynth) Speak(context.Context, SpeakRequest) ([]SynthesisChunk, error) {
@@ -312,5 +441,94 @@ func (s *interruptSynth) waitForClose(t *testing.T) {
 	case <-s.closeCh:
 	case <-time.After(time.Second):
 		t.Fatal("timeout waiting for synthesizer close")
+	}
+}
+
+func TestEnqueueRejectsAfterRebufferStarted(t *testing.T) {
+	bus := eventbus.New()
+	svc := New(bus, WithFactory(FactoryFunc(func(context.Context, SessionParams) (Synthesizer, error) {
+		return &noopSynth{}, nil
+	})))
+	svc.ctx, svc.cancel = context.WithCancel(context.Background())
+	t.Cleanup(func() { svc.cancel() })
+
+	params := SessionParams{
+		SessionID: "sess-rej",
+		StreamID:  "tts",
+		Format: eventbus.AudioFormat{
+			Encoding:   eventbus.AudioEncodingPCM16,
+			SampleRate: 16000,
+			Channels:   1,
+			BitDepth:   16,
+		},
+	}
+
+	st, err := svc.createStream(streamKey(params.SessionID, params.StreamID), params)
+	if err != nil {
+		t.Fatalf("create stream: %v", err)
+	}
+
+	// Simulate rebuffer: set stopped = true under lock.
+	st.mu.Lock()
+	st.stopped = true
+	st.mu.Unlock()
+
+	err = st.enqueue(speakRequest{
+		SessionID: "sess-rej",
+		StreamID:  "tts",
+		Text:      "should be rejected",
+	})
+	if !errors.Is(err, errStreamRebuffering) {
+		t.Fatalf("expected errStreamRebuffering, got %v", err)
+	}
+}
+
+func TestHandleSpeakRequestBuffersOnRebuffering(t *testing.T) {
+	bus := eventbus.New()
+	svc := New(bus, WithFactory(FactoryFunc(func(context.Context, SessionParams) (Synthesizer, error) {
+		return &noopSynth{}, nil
+	})))
+	svc.ctx, svc.cancel = context.WithCancel(context.Background())
+	t.Cleanup(func() { svc.cancel() })
+
+	params := SessionParams{
+		SessionID: "sess-buf",
+		StreamID:  "tts",
+		Format: eventbus.AudioFormat{
+			Encoding:   eventbus.AudioEncodingPCM16,
+			SampleRate: 16000,
+			Channels:   1,
+			BitDepth:   16,
+		},
+	}
+	key := streamKey(params.SessionID, params.StreamID)
+
+	st, err := svc.createStream(key, params)
+	if err != nil {
+		t.Fatalf("create stream: %v", err)
+	}
+
+	// Simulate rebuffer state.
+	st.mu.Lock()
+	st.stopped = true
+	st.mu.Unlock()
+
+	// handleSpeakRequest should detect enqueue failure and buffer the request.
+	svc.handleSpeakRequest(speakRequest{
+		SessionID: "sess-buf",
+		StreamID:  "tts",
+		Text:      "should be buffered",
+	})
+
+	svc.pendingMu.Lock()
+	queue, ok := svc.pending[key]
+	var count int
+	if ok {
+		count = len(queue.records)
+	}
+	svc.pendingMu.Unlock()
+
+	if !ok || count == 0 {
+		t.Fatalf("expected request to be buffered in pending queue, found=%t count=%d", ok, count)
 	}
 }

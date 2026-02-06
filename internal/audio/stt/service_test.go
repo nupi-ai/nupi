@@ -413,6 +413,77 @@ func TestPendingBufferDropsOldestWhenFull(t *testing.T) {
 	}
 }
 
+func TestServiceRetryDropsPendingOnPermanentError(t *testing.T) {
+	bus := eventbus.New()
+
+	var (
+		mu       sync.Mutex
+		attempts int
+	)
+
+	permanentErr := errors.New("duplicate runtime entries")
+	factory := FactoryFunc(func(ctx context.Context, params SessionParams) (Transcriber, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		attempts++
+		if attempts == 1 {
+			return nil, ErrAdapterUnavailable
+		}
+		return nil, permanentErr
+	})
+
+	svc := New(
+		bus,
+		WithFactory(factory),
+		WithRetryDelays(5*time.Millisecond, 20*time.Millisecond),
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("start service: %v", err)
+	}
+	defer svc.Shutdown(context.Background())
+
+	bus.Publish(context.Background(), eventbus.Envelope{
+		Topic: eventbus.TopicAudioIngressSegment,
+		Payload: eventbus.AudioIngressSegmentEvent{
+			SessionID: "sess-perm",
+			StreamID:  "mic",
+			Sequence:  1,
+			Format: eventbus.AudioFormat{
+				Encoding:   eventbus.AudioEncodingPCM16,
+				SampleRate: 16000,
+				Channels:   1,
+				BitDepth:   16,
+			},
+			Data:     make([]byte, 640),
+			Duration: 20 * time.Millisecond,
+		},
+	})
+
+	// Poll until the retry fires and hits the permanent error.
+	deadline := time.After(time.Second)
+	for {
+		svc.pendingMu.Lock()
+		pending := len(svc.pending)
+		svc.pendingMu.Unlock()
+		if pending == 0 {
+			mu.Lock()
+			a := attempts
+			mu.Unlock()
+			if a >= 2 {
+				break
+			}
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for pending queue to be dropped on permanent error")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+}
+
 func receiveTranscript(t *testing.T, sub *eventbus.Subscription, timeout time.Duration) eventbus.SpeechTranscriptEvent {
 	t.Helper()
 	timer := time.NewTimer(timeout)
@@ -470,4 +541,189 @@ func (s *scriptedTranscriber) closed() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.closeCalled
+}
+
+func TestSTTRecoversMidStreamAdapterFailure(t *testing.T) {
+	bus := eventbus.New()
+
+	var (
+		mu       sync.Mutex
+		callNum  int
+	)
+
+	factory := FactoryFunc(func(ctx context.Context, params SessionParams) (Transcriber, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		callNum++
+		switch callNum {
+		case 1:
+			// First transcriber: will fail on second segment.
+			return &failingTranscriber{
+				failOnSeq: 2,
+			}, nil
+		case 2:
+			// Second transcriber (recovery attempt): factory still unavailable.
+			return nil, ErrAdapterUnavailable
+		default:
+			// Third call: factory recovers.
+			return &scriptedTranscriber{
+				outputs: map[uint64][]Transcription{
+					3: {
+						{
+							Text:       "recovered",
+							Confidence: 0.85,
+							Final:      true,
+							StartedAt:  time.Unix(1, 0).UTC(),
+							EndedAt:    time.Unix(1, int64(200*time.Millisecond)).UTC(),
+						},
+					},
+				},
+			}, nil
+		}
+	})
+
+	svc := New(bus, WithFactory(factory))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("start service: %v", err)
+	}
+	defer svc.Shutdown(context.Background())
+
+	finalSub := bus.Subscribe(eventbus.TopicSpeechTranscriptFinal)
+	defer finalSub.Close()
+
+	baseSegment := eventbus.AudioIngressSegmentEvent{
+		SessionID: "sess-recover",
+		StreamID:  "mic",
+		Format: eventbus.AudioFormat{
+			Encoding:   eventbus.AudioEncodingPCM16,
+			SampleRate: 16000,
+			Channels:   1,
+			BitDepth:   16,
+		},
+		Data:     make([]byte, 640),
+		Duration: 20 * time.Millisecond,
+	}
+
+	// Segment 1: succeeds on first transcriber.
+	seg1 := baseSegment
+	seg1.Sequence = 1
+	seg1.First = true
+	bus.Publish(context.Background(), eventbus.Envelope{
+		Topic:   eventbus.TopicAudioIngressSegment,
+		Payload: seg1,
+	})
+	time.Sleep(20 * time.Millisecond)
+
+	// Segment 2: first transcriber returns ErrAdapterUnavailable, triggers recovery.
+	seg2 := baseSegment
+	seg2.Sequence = 2
+	bus.Publish(context.Background(), eventbus.Envelope{
+		Topic:   eventbus.TopicAudioIngressSegment,
+		Payload: seg2,
+	})
+	time.Sleep(20 * time.Millisecond)
+
+	// Segment 3: factory returns ErrAdapterUnavailable, segment dropped.
+	// (reconnect attempt #2 in factory)
+	seg3drop := baseSegment
+	seg3drop.Sequence = 99
+	bus.Publish(context.Background(), eventbus.Envelope{
+		Topic:   eventbus.TopicAudioIngressSegment,
+		Payload: seg3drop,
+	})
+	time.Sleep(20 * time.Millisecond)
+
+	// Segment 4: factory succeeds, new transcriber produces output.
+	seg3 := baseSegment
+	seg3.Sequence = 3
+	seg3.Last = true
+	bus.Publish(context.Background(), eventbus.Envelope{
+		Topic:   eventbus.TopicAudioIngressSegment,
+		Payload: seg3,
+	})
+
+	transcript := receiveTranscript(t, finalSub, time.Second)
+	if transcript.Text != "recovered" {
+		t.Fatalf("expected recovered transcript, got %q", transcript.Text)
+	}
+}
+
+// failingTranscriber returns ErrAdapterUnavailable on a specific sequence,
+// optionally returning partial results alongside the error (matching NAP contract).
+type failingTranscriber struct {
+	mu            sync.Mutex
+	failOnSeq     uint64
+	partialOnFail []Transcription
+}
+
+func (f *failingTranscriber) OnSegment(_ context.Context, segment eventbus.AudioIngressSegmentEvent) ([]Transcription, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if segment.Sequence == f.failOnSeq {
+		return append([]Transcription(nil), f.partialOnFail...), ErrAdapterUnavailable
+	}
+	return nil, nil
+}
+
+func (f *failingTranscriber) Close(context.Context) ([]Transcription, error) {
+	return nil, nil
+}
+
+func TestSTTPublishesPartialResultsBeforeRecovery(t *testing.T) {
+	bus := eventbus.New()
+
+	factory := FactoryFunc(func(ctx context.Context, params SessionParams) (Transcriber, error) {
+		return &failingTranscriber{
+			failOnSeq: 1,
+			partialOnFail: []Transcription{
+				{
+					Text:       "partial before fail",
+					Confidence: 0.5,
+					Final:      false,
+					StartedAt:  time.Unix(1, 0).UTC(),
+					EndedAt:    time.Unix(1, int64(100*time.Millisecond)).UTC(),
+				},
+			},
+		}, nil
+	})
+
+	svc := New(bus, WithFactory(factory))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("start service: %v", err)
+	}
+	defer svc.Shutdown(context.Background())
+
+	partialSub := bus.Subscribe(eventbus.TopicSpeechTranscriptPartial)
+	defer partialSub.Close()
+
+	seg := eventbus.AudioIngressSegmentEvent{
+		SessionID: "sess-partial",
+		StreamID:  "mic",
+		Sequence:  1,
+		Format: eventbus.AudioFormat{
+			Encoding:   eventbus.AudioEncodingPCM16,
+			SampleRate: 16000,
+			Channels:   1,
+			BitDepth:   16,
+		},
+		Data:     make([]byte, 640),
+		Duration: 20 * time.Millisecond,
+		First:    true,
+	}
+
+	bus.Publish(context.Background(), eventbus.Envelope{
+		Topic:   eventbus.TopicAudioIngressSegment,
+		Payload: seg,
+	})
+
+	tr := receiveTranscript(t, partialSub, time.Second)
+	if tr.Text != "partial before fail" {
+		t.Fatalf("expected partial transcript to be published before recovery, got %q", tr.Text)
+	}
 }
