@@ -40,7 +40,7 @@ func TestVoiceReadinessAllAdapters(t *testing.T) {
 		t.Errorf("expected all slots available, got: %+v", report.Slots)
 	}
 
-	for _, slot := range VoiceSlots {
+	for _, slot := range VoiceSlots() {
 		s := report.SlotByName(slot)
 		if s == nil {
 			t.Errorf("missing slot %s in report", slot)
