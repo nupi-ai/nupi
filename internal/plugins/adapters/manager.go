@@ -32,7 +32,7 @@ const (
 	SlotAI     Slot = "ai"
 	SlotSTT    Slot = slots.STT
 	SlotTTS    Slot = slots.TTS
-	SlotVAD    Slot = "vad"
+	SlotVAD    Slot = slots.VAD
 	SlotTunnel Slot = "tunnel"
 )
 

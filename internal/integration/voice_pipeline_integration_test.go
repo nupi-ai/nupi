@@ -3441,3 +3441,786 @@ func TestVoiceFallbackSTTBuffersWithAdapterFactory(t *testing.T) {
 		t.Errorf("STT should have received segments, got 0")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Story 2.6: End-to-End VAD Integration Validation
+// ---------------------------------------------------------------------------
+
+// waitForVADEvent waits for a SpeechVADEvent matching the predicate.
+func waitForVADEvent(t *testing.T, sub *eventbus.Subscription, timeout time.Duration, predicate func(eventbus.SpeechVADEvent) bool) eventbus.SpeechVADEvent {
+	t.Helper()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	for {
+		select {
+		case env := <-sub.C():
+			evt, ok := env.Payload.(eventbus.SpeechVADEvent)
+			if !ok {
+				continue
+			}
+			if predicate == nil || predicate(evt) {
+				return evt
+			}
+		case <-timer.C:
+			t.Fatalf("timeout waiting for VAD event (%s)", timeout)
+		}
+	}
+}
+
+// phaseAnalyzer wraps a VAD analyzer to fail with ErrAdapterUnavailable when
+// the phase flag is set to 1. Used by TestVADMidStreamRecovery.
+type phaseAnalyzer struct {
+	inner vad.Analyzer
+	phase *atomic.Int32
+}
+
+func (a *phaseAnalyzer) OnSegment(ctx context.Context, seg eventbus.AudioIngressSegmentEvent) ([]vad.Detection, error) {
+	if a.phase.Load() == 1 {
+		return nil, vad.ErrAdapterUnavailable
+	}
+	return a.inner.OnSegment(ctx, seg)
+}
+
+func (a *phaseAnalyzer) Close(ctx context.Context) ([]vad.Detection, error) {
+	return a.inner.Close(ctx)
+}
+
+// TestVADDrivenVoiceLoop validates the complete voice pipeline driven through
+// the actual VAD service with mock adapter. Unlike earlier tests that inject
+// VAD events directly, this test drives loud PCM audio through ingress so the
+// mock VAD analyzer detects speech based on RMS amplitude.
+//
+// Audio → ingress → VAD detection → STT transcript → conversation → intent → TTS playback.
+func TestVADDrivenVoiceLoop(t *testing.T) {
+	ctx := context.Background()
+	bus := eventbus.New()
+
+	store, cleanup := testutil.OpenStore(t)
+	defer cleanup()
+
+	if err := adapters.EnsureBuiltinAdapters(ctx, store); err != nil {
+		t.Fatalf("ensure builtin adapters: %v", err)
+	}
+
+	// Mock VAD: threshold 0.1 with min_frames=1. A single loud segment
+	// (amplitude 5000 → RMS ≈ 0.15) triggers Active detection immediately.
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotSTT), adapters.MockSTTAdapterID, map[string]any{
+		"phrases": []any{"hello vad"},
+	}); err != nil {
+		t.Fatalf("activate stt: %v", err)
+	}
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotTTS), adapters.MockTTSAdapterID, map[string]any{
+		"duration_ms": 200,
+	}); err != nil {
+		t.Fatalf("activate tts: %v", err)
+	}
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotVAD), adapters.MockVADAdapterID, map[string]any{
+		"threshold":  0.1,
+		"min_frames": 1,
+	}); err != nil {
+		t.Fatalf("activate vad: %v", err)
+	}
+
+	ingressSvc := ingress.New(bus)
+	sttSvc := stt.New(bus,
+		stt.WithFactory(stt.NewAdapterFactory(store, nil)),
+		stt.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
+	)
+	vadSvc := vad.New(bus,
+		vad.WithFactory(vad.NewAdapterFactory(store, nil)),
+		vad.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
+	)
+	bargeSvc := barge.New(bus,
+		barge.WithConfidenceThreshold(0.1),
+		barge.WithCooldown(50*time.Millisecond),
+		barge.WithQuietPeriod(0),
+	)
+	pipelineSvc := contentpipeline.NewService(bus, nil)
+	conversationSvc := conversation.NewService(bus,
+		conversation.WithHistoryLimit(8),
+		conversation.WithDetachTTL(5*time.Second),
+	)
+	intentSvc := intentrouter.NewService(bus,
+		intentrouter.WithAdapter(&speakBackAdapter{prefix: "VAD loop: "}),
+	)
+	egressSvc := egress.New(bus,
+		egress.WithFactory(egress.NewAdapterFactory(store, nil)),
+		egress.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
+	)
+
+	services := []startStopper{
+		pipelineSvc, ingressSvc, sttSvc, vadSvc, bargeSvc, conversationSvc, intentSvc, egressSvc,
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	for _, svc := range services {
+		if err := svc.Start(runCtx); err != nil {
+			t.Fatalf("start %T: %v", svc, err)
+		}
+		defer svc.Shutdown(context.Background())
+	}
+
+	vadSub := bus.Subscribe(eventbus.TopicSpeechVADDetected, eventbus.WithSubscriptionName("test_vad"))
+	defer vadSub.Close()
+	transcriptSub := bus.Subscribe(eventbus.TopicSpeechTranscriptFinal, eventbus.WithSubscriptionName("test_transcript"))
+	defer transcriptSub.Close()
+	promptSub := bus.Subscribe(eventbus.TopicConversationPrompt, eventbus.WithSubscriptionName("test_prompt"))
+	defer promptSub.Close()
+	playbackSub := bus.Subscribe(eventbus.TopicAudioEgressPlayback, eventbus.WithSubscriptionName("test_playback"))
+	defer playbackSub.Close()
+
+	transcriptCh := make(chan eventbus.SpeechTranscriptEvent, 4)
+	promptCh := make(chan eventbus.ConversationPromptEvent, 4)
+	bridgeCtx, bridgeCancel := context.WithCancel(runCtx)
+	defer bridgeCancel()
+	go forwardEvents(bridgeCtx, transcriptSub, transcriptCh)
+	go forwardEvents(bridgeCtx, promptSub, promptCh)
+
+	const sessionID = "vad-loop-session"
+	bus.Publish(ctx, eventbus.Envelope{
+		Topic:  eventbus.TopicSessionsLifecycle,
+		Source: eventbus.SourceSessionManager,
+		Payload: eventbus.SessionLifecycleEvent{
+			SessionID: sessionID,
+			State:     eventbus.SessionStateRunning,
+		},
+	})
+
+	format := eventbus.AudioFormat{
+		Encoding:      eventbus.AudioEncodingPCM16,
+		SampleRate:    16000,
+		Channels:      1,
+		BitDepth:      16,
+		FrameDuration: 20 * time.Millisecond,
+	}
+
+	stream, err := ingressSvc.OpenStream(sessionID, "mic", format, map[string]string{
+		"locale": "en-US",
+	})
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+
+	// Write loud PCM: amplitude 5000 → RMS ≈ 0.15 exceeds threshold 0.1.
+	loudSegment := pcmBuffer(5000, 320) // 320 samples = 20ms at 16kHz
+	for i := 0; i < 3; i++ {
+		if err := stream.Write(loudSegment); err != nil {
+			t.Fatalf("write segment %d: %v", i+1, err)
+		}
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatalf("close stream: %v", err)
+	}
+
+	// 1. Verify VAD detects speech with correct fields.
+	vadEvt := waitForVADEvent(t, vadSub, 2*time.Second, func(evt eventbus.SpeechVADEvent) bool {
+		return evt.Active
+	})
+	if vadEvt.SessionID != sessionID {
+		t.Errorf("VAD sessionID: got %q want %q", vadEvt.SessionID, sessionID)
+	}
+	if vadEvt.StreamID != "mic" {
+		t.Errorf("VAD streamID: got %q want %q", vadEvt.StreamID, "mic")
+	}
+	if vadEvt.Confidence <= 0 {
+		t.Errorf("VAD confidence should be > 0, got %f", vadEvt.Confidence)
+	}
+
+	// 2. Verify STT produces a final transcript (triggered by stream close).
+	transcript := waitFor(t, transcriptCh, 2*time.Second)
+	if !transcript.Final {
+		t.Fatalf("expected final transcript, got partial")
+	}
+	if transcript.SessionID != sessionID {
+		t.Errorf("transcript sessionID: got %q want %q", transcript.SessionID, sessionID)
+	}
+
+	// 3. Verify conversation prompt is generated from the transcript.
+	prompt := waitFor(t, promptCh, 2*time.Second)
+	if prompt.SessionID != sessionID {
+		t.Errorf("prompt sessionID: got %q want %q", prompt.SessionID, sessionID)
+	}
+	if prompt.NewMessage.Text != transcript.Text {
+		t.Errorf("prompt text: got %q want %q", prompt.NewMessage.Text, transcript.Text)
+	}
+	if prompt.NewMessage.Origin != eventbus.OriginUser {
+		t.Errorf("prompt origin: got %q want %q", prompt.NewMessage.Origin, eventbus.OriginUser)
+	}
+
+	// 4. Verify TTS produces playback with final chunk.
+	finalPlayback := waitForPlayback(t, playbackSub, 3*time.Second, func(evt eventbus.AudioEgressPlaybackEvent) bool {
+		return evt.Final
+	})
+	if finalPlayback.SessionID != sessionID {
+		t.Errorf("playback sessionID: got %q want %q", finalPlayback.SessionID, sessionID)
+	}
+	if len(finalPlayback.Data) == 0 {
+		t.Error("expected playback data, got empty")
+	}
+}
+
+// TestVADSilenceDoesNotTriggerDetection verifies that zero-amplitude PCM data
+// does not trigger VAD speech detection. The mock VAD analyzer calculates RMS
+// which is 0 for silent data, well below any configured threshold.
+func TestVADSilenceDoesNotTriggerDetection(t *testing.T) {
+	ctx := context.Background()
+	bus := eventbus.New()
+
+	store, cleanup := testutil.OpenStore(t)
+	defer cleanup()
+
+	if err := adapters.EnsureBuiltinAdapters(ctx, store); err != nil {
+		t.Fatalf("ensure builtin adapters: %v", err)
+	}
+
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotVAD), adapters.MockVADAdapterID, map[string]any{
+		"threshold":  0.1,
+		"min_frames": 1,
+	}); err != nil {
+		t.Fatalf("activate vad: %v", err)
+	}
+
+	ingressSvc := ingress.New(bus)
+	vadSvc := vad.New(bus,
+		vad.WithFactory(vad.NewAdapterFactory(store, nil)),
+		vad.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
+	)
+
+	services := []startStopper{ingressSvc, vadSvc}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	for _, svc := range services {
+		if err := svc.Start(runCtx); err != nil {
+			t.Fatalf("start %T: %v", svc, err)
+		}
+		defer svc.Shutdown(context.Background())
+	}
+
+	vadSub := bus.Subscribe(eventbus.TopicSpeechVADDetected, eventbus.WithSubscriptionName("test_vad"))
+	defer vadSub.Close()
+
+	format := eventbus.AudioFormat{
+		Encoding:      eventbus.AudioEncodingPCM16,
+		SampleRate:    16000,
+		Channels:      1,
+		BitDepth:      16,
+		FrameDuration: 20 * time.Millisecond,
+	}
+
+	const sessionID = "vad-silence-session"
+	stream, err := ingressSvc.OpenStream(sessionID, "mic", format, nil)
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+
+	// Write zero-amplitude (silent) PCM segments.
+	silentSegment := pcmBuffer(0, 320)
+	for i := 0; i < 5; i++ {
+		if err := stream.Write(silentSegment); err != nil {
+			t.Fatalf("write segment %d: %v", i+1, err)
+		}
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatalf("close stream: %v", err)
+	}
+
+	// No Active VAD detection should fire for silent audio.
+	timer := time.NewTimer(500 * time.Millisecond)
+	defer timer.Stop()
+	for {
+		select {
+		case env := <-vadSub.C():
+			evt, ok := env.Payload.(eventbus.SpeechVADEvent)
+			if ok && evt.Active {
+				t.Fatalf("unexpected active VAD detection from silence: confidence=%f", evt.Confidence)
+			}
+			// Inactive events are fine (mock emits on Close if was active).
+		case <-timer.C:
+			return
+		}
+	}
+}
+
+// TestVADBargeInDuringPlayback validates that when TTS is actively streaming
+// and the VAD service detects speech from real audio (via mock adapter), the
+// barge coordinator fires a barge-in event. Unlike TestVoicePipelineBargeInDuringTTSStreaming
+// which injects VAD events directly, this test drives audio through the full
+// VAD bridge path: ingress → VAD service → mock analyzer → detection → barge.
+func TestVADBargeInDuringPlayback(t *testing.T) {
+	ctx := context.Background()
+	bus := eventbus.New()
+
+	store, cleanup := testutil.OpenStore(t)
+	defer cleanup()
+
+	if err := adapters.EnsureBuiltinAdapters(ctx, store); err != nil {
+		t.Fatalf("ensure builtin adapters: %v", err)
+	}
+
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotSTT), adapters.MockSTTAdapterID, map[string]any{
+		"phrases": []any{"barge test"},
+	}); err != nil {
+		t.Fatalf("activate stt: %v", err)
+	}
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotVAD), adapters.MockVADAdapterID, map[string]any{
+		"threshold":  0.1,
+		"min_frames": 1,
+	}); err != nil {
+		t.Fatalf("activate vad: %v", err)
+	}
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotTTS), adapters.MockTTSAdapterID, nil); err != nil {
+		t.Fatalf("activate tts: %v", err)
+	}
+
+	// Multi-chunk streaming synth keeps playback alive long enough for VAD
+	// detection to trigger barge. Speak() returns 1 head chunk (published
+	// immediately), Close() returns the 9 tail chunks.
+	ttsFactory := egress.FactoryFunc(func(_ context.Context, _ egress.SessionParams) (egress.Synthesizer, error) {
+		return newStreamingSynth(&multiChunkSynthesizer{
+			chunkCount: 10,
+			chunkSize:  640,
+		}), nil
+	})
+
+	ingressSvc := ingress.New(bus)
+	sttSvc := stt.New(bus,
+		stt.WithFactory(stt.NewAdapterFactory(store, nil)),
+		stt.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
+	)
+	vadSvc := vad.New(bus,
+		vad.WithFactory(vad.NewAdapterFactory(store, nil)),
+		vad.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
+	)
+	bargeSvc := barge.New(bus,
+		barge.WithConfidenceThreshold(0.1),
+		barge.WithCooldown(100*time.Millisecond),
+		barge.WithQuietPeriod(0),
+	)
+	pipelineSvc := contentpipeline.NewService(bus, nil)
+	conversationSvc := conversation.NewService(bus,
+		conversation.WithHistoryLimit(8),
+		conversation.WithDetachTTL(5*time.Second),
+	)
+	intentSvc := intentrouter.NewService(bus,
+		intentrouter.WithAdapter(&speakBackAdapter{prefix: "Barge VAD: "}),
+	)
+	egressSvc := egress.New(bus,
+		egress.WithFactory(ttsFactory),
+		egress.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
+	)
+
+	services := []startStopper{
+		pipelineSvc, ingressSvc, sttSvc, vadSvc, bargeSvc, conversationSvc, intentSvc, egressSvc,
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	for _, svc := range services {
+		if err := svc.Start(runCtx); err != nil {
+			t.Fatalf("start %T: %v", svc, err)
+		}
+		defer svc.Shutdown(context.Background())
+	}
+
+	playbackSub := bus.Subscribe(eventbus.TopicAudioEgressPlayback, eventbus.WithSubscriptionName("test_playback"))
+	defer playbackSub.Close()
+	bargeSub := bus.Subscribe(eventbus.TopicSpeechBargeIn, eventbus.WithSubscriptionName("test_barge"))
+	defer bargeSub.Close()
+
+	const sessionID = "vad-barge-session"
+	bus.Publish(ctx, eventbus.Envelope{
+		Topic:  eventbus.TopicSessionsLifecycle,
+		Source: eventbus.SourceSessionManager,
+		Payload: eventbus.SessionLifecycleEvent{
+			SessionID: sessionID,
+			State:     eventbus.SessionStateRunning,
+		},
+	})
+
+	format := eventbus.AudioFormat{
+		Encoding:      eventbus.AudioEncodingPCM16,
+		SampleRate:    16000,
+		Channels:      1,
+		BitDepth:      16,
+		FrameDuration: 20 * time.Millisecond,
+	}
+
+	// Phase 1: Feed audio through the pipeline to start TTS playback.
+	stream1, err := ingressSvc.OpenStream(sessionID, "mic", format, nil)
+	if err != nil {
+		t.Fatalf("open stream 1: %v", err)
+	}
+	loudSegment := pcmBuffer(5000, 320)
+	for i := 0; i < 3; i++ {
+		if err := stream1.Write(loudSegment); err != nil {
+			t.Fatalf("write segment %d: %v", i, err)
+		}
+	}
+	if err := stream1.Close(); err != nil {
+		t.Fatalf("close stream 1: %v", err)
+	}
+
+	// Wait for TTS to start streaming (non-final playback = active playback).
+	waitForPlayback(t, playbackSub, 5*time.Second, func(evt eventbus.AudioEgressPlaybackEvent) bool {
+		return !evt.Final && len(evt.Data) > 0
+	})
+
+	// Phase 2: Feed loud audio through a new ingress stream. The new stream
+	// creates a fresh VAD analyzer (lastState=false) so the first loud
+	// segment triggers Active=true detection. With active playback, the
+	// barge coordinator fires.
+	stream2, err := ingressSvc.OpenStream(sessionID, "mic2", format, nil)
+	if err != nil {
+		t.Fatalf("open stream 2: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := stream2.Write(loudSegment); err != nil {
+			t.Fatalf("write barge segment %d: %v", i, err)
+		}
+	}
+	if err := stream2.Close(); err != nil {
+		t.Fatalf("close stream 2: %v", err)
+	}
+
+	// Verify barge event from VAD-driven detection.
+	bargeEvt := waitForBargeEvent(t, bargeSub, 3*time.Second)
+	if bargeEvt.SessionID != sessionID {
+		t.Errorf("barge sessionID: got %q want %q", bargeEvt.SessionID, sessionID)
+	}
+	if bargeEvt.Reason != "vad_detected" {
+		t.Errorf("barge reason: got %q want %q", bargeEvt.Reason, "vad_detected")
+	}
+
+	// Verify final playback carries barge_in metadata.
+	finalPlayback := waitForPlayback(t, playbackSub, 3*time.Second, func(evt eventbus.AudioEgressPlaybackEvent) bool {
+		return evt.Final && evt.Metadata["barge_in"] == "true"
+	})
+	if finalPlayback.Metadata["barge_in_reason"] != "vad_detected" {
+		t.Errorf("expected barge_in_reason=vad_detected, got: %q", finalPlayback.Metadata["barge_in_reason"])
+	}
+}
+
+// TestVADMultiSessionIsolation verifies that VAD detections and barge-in events
+// in one session do not affect another session. Session A receives loud audio
+// (triggering VAD + barge), while session B has active playback but no VAD
+// input — its playback continues uninterrupted.
+func TestVADMultiSessionIsolation(t *testing.T) {
+	ctx := context.Background()
+	bus := eventbus.New()
+
+	store, cleanup := testutil.OpenStore(t)
+	defer cleanup()
+
+	if err := adapters.EnsureBuiltinAdapters(ctx, store); err != nil {
+		t.Fatalf("ensure builtin adapters: %v", err)
+	}
+
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotSTT), adapters.MockSTTAdapterID, map[string]any{
+		"phrases": []any{"session test"},
+	}); err != nil {
+		t.Fatalf("activate stt: %v", err)
+	}
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotVAD), adapters.MockVADAdapterID, map[string]any{
+		"threshold":  0.1,
+		"min_frames": 1,
+	}); err != nil {
+		t.Fatalf("activate vad: %v", err)
+	}
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotTTS), adapters.MockTTSAdapterID, nil); err != nil {
+		t.Fatalf("activate tts: %v", err)
+	}
+
+	// Multi-chunk streaming synth for both sessions.
+	ttsFactory := egress.FactoryFunc(func(_ context.Context, _ egress.SessionParams) (egress.Synthesizer, error) {
+		return newStreamingSynth(&multiChunkSynthesizer{
+			chunkCount: 10,
+			chunkSize:  640,
+		}), nil
+	})
+
+	ingressSvc := ingress.New(bus)
+	sttSvc := stt.New(bus,
+		stt.WithFactory(stt.NewAdapterFactory(store, nil)),
+		stt.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
+	)
+	vadSvc := vad.New(bus,
+		vad.WithFactory(vad.NewAdapterFactory(store, nil)),
+		vad.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
+	)
+	bargeSvc := barge.New(bus,
+		barge.WithConfidenceThreshold(0.1),
+		barge.WithCooldown(100*time.Millisecond),
+		barge.WithQuietPeriod(0),
+	)
+	pipelineSvc := contentpipeline.NewService(bus, nil)
+	conversationSvc := conversation.NewService(bus,
+		conversation.WithHistoryLimit(8),
+		conversation.WithDetachTTL(5*time.Second),
+	)
+	intentSvc := intentrouter.NewService(bus,
+		intentrouter.WithAdapter(&speakBackAdapter{prefix: "Multi: "}),
+	)
+	egressSvc := egress.New(bus,
+		egress.WithFactory(ttsFactory),
+		egress.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
+	)
+
+	services := []startStopper{
+		pipelineSvc, ingressSvc, sttSvc, vadSvc, bargeSvc, conversationSvc, intentSvc, egressSvc,
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	for _, svc := range services {
+		if err := svc.Start(runCtx); err != nil {
+			t.Fatalf("start %T: %v", svc, err)
+		}
+		defer svc.Shutdown(context.Background())
+	}
+
+	vadSub := bus.Subscribe(eventbus.TopicSpeechVADDetected, eventbus.WithSubscriptionName("test_vad"))
+	defer vadSub.Close()
+	bargeSub := bus.Subscribe(eventbus.TopicSpeechBargeIn, eventbus.WithSubscriptionName("test_barge"))
+	defer bargeSub.Close()
+	playbackSub := bus.Subscribe(eventbus.TopicAudioEgressPlayback, eventbus.WithSubscriptionName("test_playback"))
+	defer playbackSub.Close()
+
+	const sessionA = "multi-session-a"
+	const sessionB = "multi-session-b"
+
+	for _, sid := range []string{sessionA, sessionB} {
+		bus.Publish(ctx, eventbus.Envelope{
+			Topic:  eventbus.TopicSessionsLifecycle,
+			Source: eventbus.SourceSessionManager,
+			Payload: eventbus.SessionLifecycleEvent{
+				SessionID: sid,
+				State:     eventbus.SessionStateRunning,
+			},
+		})
+	}
+
+	format := eventbus.AudioFormat{
+		Encoding:      eventbus.AudioEncodingPCM16,
+		SampleRate:    16000,
+		Channels:      1,
+		BitDepth:      16,
+		FrameDuration: 20 * time.Millisecond,
+	}
+
+	// Silent audio for initial seeding: mock STT still produces transcripts
+	// (it ignores audio content), but VAD will NOT detect speech (RMS = 0).
+	// This avoids an early VAD detection + barge race during pipeline warm-up.
+	silentSegment := pcmBuffer(0, 320)
+	loudSegment := pcmBuffer(5000, 320)
+
+	// Seed both sessions with silent audio → STT transcribes → conversation → TTS plays.
+	for _, sid := range []string{sessionA, sessionB} {
+		stream, err := ingressSvc.OpenStream(sid, "mic", format, nil)
+		if err != nil {
+			t.Fatalf("open stream %s: %v", sid, err)
+		}
+		for i := 0; i < 3; i++ {
+			if err := stream.Write(silentSegment); err != nil {
+				t.Fatalf("write %s segment %d: %v", sid, i, err)
+			}
+		}
+		if err := stream.Close(); err != nil {
+			t.Fatalf("close %s stream: %v", sid, err)
+		}
+	}
+
+	// Wait for playback to start in both sessions.
+	seenA := false
+	seenB := false
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	for !seenA || !seenB {
+		select {
+		case env := <-playbackSub.C():
+			evt, ok := env.Payload.(eventbus.AudioEgressPlaybackEvent)
+			if !ok {
+				continue
+			}
+			if evt.SessionID == sessionA && !evt.Final {
+				seenA = true
+			}
+			if evt.SessionID == sessionB && !evt.Final {
+				seenB = true
+			}
+		case <-deadline.C:
+			t.Fatalf("timeout waiting for playback in both sessions (A=%v B=%v)", seenA, seenB)
+		}
+	}
+
+	// Feed loud audio ONLY in session A via new stream → VAD detects → barge in A.
+	streamA, err := ingressSvc.OpenStream(sessionA, "mic2", format, nil)
+	if err != nil {
+		t.Fatalf("open stream A mic2: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := streamA.Write(loudSegment); err != nil {
+			t.Fatalf("write A barge segment %d: %v", i, err)
+		}
+	}
+	if err := streamA.Close(); err != nil {
+		t.Fatalf("close stream A mic2: %v", err)
+	}
+
+	// Verify VAD detection only for session A.
+	waitForVADEvent(t, vadSub, 3*time.Second, func(evt eventbus.SpeechVADEvent) bool {
+		return evt.Active && evt.SessionID == sessionA && evt.StreamID == "mic2"
+	})
+
+	// Verify barge fires only for session A.
+	bargeEvt := waitForBargeEvent(t, bargeSub, 3*time.Second)
+	if bargeEvt.SessionID != sessionA {
+		t.Errorf("barge should be for session A, got %q", bargeEvt.SessionID)
+	}
+
+	// Verify no barge event for session B within a bounded window.
+	noBarge := time.NewTimer(500 * time.Millisecond)
+	defer noBarge.Stop()
+	for {
+		select {
+		case env := <-bargeSub.C():
+			evt, ok := env.Payload.(eventbus.SpeechBargeInEvent)
+			if ok && evt.SessionID == sessionB {
+				t.Fatalf("unexpected barge event for session B: %+v", evt)
+			}
+		case <-noBarge.C:
+			// No barge for B — correct: session B had no loud audio input.
+			return
+		}
+	}
+}
+
+// TestVADMidStreamRecovery validates that when the VAD adapter becomes
+// unavailable mid-stream (OnSegment returns ErrAdapterUnavailable), the
+// service nils out the broken analyzer and recovers when the factory
+// succeeds again on a subsequent segment.
+func TestVADMidStreamRecovery(t *testing.T) {
+	ctx := context.Background()
+	bus := eventbus.New()
+
+	store, cleanup := testutil.OpenStore(t)
+	defer cleanup()
+
+	if err := adapters.EnsureBuiltinAdapters(ctx, store); err != nil {
+		t.Fatalf("ensure builtin adapters: %v", err)
+	}
+
+	if err := store.SetActiveAdapter(ctx, string(adapters.SlotVAD), adapters.MockVADAdapterID, map[string]any{
+		"threshold":  0.1,
+		"min_frames": 1,
+	}); err != nil {
+		t.Fatalf("activate vad: %v", err)
+	}
+
+	// Phase-controlled factory: phase 0 = available, phase 1 = unavailable.
+	// The factory wraps each analyzer with phaseAnalyzer so that mid-stream
+	// OnSegment calls also respect the phase flag.
+	// factoryFailCount tracks Create calls during phase=1, used to synchronize
+	// the test without time.Sleep — when >= 1, the service has processed the
+	// analyzer failure and attempted reconnection.
+	var phase atomic.Int32
+	var factoryFailCount atomic.Int32
+	innerFactory := vad.NewAdapterFactory(store, nil)
+	factory := vad.FactoryFunc(func(ctx context.Context, params vad.SessionParams) (vad.Analyzer, error) {
+		if phase.Load() == 1 {
+			factoryFailCount.Add(1)
+			return nil, vad.ErrAdapterUnavailable
+		}
+		analyzer, err := innerFactory.Create(ctx, params)
+		if err != nil {
+			return nil, err
+		}
+		return &phaseAnalyzer{inner: analyzer, phase: &phase}, nil
+	})
+
+	ingressSvc := ingress.New(bus)
+	vadSvc := vad.New(bus,
+		vad.WithFactory(factory),
+		vad.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
+	)
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	if err := ingressSvc.Start(runCtx); err != nil {
+		t.Fatalf("start ingress: %v", err)
+	}
+	defer ingressSvc.Shutdown(context.Background())
+	if err := vadSvc.Start(runCtx); err != nil {
+		t.Fatalf("start vad: %v", err)
+	}
+	defer vadSvc.Shutdown(context.Background())
+
+	vadSub := bus.Subscribe(eventbus.TopicSpeechVADDetected, eventbus.WithSubscriptionName("test_vad"))
+	defer vadSub.Close()
+
+	format := eventbus.AudioFormat{
+		Encoding:      eventbus.AudioEncodingPCM16,
+		SampleRate:    16000,
+		Channels:      1,
+		BitDepth:      16,
+		FrameDuration: 20 * time.Millisecond,
+	}
+
+	const sessionID = "vad-recovery-session"
+	stream, err := ingressSvc.OpenStream(sessionID, "mic", format, nil)
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+
+	loudSegment := pcmBuffer(5000, 320)
+
+	// Phase 1: Available. Loud audio → VAD detects Active=true.
+	for i := 0; i < 2; i++ {
+		if err := stream.Write(loudSegment); err != nil {
+			t.Fatalf("phase 1 write %d: %v", i, err)
+		}
+	}
+	vadEvt := waitForVADEvent(t, vadSub, 2*time.Second, func(evt eventbus.SpeechVADEvent) bool {
+		return evt.Active && evt.SessionID == sessionID
+	})
+	t.Logf("phase 1: VAD detected, confidence=%f", vadEvt.Confidence)
+
+	// Phase 2: Unavailable. OnSegment fails → analyzer nilled → Create fails.
+	phase.Store(1)
+	for i := 0; i < 3; i++ {
+		if err := stream.Write(loudSegment); err != nil {
+			t.Fatalf("phase 2 write %d: %v", i, err)
+		}
+	}
+	// Wait for the VAD service to process failure and attempt reconnection.
+	// factoryFailCount >= 1 means the service has nilled out the broken
+	// analyzer and tried factory.Create, confirming the failure path completed.
+	{
+		tick := time.NewTicker(5 * time.Millisecond)
+		defer tick.Stop()
+		syncDeadline := time.NewTimer(2 * time.Second)
+		defer syncDeadline.Stop()
+		for factoryFailCount.Load() < 1 {
+			select {
+			case <-tick.C:
+			case <-syncDeadline.C:
+				t.Fatal("timeout waiting for VAD failure processing")
+			}
+		}
+	}
+
+	// Phase 3: Available again. Next segment → Create succeeds → new analyzer
+	// detects Active=true (fresh analyzer, lastState=false).
+	phase.Store(0)
+	for i := 0; i < 2; i++ {
+		if err := stream.Write(loudSegment); err != nil {
+			t.Fatalf("phase 3 write %d: %v", i, err)
+		}
+	}
+	recoveredEvt := waitForVADEvent(t, vadSub, 2*time.Second, func(evt eventbus.SpeechVADEvent) bool {
+		return evt.Active && evt.SessionID == sessionID
+	})
+	t.Logf("phase 3: VAD recovered, confidence=%f", recoveredEvt.Confidence)
+
+	if err := stream.Close(); err != nil {
+		t.Fatalf("close stream: %v", err)
+	}
+}
