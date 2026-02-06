@@ -18,6 +18,8 @@ var (
 	ErrFactoryUnavailable = errors.New("tts: synthesizer factory unavailable")
 	// ErrAdapterUnavailable indicates no active TTS adapter is bound.
 	ErrAdapterUnavailable = errors.New("tts: adapter unavailable")
+	// errStreamRebuffering is returned by enqueue when a stream is being rebuffered.
+	errStreamRebuffering = errors.New("tts: stream rebuffering")
 )
 
 const (
@@ -410,8 +412,19 @@ func (s *Service) handleSpeakRequest(req speakRequest) {
 	key := streamKey(req.SessionID, req.StreamID)
 
 	if st, ok := s.stream(key); ok {
-		if err := st.enqueue(req); err != nil && !errors.Is(err, context.Canceled) {
-			s.logger.Printf("[TTS] enqueue request session=%s stream=%s failed: %v", req.SessionID, req.StreamID, err)
+		if err := st.enqueue(req); err == nil {
+			return
+		}
+		// Enqueue failed — stream is dying (rebuffer/interrupt) or service
+		// shutting down.  If the service is still running, buffer the request
+		// so it survives the stream transition rather than being dropped.
+		if s.ctx.Err() == nil {
+			s.bufferPending(key, SessionParams{
+				SessionID: req.SessionID,
+				StreamID:  req.StreamID,
+				Format:    s.format,
+				Metadata:  copyMetadata(req.Metadata),
+			}, req)
 		}
 		return
 	}
@@ -426,8 +439,12 @@ func (s *Service) handleSpeakRequest(req speakRequest) {
 	stream, err := s.createStream(key, params)
 	switch {
 	case err == nil:
-		if err := stream.enqueue(req); err != nil && !errors.Is(err, context.Canceled) {
-			s.logger.Printf("[TTS] enqueue request session=%s stream=%s failed: %v", req.SessionID, req.StreamID, err)
+		if err := stream.enqueue(req); err != nil {
+			if errors.Is(err, errStreamRebuffering) {
+				s.bufferPending(key, params, req)
+			} else if !errors.Is(err, context.Canceled) {
+				s.logger.Printf("[TTS] enqueue request session=%s stream=%s failed: %v", req.SessionID, req.StreamID, err)
+			}
 		}
 	case errors.Is(err, ErrAdapterUnavailable):
 		s.bufferPending(key, params, req)
@@ -545,7 +562,30 @@ func (s *Service) onStreamClosed(key string, st *stream) {
 			s.logger.Printf("[TTS] stream closed session=%s stream=%s interrupted=%t", st.sessionID, st.streamID, st.interrupted)
 		}
 	}
-	s.clearPending(key)
+	if !st.keepPending {
+		s.clearPending(key)
+		return
+	}
+	// Drain any requests that arrived between rebufferPending and stream
+	// removal from the map. Without this, requests enqueued after the
+	// drain in rebufferPending but before onStreamClosed would be lost.
+	params := SessionParams{
+		SessionID: st.sessionID,
+		StreamID:  st.streamID,
+		Format:    st.format,
+		Metadata:  copyMetadata(st.metadata),
+	}
+	for {
+		select {
+		case req, ok := <-st.requestCh:
+			if !ok {
+				return
+			}
+			s.bufferPending(st.key, params, req)
+		default:
+			return
+		}
+	}
 }
 
 type pendingQueue struct {
@@ -622,8 +662,17 @@ func (s *Service) flushPending(key string, st *stream) {
 		}
 
 		for _, req := range records {
-			if err := st.enqueue(req); err != nil && !errors.Is(err, context.Canceled) {
-				s.logger.Printf("[TTS] enqueue pending request session=%s stream=%s failed: %v", req.SessionID, req.StreamID, err)
+			if err := st.enqueue(req); err != nil {
+				if errors.Is(err, errStreamRebuffering) {
+					s.bufferPending(key, SessionParams{
+						SessionID: st.sessionID,
+						StreamID:  st.streamID,
+						Format:    st.format,
+						Metadata:  copyMetadata(st.metadata),
+					}, req)
+				} else if !errors.Is(err, context.Canceled) {
+					s.logger.Printf("[TTS] enqueue pending request session=%s stream=%s failed: %v", req.SessionID, req.StreamID, err)
+				}
 			}
 		}
 		return
@@ -644,12 +693,21 @@ func (s *Service) retryPending(key string) {
 
 	stream, err := s.createStream(key, params)
 	if err != nil {
-		if !errors.Is(err, ErrAdapterUnavailable) && !errors.Is(err, context.Canceled) {
-			s.logger.Printf("[TTS] retry stream session=%s stream=%s failed: %v", params.SessionID, params.StreamID, err)
+		if errors.Is(err, ErrAdapterUnavailable) {
+			s.pendingMu.Lock()
+			if queue, ok := s.pending[key]; ok {
+				queue.scheduleRetry(s, key)
+			}
+			s.pendingMu.Unlock()
+			return
+		}
+		if !errors.Is(err, context.Canceled) {
+			s.logger.Printf("[TTS] retry stream session=%s stream=%s permanent error, dropping pending: %v", params.SessionID, params.StreamID, err)
 		}
 		s.pendingMu.Lock()
 		if queue, ok := s.pending[key]; ok {
-			queue.scheduleRetry(s, key)
+			queue.stopTimer()
+			delete(s.pending, key)
 		}
 		s.pendingMu.Unlock()
 		return
@@ -674,9 +732,10 @@ type stream struct {
 
 	mu sync.RWMutex
 
-	wg      sync.WaitGroup
-	seq     uint64
-	stopped bool
+	wg          sync.WaitGroup
+	seq         uint64
+	stopped     bool
+	keepPending bool
 
 	interrupted        bool
 	interruptReason    string
@@ -744,6 +803,13 @@ func (st *stream) decorateMetadata(meta map[string]string) map[string]string {
 }
 
 func (st *stream) enqueue(req speakRequest) error {
+	st.mu.RLock()
+	stopped := st.stopped
+	st.mu.RUnlock()
+	if stopped {
+		return errStreamRebuffering
+	}
+
 	select {
 	case <-st.ctx.Done():
 		return context.Canceled
@@ -771,12 +837,24 @@ func (st *stream) run() {
 				st.closeSynthesizer("queue closed")
 				return
 			}
-			st.handleRequest(req)
+			if st.handleRequest(req) {
+				// Close synthesizer quietly — don't publish final events
+				// since the request is being rebuffered for retry.
+				if st.synthesizer != nil {
+					closeCtx, closeCancel := context.WithTimeout(context.Background(), 2*time.Second)
+					st.synthesizer.Close(closeCtx)
+					closeCancel()
+				}
+				st.rebufferPending(req)
+				return
+			}
 		}
 	}
 }
 
-func (st *stream) handleRequest(req speakRequest) {
+// handleRequest returns true if the error is ErrAdapterUnavailable, signalling
+// the caller to rebuffer the request and close the stream.
+func (st *stream) handleRequest(req speakRequest) bool {
 	ctx := st.ctx
 	if ctx == nil {
 		ctx = context.Background()
@@ -790,8 +868,12 @@ func (st *stream) handleRequest(req speakRequest) {
 		Metadata:  req.Metadata,
 	})
 	if err != nil {
+		if errors.Is(err, ErrAdapterUnavailable) {
+			st.service.logger.Printf("[TTS] synthesizer unavailable session=%s stream=%s, rebuffering: %v", st.sessionID, st.streamID, err)
+			return true
+		}
 		st.service.logger.Printf("[TTS] synthesizer speak session=%s stream=%s failed: %v", st.sessionID, st.streamID, err)
-		return
+		return false
 	}
 
 	if len(chunks) == 0 {
@@ -823,6 +905,7 @@ func (st *stream) handleRequest(req speakRequest) {
 		}
 		st.service.publishPlayback(evt)
 	}
+	return false
 }
 
 func (st *stream) publishFinal() {
@@ -839,6 +922,40 @@ func (st *stream) publishFinal() {
 		Metadata:  metadata,
 	}
 	st.service.publishPlayback(evt)
+}
+
+func (st *stream) rebufferPending(failedReq speakRequest) {
+	st.mu.Lock()
+	st.stopped = true
+	st.mu.Unlock()
+
+	st.keepPending = true
+	params := SessionParams{
+		SessionID: st.sessionID,
+		StreamID:  st.streamID,
+		Format:    st.format,
+		Metadata:  copyMetadata(st.metadata),
+	}
+	st.service.bufferPending(st.key, params, failedReq)
+
+	// Cancel context BEFORE draining so that racing enqueue calls
+	// see ctx.Done in their first select and fail fast.  Any request
+	// that still slips through the nondeterministic second select will
+	// land in the channel buffer and be caught by the drain below.
+	st.cancel()
+
+	// Drain any remaining queued requests into the pending buffer.
+	for {
+		select {
+		case req, ok := <-st.requestCh:
+			if !ok {
+				return
+			}
+			st.service.bufferPending(st.key, params, req)
+		default:
+			return
+		}
+	}
 }
 
 func (st *stream) stop() {

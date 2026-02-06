@@ -396,12 +396,21 @@ func (s *Service) retryPending(key string) {
 
 	stream, err := s.createStream(key, params)
 	if err != nil {
-		if !errors.Is(err, ErrAdapterUnavailable) && !errors.Is(err, ErrFactoryUnavailable) && !errors.Is(err, context.Canceled) {
-			s.logger.Printf("[STT] retry stream session=%s stream=%s failed: %v", params.SessionID, params.StreamID, err)
+		if errors.Is(err, ErrAdapterUnavailable) {
+			s.pendingMu.Lock()
+			if ps, ok := s.pending[key]; ok {
+				ps.scheduleRetry(s, key)
+			}
+			s.pendingMu.Unlock()
+			return
+		}
+		if !errors.Is(err, context.Canceled) {
+			s.logger.Printf("[STT] retry stream session=%s stream=%s permanent error, dropping pending: %v", params.SessionID, params.StreamID, err)
 		}
 		s.pendingMu.Lock()
 		if ps, ok := s.pending[key]; ok {
-			ps.scheduleRetry(s, key)
+			ps.stopTimer()
+			delete(s.pending, key)
 		}
 		s.pendingMu.Unlock()
 		return
@@ -562,18 +571,60 @@ func (st *stream) run() {
 }
 
 func (st *stream) handleSegment(segment eventbus.AudioIngressSegmentEvent) {
-	transcripts, err := st.transcriber.OnSegment(st.ctx, segment)
-	if err != nil {
-		st.service.logger.Printf("[STT] transcribe segment session=%s stream=%s seq=%d: %v", st.sessionID, st.streamID, segment.Sequence, err)
+	if st.transcriber == nil {
+		params := SessionParams{
+			SessionID: st.sessionID,
+			StreamID:  st.streamID,
+			Format:    st.format,
+			Metadata:  copyMetadata(st.metadata),
+		}
+		transcriber, err := st.service.factory.Create(st.ctx, params)
+		if err != nil {
+			if !errors.Is(err, ErrAdapterUnavailable) {
+				st.service.logger.Printf("[STT] reconnect transcriber session=%s stream=%s: %v", st.sessionID, st.streamID, err)
+			}
+			return
+		}
+		st.transcriber = transcriber
+		st.service.logger.Printf("[STT] transcriber reconnected session=%s stream=%s", st.sessionID, st.streamID)
 	}
 
+	transcripts, err := st.transcriber.OnSegment(st.ctx, segment)
+
+	// Publish any transcripts returned alongside the error — the NAP
+	// contract allows partial results + error (see nap_transcriber.go:182).
 	for _, tr := range transcripts {
 		st.service.publishTranscript(st, tr)
 	}
+
+	if err != nil {
+		if errors.Is(err, ErrAdapterUnavailable) {
+			st.service.logger.Printf("[STT] transcriber unavailable session=%s stream=%s, will retry: %v", st.sessionID, st.streamID, err)
+			st.closeTranscriberForRecovery("adapter unavailable")
+			return
+		}
+		st.service.logger.Printf("[STT] transcribe segment session=%s stream=%s seq=%d: %v", st.sessionID, st.streamID, segment.Sequence, err)
+	}
+}
+
+func (st *stream) closeTranscriberForRecovery(reason string) {
+	if st.transcriber == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err := st.transcriber.Close(ctx)
+	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		st.service.logger.Printf("[STT] close broken transcriber session=%s stream=%s (%s): %v", st.sessionID, st.streamID, reason, err)
+	}
+	st.transcriber = nil
 }
 
 func (st *stream) closeTranscriber(reason string) {
 	st.closeOnce.Do(func() {
+		if st.transcriber == nil {
+			return
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), st.service.flushTimeout)
 		defer cancel()
 
