@@ -450,7 +450,6 @@ func TestEnqueueRejectsAfterRebufferStarted(t *testing.T) {
 		return &noopSynth{}, nil
 	})))
 	svc.ctx, svc.cancel = context.WithCancel(context.Background())
-	t.Cleanup(func() { svc.cancel() })
 
 	params := SessionParams{
 		SessionID: "sess-rej",
@@ -467,6 +466,7 @@ func TestEnqueueRejectsAfterRebufferStarted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create stream: %v", err)
 	}
+	t.Cleanup(func() { svc.cancel(); st.wg.Wait() })
 
 	// Simulate rebuffer: set stopped = true under lock.
 	st.mu.Lock()
@@ -489,7 +489,6 @@ func TestHandleSpeakRequestBuffersOnRebuffering(t *testing.T) {
 		return &noopSynth{}, nil
 	})))
 	svc.ctx, svc.cancel = context.WithCancel(context.Background())
-	t.Cleanup(func() { svc.cancel() })
 
 	params := SessionParams{
 		SessionID: "sess-buf",
@@ -507,6 +506,7 @@ func TestHandleSpeakRequestBuffersOnRebuffering(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create stream: %v", err)
 	}
+	t.Cleanup(func() { svc.cancel(); st.wg.Wait() })
 
 	// Simulate rebuffer state.
 	st.mu.Lock()

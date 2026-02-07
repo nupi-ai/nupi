@@ -398,6 +398,9 @@ func TestVADRecoversMidStreamAdapterFailure(t *testing.T) {
 	if !recovered.Active {
 		t.Fatalf("expected active detection after recovery")
 	}
+	if recovered.Confidence != 0.9 {
+		t.Fatalf("expected confidence 0.9 from recovered analyzer, got %v (old analyzer returns 0.5)", recovered.Confidence)
+	}
 }
 
 // failingAnalyzer returns ErrAdapterUnavailable on a specific sequence,
@@ -411,7 +414,7 @@ func (f *failingAnalyzer) OnSegment(_ context.Context, segment eventbus.AudioIng
 	if segment.Sequence == f.failOnSeq {
 		return append([]Detection(nil), f.partialOnFail...), ErrAdapterUnavailable
 	}
-	return []Detection{{Active: true, Confidence: 0.9}}, nil
+	return []Detection{{Active: true, Confidence: 0.5}}, nil
 }
 
 func (f *failingAnalyzer) Close(context.Context) ([]Detection, error) {
