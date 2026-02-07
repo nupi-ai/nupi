@@ -216,8 +216,9 @@ func extractSessionRef(transcript string, sessions []intentrouter.SessionInfo) s
 
 // mutableSessionProvider is a thread-safe SessionProvider that supports adding/removing sessions at runtime.
 type mutableSessionProvider struct {
-	mu       sync.RWMutex
-	sessions []intentrouter.SessionInfo
+	mu               sync.RWMutex
+	sessions         []intentrouter.SessionInfo
+	rejectedSessions map[string]bool // sessions that ValidateSession should reject
 }
 
 func newMutableSessionProvider(sessions ...intentrouter.SessionInfo) *mutableSessionProvider {
@@ -244,11 +245,29 @@ func (p *mutableSessionProvider) GetSessionInfo(sessionID string) (intentrouter.
 }
 
 func (p *mutableSessionProvider) ValidateSession(sessionID string) error {
+	p.mu.RLock()
+	rejected := p.rejectedSessions[sessionID]
+	p.mu.RUnlock()
+	if rejected {
+		return fmt.Errorf("session %s: validation rejected", sessionID)
+	}
 	_, found := p.GetSessionInfo(sessionID)
 	if !found {
 		return fmt.Errorf("session %s not found", sessionID)
 	}
 	return nil
+}
+
+// RejectValidation makes ValidateSession reject the given session even if it
+// exists in the session list. This simulates scenarios where a session is visible
+// (e.g., in AvailableSessions) but not commandable.
+func (p *mutableSessionProvider) RejectValidation(sessionID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.rejectedSessions == nil {
+		p.rejectedSessions = make(map[string]bool)
+	}
+	p.rejectedSessions[sessionID] = true
 }
 
 func (p *mutableSessionProvider) UpdateStatus(sessionID, status string) {
