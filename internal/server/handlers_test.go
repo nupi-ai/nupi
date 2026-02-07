@@ -37,6 +37,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/observability"
 	adapters "github.com/nupi-ai/nupi/internal/plugins/adapters"
 	"github.com/nupi-ai/nupi/internal/pty"
+	"github.com/nupi-ai/nupi/internal/recording"
 	"github.com/nupi-ai/nupi/internal/session"
 	"github.com/nupi-ai/nupi/internal/voice/slots"
 )
@@ -189,6 +190,107 @@ func TestHandleRecordingFileOptions(t *testing.T) {
 
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("expected status %d, got %d", http.StatusNoContent, rec.Code)
+	}
+}
+
+func TestHandleRecordingsListWithData(t *testing.T) {
+	apiServer, mgr := newTestAPIServer(t)
+
+	store := mgr.GetRecordingStore()
+	if store == nil {
+		t.Fatal("expected non-nil recording store")
+	}
+
+	now := time.Now()
+	for _, id := range []string{"sess-a", "sess-b"} {
+		if err := store.SaveMetadata(recording.Metadata{
+			SessionID:     id,
+			Filename:      id + ".cast",
+			StartTime:     now,
+			Duration:      1.5,
+			RecordingPath: filepath.Join(store.GetRecordingsDir(), id+".cast"),
+		}); err != nil {
+			t.Fatalf("SaveMetadata %s: %v", id, err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/recordings", nil)
+	rec := httptest.NewRecorder()
+	apiServer.handleRecordingsList(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Fatalf("expected Content-Type starting with application/json, got %q", ct)
+	}
+
+	var items []recording.Metadata
+	if err := json.Unmarshal(rec.Body.Bytes(), &items); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected 2 recordings, got %d", len(items))
+	}
+	ids := map[string]bool{}
+	for _, m := range items {
+		ids[m.SessionID] = true
+	}
+	if !ids["sess-a"] || !ids["sess-b"] {
+		t.Fatalf("expected both session IDs, got %v", ids)
+	}
+}
+
+func TestHandleRecordingFileServesAsciicast(t *testing.T) {
+	apiServer, mgr := newTestAPIServer(t)
+
+	store := mgr.GetRecordingStore()
+	if store == nil {
+		t.Fatal("expected non-nil recording store")
+	}
+
+	// Create a minimal .cast file inside the recordings directory
+	// (not an arbitrary path — avoids cementing open-redirect via http.ServeFile).
+	castPath := filepath.Join(store.GetRecordingsDir(), "test-session.cast")
+	castContent := "{\"version\":2,\"width\":80,\"height\":24,\"timestamp\":1700000000}\n[0.1,\"o\",\"hello\"]\n"
+	if err := os.WriteFile(castPath, []byte(castContent), 0o644); err != nil {
+		t.Fatalf("write cast file: %v", err)
+	}
+
+	if err := store.SaveMetadata(recording.Metadata{
+		SessionID:     "test-session",
+		Filename:      "test-session.cast",
+		StartTime:     time.Now(),
+		Duration:      0.1,
+		RecordingPath: castPath,
+	}); err != nil {
+		t.Fatalf("SaveMetadata: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/recordings/test-session", nil)
+	rec := httptest.NewRecorder()
+	apiServer.handleRecordingFile(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "application/x-asciicast") {
+		t.Fatalf("expected Content-Type application/x-asciicast, got %q", ct)
+	}
+	if !strings.Contains(rec.Body.String(), "\"version\":2") {
+		t.Fatalf("expected asciicast v2 header in body, got %q", rec.Body.String())
+	}
+}
+
+func TestHandleRecordingFileNotFound(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/recordings/nonexistent", nil)
+	rec := httptest.NewRecorder()
+	apiServer.handleRecordingFile(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rec.Code)
 	}
 }
 
