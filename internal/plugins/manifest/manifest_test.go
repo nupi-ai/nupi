@@ -866,6 +866,139 @@ func TestRelativeMainPathReturnsRelativePath(t *testing.T) {
 	}
 }
 
+// Validate directory-based plugin discovery
+
+func TestDiscoverVADPluginFromDirectoryStructure(t *testing.T) {
+	root := t.TempDir()
+
+	vadYAML := `apiVersion: nap.nupi.ai/v1alpha1
+kind: Plugin
+type: adapter
+metadata:
+  name: Test Silero VAD
+  catalog: ai.nupi
+  slug: vad-local-silero
+  description: Local voice activity detection adapter.
+  version: 1.0.0
+spec:
+  slot: vad
+  entrypoint:
+    command: ./vad-local-silero
+    transport: process
+    readyTimeout: 10s
+  options:
+    threshold:
+      type: number
+      default: 0.5`
+
+	createPluginYAML(t, root, "ai.nupi/vad-local-silero", vadYAML)
+
+	manifests, err := Discover(root)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if len(manifests) != 1 {
+		t.Fatalf("expected 1 manifest, got %d", len(manifests))
+	}
+
+	mf := manifests[0]
+	if mf.Metadata.Slug != "vad-local-silero" {
+		t.Fatalf("expected slug 'vad-local-silero', got %q", mf.Metadata.Slug)
+	}
+	if mf.Type != PluginTypeAdapter {
+		t.Fatalf("expected type adapter, got %q", mf.Type)
+	}
+	if mf.Adapter == nil {
+		t.Fatal("expected Adapter spec to be non-nil")
+	}
+	if mf.Adapter.Slot != "vad" {
+		t.Fatalf("expected slot 'vad', got %q", mf.Adapter.Slot)
+	}
+	if mf.Adapter.Entrypoint.Transport != "process" {
+		t.Fatalf("expected transport 'process', got %q", mf.Adapter.Entrypoint.Transport)
+	}
+	if mf.Adapter.Entrypoint.Command != "./vad-local-silero" {
+		t.Fatalf("expected command './vad-local-silero', got %q", mf.Adapter.Entrypoint.Command)
+	}
+	if mf.Adapter.Entrypoint.ReadyTimeout != "10s" {
+		t.Fatalf("expected readyTimeout '10s', got %q", mf.Adapter.Entrypoint.ReadyTimeout)
+	}
+	if len(mf.Adapter.Options) != 1 {
+		t.Fatalf("expected 1 option, got %d", len(mf.Adapter.Options))
+	}
+	threshOpt, ok := mf.Adapter.Options["threshold"]
+	if !ok {
+		t.Fatal("expected 'threshold' option to exist")
+	}
+	if threshOpt.Type != "number" {
+		t.Fatalf("expected threshold type 'number', got %q", threshOpt.Type)
+	}
+	expectedDir := filepath.Join(root, "ai.nupi", "vad-local-silero")
+	if mf.Dir != expectedDir {
+		t.Fatalf("expected Dir %q, got %q", expectedDir, mf.Dir)
+	}
+}
+
+func TestDiscoverPluginWithComplexDirectoryLayout(t *testing.T) {
+	root := t.TempDir()
+
+	pluginDir := filepath.Join(root, "ai.nupi", "vad-local-silero")
+	// Create complex subdirectory structure alongside manifest
+	for _, sub := range []string{"bin", "lib", "models"} {
+		if err := os.MkdirAll(filepath.Join(pluginDir, sub), 0o755); err != nil {
+			t.Fatalf("MkdirAll %s: %v", sub, err)
+		}
+	}
+
+	createPluginYAML(t, root, "ai.nupi/vad-local-silero", adapterManifest("Complex VAD", "vad-local-silero", "ai.nupi", "vad"))
+
+	manifests, err := Discover(root)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if len(manifests) != 1 {
+		t.Fatalf("expected 1 manifest, got %d", len(manifests))
+	}
+
+	mf := manifests[0]
+	if mf.Dir != pluginDir {
+		t.Fatalf("expected Dir to be plugin directory %q, got %q", pluginDir, mf.Dir)
+	}
+	if mf.Adapter.Entrypoint.Command != "./adapter" {
+		t.Fatalf("expected command './adapter', got %q", mf.Adapter.Entrypoint.Command)
+	}
+}
+
+func TestDiscoverSkipsPluginWithMissingSlugs(t *testing.T) {
+	root := t.TempDir()
+
+	noSlugYAML := `apiVersion: nap.nupi.ai/v1alpha1
+kind: Plugin
+type: adapter
+metadata:
+  name: No Slug Plugin
+  catalog: test
+spec:
+  slot: vad
+  entrypoint:
+    command: ./adapter
+    transport: process`
+
+	createPluginYAML(t, root, "test/no-slug-plugin", noSlugYAML)
+
+	manifests, warnings := DiscoverWithWarnings(root)
+
+	if len(manifests) != 0 {
+		t.Fatalf("expected 0 manifests for missing slug, got %d", len(manifests))
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("expected 1 warning, got %d", len(warnings))
+	}
+	if !strings.Contains(warnings[0].Err.Error(), "slug") {
+		t.Fatalf("expected warning about slug, got: %v", warnings[0].Err)
+	}
+}
+
 // Test helpers
 
 func createPluginYAML(t *testing.T, root, path, content string) {

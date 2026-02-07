@@ -2081,7 +2081,7 @@ func TestVoicePipelinePayloadIntegrity(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Story 1.3: Barge-in with real TTS streaming
+// Barge-in with real TTS streaming
 // ---------------------------------------------------------------------------
 
 // multiChunkSynthesizer produces N chunks from a single Speak() call. Combined
@@ -2830,7 +2830,7 @@ func TestVoicePipelineBargeInQuietPeriod(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Story 1.4: Voice-optional fallback mode
+// Voice-optional fallback mode
 // ---------------------------------------------------------------------------
 
 // TestVoiceFallbackServicesStartWithoutAdapters validates that ALL audio
@@ -3443,7 +3443,7 @@ func TestVoiceFallbackSTTBuffersWithAdapterFactory(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Story 2.6: End-to-End VAD Integration Validation
+// End-to-End VAD Integration Validation
 // ---------------------------------------------------------------------------
 
 // waitForVADEvent waits for a SpeechVADEvent matching the predicate.
