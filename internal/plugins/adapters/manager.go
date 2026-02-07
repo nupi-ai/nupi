@@ -847,7 +847,7 @@ func (m *Manager) prepareBinding(ctx context.Context, binding Binding) (bindingP
 		plan.endpoint = mergedEndpoint
 	}
 
-	plan.fingerprint = computePlanFingerprint(binding, plan.manifest, plan.adapter.Manifest, plan.endpoint)
+	plan.fingerprint = computePlanFingerprint(plan.binding, plan.manifest, plan.adapter.Manifest, plan.endpoint)
 	plan.binding.Fingerprint = plan.fingerprint
 	return plan, nil
 }

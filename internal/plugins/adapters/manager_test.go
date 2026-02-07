@@ -2011,3 +2011,509 @@ spec:
 		}
 	})
 }
+
+// Validate adapter hot-swap and lifecycle consistency
+
+func TestManagerHotSwapVADWithoutAffectingSTT(t *testing.T) {
+	t.Cleanup(SetReadinessChecker(func(context.Context, string) error { return nil }))
+
+	store := &fakeBindingSource{
+		bindings: []configstore.AdapterBinding{
+			{
+				Slot:      string(SlotSTT),
+				Status:    "active",
+				AdapterID: strPtr("adapter.stt.whisper"),
+			},
+			{
+				Slot:      string(SlotVAD),
+				Status:    "active",
+				AdapterID: strPtr("adapter.vad.silero"),
+			},
+		},
+	}
+	store.setAdapter(configstore.Adapter{ID: "adapter.stt.whisper"})
+	store.setAdapter(configstore.Adapter{ID: "adapter.vad.silero"})
+	store.setAdapter(configstore.Adapter{ID: "adapter.vad.webrtc"})
+	store.setEndpoint(configstore.AdapterEndpoint{
+		AdapterID: "adapter.stt.whisper",
+		Transport: "process",
+		Command:   "./stt-whisper",
+	})
+	store.setEndpoint(configstore.AdapterEndpoint{
+		AdapterID: "adapter.vad.silero",
+		Transport: "process",
+		Command:   "./vad-silero",
+	})
+	store.setEndpoint(configstore.AdapterEndpoint{
+		AdapterID: "adapter.vad.webrtc",
+		Transport: "process",
+		Command:   "./vad-webrtc",
+	})
+
+	launcher := NewMockLauncher()
+	manager := NewManager(ManagerOptions{
+		Store:     store,
+		Adapters:  store,
+		Launcher:  launcher,
+		PluginDir: t.TempDir(),
+	})
+
+	// Initial reconciliation — both adapters start
+	if err := manager.Ensure(context.Background()); err != nil {
+		t.Fatalf("initial Ensure: %v", err)
+	}
+
+	running := manager.Running()
+	if len(running) != 2 {
+		t.Fatalf("expected 2 running adapters, got %d", len(running))
+	}
+
+	initialLaunches := len(launcher.Records())
+
+	// Swap VAD binding to a different adapter
+	store.mu.Lock()
+	store.bindings[1].AdapterID = strPtr("adapter.vad.webrtc")
+	store.mu.Unlock()
+
+	if err := manager.Ensure(context.Background()); err != nil {
+		t.Fatalf("hot-swap Ensure: %v", err)
+	}
+
+	// STT should NOT have been restarted (fingerprint unchanged)
+	// VAD should have been stopped and relaunched (different adapter ID)
+	if launcher.StopCount(string(SlotSTT)) != 0 {
+		t.Fatalf("STT adapter should not be stopped during VAD swap, got stop count %d", launcher.StopCount(string(SlotSTT)))
+	}
+	if launcher.StopCount(string(SlotVAD)) != 1 {
+		t.Fatalf("VAD adapter should be stopped once during swap, got stop count %d", launcher.StopCount(string(SlotVAD)))
+	}
+
+	// Verify new VAD launch happened
+	newLaunches := len(launcher.Records()) - initialLaunches
+	if newLaunches != 1 {
+		t.Fatalf("expected 1 new launch after swap, got %d", newLaunches)
+	}
+
+	// Both slots still running
+	running = manager.Running()
+	if len(running) != 2 {
+		t.Fatalf("expected 2 running adapters after swap, got %d", len(running))
+	}
+
+	// Verify correct adapter IDs
+	runMap := make(map[Slot]string)
+	for _, r := range running {
+		runMap[r.Slot] = r.AdapterID
+	}
+	if runMap[SlotSTT] != "adapter.stt.whisper" {
+		t.Fatalf("expected STT adapter unchanged, got %q", runMap[SlotSTT])
+	}
+	if runMap[SlotVAD] != "adapter.vad.webrtc" {
+		t.Fatalf("expected VAD adapter swapped to webrtc, got %q", runMap[SlotVAD])
+	}
+}
+
+func TestManagerUnbindSlotLeavesOthersRunning(t *testing.T) {
+	t.Cleanup(SetReadinessChecker(func(context.Context, string) error { return nil }))
+
+	store := &fakeBindingSource{
+		bindings: []configstore.AdapterBinding{
+			{
+				Slot:      string(SlotSTT),
+				Status:    "active",
+				AdapterID: strPtr("adapter.stt"),
+			},
+			{
+				Slot:      string(SlotVAD),
+				Status:    "active",
+				AdapterID: strPtr("adapter.vad"),
+			},
+		},
+	}
+	store.setAdapter(configstore.Adapter{ID: "adapter.stt"})
+	store.setAdapter(configstore.Adapter{ID: "adapter.vad"})
+	store.setEndpoint(configstore.AdapterEndpoint{
+		AdapterID: "adapter.stt",
+		Transport: "process",
+		Command:   "./stt",
+	})
+	store.setEndpoint(configstore.AdapterEndpoint{
+		AdapterID: "adapter.vad",
+		Transport: "process",
+		Command:   "./vad",
+	})
+
+	launcher := NewMockLauncher()
+	manager := NewManager(ManagerOptions{
+		Store:     store,
+		Adapters:  store,
+		Launcher:  launcher,
+		PluginDir: t.TempDir(),
+	})
+
+	if err := manager.Ensure(context.Background()); err != nil {
+		t.Fatalf("initial Ensure: %v", err)
+	}
+	if running := manager.Running(); len(running) != 2 {
+		t.Fatalf("expected 2 running, got %d", len(running))
+	}
+
+	// Unbind VAD (remove binding)
+	store.mu.Lock()
+	store.bindings = store.bindings[:1] // keep only STT
+	store.mu.Unlock()
+
+	if err := manager.Ensure(context.Background()); err != nil {
+		t.Fatalf("unbind Ensure: %v", err)
+	}
+
+	running := manager.Running()
+	if len(running) != 1 {
+		t.Fatalf("expected 1 running after unbind, got %d", len(running))
+	}
+	if running[0].Slot != SlotSTT {
+		t.Fatalf("expected remaining adapter to be STT, got %s", running[0].Slot)
+	}
+	if launcher.StopCount(string(SlotSTT)) != 0 {
+		t.Fatalf("STT should not have been stopped, got count %d", launcher.StopCount(string(SlotSTT)))
+	}
+	if launcher.StopCount(string(SlotVAD)) != 1 {
+		t.Fatalf("unbound VAD adapter should have been stopped, got count %d", launcher.StopCount(string(SlotVAD)))
+	}
+}
+
+func TestLaunchEnvConsistencyAllSlots(t *testing.T) {
+	t.Cleanup(SetReadinessChecker(func(context.Context, string) error { return nil }))
+
+	slots := []Slot{SlotSTT, SlotTTS, SlotVAD, SlotAI, SlotTunnel}
+	requiredEnvKeys := []string{
+		"NUPI_ADAPTER_SLOT",
+		"NUPI_ADAPTER_ID",
+		"NUPI_ADAPTER_CONFIG",
+		"NUPI_ADAPTER_HOME",
+		"NUPI_ADAPTER_DATA_DIR",
+		"NUPI_ADAPTER_TRANSPORT",
+		"NUPI_ADAPTER_ENDPOINT",
+	}
+
+	for _, slot := range slots {
+		t.Run(string(slot), func(t *testing.T) {
+			adapterID := "adapter." + string(slot) + ".test"
+			store := &fakeBindingSource{
+				bindings: []configstore.AdapterBinding{
+					{
+						Slot:      string(slot),
+						Status:    "active",
+						AdapterID: strPtr(adapterID),
+						Config:    `{"key":"val"}`,
+					},
+				},
+			}
+			store.setAdapter(configstore.Adapter{ID: adapterID})
+			store.setEndpoint(configstore.AdapterEndpoint{
+				AdapterID: adapterID,
+				Transport: "process",
+				Command:   "./adapter",
+			})
+
+			launcher := NewMockLauncher()
+			manager := NewManager(ManagerOptions{
+				Store:     store,
+				Adapters:  store,
+				Launcher:  launcher,
+				PluginDir: t.TempDir(),
+			})
+
+			if err := manager.Ensure(context.Background()); err != nil {
+				t.Fatalf("Ensure for slot %s: %v", slot, err)
+			}
+
+			records := launcher.Records()
+			if len(records) != 1 {
+				t.Fatalf("expected 1 launch for %s, got %d", slot, len(records))
+			}
+
+			envMap := make(map[string]string)
+			for _, e := range records[0].Env {
+				parts := strings.SplitN(e, "=", 2)
+				if len(parts) == 2 {
+					envMap[parts[0]] = parts[1]
+				}
+			}
+
+			for _, key := range requiredEnvKeys {
+				if _, ok := envMap[key]; !ok {
+					t.Errorf("missing env key %s for slot %s", key, slot)
+				}
+			}
+
+			if envMap["NUPI_ADAPTER_SLOT"] != string(slot) {
+				t.Errorf("NUPI_ADAPTER_SLOT = %q, want %q", envMap["NUPI_ADAPTER_SLOT"], string(slot))
+			}
+			if envMap["NUPI_ADAPTER_ID"] != adapterID {
+				t.Errorf("NUPI_ADAPTER_ID = %q, want %q", envMap["NUPI_ADAPTER_ID"], adapterID)
+			}
+			if envMap["NUPI_ADAPTER_CONFIG"] != `{"key":"val"}` {
+				t.Errorf("NUPI_ADAPTER_CONFIG = %q, want %q", envMap["NUPI_ADAPTER_CONFIG"], `{"key":"val"}`)
+			}
+			if envMap["NUPI_ADAPTER_TRANSPORT"] != "process" {
+				t.Errorf("NUPI_ADAPTER_TRANSPORT = %q, want %q", envMap["NUPI_ADAPTER_TRANSPORT"], "process")
+			}
+			if envMap["NUPI_ADAPTER_ENDPOINT"] == "" {
+				t.Errorf("NUPI_ADAPTER_ENDPOINT should not be empty for slot %s", slot)
+			}
+			if envMap["NUPI_ADAPTER_HOME"] == "" {
+				t.Errorf("NUPI_ADAPTER_HOME should not be empty for slot %s", slot)
+			}
+			if envMap["NUPI_ADAPTER_DATA_DIR"] == "" {
+				t.Errorf("NUPI_ADAPTER_DATA_DIR should not be empty for slot %s", slot)
+			}
+		})
+	}
+}
+
+func TestFingerprintDeterministicAndSlotSensitive(t *testing.T) {
+	sttManifestYAML := `apiVersion: nap.nupi.ai/v1alpha1
+kind: Plugin
+type: adapter
+metadata:
+  name: Test STT
+spec:
+  slot: stt
+  entrypoint:
+    command: ./adapter
+    transport: process`
+
+	vadManifestYAML := `apiVersion: nap.nupi.ai/v1alpha1
+kind: Plugin
+type: adapter
+metadata:
+  name: Test VAD
+spec:
+  slot: vad
+  entrypoint:
+    command: ./adapter
+    transport: process`
+
+	sttMF, err := manifestpkg.Parse([]byte(sttManifestYAML))
+	if err != nil {
+		t.Fatalf("parse stt manifest: %v", err)
+	}
+	vadMF, err := manifestpkg.Parse([]byte(vadManifestYAML))
+	if err != nil {
+		t.Fatalf("parse vad manifest: %v", err)
+	}
+
+	endpoint := configstore.AdapterEndpoint{
+		Transport: "process",
+		Command:   "./adapter",
+	}
+
+	bindingA := Binding{Slot: SlotSTT, AdapterID: "adapter.test", RawConfig: `{"key":"val"}`}
+	bindingB := Binding{Slot: SlotVAD, AdapterID: "adapter.test", RawConfig: `{"key":"val"}`}
+
+	fpA := computePlanFingerprint(bindingA, sttMF, sttManifestYAML, endpoint)
+	fpB := computePlanFingerprint(bindingB, vadMF, vadManifestYAML, endpoint)
+
+	if fpA == "" || fpB == "" {
+		t.Fatalf("fingerprints should not be empty: fpA=%q, fpB=%q", fpA, fpB)
+	}
+
+	// Different manifest slot values should produce different fingerprints
+	if fpA == fpB {
+		t.Fatalf("fingerprints should differ for different manifest slots, both got %q", fpA)
+	}
+
+	// Same inputs should produce deterministic output
+	fpA2 := computePlanFingerprint(bindingA, sttMF, sttManifestYAML, endpoint)
+	if fpA != fpA2 {
+		t.Fatalf("fingerprint not deterministic: %q vs %q", fpA, fpA2)
+	}
+
+	// Changing config should change fingerprint
+	bindingC := Binding{Slot: SlotSTT, AdapterID: "adapter.test", RawConfig: `{"key":"changed"}`}
+	fpC := computePlanFingerprint(bindingC, sttMF, sttManifestYAML, endpoint)
+	if fpA == fpC {
+		t.Fatalf("fingerprint should change when config changes, both are %q", fpA)
+	}
+}
+
+func TestDiscoveredManifestFeedsManagerPlan(t *testing.T) {
+	t.Cleanup(SetReadinessChecker(func(context.Context, string) error { return nil }))
+
+	// Create a plugin directory with a real manifest
+	pluginRoot := t.TempDir()
+	vadDir := filepath.Join(pluginRoot, "ai.nupi", "vad-local-silero")
+	if err := os.MkdirAll(vadDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	vadYAML := `apiVersion: nap.nupi.ai/v1alpha1
+kind: Plugin
+type: adapter
+metadata:
+  name: Test Silero VAD
+  catalog: ai.nupi
+  slug: vad-local-silero
+  version: 1.0.0
+spec:
+  slot: vad
+  entrypoint:
+    command: ./vad-local-silero
+    transport: process
+    readyTimeout: 10s`
+
+	if err := os.WriteFile(filepath.Join(vadDir, "plugin.yaml"), []byte(vadYAML), 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+
+	// Discover the plugin — this is the entry point being tested
+	manifests, err := manifestpkg.Discover(pluginRoot)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if len(manifests) != 1 {
+		t.Fatalf("expected 1 discovered manifest, got %d", len(manifests))
+	}
+	discovered := manifests[0]
+
+	// Feed discovered manifest data into the store — simulating the real
+	// flow where discovery results populate the config store
+	adapterID := "adapter.vad.silero"
+	store := &fakeBindingSource{
+		bindings: []configstore.AdapterBinding{
+			{
+				Slot:      discovered.Adapter.Slot,
+				Status:    "active",
+				AdapterID: strPtr(adapterID),
+			},
+		},
+	}
+	store.setAdapter(configstore.Adapter{
+		ID:       adapterID,
+		Manifest: vadYAML,
+	})
+	store.setEndpoint(configstore.AdapterEndpoint{
+		AdapterID: adapterID,
+		Transport: discovered.Adapter.Entrypoint.Transport,
+		Command:   discovered.Adapter.Entrypoint.Command,
+	})
+
+	launcher := NewMockLauncher()
+	manager := NewManager(ManagerOptions{
+		Store:     store,
+		Adapters:  store,
+		Launcher:  launcher,
+		PluginDir: pluginRoot,
+	})
+
+	if err := manager.Ensure(context.Background()); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+
+	records := launcher.Records()
+	if len(records) != 1 {
+		t.Fatalf("expected 1 launch, got %d", len(records))
+	}
+
+	// Verify the launch plan reflects discovered manifest properties
+	envMap := make(map[string]string)
+	for _, e := range records[0].Env {
+		parts := strings.SplitN(e, "=", 2)
+		if len(parts) == 2 {
+			envMap[parts[0]] = parts[1]
+		}
+	}
+
+	if envMap["NUPI_ADAPTER_SLOT"] != discovered.Adapter.Slot {
+		t.Fatalf("launch slot %q != discovered slot %q", envMap["NUPI_ADAPTER_SLOT"], discovered.Adapter.Slot)
+	}
+	if envMap["NUPI_ADAPTER_TRANSPORT"] != discovered.Adapter.Entrypoint.Transport {
+		t.Fatalf("launch transport %q != discovered transport %q", envMap["NUPI_ADAPTER_TRANSPORT"], discovered.Adapter.Entrypoint.Transport)
+	}
+	if envMap["NUPI_ADAPTER_ID"] != adapterID {
+		t.Fatalf("launch adapter ID %q != expected %q", envMap["NUPI_ADAPTER_ID"], adapterID)
+	}
+	if !strings.HasSuffix(records[0].Binary, "vad-local-silero") {
+		t.Fatalf("launch binary %q should end with discovered command 'vad-local-silero'", records[0].Binary)
+	}
+}
+
+func TestEnsureIdempotentWithManifestDefaults(t *testing.T) {
+	t.Cleanup(SetReadinessChecker(func(context.Context, string) error { return nil }))
+
+	// Manifest with options that have defaults
+	manifestYAML := `apiVersion: nap.nupi.ai/v1alpha1
+kind: Plugin
+type: adapter
+metadata:
+  name: VAD with defaults
+spec:
+  slot: vad
+  entrypoint:
+    command: ./vad
+    transport: process
+  options:
+    threshold:
+      type: number
+      default: 0.5`
+
+	adapterID := "adapter.vad.defaults"
+	store := &fakeBindingSource{
+		bindings: []configstore.AdapterBinding{
+			{
+				Slot:      string(SlotVAD),
+				Status:    "active",
+				AdapterID: strPtr(adapterID),
+				// No config — defaults should be applied from manifest
+			},
+		},
+	}
+	store.setAdapter(configstore.Adapter{ID: adapterID, Manifest: manifestYAML})
+	store.setEndpoint(configstore.AdapterEndpoint{
+		AdapterID: adapterID,
+		Transport: "process",
+		Command:   "./vad",
+	})
+
+	launcher := NewMockLauncher()
+	manager := NewManager(ManagerOptions{
+		Store:     store,
+		Adapters:  store,
+		Launcher:  launcher,
+		PluginDir: t.TempDir(),
+	})
+
+	// First Ensure — adapter starts
+	if err := manager.Ensure(context.Background()); err != nil {
+		t.Fatalf("first Ensure: %v", err)
+	}
+	if len(launcher.Records()) != 1 {
+		t.Fatalf("expected 1 launch, got %d", len(launcher.Records()))
+	}
+
+	// Verify the manifest defaults were actually applied to launch config
+	records := launcher.Records()
+	envMap := make(map[string]string)
+	for _, e := range records[0].Env {
+		parts := strings.SplitN(e, "=", 2)
+		if len(parts) == 2 {
+			envMap[parts[0]] = parts[1]
+		}
+	}
+	adapterConfig := envMap["NUPI_ADAPTER_CONFIG"]
+	if !strings.Contains(adapterConfig, "threshold") {
+		t.Fatalf("NUPI_ADAPTER_CONFIG should contain default 'threshold', got %q", adapterConfig)
+	}
+
+	// Second Ensure — nothing changed, adapter should NOT restart
+	if err := manager.Ensure(context.Background()); err != nil {
+		t.Fatalf("second Ensure: %v", err)
+	}
+	if launcher.StopCount(string(SlotVAD)) != 0 {
+		t.Fatalf("adapter should not restart on idempotent Ensure with manifest defaults, got stop count %d", launcher.StopCount(string(SlotVAD)))
+	}
+	if len(launcher.Records()) != 1 {
+		t.Fatalf("expected still 1 launch (no restart), got %d", len(launcher.Records()))
+	}
+}
