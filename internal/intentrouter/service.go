@@ -549,7 +549,7 @@ func (s *Service) executeCommand(ctx context.Context, prompt eventbus.Conversati
 	if sessionProvider != nil {
 		if err := sessionProvider.ValidateSession(sessionRef); err != nil {
 			log.Printf("[IntentRouter] Invalid session %s for command: %v", sessionRef, err)
-			s.publishError(prompt.SessionID, prompt.PromptID, fmt.Errorf("session %s not found", sessionRef))
+			s.publishError(prompt.SessionID, prompt.PromptID, fmt.Errorf("session %s: %w", sessionRef, ErrSessionNotFound))
 			return
 		}
 	}
