@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/nupi-ai/nupi/internal/api"
 	apihttp "github.com/nupi-ai/nupi/internal/api/http"
 	"github.com/nupi-ai/nupi/internal/audio/egress"
 	"github.com/nupi-ai/nupi/internal/audio/ingress"
@@ -2503,5 +2504,267 @@ func (p pipelineMetricsStub) Metrics() contentpipeline.Metrics {
 	return contentpipeline.Metrics{
 		Processed: p.processed,
 		Errors:    p.errors,
+	}
+}
+
+func TestHandleAudioInterruptEndpoint(t *testing.T) {
+	skipIfNoPTY(t)
+
+	apiServer, mgr := newTestAPIServer(t)
+	enableVoiceAdapters(t, apiServer.configStore)
+	bus := eventbus.New()
+	apiServer.SetEventBus(bus)
+	egressSvc := egress.New(bus)
+	apiServer.SetAudioEgress(newTestAudioEgressController(egressSvc))
+
+	sess, err := mgr.CreateSession(pty.StartOptions{
+		Command: "/bin/sh",
+		Args:    []string{"-c", "sleep 30"},
+		Rows:    24,
+		Cols:    80,
+	}, false)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	defer mgr.KillSession(sess.ID)
+
+	// Subscribe to interrupt events to verify the business effect.
+	sub := bus.Subscribe(eventbus.TopicAudioInterrupt)
+	defer sub.Close()
+
+	body := fmt.Sprintf(`{"session_id":%q,"stream_id":"tts","reason":"user_interrupt","metadata":{"source":"test"}}`, sess.ID)
+	req := httptest.NewRequest(http.MethodPost, "/audio/interrupt", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = withAdmin(apiServer, req)
+	rec := httptest.NewRecorder()
+
+	apiServer.handleAudioInterrupt(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Verify the interrupt event was published to the event bus.
+	select {
+	case env := <-sub.C():
+		event, ok := env.Payload.(eventbus.AudioInterruptEvent)
+		if !ok {
+			t.Fatalf("unexpected payload type: %T", env.Payload)
+		}
+		if event.SessionID != sess.ID {
+			t.Fatalf("expected session %s, got %s", sess.ID, event.SessionID)
+		}
+		if event.Reason != "user_interrupt" {
+			t.Fatalf("expected reason user_interrupt, got %s", event.Reason)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for AudioInterruptEvent on event bus")
+	}
+}
+
+func TestHandleAudioInterruptRequiresTTS(t *testing.T) {
+	skipIfNoPTY(t)
+
+	apiServer, mgr := newTestAPIServer(t)
+	bus := eventbus.New()
+	apiServer.SetEventBus(bus)
+	egressSvc := egress.New(bus)
+	apiServer.SetAudioEgress(newTestAudioEgressController(egressSvc))
+	// Voice adapters NOT configured — voiceReadiness should fail.
+
+	sess, err := mgr.CreateSession(pty.StartOptions{
+		Command: "/bin/sh",
+		Args:    []string{"-c", "sleep 30"},
+		Rows:    24,
+		Cols:    80,
+	}, false)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	defer mgr.KillSession(sess.ID)
+
+	body := fmt.Sprintf(`{"session_id":%q,"reason":"test"}`, sess.ID)
+	req := httptest.NewRequest(http.MethodPost, "/audio/interrupt", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = withAdmin(apiServer, req)
+	rec := httptest.NewRecorder()
+
+	apiServer.handleAudioInterrupt(rec, req)
+
+	if rec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("expected 412, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var payload voiceErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode voice error: %v", err)
+	}
+	if payload.Error == "" {
+		t.Fatal("expected error message in response")
+	}
+}
+
+func TestSessionManagementWorksWithoutVoice(t *testing.T) {
+	skipIfNoPTY(t)
+
+	apiServer, mgr := newTestAPIServer(t)
+
+	// Create session via REST — no voice adapters configured
+	body := `{"command":"/bin/sh","args":["-c","sleep 30"]}`
+	req := httptest.NewRequest(http.MethodPost, "/sessions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req = withAdmin(apiServer, req)
+	rec := httptest.NewRecorder()
+	apiServer.handleSessionsRoot(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var dto api.SessionDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &dto); err != nil {
+		t.Fatalf("unmarshal session DTO: %v", err)
+	}
+	if dto.ID == "" {
+		t.Fatal("expected non-empty session ID")
+	}
+
+	// List sessions via REST — should include the session
+	listReq := httptest.NewRequest(http.MethodGet, "/sessions", nil)
+	listRec := httptest.NewRecorder()
+	apiServer.handleSessionsRoot(listRec, listReq)
+
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", listRec.Code)
+	}
+	var sessions []api.SessionDTO
+	if err := json.Unmarshal(listRec.Body.Bytes(), &sessions); err != nil {
+		t.Fatalf("unmarshal sessions: %v", err)
+	}
+	if len(sessions) < 1 {
+		t.Fatal("expected at least 1 session")
+	}
+	found := false
+	for _, s := range sessions {
+		if s.ID == dto.ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("created session %s not in list", dto.ID)
+	}
+
+	// Kill session
+	if err := mgr.KillSession(dto.ID); err != nil {
+		t.Fatalf("kill session: %v", err)
+	}
+	got, err := mgr.GetSession(dto.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if status := string(got.CurrentStatus()); status != "stopped" {
+		t.Fatalf("expected stopped, got %s", status)
+	}
+}
+
+func TestVoiceReadinessAllSlots(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	enableVoiceAdapters(t, apiServer.configStore)
+
+	// Also configure VAD adapter
+	ctx := context.Background()
+	vadAdapter := configstore.Adapter{ID: "adapter.vad.mock", Source: "builtin", Type: "vad", Name: "Mock VAD"}
+	if err := apiServer.configStore.UpsertAdapter(ctx, vadAdapter); err != nil {
+		t.Fatalf("upsert VAD: %v", err)
+	}
+	if err := apiServer.configStore.UpsertAdapterEndpoint(ctx, configstore.AdapterEndpoint{
+		AdapterID: vadAdapter.ID,
+		Transport: "grpc",
+		Address:   "127.0.0.1:0",
+	}); err != nil {
+		t.Fatalf("upsert VAD endpoint: %v", err)
+	}
+	if err := apiServer.configStore.SetActiveAdapter(ctx, slots.VAD, "adapter.vad.mock", nil); err != nil {
+		t.Fatalf("activate VAD: %v", err)
+	}
+
+	bus := eventbus.New()
+	apiServer.SetEventBus(bus)
+	apiServer.SetAudioIngress(newTestAudioIngressProvider(ingress.New(bus)))
+	apiServer.SetAudioEgress(newTestAudioEgressController(egress.New(bus)))
+
+	req := httptest.NewRequest(http.MethodGet, "/audio/capabilities", nil)
+	req = withReadOnly(apiServer, req)
+	rec := httptest.NewRecorder()
+	apiServer.handleAudioCapabilities(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var payload audioCapabilitiesResponse
+	if err := json.NewDecoder(rec.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !payload.CaptureEnabled {
+		t.Fatal("expected capture_enabled true")
+	}
+	if !payload.PlaybackEnabled {
+		t.Fatal("expected playback_enabled true")
+	}
+	if len(payload.Diagnostics) != 0 {
+		t.Fatalf("expected no diagnostics, got %+v", payload.Diagnostics)
+	}
+}
+
+func TestRecordingsEmptyWhenNoSessions(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/recordings", nil)
+	rec := httptest.NewRecorder()
+	apiServer.handleRecordingsList(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var items []recording.Metadata
+	if err := json.Unmarshal(rec.Body.Bytes(), &items); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("expected empty array, got %d items", len(items))
+	}
+}
+
+func TestDaemonStatusEndpoint(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/daemon/status", nil)
+	rec := httptest.NewRecorder()
+	apiServer.handleDaemonStatus(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := payload["version"]; !ok {
+		t.Fatal("missing version field")
+	}
+	if v, ok := payload["version"].(string); !ok || v == "" {
+		t.Fatalf("version should be non-empty string, got %v", payload["version"])
+	}
+	if _, ok := payload["sessions_count"]; !ok {
+		t.Fatal("missing sessions_count field")
+	}
+	if count, ok := payload["sessions_count"].(float64); !ok || count != 0 {
+		t.Fatalf("expected sessions_count 0, got %v", payload["sessions_count"])
+	}
+	if _, ok := payload["port"]; !ok {
+		t.Fatal("missing port field")
+	}
+	if port, ok := payload["port"].(float64); !ok || port != 9999 {
+		t.Fatalf("expected port 9999, got %v", payload["port"])
 	}
 }
