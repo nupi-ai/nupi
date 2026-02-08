@@ -1594,6 +1594,15 @@ type flushRecorder struct {
 
 func (f *flushRecorder) Flush() {}
 
+func parseConfigJSON(t *testing.T, raw string) map[string]interface{} {
+	t.Helper()
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		t.Fatalf("parse config JSON %q: %v", raw, err)
+	}
+	return m
+}
+
 func openTestStore(t *testing.T) *configstore.Store {
 	t.Helper()
 	store, err := configstore.Open(configstore.Options{InstanceName: config.DefaultInstance, ProfileName: config.DefaultProfile})
@@ -2766,5 +2775,546 @@ func TestDaemonStatusEndpoint(t *testing.T) {
 	}
 	if port, ok := payload["port"].(float64); !ok || port != 9999 {
 		t.Fatalf("expected port 9999, got %v", payload["port"])
+	}
+}
+
+func TestAdaptersOverviewReturnsAllSlots(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	store := openTestStore(t)
+	adaptersService := newTestAdaptersService(t, store)
+	apiServer.SetAdaptersController(adaptersService)
+
+	ctx := context.Background()
+
+	// Ensure required adapter slots exist (creates ai, stt, tts, vad, tunnel).
+	if _, err := store.EnsureRequiredAdapterSlots(ctx); err != nil {
+		t.Fatalf("ensure required slots: %v", err)
+	}
+
+	// Register and bind STT + AI adapters.
+	for _, a := range []configstore.Adapter{
+		{ID: "adapter.stt.test", Source: "builtin", Type: "stt", Name: "Test STT"},
+		{ID: "adapter.ai.test", Source: "builtin", Type: "ai", Name: "Test AI"},
+	} {
+		if err := store.UpsertAdapter(ctx, a); err != nil {
+			t.Fatalf("upsert adapter %s: %v", a.ID, err)
+		}
+		if err := store.UpsertAdapterEndpoint(ctx, configstore.AdapterEndpoint{
+			AdapterID: a.ID, Transport: "grpc", Address: "127.0.0.1:0",
+		}); err != nil {
+			t.Fatalf("upsert endpoint %s: %v", a.ID, err)
+		}
+	}
+	if err := store.SetActiveAdapter(ctx, "stt", "adapter.stt.test", nil); err != nil {
+		t.Fatalf("activate stt: %v", err)
+	}
+	if err := store.SetActiveAdapter(ctx, "ai", "adapter.ai.test", map[string]any{"model": "claude"}); err != nil {
+		t.Fatalf("activate ai: %v", err)
+	}
+
+	req := withAdmin(apiServer, httptest.NewRequest(http.MethodGet, "/adapters", nil))
+	rec := httptest.NewRecorder()
+	apiServer.handleAdapters(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var payload apihttp.AdaptersOverview
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	// Verify all 5 slots are present.
+	slotMap := make(map[string]apihttp.AdapterEntry)
+	for _, entry := range payload.Adapters {
+		slotMap[entry.Slot] = entry
+	}
+	for _, slot := range []string{"ai", "stt", "tts", "vad", "tunnel"} {
+		entry, ok := slotMap[slot]
+		if !ok {
+			t.Fatalf("missing slot %q in response", slot)
+		}
+		switch slot {
+		case "ai":
+			if entry.AdapterID == nil || *entry.AdapterID != "adapter.ai.test" {
+				t.Fatalf("ai: expected adapter_id adapter.ai.test, got %v", entry.AdapterID)
+			}
+			if entry.Status != configstore.BindingStatusActive {
+				t.Fatalf("ai: expected status active, got %s", entry.Status)
+			}
+			cfgMap := parseConfigJSON(t, entry.Config)
+			if cfgMap["model"] != "claude" {
+				t.Fatalf("ai: expected config model=claude, got %v", cfgMap)
+			}
+		case "stt":
+			if entry.AdapterID == nil || *entry.AdapterID != "adapter.stt.test" {
+				t.Fatalf("stt: expected adapter_id adapter.stt.test, got %v", entry.AdapterID)
+			}
+			if entry.Status != configstore.BindingStatusActive {
+				t.Fatalf("stt: expected status active, got %s", entry.Status)
+			}
+		case "tts", "vad", "tunnel":
+			if entry.Status != configstore.BindingStatusRequired {
+				t.Fatalf("%s: expected status required, got %s", slot, entry.Status)
+			}
+		}
+	}
+}
+
+func TestAdaptersOverviewIncludesRuntimeHealth(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	store := openTestStore(t)
+	adaptersService := newTestAdaptersService(t, store)
+	apiServer.SetAdaptersController(adaptersService)
+
+	ctx := context.Background()
+
+	adapter := configstore.Adapter{ID: "adapter.ai.rt", Source: "builtin", Type: "ai", Name: "RT AI"}
+	if err := store.UpsertAdapter(ctx, adapter); err != nil {
+		t.Fatalf("upsert adapter: %v", err)
+	}
+	if err := store.UpsertAdapterEndpoint(ctx, configstore.AdapterEndpoint{
+		AdapterID: adapter.ID, Transport: "grpc", Address: "127.0.0.1:9921",
+	}); err != nil {
+		t.Fatalf("upsert endpoint: %v", err)
+	}
+	if err := store.SetActiveAdapter(ctx, "ai", adapter.ID, nil); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+
+	// Start the adapter slot to populate runtime health.
+	if _, err := adaptersService.StartSlot(ctx, "ai"); err != nil {
+		t.Fatalf("start slot: %v", err)
+	}
+
+	req := withAdmin(apiServer, httptest.NewRequest(http.MethodGet, "/adapters", nil))
+	rec := httptest.NewRecorder()
+	apiServer.handleAdapters(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var payload apihttp.AdaptersOverview
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	var aiEntry *apihttp.AdapterEntry
+	for i, entry := range payload.Adapters {
+		if entry.Slot == "ai" {
+			aiEntry = &payload.Adapters[i]
+			break
+		}
+	}
+	if aiEntry == nil {
+		t.Fatal("ai slot not found")
+	}
+	if aiEntry.Runtime == nil {
+		t.Fatal("expected runtime field for started adapter")
+	}
+	if aiEntry.Runtime.Health == "" {
+		t.Fatal("expected runtime health to be populated")
+	}
+	if aiEntry.Runtime.AdapterID != adapter.ID {
+		t.Fatalf("expected runtime adapter_id %q, got %q", adapter.ID, aiEntry.Runtime.AdapterID)
+	}
+}
+
+func TestAdaptersOverviewWithNoAdapters(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	store := openTestStore(t)
+	adaptersService := newTestAdaptersService(t, store)
+	apiServer.SetAdaptersController(adaptersService)
+
+	ctx := context.Background()
+	if _, err := store.EnsureRequiredAdapterSlots(ctx); err != nil {
+		t.Fatalf("ensure slots: %v", err)
+	}
+
+	req := withAdmin(apiServer, httptest.NewRequest(http.MethodGet, "/adapters", nil))
+	rec := httptest.NewRecorder()
+	apiServer.handleAdapters(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var payload apihttp.AdaptersOverview
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if len(payload.Adapters) != 5 {
+		t.Fatalf("expected exactly 5 slots, got %d", len(payload.Adapters))
+	}
+	for _, entry := range payload.Adapters {
+		if entry.AdapterID != nil {
+			t.Fatalf("slot %s: expected nil adapter_id for unbound slot, got %v", entry.Slot, *entry.AdapterID)
+		}
+		if entry.Status != configstore.BindingStatusRequired {
+			t.Fatalf("slot %s: expected status required, got %s", entry.Slot, entry.Status)
+		}
+	}
+}
+
+func TestAdaptersBindChangesConfig(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	store := openTestStore(t)
+	adaptersService := newTestAdaptersService(t, store)
+	apiServer.SetAdaptersController(adaptersService)
+
+	ctx := context.Background()
+	adapter := configstore.Adapter{ID: "adapter.ai.cfg", Source: "builtin", Type: "ai", Name: "Cfg AI"}
+	if err := store.UpsertAdapter(ctx, adapter); err != nil {
+		t.Fatalf("upsert adapter: %v", err)
+	}
+	if err := store.UpsertAdapterEndpoint(ctx, configstore.AdapterEndpoint{
+		AdapterID: adapter.ID, Transport: "grpc", Address: "127.0.0.1:9930",
+	}); err != nil {
+		t.Fatalf("upsert endpoint: %v", err)
+	}
+
+	// Bind with initial config.
+	bindReq := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/adapters/bind",
+		bytes.NewBufferString(`{"slot":"ai","adapter_id":"adapter.ai.cfg","config":{"model":"claude"}}`)))
+	bindReq.Header.Set("Content-Type", "application/json")
+	bindRec := httptest.NewRecorder()
+	apiServer.handleAdaptersBind(bindRec, bindReq)
+
+	if bindRec.Code != http.StatusOK {
+		t.Fatalf("first bind expected 200, got %d: %s", bindRec.Code, bindRec.Body.String())
+	}
+	var firstResult apihttp.AdapterActionResult
+	if err := json.Unmarshal(bindRec.Body.Bytes(), &firstResult); err != nil {
+		t.Fatalf("unmarshal first bind: %v", err)
+	}
+	if firstResult.Adapter.Status != configstore.BindingStatusActive {
+		t.Fatalf("expected active after first bind, got %s", firstResult.Adapter.Status)
+	}
+
+	// Verify initial config persisted.
+	initialBinding, err := store.AdapterBinding(ctx, "ai")
+	if err != nil {
+		t.Fatalf("get initial binding: %v", err)
+	}
+	if initialBinding == nil {
+		t.Fatal("expected initial ai binding")
+	}
+	initialCfg := parseConfigJSON(t, initialBinding.Config)
+	if initialCfg["model"] != "claude" {
+		t.Fatalf("expected initial config model=claude, got %v", initialCfg)
+	}
+
+	// Re-bind with new config.
+	rebindReq := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/adapters/bind",
+		bytes.NewBufferString(`{"slot":"ai","adapter_id":"adapter.ai.cfg","config":{"model":"gpt-4"}}`)))
+	rebindReq.Header.Set("Content-Type", "application/json")
+	rebindRec := httptest.NewRecorder()
+	apiServer.handleAdaptersBind(rebindRec, rebindReq)
+
+	if rebindRec.Code != http.StatusOK {
+		t.Fatalf("rebind expected 200, got %d: %s", rebindRec.Code, rebindRec.Body.String())
+	}
+
+	// Verify config persisted in store.
+	binding, err := store.AdapterBinding(ctx, "ai")
+	if err != nil {
+		t.Fatalf("get binding: %v", err)
+	}
+	if binding == nil {
+		t.Fatal("expected ai binding")
+	}
+	rebindCfg := parseConfigJSON(t, binding.Config)
+	if rebindCfg["model"] != "gpt-4" {
+		t.Fatalf("expected config model=gpt-4, got %v", rebindCfg)
+	}
+}
+
+func TestAdaptersBindStartStopRestart(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	store := openTestStore(t)
+	adaptersService := newTestAdaptersService(t, store)
+	apiServer.SetAdaptersController(adaptersService)
+
+	ctx := context.Background()
+	adapter := configstore.Adapter{ID: "adapter.ai.cycle", Source: "builtin", Type: "ai", Name: "Cycle AI"}
+	if err := store.UpsertAdapter(ctx, adapter); err != nil {
+		t.Fatalf("upsert adapter: %v", err)
+	}
+	if err := store.UpsertAdapterEndpoint(ctx, configstore.AdapterEndpoint{
+		AdapterID: adapter.ID, Transport: "grpc", Address: "127.0.0.1:9931",
+	}); err != nil {
+		t.Fatalf("upsert endpoint: %v", err)
+	}
+
+	// Bind.
+	bindReq := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/adapters/bind",
+		bytes.NewBufferString(`{"slot":"ai","adapter_id":"adapter.ai.cycle"}`)))
+	bindReq.Header.Set("Content-Type", "application/json")
+	bindRec := httptest.NewRecorder()
+	apiServer.handleAdaptersBind(bindRec, bindReq)
+	if bindRec.Code != http.StatusOK {
+		t.Fatalf("bind: expected 200, got %d", bindRec.Code)
+	}
+
+	// Start.
+	startReq := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/adapters/start",
+		bytes.NewBufferString(`{"slot":"ai"}`)))
+	startReq.Header.Set("Content-Type", "application/json")
+	startRec := httptest.NewRecorder()
+	apiServer.handleAdaptersStart(startRec, startReq)
+	if startRec.Code != http.StatusOK {
+		t.Fatalf("start: expected 200, got %d: %s", startRec.Code, startRec.Body.String())
+	}
+	var startPayload apihttp.AdapterActionResult
+	if err := json.Unmarshal(startRec.Body.Bytes(), &startPayload); err != nil {
+		t.Fatalf("unmarshal start: %v", err)
+	}
+	if startPayload.Adapter.Status != configstore.BindingStatusActive {
+		t.Fatalf("expected active after start, got %s", startPayload.Adapter.Status)
+	}
+
+	// Stop.
+	stopReq := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/adapters/stop",
+		bytes.NewBufferString(`{"slot":"ai"}`)))
+	stopReq.Header.Set("Content-Type", "application/json")
+	stopRec := httptest.NewRecorder()
+	apiServer.handleAdaptersStop(stopRec, stopReq)
+	if stopRec.Code != http.StatusOK {
+		t.Fatalf("stop: expected 200, got %d", stopRec.Code)
+	}
+	var stopPayload apihttp.AdapterActionResult
+	if err := json.Unmarshal(stopRec.Body.Bytes(), &stopPayload); err != nil {
+		t.Fatalf("unmarshal stop: %v", err)
+	}
+	if stopPayload.Adapter.Status != configstore.BindingStatusInactive {
+		t.Fatalf("expected inactive after stop, got %s", stopPayload.Adapter.Status)
+	}
+
+	// Re-start to verify full cycle.
+	restartReq := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/adapters/start",
+		bytes.NewBufferString(`{"slot":"ai"}`)))
+	restartReq.Header.Set("Content-Type", "application/json")
+	restartRec := httptest.NewRecorder()
+	apiServer.handleAdaptersStart(restartRec, restartReq)
+	if restartRec.Code != http.StatusOK {
+		t.Fatalf("restart: expected 200, got %d: %s", restartRec.Code, restartRec.Body.String())
+	}
+	var restartPayload apihttp.AdapterActionResult
+	if err := json.Unmarshal(restartRec.Body.Bytes(), &restartPayload); err != nil {
+		t.Fatalf("unmarshal restart: %v", err)
+	}
+	if restartPayload.Adapter.Status != configstore.BindingStatusActive {
+		t.Fatalf("expected active after restart, got %s", restartPayload.Adapter.Status)
+	}
+}
+
+func TestAdaptersBindRequiresAdminRole(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	store := openTestStore(t)
+	adaptersService := newTestAdaptersService(t, store)
+	apiServer.SetAdaptersController(adaptersService)
+
+	endpoints := []struct {
+		path    string
+		handler func(http.ResponseWriter, *http.Request)
+		body    string
+	}{
+		{"/adapters/bind", apiServer.handleAdaptersBind, `{"slot":"ai","adapter_id":"x"}`},
+		{"/adapters/start", apiServer.handleAdaptersStart, `{"slot":"ai"}`},
+		{"/adapters/stop", apiServer.handleAdaptersStop, `{"slot":"ai"}`},
+	}
+
+	for _, ep := range endpoints {
+		req := withReadOnly(apiServer, httptest.NewRequest(http.MethodPost, ep.path, bytes.NewBufferString(ep.body)))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		ep.handler(rec, req)
+
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("%s: expected 403 for read-only, got %d", ep.path, rec.Code)
+		}
+	}
+}
+
+func TestAdapterConfigShowsRequiredKeysViaStatus(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	store := openTestStore(t)
+	adaptersService := newTestAdaptersService(t, store)
+	apiServer.SetAdaptersController(adaptersService)
+
+	ctx := context.Background()
+
+	// Ensure required slots exist.
+	if _, err := store.EnsureRequiredAdapterSlots(ctx); err != nil {
+		t.Fatalf("ensure slots: %v", err)
+	}
+
+	// Register adapter with empty API key in config.
+	adapter := configstore.Adapter{ID: "adapter.tts.keys", Source: "ext", Type: "tts", Name: "TTS With Keys"}
+	if err := store.UpsertAdapter(ctx, adapter); err != nil {
+		t.Fatalf("upsert adapter: %v", err)
+	}
+	if err := store.UpsertAdapterEndpoint(ctx, configstore.AdapterEndpoint{
+		AdapterID: adapter.ID, Transport: "grpc", Address: "127.0.0.1:0",
+	}); err != nil {
+		t.Fatalf("upsert endpoint: %v", err)
+	}
+	if err := store.SetActiveAdapter(ctx, "tts", adapter.ID, map[string]any{"api_key": ""}); err != nil {
+		t.Fatalf("activate tts: %v", err)
+	}
+
+	req := withAdmin(apiServer, httptest.NewRequest(http.MethodGet, "/adapters", nil))
+	rec := httptest.NewRecorder()
+	apiServer.handleAdapters(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var payload apihttp.AdaptersOverview
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	var ttsEntry *apihttp.AdapterEntry
+	for i, entry := range payload.Adapters {
+		if entry.Slot == "tts" {
+			ttsEntry = &payload.Adapters[i]
+			break
+		}
+	}
+	if ttsEntry == nil {
+		t.Fatal("tts slot not found")
+	}
+	if ttsEntry.AdapterID == nil || *ttsEntry.AdapterID != adapter.ID {
+		t.Fatalf("expected adapter %s, got %v", adapter.ID, ttsEntry.AdapterID)
+	}
+	// Config with empty api_key should be visible in status so users know it needs to be configured.
+	ttsCfg := parseConfigJSON(t, ttsEntry.Config)
+	if _, ok := ttsCfg["api_key"]; !ok {
+		t.Fatalf("expected config to include api_key field for user visibility, got %v", ttsCfg)
+	}
+}
+
+func TestDaemonStatusEndpointReturnsAllFields(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/daemon/status", nil)
+	rec := httptest.NewRecorder()
+	apiServer.handleDaemonStatus(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	requiredFields := []string{"version", "sessions_count", "port", "grpc_port", "binding", "grpc_binding", "auth_required"}
+	for _, field := range requiredFields {
+		if _, ok := payload[field]; !ok {
+			t.Fatalf("missing required field %q", field)
+		}
+	}
+
+	if v, ok := payload["version"].(string); !ok || v == "" {
+		t.Fatalf("version should be non-empty string, got %v", payload["version"])
+	}
+	if _, ok := payload["auth_required"].(bool); !ok {
+		t.Fatalf("auth_required should be boolean, got %T", payload["auth_required"])
+	}
+	if port, ok := payload["port"].(float64); !ok || port <= 0 {
+		t.Fatalf("port should be positive number, got %v", payload["port"])
+	}
+}
+
+func TestDaemonStatusSessionsCountReflectsActiveSessions(t *testing.T) {
+	skipIfNoPTY(t)
+	apiServer, sessionManager := newTestAPIServer(t)
+
+	// Verify 0 sessions initially.
+	req0 := httptest.NewRequest(http.MethodGet, "/daemon/status", nil)
+	rec0 := httptest.NewRecorder()
+	apiServer.handleDaemonStatus(rec0, req0)
+	if rec0.Code != http.StatusOK {
+		t.Fatalf("initial status expected 200, got %d: %s", rec0.Code, rec0.Body.String())
+	}
+	var payload0 map[string]interface{}
+	if err := json.Unmarshal(rec0.Body.Bytes(), &payload0); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	count0, ok := payload0["sessions_count"].(float64)
+	if !ok {
+		t.Fatalf("sessions_count not a number: %v", payload0["sessions_count"])
+	}
+	if count0 != 0 {
+		t.Fatalf("expected sessions_count 0 initially, got %v", count0)
+	}
+
+	// Create 2 sessions.
+	sess1, err := sessionManager.CreateSession(pty.StartOptions{Command: "sleep", Args: []string{"30"}}, false)
+	if err != nil {
+		t.Fatalf("create session 1: %v", err)
+	}
+	t.Cleanup(func() { _ = sessionManager.KillSession(sess1.ID) })
+
+	sess2, err := sessionManager.CreateSession(pty.StartOptions{Command: "sleep", Args: []string{"30"}}, false)
+	if err != nil {
+		t.Fatalf("create session 2: %v", err)
+	}
+	t.Cleanup(func() { _ = sessionManager.KillSession(sess2.ID) })
+
+	req := httptest.NewRequest(http.MethodGet, "/daemon/status", nil)
+	rec := httptest.NewRecorder()
+	apiServer.handleDaemonStatus(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	count, ok := payload["sessions_count"].(float64)
+	if !ok {
+		t.Fatalf("sessions_count not a number: %v", payload["sessions_count"])
+	}
+	if count != 2 {
+		t.Fatalf("expected sessions_count 2, got %v", count)
+	}
+}
+
+func TestDaemonStatusIncludesUptime(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+
+	// runtimeStub.StartTime() returns time.Unix(0, 0), which is non-zero,
+	// so UptimeSeconds should be populated.
+	req := httptest.NewRequest(http.MethodGet, "/daemon/status", nil)
+	rec := httptest.NewRecorder()
+	apiServer.handleDaemonStatus(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	uptime, ok := payload["uptime"]
+	if !ok {
+		t.Fatal("expected uptime field when StartTime is set")
+	}
+	uptimeVal, ok := uptime.(float64)
+	if !ok || uptimeVal <= 0 {
+		t.Fatalf("expected positive uptime, got %v", uptime)
 	}
 }
