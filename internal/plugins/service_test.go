@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,17 +15,30 @@ import (
 	pipelinecleaners "github.com/nupi-ai/nupi/internal/plugins/pipeline_cleaners"
 )
 
+var (
+	bunOnce      sync.Once
+	bunAvailable bool
+)
+
 // skipIfNoBun skips the test if the JS runtime is not available.
+// Uses sync.Once + os.Setenv (not t.Setenv) so tests can use t.Parallel().
 func skipIfNoBun(t *testing.T) {
 	t.Helper()
-	if jsrunner.IsAvailable() {
-		return
-	}
-	bunPath, err := exec.LookPath("bun")
-	if err != nil {
+	bunOnce.Do(func() {
+		if jsrunner.IsAvailable() {
+			bunAvailable = true
+			return
+		}
+		bunPath, err := exec.LookPath("bun")
+		if err != nil {
+			return
+		}
+		os.Setenv("NUPI_JS_RUNTIME", bunPath)
+		bunAvailable = true
+	})
+	if !bunAvailable {
 		t.Skip("JS runtime not available: not bundled and bun not in PATH")
 	}
-	t.Setenv("NUPI_JS_RUNTIME", bunPath)
 }
 
 func writePlugin(t *testing.T, root, catalog, slug, pluginType, script string) {
@@ -52,10 +66,11 @@ spec:
 	}
 }
 
-// --- Task 1: Plugin Service Lifecycle ---
+// --- Plugin Service Lifecycle ---
 
 func TestServiceStartCreatesPluginDir(t *testing.T) {
 	skipIfNoBun(t)
+	t.Parallel()
 
 	root := t.TempDir()
 	pluginDir := filepath.Join(root, "plugins")
@@ -82,6 +97,7 @@ func TestServiceStartCreatesPluginDir(t *testing.T) {
 
 func TestServiceStartInitializesRuntime(t *testing.T) {
 	skipIfNoBun(t)
+	t.Parallel()
 
 	root := t.TempDir()
 	svc := plugins.NewService(root)
@@ -98,6 +114,7 @@ func TestServiceStartInitializesRuntime(t *testing.T) {
 
 func TestServiceShutdownStopsRuntime(t *testing.T) {
 	skipIfNoBun(t)
+	t.Parallel()
 
 	root := t.TempDir()
 	svc := plugins.NewService(root)
@@ -117,6 +134,7 @@ func TestServiceShutdownStopsRuntime(t *testing.T) {
 
 func TestServiceStartEmptyDirSucceeds(t *testing.T) {
 	skipIfNoBun(t)
+	t.Parallel()
 
 	root := t.TempDir()
 	svc := plugins.NewService(root)
@@ -136,6 +154,7 @@ func TestServiceStartEmptyDirSucceeds(t *testing.T) {
 
 func TestServiceStartLogsWarningsForInvalidPlugins(t *testing.T) {
 	skipIfNoBun(t)
+	t.Parallel()
 
 	root := t.TempDir()
 
@@ -181,10 +200,11 @@ spec:
 	}
 }
 
-// --- Task 2: Tool Handler Plugin Loading and Execution ---
+// --- Tool Handler Plugin Loading and Execution ---
 
 func TestServiceLoadsToolHandlerWithAllFunctions(t *testing.T) {
 	skipIfNoBun(t)
+	t.Parallel()
 
 	root := t.TempDir()
 	writePlugin(t, root, "test", "full-handler", "tool-handler", `module.exports = {
@@ -228,6 +248,7 @@ func TestServiceLoadsToolHandlerWithAllFunctions(t *testing.T) {
 
 func TestServiceLoadsMinimalToolHandler(t *testing.T) {
 	skipIfNoBun(t)
+	t.Parallel()
 
 	root := t.TempDir()
 	writePlugin(t, root, "test", "minimal-handler", "tool-handler", `module.exports = {
@@ -262,6 +283,7 @@ func TestServiceLoadsMinimalToolHandler(t *testing.T) {
 
 func TestServiceSkipsToolHandlerMissingDetect(t *testing.T) {
 	skipIfNoBun(t)
+	t.Parallel()
 
 	root := t.TempDir()
 	writePlugin(t, root, "test", "no-detect", "tool-handler", `module.exports = {
@@ -283,6 +305,7 @@ func TestServiceSkipsToolHandlerMissingDetect(t *testing.T) {
 
 func TestServiceToolHandlerForReturnsCorrectPlugin(t *testing.T) {
 	skipIfNoBun(t)
+	t.Parallel()
 
 	root := t.TempDir()
 	writePlugin(t, root, "test", "handler-a", "tool-handler", `module.exports = {
@@ -323,10 +346,11 @@ func TestServiceToolHandlerForReturnsCorrectPlugin(t *testing.T) {
 	}
 }
 
-// --- Task 3: Pipeline Cleaner Plugin Loading and Execution ---
+// --- Pipeline Cleaner Plugin Loading and Execution ---
 
 func TestServiceLoadsPipelineCleanerWithTransform(t *testing.T) {
 	skipIfNoBun(t)
+	t.Parallel()
 
 	root := t.TempDir()
 	writePlugin(t, root, "test", "my-cleaner", "pipeline-cleaner", `module.exports = {
@@ -354,6 +378,7 @@ func TestServiceLoadsPipelineCleanerWithTransform(t *testing.T) {
 
 func TestServiceSkipsPipelineCleanerMissingTransform(t *testing.T) {
 	skipIfNoBun(t)
+	t.Parallel()
 
 	root := t.TempDir()
 	writePlugin(t, root, "test", "no-transform", "pipeline-cleaner", `module.exports = {
@@ -376,6 +401,7 @@ func TestServiceSkipsPipelineCleanerMissingTransform(t *testing.T) {
 
 func TestServicePipelinePluginForFallsBackToDefault(t *testing.T) {
 	skipIfNoBun(t)
+	t.Parallel()
 
 	root := t.TempDir()
 	writePlugin(t, root, "test", "default-cleaner", "pipeline-cleaner", `module.exports = {
@@ -401,6 +427,7 @@ func TestServicePipelinePluginForFallsBackToDefault(t *testing.T) {
 
 func TestServicePipelineTransformExecution(t *testing.T) {
 	skipIfNoBun(t)
+	t.Parallel()
 
 	root := t.TempDir()
 	writePlugin(t, root, "test", "upper-cleaner", "pipeline-cleaner", `module.exports = {
@@ -430,7 +457,6 @@ func TestServicePipelineTransformExecution(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// nolint: staticcheck  // pipeline_cleaners is the canonical import alias
 	result, err := plugin.Transform(ctx, rt, pipelinecleaners.TransformInput{
 		Text: "hello world",
 	})
@@ -442,10 +468,11 @@ func TestServicePipelineTransformExecution(t *testing.T) {
 	}
 }
 
-// --- Task 4: Discovery warnings via Service ---
+// --- Discovery warnings via Service ---
 
 func TestServiceLastDiscoveryWarnings(t *testing.T) {
 	skipIfNoBun(t)
+	t.Parallel()
 
 	root := t.TempDir()
 
@@ -497,6 +524,7 @@ spec:
 
 func TestServiceDiscoverMultipleCatalogs(t *testing.T) {
 	skipIfNoBun(t)
+	t.Parallel()
 
 	root := t.TempDir()
 
@@ -525,10 +553,11 @@ func TestServiceDiscoverMultipleCatalogs(t *testing.T) {
 	}
 }
 
-// --- Task 5: JS Runtime Integration ---
+// --- JS Runtime Integration ---
 
 func TestServiceRuntimeAvailableForPluginCalls(t *testing.T) {
 	skipIfNoBun(t)
+	t.Parallel()
 
 	root := t.TempDir()
 	writePlugin(t, root, "test", "detect-handler", "tool-handler", `module.exports = {
@@ -577,6 +606,7 @@ func TestServiceRuntimeAvailableForPluginCalls(t *testing.T) {
 
 func TestServiceRuntimeHandlesMultipleReturnTypes(t *testing.T) {
 	skipIfNoBun(t)
+	t.Parallel()
 
 	root := t.TempDir()
 	writePlugin(t, root, "test", "multi-return", "tool-handler", `module.exports = {
@@ -605,63 +635,68 @@ func TestServiceRuntimeHandlesMultipleReturnTypes(t *testing.T) {
 	}
 
 	rt := svc.JSRuntime()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Boolean return (detect).
-	detected, err := plugin.Detect(ctx, rt, "anything")
-	if err != nil {
-		t.Fatalf("Detect: %v", err)
-	}
-	if !detected {
-		t.Fatal("expected true from detect")
-	}
+	t.Run("boolean_detect", func(t *testing.T) {
+		detected, err := plugin.Detect(ctx, rt, "anything")
+		if err != nil {
+			t.Fatalf("Detect: %v", err)
+		}
+		if !detected {
+			t.Fatal("expected true from detect")
+		}
+	})
 
-	// String return (clean).
-	cleaned, err := plugin.Clean(ctx, rt, "raw")
-	if err != nil {
-		t.Fatalf("Clean: %v", err)
-	}
-	if cleaned != "cleaned:raw" {
-		t.Fatalf("expected 'cleaned:raw', got %q", cleaned)
-	}
+	t.Run("string_clean", func(t *testing.T) {
+		cleaned, err := plugin.Clean(ctx, rt, "raw")
+		if err != nil {
+			t.Fatalf("Clean: %v", err)
+		}
+		if cleaned != "cleaned:raw" {
+			t.Fatalf("expected 'cleaned:raw', got %q", cleaned)
+		}
+	})
 
-	// Object return (detectIdleState).
-	state, err := plugin.DetectIdleState(ctx, rt, "idle state")
-	if err != nil {
-		t.Fatalf("DetectIdleState: %v", err)
-	}
-	if state == nil {
-		t.Fatal("expected non-nil idle state")
-	}
-	if !state.IsIdle {
-		t.Error("expected IsIdle to be true")
-	}
-	if state.Reason != "idle" {
-		t.Errorf("expected reason 'idle', got %q", state.Reason)
-	}
+	t.Run("object_detectIdleState", func(t *testing.T) {
+		state, err := plugin.DetectIdleState(ctx, rt, "idle state")
+		if err != nil {
+			t.Fatalf("DetectIdleState: %v", err)
+		}
+		if state == nil {
+			t.Fatal("expected non-nil idle state")
+		}
+		if !state.IsIdle {
+			t.Error("expected IsIdle to be true")
+		}
+		if state.Reason != "idle" {
+			t.Errorf("expected reason 'idle', got %q", state.Reason)
+		}
+	})
 
-	// Null return (detectIdleState).
-	state, err = plugin.DetectIdleState(ctx, rt, "some other output")
-	if err != nil {
-		t.Fatalf("DetectIdleState: %v", err)
-	}
-	if state != nil {
-		t.Errorf("expected nil for non-matching buffer, got %+v", state)
-	}
+	t.Run("null_detectIdleState", func(t *testing.T) {
+		state, err := plugin.DetectIdleState(ctx, rt, "some other output")
+		if err != nil {
+			t.Fatalf("DetectIdleState: %v", err)
+		}
+		if state != nil {
+			t.Errorf("expected nil for non-matching buffer, got %+v", state)
+		}
+	})
 
-	// Array return (extractEvents).
-	events, err := plugin.ExtractEvents(ctx, rt, "test output")
-	if err != nil {
-		t.Fatalf("ExtractEvents: %v", err)
-	}
-	if len(events) != 2 {
-		t.Fatalf("expected 2 events, got %d", len(events))
-	}
-	if events[0].Severity != "info" || events[0].Title != "event1" {
-		t.Errorf("unexpected event[0]: %+v", events[0])
-	}
-	if events[1].Severity != "warning" || events[1].Title != "event2" {
-		t.Errorf("unexpected event[1]: %+v", events[1])
-	}
+	t.Run("array_extractEvents", func(t *testing.T) {
+		events, err := plugin.ExtractEvents(ctx, rt, "test output")
+		if err != nil {
+			t.Fatalf("ExtractEvents: %v", err)
+		}
+		if len(events) != 2 {
+			t.Fatalf("expected 2 events, got %d", len(events))
+		}
+		if events[0].Severity != "info" || events[0].Title != "event1" {
+			t.Errorf("unexpected event[0]: %+v", events[0])
+		}
+		if events[1].Severity != "warning" || events[1].Title != "event2" {
+			t.Errorf("unexpected event[1]: %+v", events[1])
+		}
+	})
 }
