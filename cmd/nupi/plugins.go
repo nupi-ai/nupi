@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"text/tabwriter"
 
 	"github.com/nupi-ai/nupi/internal/client"
 	manifestpkg "github.com/nupi-ai/nupi/internal/plugins/manifest"
@@ -12,11 +14,23 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// pluginRow holds data for a single row in the unified plugins table.
+type pluginRow struct {
+	Type    string
+	Name    string
+	Slug    string
+	Catalog string
+	Version string
+	Slot    string
+	Status  string
+	Health  string
+}
+
 // pluginsCmd represents the plugins command group
 var pluginsCmd = &cobra.Command{
 	Use:   "plugins",
-	Short: "Manage tool handler plugins",
-	Long:  `Commands for managing tool handler plugins used for AI tool handling.`,
+	Short: "Manage plugins",
+	Long:  `Commands for managing plugins (adapters, tool handlers, pipeline cleaners).`,
 }
 
 // pluginsRebuildCmd rebuilds the plugin index
@@ -43,60 +57,29 @@ var pluginsRebuildCmd = &cobra.Command{
 	},
 }
 
-// pluginsListCmd lists all plugins
+// pluginsListCmd lists all installed plugins
 var pluginsListCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List tool handler plugins",
-	Long:  `Shows information about tool handler plugins available in the current instance.`,
+	Short: "List all installed plugins",
+	Long:  `Shows all installed plugins (adapters, tool handlers, pipeline cleaners) with runtime status for adapters.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		pluginDir := getPluginDir()
 
-		manifests, err := manifestpkg.Discover(pluginDir)
+		rows, err := listAllPlugins(pluginDir)
 		if err != nil {
-			return fmt.Errorf("discover manifests: %w", err)
+			return err
 		}
 
-		generator := toolhandlers.NewIndexGenerator(pluginDir, manifests)
-		plugins, err := generator.ListPlugins()
-		if err != nil {
-			return fmt.Errorf("failed to list plugins: %w", err)
-		}
-
-		if len(plugins) == 0 {
-			fmt.Println("No tool handler plugins found.")
+		if len(rows) == 0 {
+			fmt.Println("No plugins found.")
 			fmt.Printf("Plugin directory: %s\n", pluginDir)
-			fmt.Println("\nAdd tool handler plugins to this directory and run 'nupi plugins rebuild'.")
 			return nil
 		}
 
-		fmt.Printf("Found %d plugin(s):\n", len(plugins))
-		fmt.Println("Name              File                      Commands")
-		fmt.Println("----------------  ------------------------  --------------------------------")
-
-		for _, plugin := range plugins {
-			if errStr, hasError := plugin["error"].(string); hasError {
-				fmt.Printf("✗ %-15s  %-24s  Error: %s\n",
-					plugin["file"],
-					"",
-					errStr)
-			} else {
-				name := fmt.Sprintf("%v", plugin["name"])
-				if len(name) > 16 {
-					name = name[:15] + "…"
-				}
-
-				file := fmt.Sprintf("%v", plugin["file"])
-				if len(file) > 24 {
-					file = file[:23] + "…"
-				}
-
-				commands := ""
-				if cmds, ok := plugin["commands"].([]string); ok && len(cmds) > 0 {
-					commands = fmt.Sprintf("%v", cmds)
-				}
-
-				fmt.Printf("%-17s  %-24s  %s\n", name, file, commands)
-			}
+		connected := enrichWithDaemonData(rows)
+		printPluginsTable(rows)
+		if !connected {
+			fmt.Println("\n(daemon not running)")
 		}
 
 		return nil
@@ -142,8 +125,8 @@ or config change). For historical tracking, check daemon logs.`,
 // pluginsInfoCmd shows detailed plugin info
 var pluginsInfoCmd = &cobra.Command{
 	Use:   "info <slug>",
-	Short: "Show tool handler plugin information",
-	Long:  `Displays manifest metadata and exported details for the given tool handler plugin slug.`,
+	Short: "Show plugin information",
+	Long:  `Displays manifest metadata and details for the given plugin slug.`,
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		target := args[0]
@@ -169,43 +152,55 @@ var pluginsInfoCmd = &cobra.Command{
 		if selected == nil {
 			return fmt.Errorf("plugin %q not found", target)
 		}
-		if selected.Type != manifestpkg.PluginTypeToolHandler {
-			return fmt.Errorf("plugin %q is not a tool-handler", target)
+
+		name := strings.TrimSpace(selected.Metadata.Name)
+		if name == "" {
+			name = selected.Metadata.Slug
 		}
 
-		mainPath, err := selected.MainPath()
-		if err != nil {
-			return err
-		}
-
-		relMain, err := selected.RelativeMainPath(pluginDir)
-		if err != nil {
-			relMain = mainPath
-		}
-
-		plugin, err := toolhandlers.LoadPlugin(mainPath)
-		if err != nil {
-			return fmt.Errorf("failed to load plugin: %w", err)
-		}
-
-		// Fallback to manifest name when jsruntime is unavailable
-		if plugin.Name == "" || plugin.Name == filepath.Base(plugin.FilePath) {
-			if name := strings.TrimSpace(selected.Metadata.Name); name != "" {
-				plugin.Name = name
-			}
-		}
-
-		fmt.Printf("Name: %s\n", plugin.Name)
+		fmt.Printf("Name: %s\n", name)
 		if selected.Metadata.Slug != "" {
 			fmt.Printf("Slug: %s\n", selected.Metadata.Slug)
 		}
 		fmt.Printf("Version: %s\n", selected.Metadata.Version)
 		fmt.Printf("Type: %s\n", selected.Type)
-		fmt.Printf("Entry: %s\n", relMain)
 		if selected.Metadata.Description != "" {
 			fmt.Printf("Description: %s\n", selected.Metadata.Description)
 		}
-		fmt.Printf("Commands: %v\n", plugin.Commands)
+
+		switch selected.Type {
+		case manifestpkg.PluginTypeAdapter:
+			if selected.Adapter != nil {
+				fmt.Printf("Slot: %s\n", selected.Adapter.Slot)
+				fmt.Printf("Transport: %s\n", selected.Adapter.Entrypoint.Transport)
+				if selected.Adapter.Entrypoint.Command != "" {
+					fmt.Printf("Command: %s\n", selected.Adapter.Entrypoint.Command)
+				}
+			}
+		case manifestpkg.PluginTypeToolHandler:
+			mainPath, err := selected.MainPath()
+			if err == nil {
+				relMain, relErr := selected.RelativeMainPath(pluginDir)
+				if relErr != nil {
+					relMain = mainPath
+				}
+				fmt.Printf("Entry: %s\n", relMain)
+
+				plugin, loadErr := toolhandlers.LoadPlugin(mainPath)
+				if loadErr == nil {
+					fmt.Printf("Commands: %v\n", plugin.Commands)
+				}
+			}
+		case manifestpkg.PluginTypePipelineCleaner:
+			mainPath, err := selected.MainPath()
+			if err == nil {
+				relMain, err := selected.RelativeMainPath(pluginDir)
+				if err != nil {
+					relMain = mainPath
+				}
+				fmt.Printf("Entry: %s\n", relMain)
+			}
+		}
 
 		return nil
 	},
@@ -230,6 +225,98 @@ func getPluginDir() string {
 		os.Exit(1)
 	}
 	return filepath.Join(homeDir, ".nupi", "plugins")
+}
+
+// listAllPlugins discovers all manifests and builds pluginRow entries.
+func listAllPlugins(pluginDir string) ([]pluginRow, error) {
+	manifests, err := manifestpkg.Discover(pluginDir)
+	if err != nil {
+		return nil, fmt.Errorf("discover manifests: %w", err)
+	}
+
+	rows := make([]pluginRow, 0, len(manifests))
+	for _, mf := range manifests {
+		name := strings.TrimSpace(mf.Metadata.Name)
+		if name == "" {
+			name = mf.Metadata.Slug
+		}
+
+		slot := "-"
+		if mf.Type == manifestpkg.PluginTypeAdapter && mf.Adapter != nil {
+			slot = mf.Adapter.Slot
+		}
+
+		rows = append(rows, pluginRow{
+			Type:    string(mf.Type),
+			Name:    name,
+			Slug:    mf.Metadata.Slug,
+			Catalog: mf.Metadata.Catalog,
+			Version: mf.Metadata.Version,
+			Slot:    slot,
+			Status:  "-",
+			Health:  "-",
+		})
+	}
+
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].Type != rows[j].Type {
+			return rows[i].Type < rows[j].Type
+		}
+		return rows[i].Name < rows[j].Name
+	})
+
+	return rows, nil
+}
+
+// enrichWithDaemonData tries to fetch adapter runtime data from the daemon.
+// Returns true if the daemon connection succeeded.
+func enrichWithDaemonData(rows []pluginRow) bool {
+	c, err := client.New()
+	if err != nil {
+		return false
+	}
+	defer c.Close()
+
+	overview, err := fetchAdaptersOverview(c)
+	if err != nil {
+		return false
+	}
+
+	// Build lookup map: catalog/slug -> AdapterEntry
+	adapterMap := make(map[string]int, len(overview.Adapters))
+	for i, entry := range overview.Adapters {
+		if entry.AdapterID != nil {
+			adapterMap[*entry.AdapterID] = i
+		}
+	}
+
+	for i := range rows {
+		if rows[i].Type != string(manifestpkg.PluginTypeAdapter) {
+			continue
+		}
+		// Try matching by catalog/slug format used in adapter registration
+		key := formatAdapterID(rows[i].Catalog, rows[i].Slug)
+		if idx, ok := adapterMap[key]; ok {
+			entry := overview.Adapters[idx]
+			rows[i].Status = entry.Status
+			if entry.Runtime != nil && strings.TrimSpace(entry.Runtime.Health) != "" {
+				rows[i].Health = entry.Runtime.Health
+			}
+		}
+	}
+
+	return true
+}
+
+// printPluginsTable renders the unified plugins table.
+func printPluginsTable(rows []pluginRow) {
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "TYPE\tNAME\tSLUG\tSLOT\tSTATUS\tHEALTH")
+	for _, r := range rows {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			r.Type, r.Name, r.Slug, r.Slot, r.Status, r.Health)
+	}
+	w.Flush()
 }
 
 func init() {
