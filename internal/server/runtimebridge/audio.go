@@ -194,8 +194,15 @@ type commandExecutorAdapter struct {
 }
 
 func (a *commandExecutorAdapter) QueueCommand(sessionID string, command string, origin eventbus.ContentOrigin) error {
-	// For now, we write the command directly to the session's PTY.
-	// In the future, this could be enhanced with command queuing and priority handling.
+	// Validate session state before executing
+	sess, err := a.manager.GetSession(sessionID)
+	if err != nil {
+		return fmt.Errorf("command rejected: %w", err)
+	}
+	if status := sess.CurrentStatus(); status == session.StatusStopped {
+		return fmt.Errorf("command rejected: session %s is stopped", sessionID)
+	}
+
 	data := []byte(command + "\n")
 	return a.manager.WriteToSession(sessionID, data)
 }

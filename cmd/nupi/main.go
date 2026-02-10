@@ -1735,7 +1735,7 @@ func adaptersRegister(cmd *cobra.Command, _ []string) error {
 
 	useGRPC, _ := cmd.Flags().GetBool("grpc")
 	if useGRPC {
-		return out.Error("Adapters register over gRPC is not supported yet", errors.New("grpc not implemented"))
+		return out.Error("Adapter registration is only available over HTTP. Use without --grpc flag", errors.New("register RPC not in proto"))
 	}
 
 	payload := apihttp.AdapterRegistrationRequest{
@@ -2041,7 +2041,7 @@ func adaptersLogs(cmd *cobra.Command, _ []string) error {
 
 	useGRPC, _ := cmd.Flags().GetBool("grpc")
 	if useGRPC {
-		return out.Error("Adapters logs over gRPC is not supported yet", errors.New("grpc not implemented"))
+		return out.Error("Adapter logs are only available over HTTP. Use without --grpc flag", errors.New("logs RPC not in proto"))
 	}
 
 	slot, _ := cmd.Flags().GetString("slot")

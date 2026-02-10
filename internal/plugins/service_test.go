@@ -700,3 +700,101 @@ func TestServiceRuntimeHandlesMultipleReturnTypes(t *testing.T) {
 		}
 	})
 }
+
+// --- No-Bun Degradation Path ---
+
+func TestServiceStartWithoutBunDegrades(t *testing.T) {
+	// Cannot use t.Parallel() because t.Setenv modifies process-global state.
+
+	root := t.TempDir()
+
+	// Create a valid plugin that would normally be loaded.
+	writePlugin(t, root, "test", "test-handler", "tool-handler", `module.exports = {
+  name: "test-handler",
+  commands: ["testcmd"],
+  detect: function(cmd) { return cmd === "testcmd"; },
+};`)
+	writePlugin(t, root, "test", "test-cleaner", "pipeline-cleaner", `module.exports = {
+  name: "test-cleaner",
+  commands: ["cleancmd"],
+  transform: function(input) { return input; },
+};`)
+
+	// Point NUPI_JS_RUNTIME to a non-existent path to force ErrRuntimeNotFound.
+	t.Setenv("NUPI_JS_RUNTIME", filepath.Join(t.TempDir(), "nonexistent-bun"))
+
+	svc := plugins.NewService(root)
+
+	// Start should succeed (graceful degradation, not crash).
+	if err := svc.Start(context.Background()); err != nil {
+		t.Fatalf("Start should succeed without Bun, got: %v", err)
+	}
+	defer svc.Shutdown(context.Background())
+
+	// JS runtime should be nil.
+	if rt := svc.JSRuntime(); rt != nil {
+		t.Fatal("expected JSRuntime to be nil when Bun is not available")
+	}
+
+	// JS-dependent plugins should NOT be loaded (no false positives).
+	if _, ok := svc.ToolHandlerPluginFor("testcmd"); ok {
+		t.Fatal("expected tool handler NOT to be loaded when runtime is unavailable")
+	}
+	if _, ok := svc.PipelinePluginFor("cleancmd"); ok {
+		t.Fatal("expected pipeline plugin NOT to be loaded when runtime is unavailable")
+	}
+}
+
+func TestServiceHotRestartClearsStaleIndicesWhenBunDisappears(t *testing.T) {
+	// Cannot use t.Parallel() because t.Setenv modifies process-global state.
+	skipIfNoBun(t)
+
+	root := t.TempDir()
+
+	writePlugin(t, root, "test", "hot-handler", "tool-handler", `module.exports = {
+  name: "hot-handler",
+  commands: ["hotcmd"],
+  detect: function(cmd) { return cmd === "hotcmd"; },
+};`)
+	writePlugin(t, root, "test", "hot-cleaner", "pipeline-cleaner", `module.exports = {
+  name: "hot-cleaner",
+  commands: ["hotclean"],
+  transform: function(input) { return input; },
+};`)
+
+	svc := plugins.NewService(root)
+	ctx := context.Background()
+
+	// First Start — Bun is available, plugins load successfully.
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("first Start: %v", err)
+	}
+	if _, ok := svc.ToolHandlerPluginFor("hotcmd"); !ok {
+		t.Fatal("expected tool handler to be loaded after first Start")
+	}
+	if _, ok := svc.PipelinePluginFor("hotclean"); !ok {
+		t.Fatal("expected pipeline plugin to be loaded after first Start")
+	}
+
+	// Shutdown the service (simulates daemon restart cycle).
+	if err := svc.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+
+	// Make Bun unavailable for the second Start.
+	t.Setenv("NUPI_JS_RUNTIME", filepath.Join(t.TempDir(), "nonexistent-bun"))
+
+	// Second Start — Bun missing, should degrade and CLEAR stale indices.
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("second Start (degraded): %v", err)
+	}
+	defer svc.Shutdown(ctx)
+
+	// Stale entries from the first Start must be gone.
+	if _, ok := svc.ToolHandlerPluginFor("hotcmd"); ok {
+		t.Fatal("stale tool handler still present after hot-restart without Bun")
+	}
+	if _, ok := svc.PipelinePluginFor("hotclean"); ok {
+		t.Fatal("stale pipeline plugin still present after hot-restart without Bun")
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/nupi-ai/nupi/internal/jsrunner"
 	"github.com/nupi-ai/nupi/internal/jsruntime"
 	"github.com/nupi-ai/nupi/internal/plugins/manifest"
 	pipelinecleaners "github.com/nupi-ai/nupi/internal/plugins/pipeline_cleaners"
@@ -244,9 +245,17 @@ func (s *Service) Start(ctx context.Context) error {
 		return fmt.Errorf("ensure plugin dir: %w", err)
 	}
 
-	// Start supervised JS runtime for plugin execution with auto-restart
+	// Start supervised JS runtime for plugin execution with auto-restart.
+	// If Bun is not installed, degrade gracefully — JS plugins are entirely
+	// skipped to avoid loading metadata for plugins that cannot execute.
+	jsRuntimeAvailable := true
 	if err := s.startJSRuntime(ctx); err != nil {
-		return fmt.Errorf("JS runtime failed to start (is Bun installed?): %w", err)
+		if jsrunner.IsRuntimeNotFound(err) {
+			jsRuntimeAvailable = false
+			log.Printf("[Plugins] WARNING: JS runtime not available — JS plugins disabled. %v", err)
+		} else {
+			return fmt.Errorf("JS runtime failed to start: %w", err)
+		}
 	}
 
 	manifests, warnings := manifest.DiscoverWithWarnings(s.pluginDir)
@@ -258,15 +267,32 @@ func (s *Service) Start(ctx context.Context) error {
 		}
 	}
 
-	if err := s.loadPipelinePlugins(manifests); err != nil {
-		log.Printf("[Plugins] pipeline load error: %v", err)
+	if jsRuntimeAvailable {
+		if err := s.loadPipelinePlugins(manifests); err != nil {
+			log.Printf("[Plugins] pipeline load error: %v", err)
+		}
+
+		if err := s.loadToolHandlerPlugins(manifests); err != nil {
+			log.Printf("[Plugins] tool handler load error: %v", err)
+		}
+	} else {
+		// Clear any stale plugin entries from a previous Start() that had
+		// a working runtime. Without this, a hot-restart (Shutdown→Start)
+		// where Bun disappears would leave orphan entries that reference
+		// a nil runtime, causing panics in the content pipeline.
+		s.pipelineMu.Lock()
+		s.pipelineIdx = make(map[string]*pipelinecleaners.PipelinePlugin)
+		s.pipelineMu.Unlock()
+
+		s.toolHandlerMu.Lock()
+		s.toolHandlerIdx = make(map[string]*toolhandlers.JSPlugin)
+		s.toolHandlerMu.Unlock()
+
+		log.Printf("[Plugins] Skipping JS plugin loading — pipeline cleaners and tool handlers unavailable")
 	}
 
-	if err := s.loadToolHandlerPlugins(manifests); err != nil {
-		log.Printf("[Plugins] tool handler load error: %v", err)
-	}
-
-	// Use jsruntime-aware index generator when available
+	// Index generation still runs — it handles nil runtime and is needed
+	// for adapter plugin manifest discovery regardless of JS availability.
 	generator := toolhandlers.NewIndexGeneratorWithRuntime(s.pluginDir, manifests, s.runtime())
 	if err := generator.Generate(); err != nil {
 		return err

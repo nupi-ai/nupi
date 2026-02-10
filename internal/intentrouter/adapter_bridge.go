@@ -555,11 +555,7 @@ func (b *AdapterBridge) createAdapter(ctx context.Context, adapterID string, run
 // parseConfig parses JSON config string into a map.
 // Returns ErrInvalidConfig if the JSON is malformed.
 // Empty config string returns nil config without error (config is optional).
-//
-// TODO: Validate config against adapter's manifest schema. Currently we only
-// check for valid JSON syntax. Future enhancement: fetch adapter manifest and
-// validate that required fields are present and types match. This would catch
-// misconfiguration earlier and provide better error messages to users.
+// Note: Schema validation against manifest options is done separately in lookupAdapterConfig.
 func (b *AdapterBridge) parseConfig(configJSON string) (map[string]any, error) {
 	if configJSON == "" {
 		return nil, nil

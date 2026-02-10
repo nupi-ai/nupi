@@ -741,6 +741,9 @@ func (m *Manager) setupRecording(session *Session) error {
 
 	// Create recorder with terminal dimensions (use defaults if not set)
 	rows, cols := 24, 80
+	if pr, pc := session.PTY.GetWinSize(); pr > 0 && pc > 0 {
+		rows, cols = pr, pc
+	}
 	recorder, err := pty.NewAsciicastRecorder(recordingPath, rows, cols, title)
 	if err != nil {
 		return fmt.Errorf("failed to create recorder: %w", err)
@@ -790,6 +793,12 @@ func (r *recordingNotifier) NotifyEvent(eventType string, exitCode int) {
 			}
 
 			log.Printf("[Recording] Preparing metadata for session %s", r.session.ID)
+			rows, cols := 24, 80
+			if r.session.PTY != nil {
+				if pr, pc := r.session.PTY.GetWinSize(); pr > 0 && pc > 0 {
+					rows, cols = pr, pc
+				}
+			}
 			metadata := recording.Metadata{
 				SessionID:     r.session.ID,
 				Filename:      filepath.Base(r.recordingPath),
@@ -798,8 +807,8 @@ func (r *recordingNotifier) NotifyEvent(eventType string, exitCode int) {
 				WorkDir:       r.session.WorkDir,
 				StartTime:     r.session.StartTime,
 				Duration:      duration.Seconds(),
-				Rows:          24, // TODO: Get from PTY
-				Cols:          80, // TODO: Get from PTY
+				Rows:          rows,
+				Cols:          cols,
 				Title:         r.session.Command,
 				Tool:          r.session.GetDetectedTool(),
 				RecordingPath: r.recordingPath,

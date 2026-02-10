@@ -12,7 +12,9 @@ import (
 	"github.com/nupi-ai/nupi/internal/audio/egress"
 	"github.com/nupi-ai/nupi/internal/audio/ingress"
 	"github.com/nupi-ai/nupi/internal/eventbus"
+	"github.com/nupi-ai/nupi/internal/pty"
 	"github.com/nupi-ai/nupi/internal/server"
+	"github.com/nupi-ai/nupi/internal/session"
 )
 
 func TestAudioIngressProvider(t *testing.T) {
@@ -128,6 +130,58 @@ func TestAudioEgressController(t *testing.T) {
 			t.Fatalf("expected interrupt log, got %q", logBuf.String())
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestCommandExecutorRejectsStoppedSession(t *testing.T) {
+	// Skip if PTY is not available (sandboxed environments).
+	p := pty.New()
+	err := p.Start(pty.StartOptions{Command: "/bin/sh", Args: []string{"-c", "exit 0"}})
+	if err != nil {
+		msg := err.Error()
+		if strings.Contains(msg, "operation not permitted") ||
+			strings.Contains(msg, "permission denied") ||
+			strings.Contains(msg, "no such file or directory") {
+			t.Skipf("PTY not available: %v", err)
+		}
+	}
+	if p != nil {
+		p.Stop(100 * time.Millisecond)
+	}
+
+	// Redirect session manager home to a temp dir.
+	t.Setenv("HOME", t.TempDir())
+
+	mgr := session.NewManager()
+
+	// Create a session that exits immediately.
+	sess, err := mgr.CreateSession(pty.StartOptions{
+		Command: "/bin/sh",
+		Args:    []string{"-c", "exit 0"},
+		Rows:    24,
+		Cols:    80,
+	}, false)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	// Wait for the session to reach StatusStopped.
+	deadline := time.Now().Add(3 * time.Second)
+	for sess.CurrentStatus() != session.StatusStopped {
+		if time.Now().After(deadline) {
+			t.Fatalf("session did not stop within deadline (status: %s)", sess.CurrentStatus())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Build the executor adapter and attempt a command.
+	executor := CommandExecutor(mgr)
+	err = executor.QueueCommand(sess.ID, "echo hello", eventbus.ContentOrigin("test"))
+	if err == nil {
+		t.Fatal("expected QueueCommand to reject command on stopped session")
+	}
+	if !strings.Contains(err.Error(), "stopped") {
+		t.Fatalf("expected error to mention 'stopped', got: %v", err)
 	}
 }
 
