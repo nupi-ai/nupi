@@ -393,7 +393,7 @@ Examples:
 
 	adaptersListCmd := &cobra.Command{
 		Use:           "list",
-		Short:         "Show adapter slots, bindings and runtime status",
+		Short:         "Show adapter slots, bindings and runtime status (see also: nupi plugins list)",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE:          adaptersList,
@@ -1643,6 +1643,10 @@ func resolveAdapterChoice(input string, ordered []adapterInfo, all []adapterInfo
 
 func adaptersList(cmd *cobra.Command, _ []string) error {
 	out := newOutputFormatter(cmd)
+
+	if !out.jsonMode {
+		fmt.Fprintln(os.Stderr, "Hint: use 'nupi plugins list' for a unified view of all plugins")
+	}
 
 	useGRPC, _ := cmd.Flags().GetBool("grpc")
 	if useGRPC {
