@@ -216,7 +216,7 @@ func (d *ToolHandler) OnOutput(data []byte) {
 	d.lastCheck = now
 	output := d.buffer.String()
 
-	if len(d.plugins) == 0 {
+	if len(d.plugins) == 0 && !d.allPluginsLoaded {
 		log.Printf("[Handler] Loading all plugins as fallback")
 		d.loadAllPlugins()
 	}
