@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -26,11 +27,12 @@ type Options struct {
 
 // Store provides access to the configuration database.
 type Store struct {
-	db           *sql.DB
-	instanceName string
-	profileName  string
-	dbPath       string
-	readOnly     bool
+	db            *sql.DB
+	instanceName  string
+	profileName   string
+	dbPath        string
+	readOnly      bool
+	encryptionKey []byte // AES-256 key for encrypting security settings
 }
 
 // NotFoundError indicates a requested record does not exist.
@@ -109,12 +111,66 @@ func Open(opts Options) (*Store, error) {
 		}
 	}
 
+	// Load or create encryption key for security settings.
+	//
+	// Safety invariant: a new key is only created when the DB contains no
+	// enc:v1: values. If the key file is missing but encrypted rows already
+	// exist, Open fails fast to prevent permanent data loss (old secrets
+	// would become undecryptable with a freshly-generated key).
+	keyPath := encryptionKeyPath(dbPath)
+	var encKey []byte
+	if !opts.ReadOnly {
+		encKey, err = loadEncryptionKey(keyPath)
+		if err != nil {
+			db.Close()
+			return nil, err
+		}
+		if encKey == nil {
+			// Key file does not exist. Safe to create only if the DB has
+			// no previously-encrypted values.
+			hasEnc, checkErr := hasEncryptedValues(ctx, db)
+			if checkErr != nil {
+				db.Close()
+				return nil, checkErr
+			}
+			if hasEnc {
+				db.Close()
+				return nil, fmt.Errorf("config: encryption key %s is missing but the database already contains encrypted values — refusing to create a new key to prevent data loss; restore the original key file or remove the encrypted rows manually", keyPath)
+			}
+			encKey, err = createEncryptionKey(keyPath)
+			if err != nil {
+				db.Close()
+				return nil, err
+			}
+		}
+	} else {
+		// Read-only mode: only load existing key, never create.
+		// A missing key is normal (first open); a corrupt key is logged.
+		var keyErr error
+		encKey, keyErr = loadEncryptionKey(keyPath)
+		if keyErr != nil {
+			log.Printf("[Config] WARNING: failed to load encryption key (read-only): %v — encrypted settings will be unreadable", keyErr)
+		}
+	}
+
+	// Backfill: re-encrypt any legacy plaintext secrets left over from
+	// before encryption was introduced. This ensures full encryption at rest.
+	if !opts.ReadOnly && encKey != nil {
+		if migrated, err := migrateEncryptPlaintext(ctx, db, encKey); err != nil {
+			db.Close()
+			return nil, fmt.Errorf("config: migrate plaintext secrets: %w", err)
+		} else if migrated > 0 {
+			log.Printf("[Config] Migrated %d plaintext secret(s) to encrypted storage", migrated)
+		}
+	}
+
 	return &Store{
-		db:           db,
-		instanceName: opts.InstanceName,
-		profileName:  opts.ProfileName,
-		dbPath:       dbPath,
-		readOnly:     opts.ReadOnly,
+		db:            db,
+		instanceName:  opts.InstanceName,
+		profileName:   opts.ProfileName,
+		dbPath:        dbPath,
+		readOnly:      opts.ReadOnly,
+		encryptionKey: encKey,
 	}, nil
 }
 

@@ -30,7 +30,15 @@ func (s *Store) SaveSecuritySettings(ctx context.Context, values map[string]stri
 		defer stmt.Close()
 
 		for key, value := range values {
-			if _, err := stmt.ExecContext(ctx, s.instanceName, s.profileName, key, value); err != nil {
+			storedValue := value
+			if s.encryptionKey != nil {
+				encrypted, err := encryptValue(s.encryptionKey, value)
+				if err != nil {
+					return fmt.Errorf("config: encrypt security %q: %w", key, err)
+				}
+				storedValue = encrypted
+			}
+			if _, err := stmt.ExecContext(ctx, s.instanceName, s.profileName, key, storedValue); err != nil {
 				return fmt.Errorf("config: exec save security %q: %w", key, err)
 			}
 		}
@@ -63,6 +71,14 @@ func (s *Store) LoadSecuritySettings(ctx context.Context, keys ...string) (map[s
 		if err := rows.Scan(&key, &value); err != nil {
 			return nil, fmt.Errorf("config: scan security row: %w", err)
 		}
+		if s.encryptionKey == nil {
+			return nil, fmt.Errorf("config: security %q is encrypted but no decryption key is available", key)
+		}
+		decrypted, err := decryptValue(s.encryptionKey, value)
+		if err != nil {
+			return nil, fmt.Errorf("config: decrypt security %q: %w", key, err)
+		}
+		value = decrypted
 		result[key] = value
 	}
 	if err := rows.Err(); err != nil {

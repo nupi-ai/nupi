@@ -12,9 +12,9 @@ import (
 
 	napv1 "github.com/nupi-ai/nupi/api/nap/v1"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
+	"github.com/nupi-ai/nupi/internal/napdial"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 )
 
@@ -39,12 +39,7 @@ func newNAPSynthesizer(ctx context.Context, params SessionParams, endpoint confi
 		return nil, fmt.Errorf("tts: adapter %s missing address", endpoint.AdapterID)
 	}
 
-	dialOpts := []grpc.DialOption{
-		grpc.WithTransportCredentials(insecure.NewCredentials()), // TODO(#NAP-TLS): wire TLS credentials for remote adapters
-	}
-	if dialer := dialerFromContext(ctx); dialer != nil {
-		dialOpts = append(dialOpts, grpc.WithContextDialer(dialer))
-	}
+	dialOpts := napdial.DialOptions(ctx)
 	conn, err := grpc.DialContext(ctx, address, dialOpts...)
 	if err != nil {
 		if s, ok := status.FromError(err); ok && s.Code() == codes.Unavailable {
@@ -208,20 +203,7 @@ func isStreamCancelled(err error) bool {
 	return false
 }
 
-type dialerContextKey struct{}
-
 // ContextWithDialer attaches a custom gRPC dialer to the context for testing.
 func ContextWithDialer(ctx context.Context, dialer func(context.Context, string) (net.Conn, error)) context.Context {
-	if ctx == nil || dialer == nil {
-		return ctx
-	}
-	return context.WithValue(ctx, dialerContextKey{}, dialer)
-}
-
-func dialerFromContext(ctx context.Context) func(context.Context, string) (net.Conn, error) {
-	if ctx == nil {
-		return nil
-	}
-	dialer, _ := ctx.Value(dialerContextKey{}).(func(context.Context, string) (net.Conn, error))
-	return dialer
+	return napdial.ContextWithDialer(ctx, dialer)
 }

@@ -16,7 +16,6 @@ package jsrunner
 import (
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -72,14 +71,9 @@ func GetRuntimePath() (string, error) {
 		ErrRuntimeNotFound, binaryName)
 }
 
-// MustGetRuntimePath returns the runtime path or logs a fatal error.
-// Use this during daemon startup when the runtime is required.
-func MustGetRuntimePath() string {
-	path, err := GetRuntimePath()
-	if err != nil {
-		log.Fatalf("[jsrunner] %v", err)
-	}
-	return path
+// IsRuntimeNotFound returns true if the error indicates the JS runtime was not found.
+func IsRuntimeNotFound(err error) bool {
+	return errors.Is(err, ErrRuntimeNotFound)
 }
 
 // getRuntimeBinaryName returns the platform-specific binary name.

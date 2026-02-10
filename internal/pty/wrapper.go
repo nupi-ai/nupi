@@ -57,9 +57,9 @@ type Wrapper struct {
 	command           *exec.Cmd
 	terminalInitState *terminal.State
 
-	headless     bool
-	headlessCols int
-	headlessRows int
+	headless    bool
+	currentRows atomic.Int32
+	currentCols atomic.Int32
 
 	outputBuffer  *bytes.Buffer
 	bufferMutex   sync.RWMutex
@@ -326,9 +326,17 @@ func (w *Wrapper) SetWinSize(rows, cols int) error {
 		return err
 	}
 
+	w.currentRows.Store(int32(rows))
+	w.currentCols.Store(int32(cols))
+
 	w.notifyResize(rows, cols)
 
 	return nil
+}
+
+// GetWinSize returns the current PTY window size.
+func (w *Wrapper) GetWinSize() (rows, cols int) {
+	return int(w.currentRows.Load()), int(w.currentCols.Load())
 }
 
 func (w *Wrapper) notifyResize(rows, cols int) {

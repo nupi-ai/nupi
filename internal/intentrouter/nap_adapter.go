@@ -12,8 +12,8 @@ import (
 	napv1 "github.com/nupi-ai/nupi/api/nap/v1"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
+	"github.com/nupi-ai/nupi/internal/napdial"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -57,12 +57,7 @@ func NewNAPAdapter(ctx context.Context, params NAPAdapterParams) (*NAPAdapter, e
 		return nil, fmt.Errorf("ai: adapter %s missing address", params.AdapterID)
 	}
 
-	dialOpts := []grpc.DialOption{
-		grpc.WithTransportCredentials(insecure.NewCredentials()), // TODO: wire TLS for remote adapters
-	}
-	if dialer := dialerFromContext(ctx); dialer != nil {
-		dialOpts = append(dialOpts, grpc.WithContextDialer(dialer))
-	}
+	dialOpts := napdial.DialOptions(ctx)
 
 	// Apply dial timeout to prevent hanging on bad addresses
 	// The parent context may be long-lived (e.g., context.Background),
@@ -279,22 +274,9 @@ func timestampOrNil(t time.Time) *timestamppb.Timestamp {
 	return ts
 }
 
-// dialerContextKey is the context key for custom gRPC dialers (used in tests).
-type dialerContextKey struct{}
 
 // ContextWithDialer attaches a custom dialer to the context.
 // This is primarily for tests using bufconn without real network sockets.
 func ContextWithDialer(ctx context.Context, dialer func(context.Context, string) (net.Conn, error)) context.Context {
-	if ctx == nil || dialer == nil {
-		return ctx
-	}
-	return context.WithValue(ctx, dialerContextKey{}, dialer)
-}
-
-func dialerFromContext(ctx context.Context) func(context.Context, string) (net.Conn, error) {
-	if ctx == nil {
-		return nil
-	}
-	dialer, _ := ctx.Value(dialerContextKey{}).(func(context.Context, string) (net.Conn, error))
-	return dialer
+	return napdial.ContextWithDialer(ctx, dialer)
 }
