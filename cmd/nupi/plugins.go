@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/nupi-ai/nupi/internal/client"
 	manifestpkg "github.com/nupi-ai/nupi/internal/plugins/manifest"
@@ -185,6 +186,13 @@ var pluginsInfoCmd = &cobra.Command{
 		plugin, err := toolhandlers.LoadPlugin(mainPath)
 		if err != nil {
 			return fmt.Errorf("failed to load plugin: %w", err)
+		}
+
+		// Fallback to manifest name when jsruntime is unavailable
+		if plugin.Name == "" || plugin.Name == filepath.Base(plugin.FilePath) {
+			if name := strings.TrimSpace(selected.Metadata.Name); name != "" {
+				plugin.Name = name
+			}
 		}
 
 		fmt.Printf("Name: %s\n", plugin.Name)

@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/nupi-ai/nupi/internal/jsruntime"
@@ -158,6 +159,13 @@ func (g *IndexGenerator) ListPlugins() ([]map[string]interface{}, error) {
 				"commands": []string{},
 			})
 			continue
+		}
+
+		// Fallback to manifest name when jsruntime is unavailable
+		if plugin.Name == "" || plugin.Name == filepath.Base(plugin.FilePath) {
+			if name := strings.TrimSpace(mf.Metadata.Name); name != "" {
+				plugin.Name = name
+			}
 		}
 
 		plugins = append(plugins, map[string]interface{}{
