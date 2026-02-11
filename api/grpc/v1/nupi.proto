@@ -98,6 +98,22 @@ message GetConversationResponse {
   uint32 next_offset = 7;
 }
 
+// GetGlobalConversationRequest asks for the global (sessionless) conversation history.
+message GetGlobalConversationRequest {
+  uint32 offset = 1;
+  uint32 limit = 2;
+}
+
+// GetGlobalConversationResponse returns the ordered list of global turns.
+message GetGlobalConversationResponse {
+  repeated ConversationTurn turns = 1;
+  uint32 offset = 2;
+  uint32 limit = 3;
+  uint32 total = 4;
+  bool has_more = 5;
+  uint32 next_offset = 6;
+}
+
 // AdapterRuntime exposes runtime metadata for an adapter process.
 message AdapterRuntime {
   string adapter_id = 1;
@@ -210,6 +226,7 @@ service SessionsService {
   rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse);
   rpc KillSession(KillSessionRequest) returns (KillSessionResponse);
   rpc GetConversation(GetConversationRequest) returns (GetConversationResponse);
+  rpc GetGlobalConversation(GetGlobalConversationRequest) returns (GetGlobalConversationResponse);
 }
 
 service AdapterRuntimeService {

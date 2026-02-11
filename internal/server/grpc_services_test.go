@@ -174,6 +174,125 @@ func TestSessionsServiceGetConversationPagination(t *testing.T) {
 	}
 }
 
+func TestSessionsServiceGetGlobalConversation(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+
+	now := time.Now().UTC()
+	store := &mockConversationStore{
+		globalTurns: []eventbus.ConversationTurn{
+			{Origin: eventbus.OriginUser, Text: "global hello", At: now, Meta: map[string]string{"alpha": "1"}},
+			{Origin: eventbus.OriginAI, Text: "global reply", At: now.Add(10 * time.Millisecond), Meta: map[string]string{"beta": "2"}},
+		},
+	}
+	apiServer.SetConversationStore(store)
+
+	service := newSessionsService(apiServer)
+
+	resp, err := service.GetGlobalConversation(context.Background(), &apiv1.GetGlobalConversationRequest{})
+	if err != nil {
+		t.Fatalf("GetGlobalConversation returned error: %v", err)
+	}
+
+	if resp.GetOffset() != 0 || resp.GetLimit() != 2 || resp.GetTotal() != 2 {
+		t.Fatalf("unexpected pagination metadata: offset=%d limit=%d total=%d", resp.GetOffset(), resp.GetLimit(), resp.GetTotal())
+	}
+	if resp.GetHasMore() {
+		t.Fatalf("expected has_more=false")
+	}
+	if resp.GetNextOffset() != 0 {
+		t.Fatalf("expected next_offset=0, got %d", resp.GetNextOffset())
+	}
+	if len(resp.GetTurns()) != 2 {
+		t.Fatalf("expected 2 turns, got %d", len(resp.GetTurns()))
+	}
+	if resp.GetTurns()[0].GetOrigin() != string(eventbus.OriginUser) || resp.GetTurns()[0].GetText() != "global hello" {
+		t.Fatalf("unexpected first turn: %+v", resp.GetTurns()[0])
+	}
+	if resp.GetTurns()[1].GetOrigin() != string(eventbus.OriginAI) || resp.GetTurns()[1].GetText() != "global reply" {
+		t.Fatalf("unexpected second turn: %+v", resp.GetTurns()[1])
+	}
+	if len(resp.GetTurns()[1].GetMetadata()) != 1 || resp.GetTurns()[1].GetMetadata()[0].GetKey() != "beta" || resp.GetTurns()[1].GetMetadata()[0].GetValue() != "2" {
+		t.Fatalf("unexpected metadata: %+v", resp.GetTurns()[1].GetMetadata())
+	}
+}
+
+func TestSessionsServiceGetGlobalConversationPagination(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+
+	now := time.Now().UTC()
+	store := &mockConversationStore{
+		globalTurns: []eventbus.ConversationTurn{
+			{Origin: eventbus.OriginUser, Text: "A", At: now},
+			{Origin: eventbus.OriginAI, Text: "B", At: now.Add(10 * time.Millisecond)},
+			{Origin: eventbus.OriginUser, Text: "C", At: now.Add(20 * time.Millisecond)},
+			{Origin: eventbus.OriginAI, Text: "D", At: now.Add(30 * time.Millisecond)},
+		},
+	}
+	apiServer.SetConversationStore(store)
+
+	service := newSessionsService(apiServer)
+
+	resp, err := service.GetGlobalConversation(context.Background(), &apiv1.GetGlobalConversationRequest{
+		Offset: 1,
+		Limit:  2,
+	})
+	if err != nil {
+		t.Fatalf("GetGlobalConversation returned error: %v", err)
+	}
+
+	if resp.GetOffset() != 1 || resp.GetLimit() != 2 || resp.GetTotal() != 4 {
+		t.Fatalf("unexpected pagination metadata: offset=%d limit=%d total=%d", resp.GetOffset(), resp.GetLimit(), resp.GetTotal())
+	}
+	if !resp.GetHasMore() {
+		t.Fatalf("expected has_more=true")
+	}
+	if resp.GetNextOffset() != 3 {
+		t.Fatalf("expected next_offset=3, got %d", resp.GetNextOffset())
+	}
+	if len(resp.GetTurns()) != 2 {
+		t.Fatalf("expected 2 turns, got %d", len(resp.GetTurns()))
+	}
+	if resp.GetTurns()[0].GetText() != "B" || resp.GetTurns()[1].GetText() != "C" {
+		t.Fatalf("unexpected turns: %+v", resp.GetTurns())
+	}
+}
+
+func TestSessionsServiceGetGlobalConversationEmpty(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+
+	store := &mockConversationStore{}
+	apiServer.SetConversationStore(store)
+
+	service := newSessionsService(apiServer)
+
+	resp, err := service.GetGlobalConversation(context.Background(), &apiv1.GetGlobalConversationRequest{})
+	if err != nil {
+		t.Fatalf("GetGlobalConversation returned error: %v", err)
+	}
+
+	if resp.GetTotal() != 0 {
+		t.Fatalf("expected total=0, got %d", resp.GetTotal())
+	}
+	if len(resp.GetTurns()) != 0 {
+		t.Fatalf("expected 0 turns, got %d", len(resp.GetTurns()))
+	}
+}
+
+func TestSessionsServiceGetGlobalConversationNoService(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	// conversation store is nil by default
+
+	service := newSessionsService(apiServer)
+
+	_, err := service.GetGlobalConversation(context.Background(), &apiv1.GetGlobalConversationRequest{})
+	if err == nil {
+		t.Fatalf("expected error when conversation service unavailable")
+	}
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("expected codes.Unavailable, got %v", status.Code(err))
+	}
+}
+
 func TestAdaptersServiceOverview(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
 	store := openTestStore(t)

@@ -50,6 +50,8 @@ type RuntimeInfoProvider interface {
 type ConversationStore interface {
 	Context(sessionID string) []eventbus.ConversationTurn
 	Slice(sessionID string, offset, limit int) (int, []eventbus.ConversationTurn)
+	GlobalContext() []eventbus.ConversationTurn
+	GlobalSlice(offset, limit int) (int, []eventbus.ConversationTurn)
 }
 
 // PrometheusExporter renders observability metrics in Prometheus exposition format.
@@ -77,6 +79,24 @@ type streamLogTestHooks struct {
 }
 
 const conversationMaxPageLimit = 500
+
+// parseQueryIntParam extracts a non-negative integer query parameter.
+// Returns (value, provided, error).
+func parseQueryIntParam(query url.Values, name string) (int, bool, error) {
+	raw := strings.TrimSpace(query.Get(name))
+	if raw == "" {
+		return 0, false, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, true, err
+	}
+	if value < 0 {
+		return 0, true, fmt.Errorf("value must be non-negative")
+	}
+	return value, true, nil
+}
+
 const defaultTTSStreamID = slots.TTS
 const voiceIssueCodeServiceUnavailable = "service_unavailable"
 
@@ -1047,6 +1067,7 @@ func (s *APIServer) Prepare(ctx context.Context) (*PreparedHTTPServer, error) {
 	mux.HandleFunc("/audio/egress/ws", s.handleAudioEgressWS)
 	mux.HandleFunc("/audio/capabilities", s.handleAudioCapabilities)
 	mux.HandleFunc("/metrics", s.handleMetrics)
+	mux.HandleFunc("/global/conversation", s.handleGlobalConversation)
 
 	// Create and store the HTTP server with CORS middleware
 	server := &http.Server{
@@ -1506,28 +1527,13 @@ func (s *APIServer) handleSessionConversation(w http.ResponseWriter, r *http.Req
 
 	query := r.URL.Query()
 
-	parseParam := func(name string) (int, bool, error) {
-		raw := strings.TrimSpace(query.Get(name))
-		if raw == "" {
-			return 0, false, nil
-		}
-		value, err := strconv.Atoi(raw)
-		if err != nil {
-			return 0, true, err
-		}
-		if value < 0 {
-			return 0, true, fmt.Errorf("value must be non-negative")
-		}
-		return value, true, nil
-	}
-
-	offset, _, err := parseParam("offset")
+	offset, _, err := parseQueryIntParam(query, "offset")
 	if err != nil {
 		http.Error(w, fmt.Sprintf("invalid offset: %v", err), http.StatusBadRequest)
 		return
 	}
 
-	limit, providedLimit, err := parseParam("limit")
+	limit, providedLimit, err := parseQueryIntParam(query, "limit")
 	if err != nil {
 		http.Error(w, fmt.Sprintf("invalid limit: %v", err), http.StatusBadRequest)
 		return
@@ -1538,6 +1544,53 @@ func (s *APIServer) handleSessionConversation(w http.ResponseWriter, r *http.Req
 
 	total, turns := s.conversation.Slice(sessionID, offset, limit)
 	state := api.ToConversationState(sessionID, total, offset, limit, turns)
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(state); err != nil {
+		http.Error(w, fmt.Sprintf("failed to encode conversation: %v", err), http.StatusInternalServerError)
+	}
+}
+
+func (s *APIServer) handleGlobalConversation(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodOptions:
+		w.WriteHeader(http.StatusNoContent)
+		return
+	case http.MethodGet:
+	default:
+		w.Header().Set("Allow", "GET,OPTIONS")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if _, ok := s.requireRole(w, r, roleAdmin, roleReadOnly); !ok {
+		return
+	}
+
+	if s.conversation == nil {
+		http.Error(w, "conversation service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	query := r.URL.Query()
+
+	offset, _, err := parseQueryIntParam(query, "offset")
+	if err != nil {
+		http.Error(w, fmt.Sprintf("invalid offset: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	limit, providedLimit, err := parseQueryIntParam(query, "limit")
+	if err != nil {
+		http.Error(w, fmt.Sprintf("invalid limit: %v", err), http.StatusBadRequest)
+		return
+	}
+	if providedLimit && limit > conversationMaxPageLimit {
+		limit = conversationMaxPageLimit
+	}
+
+	total, turns := s.conversation.GlobalSlice(offset, limit)
+	state := api.ToConversationState("", total, offset, limit, turns)
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(state); err != nil {
