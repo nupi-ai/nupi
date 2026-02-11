@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +14,12 @@ import (
 	"github.com/google/uuid"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 )
+
+type summaryRequest struct {
+	promptID string
+	count    int // number of turns being summarized
+	timer    *time.Timer
+}
 
 type Option func(*Service)
 
@@ -30,6 +37,24 @@ func WithDetachTTL(ttl time.Duration) Option {
 	return func(s *Service) {
 		if ttl >= 0 {
 			s.detachTTL = ttl
+		}
+	}
+}
+
+// WithSummaryThreshold overrides when history summarization triggers.
+func WithSummaryThreshold(threshold int) Option {
+	return func(s *Service) {
+		if threshold > 0 {
+			s.summaryThreshold = threshold
+		}
+	}
+}
+
+// WithSummaryBatchSize overrides how many oldest turns are summarized.
+func WithSummaryBatchSize(size int) Option {
+	return func(s *Service) {
+		if size > 0 {
+			s.summaryBatchSize = size
 		}
 	}
 }
@@ -57,6 +82,11 @@ type Service struct {
 	// Rate limiting for SESSION_OUTPUT events
 	lastSessionOutput sync.Map // sessionID -> time.Time
 
+	// History summarization
+	pendingSummary   sync.Map // sessionID -> *summaryRequest
+	summaryThreshold int      // trigger summarization when len(history) >= this
+	summaryBatchSize int      // number of oldest turns to summarize
+
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 	subs   []*eventbus.Subscription
@@ -65,6 +95,10 @@ type Service struct {
 const (
 	defaultHistory   = 50
 	defaultDetachTTL = 5 * time.Minute
+
+	defaultSummaryThreshold = 35
+	defaultSummaryBatchSize = 20
+	summaryTimeout          = 60 * time.Second
 
 	maxMetadataEntries    = 32
 	maxMetadataKeyRunes   = 64
@@ -78,15 +112,28 @@ const (
 // NewService creates a conversation service bound to the provided bus.
 func NewService(bus *eventbus.Bus, opts ...Option) *Service {
 	svc := &Service{
-		bus:        bus,
-		maxHistory: defaultHistory,
-		detachTTL:  defaultDetachTTL,
-		sessions:   make(map[string][]eventbus.ConversationTurn),
-		detach:     make(map[string]*time.Timer),
-		toolCache:  make(map[string]string),
+		bus:              bus,
+		maxHistory:       defaultHistory,
+		detachTTL:        defaultDetachTTL,
+		summaryThreshold: defaultSummaryThreshold,
+		summaryBatchSize: defaultSummaryBatchSize,
+		sessions:         make(map[string][]eventbus.ConversationTurn),
+		detach:           make(map[string]*time.Timer),
+		toolCache:        make(map[string]string),
 	}
 	for _, opt := range opts {
 		opt(svc)
+	}
+	// Ensure summaryThreshold <= maxHistory so FIFO truncation doesn't prevent triggering
+	if svc.summaryThreshold > svc.maxHistory {
+		svc.summaryThreshold = svc.maxHistory
+	}
+	// Ensure summaryBatchSize < summaryThreshold to prevent infinite summarization loops
+	if svc.summaryBatchSize >= svc.summaryThreshold {
+		svc.summaryBatchSize = svc.summaryThreshold / 2
+		if svc.summaryBatchSize < 1 {
+			svc.summaryBatchSize = 1
+		}
 	}
 	return svc
 }
@@ -128,6 +175,15 @@ func (s *Service) Shutdown(ctx context.Context) error {
 			sub.Close()
 		}
 	}
+
+	// Stop all pending summary timers to prevent goroutine leaks
+	s.pendingSummary.Range(func(key, val any) bool {
+		if req, ok := val.(*summaryRequest); ok && req.timer != nil {
+			req.timer.Stop()
+		}
+		s.pendingSummary.Delete(key)
+		return true
+	})
 
 	done := make(chan struct{})
 	go func() {
@@ -364,10 +420,16 @@ func (s *Service) handlePipelineMessage(ts time.Time, msg eventbus.PipelineMessa
 		history = history[len(history)-s.maxHistory:]
 	}
 	s.sessions[msg.SessionID] = history
+	historyLen := len(history)
 	s.mu.Unlock()
 
 	if shouldTriggerAI {
 		s.publishPrompt(msg.SessionID, contextSnapshot, turn)
+	}
+
+	// Trigger history summarization if threshold reached
+	if historyLen >= s.summaryThreshold {
+		s.requestSummary(msg.SessionID)
 	}
 }
 
@@ -488,6 +550,156 @@ func (s *Service) clearSession(sessionID string) {
 
 	// Clean up rate limiting entry to prevent memory leaks
 	s.lastSessionOutput.Delete(sessionID)
+
+	// Clean up pending summary state
+	if val, ok := s.pendingSummary.LoadAndDelete(sessionID); ok {
+		if req, ok := val.(*summaryRequest); ok && req.timer != nil {
+			req.timer.Stop()
+		}
+	}
+}
+
+// requestSummary triggers an async history summarization if the threshold is met
+// and no summary is already pending for the session.
+func (s *Service) requestSummary(sessionID string) {
+	if sessionID == "" || s.bus == nil {
+		return
+	}
+
+	// Idempotency: check if a summary is already pending for this session
+	if _, loaded := s.pendingSummary.Load(sessionID); loaded {
+		return
+	}
+
+	s.mu.RLock()
+	history := s.sessions[sessionID]
+	histLen := len(history)
+	if histLen < s.summaryThreshold {
+		s.mu.RUnlock()
+		return
+	}
+
+	batchSize := s.summaryBatchSize
+	if batchSize > histLen {
+		batchSize = histLen
+	}
+
+	// Copy the oldest N turns for serialization
+	oldest := make([]eventbus.ConversationTurn, batchSize)
+	copy(oldest, history[:batchSize])
+	s.mu.RUnlock()
+
+	promptText := serializeTurnsForSummary(oldest)
+	promptID := uuid.NewString()
+
+	// Build the fully populated request before storing atomically
+	req := &summaryRequest{
+		promptID: promptID,
+		count:    batchSize,
+	}
+	req.timer = time.AfterFunc(summaryTimeout, func() {
+		s.pendingSummary.Delete(sessionID)
+	})
+
+	// Atomically store only if no other goroutine stored first
+	if _, loaded := s.pendingSummary.LoadOrStore(sessionID, req); loaded {
+		req.timer.Stop()
+		return
+	}
+
+	now := time.Now().UTC()
+	prompt := eventbus.ConversationPromptEvent{
+		SessionID: sessionID,
+		PromptID:  promptID,
+		Context:   oldest, // Structured turns for prompt engine (populates {{.history}})
+		NewMessage: eventbus.ConversationMessage{
+			Origin: eventbus.OriginSystem,
+			Text:   promptText, // Serialized text as fallback for adapters without prompt engine
+			At:     now,
+			Meta: map[string]string{
+				"event_type": "history_summary",
+			},
+		},
+		Metadata: map[string]string{
+			"event_type": "history_summary",
+		},
+	}
+
+	s.bus.Publish(context.Background(), eventbus.Envelope{
+		Topic:   eventbus.TopicConversationPrompt,
+		Source:  eventbus.SourceConversation,
+		Payload: prompt,
+	})
+}
+
+// handleSummaryReply processes an AI reply to a history_summary prompt,
+// replacing the oldest N turns with a single summary turn.
+func (s *Service) handleSummaryReply(sessionID string, msg eventbus.ConversationReplyEvent) {
+	s.cancelDetachCleanup(sessionID)
+
+	val, ok := s.pendingSummary.LoadAndDelete(sessionID)
+	if !ok {
+		return // No pending summary for this session
+	}
+	req, ok := val.(*summaryRequest)
+	if !ok {
+		return
+	}
+
+	// Cancel the timeout timer
+	if req.timer != nil {
+		req.timer.Stop()
+	}
+
+	// Verify PromptID matches to reject stale replies
+	if msg.PromptID != req.promptID {
+		return
+	}
+
+	s.mu.Lock()
+	history := s.sessions[sessionID]
+	if len(history) >= req.count {
+		// Use the timestamp of the first summarized turn to preserve chronological
+		// ordering. Using time.Now() would cause the summary to sort after the
+		// remaining turns on the next sort.SliceStable call.
+		summaryAt := history[0].At
+
+		summaryTurn := eventbus.ConversationTurn{
+			Origin: eventbus.OriginSystem,
+			Text:   msg.Text,
+			At:     summaryAt,
+			Meta: map[string]string{
+				"summarized":      "true",
+				"original_length": strconv.Itoa(req.count),
+			},
+		}
+
+		// Replace the oldest N turns with the summary turn
+		remaining := history[req.count:]
+		newHistory := make([]eventbus.ConversationTurn, 0, 1+len(remaining))
+		newHistory = append(newHistory, summaryTurn)
+		newHistory = append(newHistory, remaining...)
+		s.sessions[sessionID] = newHistory
+	}
+	s.mu.Unlock()
+}
+
+// serializeTurnsForSummary formats conversation turns as readable text for the AI prompt.
+func serializeTurnsForSummary(turns []eventbus.ConversationTurn) string {
+	var sb strings.Builder
+	for _, t := range turns {
+		origin := "user"
+		switch t.Origin {
+		case eventbus.OriginAI:
+			origin = "assistant"
+		case eventbus.OriginTool:
+			origin = "tool"
+		case eventbus.OriginSystem:
+			origin = "system"
+		}
+		fmt.Fprintf(&sb, "[%s] %s\n", origin, t.Text)
+	}
+	return strings.TrimRight(sb.String(), "\n")
 }
 
 // clearToolCache removes just the tool cache for a session without affecting
@@ -582,6 +794,12 @@ func (s *Service) GlobalSlice(offset, limit int) (int, []eventbus.ConversationTu
 func (s *Service) handleReplyMessage(ts time.Time, msg eventbus.ConversationReplyEvent) {
 	if ts.IsZero() {
 		ts = time.Now().UTC()
+	}
+
+	// Intercept history_summary replies before normal processing
+	if msg.Metadata["event_type"] == "history_summary" && msg.SessionID != "" {
+		s.handleSummaryReply(msg.SessionID, msg)
+		return
 	}
 
 	meta := newMetadataAccumulator(msg.Metadata)

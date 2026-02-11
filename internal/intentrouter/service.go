@@ -509,9 +509,10 @@ func (s *Service) executeActions(ctx context.Context, prompt eventbus.Conversati
 	if response == nil || len(response.Actions) == 0 {
 		log.Printf("[IntentRouter] No actions from adapter for prompt %s", prompt.PromptID)
 		// Publish acknowledgment so UI knows the prompt was processed
-		s.publishReply(prompt.SessionID, prompt.PromptID, "", nil, map[string]string{
+		replyMeta := s.buildReplyMetadata(prompt, map[string]string{
 			"status": "no_action",
 		})
+		s.publishReply(prompt.SessionID, prompt.PromptID, "", nil, replyMeta)
 		return
 	}
 
@@ -528,15 +529,30 @@ func (s *Service) executeActions(ctx context.Context, prompt eventbus.Conversati
 
 		case ActionNoop:
 			log.Printf("[IntentRouter] Noop action for prompt %s", prompt.PromptID)
-			s.publishReply(prompt.SessionID, prompt.PromptID, "", nil, map[string]string{
+			replyMeta := s.buildReplyMetadata(prompt, map[string]string{
 				"status": "noop",
 			})
+			s.publishReply(prompt.SessionID, prompt.PromptID, "", nil, replyMeta)
 
 		default:
 			log.Printf("[IntentRouter] Unknown action type %q at index %d for prompt %s",
 				action.Type, i, prompt.PromptID)
 		}
 	}
+}
+
+// buildReplyMetadata creates reply metadata that preserves the event_type from the
+// original prompt, allowing downstream consumers (e.g., conversation service) to
+// identify summary replies and other non-standard event types.
+func (s *Service) buildReplyMetadata(prompt eventbus.ConversationPromptEvent, extra map[string]string) map[string]string {
+	meta := make(map[string]string, len(extra)+1)
+	for k, v := range extra {
+		meta[k] = v
+	}
+	if et, ok := prompt.Metadata["event_type"]; ok && et != "" {
+		meta["event_type"] = et
+	}
+	return meta
 }
 
 func (s *Service) executeCommand(ctx context.Context, prompt eventbus.ConversationPromptEvent, action IntentAction, response *IntentResponse, sessionProvider SessionProvider, commandExecutor CommandExecutor) {
@@ -574,6 +590,10 @@ func (s *Service) executeCommand(ctx context.Context, prompt eventbus.Conversati
 	s.updateConversationSession(sessionRef)
 
 	// Publish confirmation with command metadata
+	replyMeta := s.buildReplyMetadata(prompt, map[string]string{
+		"status":     "command_queued",
+		"session_id": sessionRef,
+	})
 	s.publishReply(prompt.SessionID, prompt.PromptID, "", []eventbus.ConversationAction{
 		{
 			Type:   "command",
@@ -584,10 +604,7 @@ func (s *Service) executeCommand(ctx context.Context, prompt eventbus.Conversati
 				"confidence": fmt.Sprintf("%.2f", response.Confidence),
 			},
 		},
-	}, map[string]string{
-		"status":     "command_queued",
-		"session_id": sessionRef,
-	})
+	}, replyMeta)
 
 	log.Printf("[IntentRouter] Queued command for session %s: %s", sessionRef, truncate(action.Command, 50))
 }
@@ -618,9 +635,10 @@ func (s *Service) executeSpeak(ctx context.Context, prompt eventbus.Conversation
 	})
 
 	// Also publish as conversation reply for history tracking
-	s.publishReply(sessionID, prompt.PromptID, action.Text, nil, map[string]string{
+	replyMeta := s.buildReplyMetadata(prompt, map[string]string{
 		"status": "speak",
 	})
+	s.publishReply(sessionID, prompt.PromptID, action.Text, nil, replyMeta)
 
 	log.Printf("[IntentRouter] Speak action for session %s: %s", sessionID, truncate(action.Text, 50))
 }
@@ -661,9 +679,10 @@ func (s *Service) executeClarify(ctx context.Context, prompt eventbus.Conversati
 			},
 		},
 	}
-	s.publishReply(sessionID, prompt.PromptID, action.Text, actions, map[string]string{
+	replyMeta := s.buildReplyMetadata(prompt, map[string]string{
 		"status": "clarification",
 	})
+	s.publishReply(sessionID, prompt.PromptID, action.Text, actions, replyMeta)
 
 	log.Printf("[IntentRouter] Clarification requested for session %s: %s", sessionID, truncate(action.Text, 50))
 }
