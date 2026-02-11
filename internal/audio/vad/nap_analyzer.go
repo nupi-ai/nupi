@@ -47,7 +47,11 @@ func newNAPAnalyzer(ctx context.Context, params SessionParams, endpoint configst
 		return nil, fmt.Errorf("vad: adapter %s missing address", endpoint.AdapterID)
 	}
 
-	dialOpts := napdial.DialOptions(ctx)
+	tlsCfg := napdial.TLSConfigFromFields(endpoint.TLSCertPath, endpoint.TLSKeyPath, endpoint.TLSCACertPath, endpoint.TLSInsecure)
+	dialOpts, err := napdial.DialOptions(ctx, tlsCfg, napdial.DefaultQoS())
+	if err != nil {
+		return nil, fmt.Errorf("vad: adapter %s: %w", endpoint.AdapterID, err)
+	}
 	conn, err := grpc.DialContext(ctx, address, dialOpts...)
 	if err != nil {
 		if s, ok := status.FromError(err); ok && s.Code() == codes.Unavailable {

@@ -106,6 +106,30 @@ var schemaStatements = []string{
 	)`,
 }
 
+// migrationStatements are ALTER TABLE statements applied after the initial schema.
+// applyMigrations swallows "duplicate column name" errors so these are idempotent.
+var migrationStatements = []string{
+	`ALTER TABLE adapter_endpoints ADD COLUMN tls_cert_path TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE adapter_endpoints ADD COLUMN tls_key_path TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE adapter_endpoints ADD COLUMN tls_ca_cert_path TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE adapter_endpoints ADD COLUMN tls_insecure INTEGER NOT NULL DEFAULT 0`,
+}
+
+// applyMigrations runs ALTER TABLE migrations idempotently.
+// "duplicate column name" errors are expected on subsequent runs and ignored.
+func applyMigrations(ctx context.Context, db *sql.DB) error {
+	for _, stmt := range migrationStatements {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			// SQLite returns "duplicate column name" when column already exists.
+			if strings.Contains(err.Error(), "duplicate column name") {
+				continue
+			}
+			return fmt.Errorf("config: apply migration %q: %w", abbreviate(stmt), err)
+		}
+	}
+	return nil
+}
+
 var requiredAdapterSlots = []string{
 	"stt",
 	"ai",

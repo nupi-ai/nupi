@@ -43,14 +43,18 @@ const (
 
 // AdapterEndpoint describes how to reach or launch an adapter.
 type AdapterEndpoint struct {
-	AdapterID string
-	Transport string
-	Address   string
-	Command   string
-	Args      []string
-	Env       map[string]string
-	CreatedAt string
-	UpdatedAt string
+	AdapterID     string
+	Transport     string
+	Address       string
+	Command       string
+	Args          []string
+	Env           map[string]string
+	TLSCertPath   string // client cert path (mTLS)
+	TLSKeyPath    string // client key path (mTLS)
+	TLSCACertPath string // CA cert path
+	TLSInsecure   bool   // skip verify (dev only)
+	CreatedAt     string
+	UpdatedAt     string
 }
 
 // Profile contains metadata about available profiles.

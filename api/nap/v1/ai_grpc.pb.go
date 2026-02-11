@@ -19,7 +19,8 @@ import (
 const _ = grpc.SupportPackageIsVersion7
 
 const (
-	IntentResolutionService_ResolveIntent_FullMethodName = "/nupi.nap.v1.IntentResolutionService/ResolveIntent"
+	IntentResolutionService_ResolveIntent_FullMethodName   = "/nupi.nap.v1.IntentResolutionService/ResolveIntent"
+	IntentResolutionService_GetCapabilities_FullMethodName = "/nupi.nap.v1.IntentResolutionService/GetCapabilities"
 )
 
 // IntentResolutionServiceClient is the client API for IntentResolutionService service.
@@ -28,6 +29,10 @@ const (
 type IntentResolutionServiceClient interface {
 	// ResolveIntent processes user input and returns intended action(s).
 	ResolveIntent(ctx context.Context, in *ResolveIntentRequest, opts ...grpc.CallOption) (*ResolveIntentResponse, error)
+	// GetCapabilities returns the adapter's supported features and version info.
+	// Adapters that do not implement this RPC will return UNIMPLEMENTED, which
+	// callers should treat as "capabilities unknown" and proceed normally.
+	GetCapabilities(ctx context.Context, in *GetCapabilitiesRequest, opts ...grpc.CallOption) (*GetCapabilitiesResponse, error)
 }
 
 type intentResolutionServiceClient struct {
@@ -47,12 +52,25 @@ func (c *intentResolutionServiceClient) ResolveIntent(ctx context.Context, in *R
 	return out, nil
 }
 
+func (c *intentResolutionServiceClient) GetCapabilities(ctx context.Context, in *GetCapabilitiesRequest, opts ...grpc.CallOption) (*GetCapabilitiesResponse, error) {
+	out := new(GetCapabilitiesResponse)
+	err := c.cc.Invoke(ctx, IntentResolutionService_GetCapabilities_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // IntentResolutionServiceServer is the server API for IntentResolutionService service.
 // All implementations must embed UnimplementedIntentResolutionServiceServer
 // for forward compatibility
 type IntentResolutionServiceServer interface {
 	// ResolveIntent processes user input and returns intended action(s).
 	ResolveIntent(context.Context, *ResolveIntentRequest) (*ResolveIntentResponse, error)
+	// GetCapabilities returns the adapter's supported features and version info.
+	// Adapters that do not implement this RPC will return UNIMPLEMENTED, which
+	// callers should treat as "capabilities unknown" and proceed normally.
+	GetCapabilities(context.Context, *GetCapabilitiesRequest) (*GetCapabilitiesResponse, error)
 	mustEmbedUnimplementedIntentResolutionServiceServer()
 }
 
@@ -62,6 +80,9 @@ type UnimplementedIntentResolutionServiceServer struct {
 
 func (UnimplementedIntentResolutionServiceServer) ResolveIntent(context.Context, *ResolveIntentRequest) (*ResolveIntentResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ResolveIntent not implemented")
+}
+func (UnimplementedIntentResolutionServiceServer) GetCapabilities(context.Context, *GetCapabilitiesRequest) (*GetCapabilitiesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetCapabilities not implemented")
 }
 func (UnimplementedIntentResolutionServiceServer) mustEmbedUnimplementedIntentResolutionServiceServer() {
 }
@@ -95,6 +116,24 @@ func _IntentResolutionService_ResolveIntent_Handler(srv interface{}, ctx context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _IntentResolutionService_GetCapabilities_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetCapabilitiesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(IntentResolutionServiceServer).GetCapabilities(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: IntentResolutionService_GetCapabilities_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(IntentResolutionServiceServer).GetCapabilities(ctx, req.(*GetCapabilitiesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // IntentResolutionService_ServiceDesc is the grpc.ServiceDesc for IntentResolutionService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -105,6 +144,10 @@ var IntentResolutionService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ResolveIntent",
 			Handler:    _IntentResolutionService_ResolveIntent_Handler,
+		},
+		{
+			MethodName: "GetCapabilities",
+			Handler:    _IntentResolutionService_GetCapabilities_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

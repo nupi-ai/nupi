@@ -35,7 +35,9 @@ func sanitizeTransport(value string) (string, error) {
 // ListAdapterEndpoints returns stored adapter endpoint definitions.
 func (s *Store) ListAdapterEndpoints(ctx context.Context) ([]AdapterEndpoint, error) {
 	rows, err := s.db.QueryContext(ctx, `
-        SELECT adapter_id, transport, address, command, args, env, created_at, updated_at
+        SELECT adapter_id, transport, address, command, args, env,
+               tls_cert_path, tls_key_path, tls_ca_cert_path, tls_insecure,
+               created_at, updated_at
         FROM adapter_endpoints
         ORDER BY adapter_id
     `)
@@ -47,9 +49,10 @@ func (s *Store) ListAdapterEndpoints(ctx context.Context) ([]AdapterEndpoint, er
 	var endpoints []AdapterEndpoint
 	for rows.Next() {
 		var (
-			argsRaw sql.NullString
-			envRaw  sql.NullString
-			endp    AdapterEndpoint
+			argsRaw     sql.NullString
+			envRaw      sql.NullString
+			tlsInsecure int
+			endp        AdapterEndpoint
 		)
 		if err := rows.Scan(
 			&endp.AdapterID,
@@ -58,11 +61,16 @@ func (s *Store) ListAdapterEndpoints(ctx context.Context) ([]AdapterEndpoint, er
 			&endp.Command,
 			&argsRaw,
 			&envRaw,
+			&endp.TLSCertPath,
+			&endp.TLSKeyPath,
+			&endp.TLSCACertPath,
+			&tlsInsecure,
 			&endp.CreatedAt,
 			&endp.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("config: scan adapter endpoint: %w", err)
 		}
+		endp.TLSInsecure = tlsInsecure != 0
 
 		args, err := decodeStringSlice(argsRaw)
 		if err != nil {
@@ -89,15 +97,18 @@ func (s *Store) ListAdapterEndpoints(ctx context.Context) ([]AdapterEndpoint, er
 func (s *Store) GetAdapterEndpoint(ctx context.Context, adapterID string) (AdapterEndpoint, error) {
 	adapterID = strings.TrimSpace(adapterID)
 	row := s.db.QueryRowContext(ctx, `
-        SELECT adapter_id, transport, address, command, args, env, created_at, updated_at
+        SELECT adapter_id, transport, address, command, args, env,
+               tls_cert_path, tls_key_path, tls_ca_cert_path, tls_insecure,
+               created_at, updated_at
         FROM adapter_endpoints
         WHERE adapter_id = ?
     `, adapterID)
 
 	var (
-		argsRaw sql.NullString
-		envRaw  sql.NullString
-		endp    AdapterEndpoint
+		argsRaw     sql.NullString
+		envRaw      sql.NullString
+		tlsInsecure int
+		endp        AdapterEndpoint
 	)
 
 	if err := row.Scan(
@@ -107,6 +118,10 @@ func (s *Store) GetAdapterEndpoint(ctx context.Context, adapterID string) (Adapt
 		&endp.Command,
 		&argsRaw,
 		&envRaw,
+		&endp.TLSCertPath,
+		&endp.TLSKeyPath,
+		&endp.TLSCACertPath,
+		&tlsInsecure,
 		&endp.CreatedAt,
 		&endp.UpdatedAt,
 	); err != nil {
@@ -115,6 +130,7 @@ func (s *Store) GetAdapterEndpoint(ctx context.Context, adapterID string) (Adapt
 		}
 		return AdapterEndpoint{}, fmt.Errorf("config: get adapter endpoint %q: %w", adapterID, err)
 	}
+	endp.TLSInsecure = tlsInsecure != 0
 
 	args, err := decodeStringSlice(argsRaw)
 	if err != nil {
@@ -155,16 +171,27 @@ func (s *Store) UpsertAdapterEndpoint(ctx context.Context, endpoint AdapterEndpo
 		return fmt.Errorf("config: marshal adapter env: %w", err)
 	}
 
+	tlsInsecure := 0
+	if endpoint.TLSInsecure {
+		tlsInsecure = 1
+	}
+
 	return s.withTx(ctx, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
-            INSERT INTO adapter_endpoints (adapter_id, transport, address, command, args, env, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            INSERT INTO adapter_endpoints (adapter_id, transport, address, command, args, env,
+                tls_cert_path, tls_key_path, tls_ca_cert_path, tls_insecure,
+                created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             ON CONFLICT(adapter_id) DO UPDATE SET
                 transport = excluded.transport,
                 address = excluded.address,
                 command = excluded.command,
                 args = excluded.args,
                 env = excluded.env,
+                tls_cert_path = excluded.tls_cert_path,
+                tls_key_path = excluded.tls_key_path,
+                tls_ca_cert_path = excluded.tls_ca_cert_path,
+                tls_insecure = excluded.tls_insecure,
                 updated_at = CURRENT_TIMESTAMP
         `,
 			adapterID,
@@ -173,6 +200,10 @@ func (s *Store) UpsertAdapterEndpoint(ctx context.Context, endpoint AdapterEndpo
 			strings.TrimSpace(endpoint.Command),
 			argsPayload,
 			envPayload,
+			strings.TrimSpace(endpoint.TLSCertPath),
+			strings.TrimSpace(endpoint.TLSKeyPath),
+			strings.TrimSpace(endpoint.TLSCACertPath),
+			tlsInsecure,
 		)
 		if err != nil {
 			return fmt.Errorf("config: upsert adapter endpoint %q: %w", adapterID, err)
