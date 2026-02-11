@@ -45,8 +45,7 @@ type ToolHandler struct {
 	sessionID   string
 	pluginDir   string
 	indexPath   string
-	runtimeFunc JSRuntimeFunc // Function to get current runtime (preferred)
-	jsRuntime   *jsruntime.Runtime // Static runtime (for backward compat)
+	runtimeFunc JSRuntimeFunc // Function to get current runtime
 
 	index            PluginIndex
 	plugins          map[string]*JSPlugin
@@ -78,17 +77,9 @@ func WithContinuousMode(enabled bool) HandlerOption {
 	}
 }
 
-// WithJSRuntime sets a static JS runtime for plugin execution.
-// Deprecated: Use WithJSRuntimeFunc for dynamic runtime that survives restarts.
-func WithJSRuntime(rt *jsruntime.Runtime) HandlerOption {
-	return func(d *ToolHandler) {
-		d.jsRuntime = rt
-	}
-}
-
 // WithJSRuntimeFunc sets a function to get the current JS runtime.
-// This is preferred over WithJSRuntime as it allows the handler to
-// get the current runtime even after a supervised restart.
+// Using a function allows the handler to get the current runtime
+// even after a supervised restart.
 func WithJSRuntimeFunc(fn JSRuntimeFunc) HandlerOption {
 	return func(d *ToolHandler) {
 		d.runtimeFunc = fn
@@ -112,12 +103,12 @@ func NewToolHandler(sessionID, pluginDir string, opts ...HandlerOption) *ToolHan
 	return d
 }
 
-// getRuntime returns the current JS runtime, preferring runtimeFunc over static jsRuntime.
+// getRuntime returns the current JS runtime.
 func (d *ToolHandler) getRuntime() *jsruntime.Runtime {
 	if d.runtimeFunc != nil {
 		return d.runtimeFunc()
 	}
-	return d.jsRuntime
+	return nil
 }
 
 // Initialize loads the plugin index.
