@@ -593,6 +593,80 @@ func (s *sessionsService) GetConversation(ctx context.Context, req *apiv1.GetCon
 	return resp, nil
 }
 
+func (s *sessionsService) GetGlobalConversation(ctx context.Context, req *apiv1.GetGlobalConversationRequest) (*apiv1.GetGlobalConversationResponse, error) {
+	if _, err := s.api.requireRoleGRPC(ctx, roleAdmin, roleReadOnly); err != nil {
+		return nil, err
+	}
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+
+	if s.api.conversation == nil {
+		return nil, status.Error(codes.Unavailable, "conversation service unavailable")
+	}
+
+	offset := int(req.GetOffset())
+	limit := int(req.GetLimit())
+	if limit > conversationMaxPageLimit {
+		limit = conversationMaxPageLimit
+	}
+
+	total, turns := s.api.conversation.GlobalSlice(offset, limit)
+	// Effective page limit: when no limit was requested (0) or limit exceeds
+	// the actual number of turns returned, clamp to the actual count.
+	pageLimit := limit
+	if pageLimit <= 0 || pageLimit > len(turns) {
+		pageLimit = len(turns)
+	}
+
+	resp := &apiv1.GetGlobalConversationResponse{
+		Turns:      make([]*apiv1.ConversationTurn, 0, len(turns)),
+		Offset:     uint32(offset),
+		Limit:      uint32(pageLimit),
+		Total:      uint32(total),
+		HasMore:    offset+len(turns) < total,
+		NextOffset: 0,
+	}
+
+	for _, turn := range turns {
+		var ts *timestamppb.Timestamp
+		if !turn.At.IsZero() {
+			ts = timestamppb.New(turn.At)
+		}
+
+		var metadata []*apiv1.ConversationMetadata
+		if len(turn.Meta) > 0 {
+			keys := make([]string, 0, len(turn.Meta))
+			for k := range turn.Meta {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			metadata = make([]*apiv1.ConversationMetadata, 0, len(keys))
+			for _, key := range keys {
+				metadata = append(metadata, &apiv1.ConversationMetadata{
+					Key:   key,
+					Value: turn.Meta[key],
+				})
+			}
+		}
+
+		resp.Turns = append(resp.Turns, &apiv1.ConversationTurn{
+			Origin:   string(turn.Origin),
+			Text:     turn.Text,
+			At:       ts,
+			Metadata: metadata,
+		})
+	}
+
+	if !resp.HasMore {
+		resp.NextOffset = 0
+	} else {
+		resp.NextOffset = uint32(offset + len(turns))
+	}
+
+	return resp, nil
+}
+
 func RegisterGRPCServices(api *APIServer, registrar grpc.ServiceRegistrar) {
 	apiv1.RegisterDaemonServiceServer(registrar, newDaemonService(api))
 	apiv1.RegisterSessionsServiceServer(registrar, newSessionsService(api))

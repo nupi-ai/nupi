@@ -91,7 +91,8 @@ func withReadOnly(s *APIServer, req *http.Request) *http.Request {
 }
 
 type mockConversationStore struct {
-	turns map[string][]eventbus.ConversationTurn
+	turns       map[string][]eventbus.ConversationTurn
+	globalTurns []eventbus.ConversationTurn
 }
 
 func (m *mockConversationStore) Context(sessionID string) []eventbus.ConversationTurn {
@@ -109,6 +110,37 @@ func (m *mockConversationStore) Slice(sessionID string, offset, limit int) (int,
 		return 0, nil
 	}
 	raw := m.turns[sessionID]
+	total := len(raw)
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > total {
+		offset = total
+	}
+	end := total
+	if limit > 0 && offset+limit < end {
+		end = offset + limit
+	}
+	window := raw[offset:end]
+	out := make([]eventbus.ConversationTurn, len(window))
+	copy(out, window)
+	return total, out
+}
+
+func (m *mockConversationStore) GlobalContext() []eventbus.ConversationTurn {
+	if m == nil {
+		return nil
+	}
+	out := make([]eventbus.ConversationTurn, len(m.globalTurns))
+	copy(out, m.globalTurns)
+	return out
+}
+
+func (m *mockConversationStore) GlobalSlice(offset, limit int) (int, []eventbus.ConversationTurn) {
+	if m == nil {
+		return 0, nil
+	}
+	raw := m.globalTurns
 	total := len(raw)
 	if offset < 0 {
 		offset = 0
@@ -778,6 +810,244 @@ func TestHandleSessionConversationPagination(t *testing.T) {
 	}
 	if payload.Turns[0].Text != "1" || payload.Turns[1].Text != "2" {
 		t.Fatalf("unexpected turns: %+v", payload.Turns)
+	}
+}
+
+func TestHandleGlobalConversationOptions(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+
+	req := httptest.NewRequest(http.MethodOptions, "/global/conversation", nil)
+	rec := httptest.NewRecorder()
+
+	apiServer.handleGlobalConversation(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected status %d, got %d", http.StatusNoContent, rec.Code)
+	}
+}
+
+func TestHandleGlobalConversationMethodNotAllowed(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete} {
+		t.Run(method, func(t *testing.T) {
+			req := httptest.NewRequest(method, "/global/conversation", nil)
+			rec := httptest.NewRecorder()
+
+			apiServer.handleGlobalConversation(rec, req)
+
+			if rec.Code != http.StatusMethodNotAllowed {
+				t.Fatalf("expected status %d, got %d", http.StatusMethodNotAllowed, rec.Code)
+			}
+			if allow := rec.Header().Get("Allow"); allow != "GET,OPTIONS" {
+				t.Fatalf("expected Allow header 'GET,OPTIONS', got %q", allow)
+			}
+		})
+	}
+}
+
+func TestHandleGlobalConversation(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+
+	now := time.Now().UTC()
+	store := &mockConversationStore{
+		globalTurns: []eventbus.ConversationTurn{
+			{Origin: eventbus.OriginUser, Text: "global hello", At: now},
+			{Origin: eventbus.OriginAI, Text: "global reply", At: now.Add(10 * time.Millisecond), Meta: map[string]string{"source": "global"}},
+		},
+	}
+	apiServer.SetConversationStore(store)
+
+	req := withReadOnly(apiServer, httptest.NewRequest(http.MethodGet, "/global/conversation", nil))
+	rec := httptest.NewRecorder()
+
+	apiServer.handleGlobalConversation(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d (body=%s)", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		SessionID  string `json:"session_id"`
+		Offset     int    `json:"offset"`
+		Limit      int    `json:"limit"`
+		Total      int    `json:"total"`
+		HasMore    bool   `json:"has_more"`
+		NextOffset *int   `json:"next_offset"`
+		Turns      []struct {
+			Origin string            `json:"origin"`
+			Text   string            `json:"text"`
+			Meta   map[string]string `json:"meta"`
+		} `json:"turns"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+
+	if payload.SessionID != "" {
+		t.Fatalf("expected empty session_id for global, got %q", payload.SessionID)
+	}
+	if payload.Offset != 0 || payload.Total != 2 {
+		t.Fatalf("unexpected pagination metadata: offset=%d total=%d", payload.Offset, payload.Total)
+	}
+	if payload.Limit != 2 {
+		t.Fatalf("expected limit=2, got %d", payload.Limit)
+	}
+	if payload.HasMore {
+		t.Fatalf("expected has_more=false")
+	}
+	if payload.NextOffset != nil {
+		t.Fatalf("expected next_offset to be nil, got %v", *payload.NextOffset)
+	}
+	if len(payload.Turns) != 2 {
+		t.Fatalf("expected 2 turns, got %d", len(payload.Turns))
+	}
+	if payload.Turns[0].Origin != string(eventbus.OriginUser) || payload.Turns[0].Text != "global hello" {
+		t.Fatalf("unexpected first turn: %+v", payload.Turns[0])
+	}
+	if payload.Turns[1].Origin != string(eventbus.OriginAI) || payload.Turns[1].Text != "global reply" {
+		t.Fatalf("unexpected second turn: %+v", payload.Turns[1])
+	}
+	if payload.Turns[1].Meta["source"] != "global" {
+		t.Fatalf("expected metadata to be preserved, got %+v", payload.Turns[1].Meta)
+	}
+}
+
+func TestHandleGlobalConversationPagination(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+
+	now := time.Now().UTC()
+	store := &mockConversationStore{
+		globalTurns: []eventbus.ConversationTurn{
+			{Origin: eventbus.OriginUser, Text: "0", At: now},
+			{Origin: eventbus.OriginAI, Text: "1", At: now.Add(10 * time.Millisecond)},
+			{Origin: eventbus.OriginUser, Text: "2", At: now.Add(20 * time.Millisecond)},
+			{Origin: eventbus.OriginAI, Text: "3", At: now.Add(30 * time.Millisecond)},
+		},
+	}
+	apiServer.SetConversationStore(store)
+
+	req := withReadOnly(apiServer, httptest.NewRequest(http.MethodGet, "/global/conversation?offset=1&limit=2", nil))
+	rec := httptest.NewRecorder()
+
+	apiServer.handleGlobalConversation(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d (body=%s)", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		Offset     int  `json:"offset"`
+		Limit      int  `json:"limit"`
+		Total      int  `json:"total"`
+		HasMore    bool `json:"has_more"`
+		NextOffset *int `json:"next_offset"`
+		Turns      []struct {
+			Text string `json:"text"`
+		} `json:"turns"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+
+	if payload.Offset != 1 || payload.Limit != 2 || payload.Total != 4 {
+		t.Fatalf("unexpected pagination metadata: %+v", payload)
+	}
+	if !payload.HasMore {
+		t.Fatalf("expected has_more=true")
+	}
+	if payload.NextOffset == nil || *payload.NextOffset != 3 {
+		t.Fatalf("expected next_offset=3, got %v", payload.NextOffset)
+	}
+	if len(payload.Turns) != 2 {
+		t.Fatalf("expected 2 turns, got %d", len(payload.Turns))
+	}
+	if payload.Turns[0].Text != "1" || payload.Turns[1].Text != "2" {
+		t.Fatalf("unexpected turns: %+v", payload.Turns)
+	}
+}
+
+func TestHandleGlobalConversationOffsetBeyondTotal(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+
+	now := time.Now().UTC()
+	store := &mockConversationStore{
+		globalTurns: []eventbus.ConversationTurn{
+			{Origin: eventbus.OriginUser, Text: "only", At: now},
+		},
+	}
+	apiServer.SetConversationStore(store)
+
+	req := withReadOnly(apiServer, httptest.NewRequest(http.MethodGet, "/global/conversation?offset=100", nil))
+	rec := httptest.NewRecorder()
+
+	apiServer.handleGlobalConversation(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d (body=%s)", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		Total int `json:"total"`
+		Turns []struct {
+			Text string `json:"text"`
+		} `json:"turns"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+
+	if payload.Total != 1 {
+		t.Fatalf("expected total=1, got %d", payload.Total)
+	}
+	if len(payload.Turns) != 0 {
+		t.Fatalf("expected 0 turns when offset exceeds total, got %d", len(payload.Turns))
+	}
+}
+
+func TestHandleGlobalConversationEmpty(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+
+	store := &mockConversationStore{}
+	apiServer.SetConversationStore(store)
+
+	req := withReadOnly(apiServer, httptest.NewRequest(http.MethodGet, "/global/conversation", nil))
+	rec := httptest.NewRecorder()
+
+	apiServer.handleGlobalConversation(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d (body=%s)", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		Total int `json:"total"`
+		Turns []struct {
+			Text string `json:"text"`
+		} `json:"turns"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("invalid JSON response: %v", err)
+	}
+
+	if payload.Total != 0 {
+		t.Fatalf("expected total=0, got %d", payload.Total)
+	}
+	if len(payload.Turns) != 0 {
+		t.Fatalf("expected 0 turns, got %d", len(payload.Turns))
+	}
+}
+
+func TestHandleGlobalConversationNoService(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+
+	req := withReadOnly(apiServer, httptest.NewRequest(http.MethodGet, "/global/conversation", nil))
+	rec := httptest.NewRecorder()
+
+	apiServer.handleGlobalConversation(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected status %d, got %d", http.StatusServiceUnavailable, rec.Code)
 	}
 }
 
