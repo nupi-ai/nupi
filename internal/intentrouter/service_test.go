@@ -129,6 +129,8 @@ func (m *mockCommandExecutor) QueueCommand(sessionID string, command string, ori
 	return nil
 }
 
+func (m *mockCommandExecutor) Stop() {}
+
 func (m *mockCommandExecutor) GetCommands() []queuedCommand {
 	m.mu.Lock()
 	defer m.mu.Unlock()

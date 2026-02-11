@@ -3,6 +3,9 @@ package runtimebridge
 import (
 	"errors"
 	"fmt"
+	"log"
+	"sort"
+	"sync"
 
 	"github.com/nupi-ai/nupi/internal/audio/egress"
 	"github.com/nupi-ai/nupi/internal/audio/ingress"
@@ -181,20 +184,69 @@ func (a *sessionProviderAdapter) ValidateSession(sessionID string) error {
 	return nil
 }
 
+// commandEntry holds a single queued command with its priority metadata.
+type commandEntry struct {
+	sessionID string
+	command   string
+	origin    eventbus.ContentOrigin
+	priority  int
+	seq       uint64 // monotonic sequence for stable FIFO within same priority
+}
+
+// originPriority maps a ContentOrigin to a numeric priority (lower = higher priority).
+func originPriority(origin eventbus.ContentOrigin) int {
+	switch origin {
+	case eventbus.OriginUser:
+		return 0 // highest
+	case eventbus.OriginTool:
+		return 1
+	case eventbus.OriginAI:
+		return 2
+	case eventbus.OriginSystem:
+		return 3 // lowest
+	default:
+		return 2 // treat unknown as AI
+	}
+}
+
 // CommandExecutor wraps session.Manager for the intentrouter.CommandExecutor interface.
+// It starts a background drain goroutine that executes commands in priority order.
 func CommandExecutor(manager *session.Manager) intentrouter.CommandExecutor {
 	if manager == nil {
 		return nil
 	}
-	return &commandExecutorAdapter{manager: manager}
+	a := &commandExecutorAdapter{
+		manager: manager,
+		logger:  log.Default(),
+		notify:  make(chan struct{}, 1),
+		done:    make(chan struct{}),
+	}
+	go a.drain()
+	return a
 }
 
 type commandExecutorAdapter struct {
 	manager *session.Manager
+	logger  *log.Logger
+
+	mu    sync.Mutex
+	queue []commandEntry
+	seq   uint64
+
+	notify   chan struct{} // signals new entry available
+	done     chan struct{} // closed on Stop()
+	stopOnce sync.Once
 }
 
 func (a *commandExecutorAdapter) QueueCommand(sessionID string, command string, origin eventbus.ContentOrigin) error {
-	// Validate session state before executing
+	// Reject commands after executor has been stopped.
+	select {
+	case <-a.done:
+		return fmt.Errorf("command rejected: executor is stopped")
+	default:
+	}
+
+	// Validate session state before enqueuing.
 	sess, err := a.manager.GetSession(sessionID)
 	if err != nil {
 		return fmt.Errorf("command rejected: %w", err)
@@ -203,7 +255,90 @@ func (a *commandExecutorAdapter) QueueCommand(sessionID string, command string, 
 		return fmt.Errorf("command rejected: session %s is stopped", sessionID)
 	}
 
-	data := []byte(command + "\n")
-	return a.manager.WriteToSession(sessionID, data)
+	a.mu.Lock()
+	a.seq++
+	a.queue = append(a.queue, commandEntry{
+		sessionID: sessionID,
+		command:   command,
+		origin:    origin,
+		priority:  originPriority(origin),
+		seq:       a.seq,
+	})
+	a.mu.Unlock()
+
+	// Non-blocking signal to the drain goroutine.
+	select {
+	case a.notify <- struct{}{}:
+	default:
+	}
+
+	return nil
+}
+
+// Stop signals the drain goroutine to exit. Safe for concurrent callers.
+func (a *commandExecutorAdapter) Stop() {
+	a.stopOnce.Do(func() {
+		close(a.done)
+	})
+}
+
+// drain runs in a goroutine, picking the highest-priority entry from the queue
+// and executing it via WriteToSession.
+func (a *commandExecutorAdapter) drain() {
+	for {
+		select {
+		case <-a.done:
+			return
+		case <-a.notify:
+		}
+
+		a.drainBatch()
+	}
+}
+
+// drainBatch takes a snapshot of the current queue, sorts it once by priority
+// (stable FIFO within same priority), and executes each entry. Checks the done
+// channel between items so Stop() is respected promptly.
+func (a *commandExecutorAdapter) drainBatch() {
+	a.mu.Lock()
+	if len(a.queue) == 0 {
+		a.mu.Unlock()
+		return
+	}
+	batch := a.queue
+	a.queue = nil
+	a.mu.Unlock()
+
+	// Sort once for the entire batch.
+	sortByPriority(batch)
+
+	for i, entry := range batch {
+		// Check for shutdown between items.
+		select {
+		case <-a.done:
+			a.logger.Printf("[CommandExecutor] shutdown: dropping %d remaining commands", len(batch)-i)
+			return
+		default:
+		}
+
+		a.logger.Printf("[CommandExecutor] executing command origin=%s session=%s cmd=%q",
+			entry.origin, entry.sessionID, entry.command)
+
+		data := []byte(entry.command + "\n")
+		if err := a.manager.WriteToSession(entry.sessionID, data); err != nil {
+			a.logger.Printf("[CommandExecutor] write failed session=%s: %v", entry.sessionID, err)
+		}
+	}
+}
+
+// sortByPriority sorts entries by priority ascending, then by seq ascending
+// for FIFO within the same priority level.
+func sortByPriority(entries []commandEntry) {
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].priority != entries[j].priority {
+			return entries[i].priority < entries[j].priority
+		}
+		return entries[i].seq < entries[j].seq
+	})
 }
 

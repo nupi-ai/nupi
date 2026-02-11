@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"log"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -176,12 +178,232 @@ func TestCommandExecutorRejectsStoppedSession(t *testing.T) {
 
 	// Build the executor adapter and attempt a command.
 	executor := CommandExecutor(mgr)
+	defer executor.Stop()
 	err = executor.QueueCommand(sess.ID, "echo hello", eventbus.ContentOrigin("test"))
 	if err == nil {
 		t.Fatal("expected QueueCommand to reject command on stopped session")
 	}
 	if !strings.Contains(err.Error(), "stopped") {
 		t.Fatalf("expected error to mention 'stopped', got: %v", err)
+	}
+}
+
+func TestOriginPriority(t *testing.T) {
+	tests := []struct {
+		origin   eventbus.ContentOrigin
+		expected int
+	}{
+		{eventbus.OriginUser, 0},
+		{eventbus.OriginTool, 1},
+		{eventbus.OriginAI, 2},
+		{eventbus.OriginSystem, 3},
+		{eventbus.ContentOrigin("unknown"), 2}, // defaults to AI priority
+	}
+
+	for _, tt := range tests {
+		got := originPriority(tt.origin)
+		if got != tt.expected {
+			t.Errorf("originPriority(%q) = %d, want %d", tt.origin, got, tt.expected)
+		}
+	}
+
+	// Verify ordering: user < tool < ai < system
+	if originPriority(eventbus.OriginUser) >= originPriority(eventbus.OriginTool) {
+		t.Error("user should have higher priority (lower value) than tool")
+	}
+	if originPriority(eventbus.OriginTool) >= originPriority(eventbus.OriginAI) {
+		t.Error("tool should have higher priority (lower value) than ai")
+	}
+	if originPriority(eventbus.OriginAI) >= originPriority(eventbus.OriginSystem) {
+		t.Error("ai should have higher priority (lower value) than system")
+	}
+}
+
+func TestCommandExecutorPriorityOrdering(t *testing.T) {
+	// Verify that the batch sort produces the correct priority order:
+	// user > tool > ai > system, with FIFO within same priority.
+	type entry struct {
+		cmd    string
+		origin eventbus.ContentOrigin
+	}
+	entries := []entry{
+		{"system-cmd", eventbus.OriginSystem},
+		{"ai-cmd-1", eventbus.OriginAI},
+		{"user-cmd", eventbus.OriginUser},
+		{"ai-cmd-2", eventbus.OriginAI},
+		{"tool-cmd", eventbus.OriginTool},
+	}
+
+	batch := make([]commandEntry, len(entries))
+	for i, e := range entries {
+		batch[i] = commandEntry{
+			sessionID: "test",
+			command:   e.cmd,
+			origin:    e.origin,
+			priority:  originPriority(e.origin),
+			seq:       uint64(i + 1),
+		}
+	}
+
+	// Same sort used by drainBatch.
+	sortByPriority(batch)
+
+	expected := []string{"user-cmd", "tool-cmd", "ai-cmd-1", "ai-cmd-2", "system-cmd"}
+	if len(batch) != len(expected) {
+		t.Fatalf("expected %d commands, got %d", len(batch), len(expected))
+	}
+	for i, cmd := range expected {
+		if batch[i].command != cmd {
+			t.Errorf("position %d: expected %q, got %q", i, cmd, batch[i].command)
+		}
+	}
+}
+
+func TestCommandExecutorFIFOWithinSamePriority(t *testing.T) {
+	// Verify FIFO ordering is preserved for entries at the same priority.
+	cmds := []string{"first", "second", "third"}
+	batch := make([]commandEntry, len(cmds))
+	for i, cmd := range cmds {
+		batch[i] = commandEntry{
+			sessionID: "test",
+			command:   cmd,
+			origin:    eventbus.OriginAI,
+			priority:  originPriority(eventbus.OriginAI),
+			seq:       uint64(i + 1),
+		}
+	}
+
+	sortByPriority(batch)
+
+	for i, cmd := range cmds {
+		if batch[i].command != cmd {
+			t.Errorf("position %d: expected %q, got %q (FIFO violated)", i, cmd, batch[i].command)
+		}
+	}
+}
+
+func TestCommandExecutorStopGraceful(t *testing.T) {
+	a := &commandExecutorAdapter{
+		logger: log.New(io.Discard, "", 0),
+		notify: make(chan struct{}, 1),
+		done:   make(chan struct{}),
+	}
+
+	// Start drain goroutine.
+	drainDone := make(chan struct{})
+	go func() {
+		a.drain()
+		close(drainDone)
+	}()
+
+	// Stop should cause drain to exit.
+	a.Stop()
+
+	select {
+	case <-drainDone:
+		// OK - drain exited
+	case <-time.After(2 * time.Second):
+		t.Fatal("drain goroutine did not exit after Stop()")
+	}
+
+	// Double Stop should not panic.
+	a.Stop()
+}
+
+func TestCommandExecutorRejectsAfterStop(t *testing.T) {
+	a := &commandExecutorAdapter{
+		logger: log.New(io.Discard, "", 0),
+		notify: make(chan struct{}, 1),
+		done:   make(chan struct{}),
+	}
+	go a.drain()
+	a.Stop()
+
+	err := a.QueueCommand("any-session", "echo hello", eventbus.OriginAI)
+	if err == nil {
+		t.Fatal("expected QueueCommand to return error after Stop()")
+	}
+	if !strings.Contains(err.Error(), "executor is stopped") {
+		t.Fatalf("expected 'executor is stopped' error, got: %v", err)
+	}
+}
+
+// syncBuffer wraps bytes.Buffer with a mutex for concurrent-safe reads.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (sb *syncBuffer) Write(p []byte) (int, error) {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.buf.Write(p)
+}
+
+func (sb *syncBuffer) String() string {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.buf.String()
+}
+
+func TestCommandExecutorOriginLogging(t *testing.T) {
+	// Skip if PTY is not available.
+	p := pty.New()
+	err := p.Start(pty.StartOptions{Command: "/bin/sh", Args: []string{"-c", "sleep 5"}})
+	if err != nil {
+		msg := err.Error()
+		if strings.Contains(msg, "operation not permitted") ||
+			strings.Contains(msg, "permission denied") ||
+			strings.Contains(msg, "no such file or directory") {
+			t.Skipf("PTY not available: %v", err)
+		}
+		t.Fatalf("PTY start: %v", err)
+	}
+	defer p.Stop(100 * time.Millisecond)
+
+	t.Setenv("HOME", t.TempDir())
+	mgr := session.NewManager()
+
+	sess, err := mgr.CreateSession(pty.StartOptions{
+		Command: "/bin/sh",
+		Args:    []string{"-c", "sleep 5"},
+		Rows:    24,
+		Cols:    80,
+	}, false)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	var logBuf syncBuffer
+	logger := log.New(&logBuf, "", 0)
+
+	executor := &commandExecutorAdapter{
+		manager: mgr,
+		logger:  logger,
+		notify:  make(chan struct{}, 1),
+		done:    make(chan struct{}),
+	}
+	go executor.drain()
+	defer executor.Stop()
+
+	if err := executor.QueueCommand(sess.ID, "echo hello", eventbus.OriginAI); err != nil {
+		t.Fatalf("QueueCommand: %v", err)
+	}
+
+	// Wait for the command to be drained and logged.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if strings.Contains(logBuf.String(), "origin=ai") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected log to contain origin=ai, got: %q", logBuf.String())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if !strings.Contains(logBuf.String(), "echo hello") {
+		t.Errorf("expected log to contain command text, got: %q", logBuf.String())
 	}
 }
 
