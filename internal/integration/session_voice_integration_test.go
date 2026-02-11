@@ -308,6 +308,8 @@ func (e *recordingCommandExecutor) QueueCommand(sessionID, command string, origi
 	return nil
 }
 
+func (e *recordingCommandExecutor) Stop() {}
+
 func (e *recordingCommandExecutor) GetCommands() []executedCommand {
 	e.mu.RLock()
 	defer e.mu.RUnlock()

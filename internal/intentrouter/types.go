@@ -149,8 +149,13 @@ type SessionProvider interface {
 // CommandExecutor handles command execution in sessions.
 type CommandExecutor interface {
 	// QueueCommand queues a command for execution in the specified session.
-	// The origin parameter indicates who issued the command (user/ai).
+	// The origin parameter indicates who issued the command (user/ai/tool/system)
+	// and determines execution priority: user > tool > ai > system.
 	QueueCommand(sessionID string, command string, origin eventbus.ContentOrigin) error
+
+	// Stop signals the executor to stop its background goroutine.
+	// Queued commands that have not yet been executed may be dropped.
+	Stop()
 }
 
 // Option configures the Service.

@@ -59,6 +59,7 @@ type Daemon struct {
 	configMu          sync.Mutex
 	configCancel      context.CancelFunc
 	transportSnapshot server.TransportSnapshot
+	commandExecutor   intentrouter.CommandExecutor
 }
 
 // New creates a new daemon instance bound to the provided configuration store.
@@ -190,12 +191,15 @@ func New(opts Options) (*Daemon, error) {
 	}
 	promptEngineAdapter := intentrouter.NewPromptEngineAdapter(promptsEngine)
 
+	// Command executor with priority queue (user > tool > ai > system).
+	commandExecutor := runtimebridge.CommandExecutor(sessionManager)
+
 	// Intent router service - bridges conversation to AI adapters
 	// Starts in passive mode (no adapter) - real AI adapter will be set via
 	// SetAdapter() when configured through adapter manager/config store
 	intentRouterService := intentrouter.NewService(bus,
 		intentrouter.WithSessionProvider(runtimebridge.SessionProvider(sessionManager)),
-		intentrouter.WithCommandExecutor(runtimebridge.CommandExecutor(sessionManager)),
+		intentrouter.WithCommandExecutor(commandExecutor),
 		intentrouter.WithPromptEngine(promptEngineAdapter),
 	)
 
@@ -251,15 +255,16 @@ func New(opts Options) (*Daemon, error) {
 	runtimeInfo.SetGRPCPort(transportCfg.GRPCPort)
 
 	d := &Daemon{
-		store:          opts.Store,
-		sessionManager: sessionManager,
-		apiServer:      apiServer,
-		serviceHost:    host,
-		runtimeInfo:    runtimeInfo,
-		lifecycle:      daemonruntime.NewLifecycle(),
-		instancePaths:  paths,
-		eventBus:       bus,
-		globalStore:    globalConversationStore,
+		store:           opts.Store,
+		sessionManager:  sessionManager,
+		apiServer:       apiServer,
+		serviceHost:     host,
+		runtimeInfo:     runtimeInfo,
+		lifecycle:       daemonruntime.NewLifecycle(),
+		instancePaths:   paths,
+		eventBus:        bus,
+		globalStore:     globalConversationStore,
+		commandExecutor: commandExecutor,
 	}
 
 	metricsExporter.WithAudioMetrics(func() observability.AudioMetricsSnapshot {
@@ -380,6 +385,9 @@ func (d *Daemon) Shutdown() error {
 	}
 	if d.cancel != nil {
 		d.cancel()
+	}
+	if d.commandExecutor != nil {
+		d.commandExecutor.Stop()
 	}
 	if d.globalStore != nil {
 		d.globalStore.Stop()
