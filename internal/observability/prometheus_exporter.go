@@ -133,6 +133,10 @@ func (e *PrometheusExporter) writeBusMetrics(buf *bytes.Buffer) {
 	buf.WriteString("# TYPE nupi_eventbus_dropped_total counter\n")
 	buf.WriteString(fmt.Sprintf("nupi_eventbus_dropped_total %d\n", metrics.DroppedTotal))
 
+	buf.WriteString("# HELP nupi_eventbus_overflow_total Total number of events spilled into overflow buffers.\n")
+	buf.WriteString("# TYPE nupi_eventbus_overflow_total counter\n")
+	buf.WriteString(fmt.Sprintf("nupi_eventbus_overflow_total %d\n", metrics.OverflowTotal))
+
 	buf.WriteString("# HELP nupi_eventbus_latency_seconds Event bus publish latency quantiles.\n")
 	buf.WriteString("# TYPE nupi_eventbus_latency_seconds summary\n")
 	buf.WriteString(fmt.Sprintf("nupi_eventbus_latency_seconds{quantile=\"0.50\"} %.9f\n", durationSeconds(metrics.LatencyP50)))

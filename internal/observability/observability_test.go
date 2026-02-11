@@ -99,6 +99,9 @@ func TestPrometheusExporter(t *testing.T) {
 	if !strings.Contains(metrics, `nupi_vad_retry_failures_total 1`) {
 		t.Fatalf("expected VAD retry failures counter in metrics output:\n%s", metrics)
 	}
+	if !strings.Contains(metrics, `nupi_eventbus_overflow_total 0`) {
+		t.Fatalf("expected overflow_total counter in metrics output:\n%s", metrics)
+	}
 	if !strings.Contains(metrics, `nupi_eventbus_latency_seconds{quantile="0.50"}`) {
 		t.Fatalf("expected latency quantile metric in output:\n%s", metrics)
 	}

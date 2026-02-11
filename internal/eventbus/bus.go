@@ -14,16 +14,18 @@ import (
 const defaultLatencySampleSize = 512
 
 type Bus struct {
-	logger       *log.Logger
-	mu           sync.RWMutex
-	subscribers  map[Topic]map[uint64]*Subscription
-	topicBuffers map[Topic]int
-	nextID       uint64
-	observerMu   sync.RWMutex
-	observers    []Observer
+	logger        *log.Logger
+	mu            sync.RWMutex
+	subscribers   map[Topic]map[uint64]*Subscription
+	topicBuffers  map[Topic]int
+	topicPolicies map[Topic]DeliveryPolicy
+	nextID        uint64
+	observerMu    sync.RWMutex
+	observers     []Observer
 
-	publishTotal atomic.Uint64
-	droppedTotal atomic.Uint64
+	publishTotal  atomic.Uint64
+	droppedTotal  atomic.Uint64
+	overflowTotal atomic.Uint64
 
 	latencyMu      sync.Mutex
 	latencySamples []time.Duration
@@ -73,6 +75,7 @@ func New(opts ...BusOption) *Bus {
 		logger:         log.Default(),
 		subscribers:    make(map[Topic]map[uint64]*Subscription),
 		topicBuffers:   defaults,
+		topicPolicies:  make(map[Topic]DeliveryPolicy),
 		latencySamples: make([]time.Duration, defaultLatencySampleSize),
 	}
 
@@ -117,6 +120,16 @@ func WithObserver(observer Observer) BusOption {
 	}
 }
 
+// WithTopicPolicy overrides the delivery policy for a specific topic.
+func WithTopicPolicy(topic Topic, policy DeliveryPolicy) BusOption {
+	return func(b *Bus) {
+		if b.topicPolicies == nil {
+			b.topicPolicies = make(map[Topic]DeliveryPolicy)
+		}
+		b.topicPolicies[topic] = policy
+	}
+}
+
 // Publish sends the envelope to all subscribers of the topic.
 func (b *Bus) Publish(ctx context.Context, env Envelope) {
 	if env.Topic == "" {
@@ -156,13 +169,27 @@ func (b *Bus) Subscribe(topic Topic, opts ...SubscriptionOption) *Subscription {
 		opt(&cfg)
 	}
 
+	policy := policyFor(topic, b.topicPolicies)
+
 	id := atomic.AddUint64(&b.nextID, 1)
 	sub := &Subscription{
-		topic: topic,
-		id:    id,
-		name:  cfg.name,
-		ch:    make(chan Envelope, cfg.bufferSize),
-		bus:   b,
+		topic:  topic,
+		id:     id,
+		name:   cfg.name,
+		ch:     make(chan Envelope, cfg.bufferSize),
+		bus:    b,
+		policy: policy,
+	}
+
+	if policy.Strategy == StrategyOverflow {
+		ovfCap := policy.MaxOverflow
+		if ovfCap <= 0 {
+			ovfCap = defaultMaxOverflow
+		}
+		sub.ovf = newOverflowBuffer(ovfCap)
+		ctx, cancel := context.WithCancel(context.Background())
+		sub.ovfCancel = cancel
+		go sub.ovf.drainLoop(ctx, sub.ch)
 	}
 
 	b.mu.Lock()
@@ -220,9 +247,13 @@ type Subscription struct {
 	name  string
 	ch    chan Envelope
 
-	bus     *Bus
-	closed  atomic.Bool
-	dropped atomic.Uint64
+	bus      *Bus
+	closed   atomic.Bool
+	dropped  atomic.Uint64
+	policy   DeliveryPolicy
+	ovf      *overflowBuffer
+	ovfCancel context.CancelFunc
+	overflow atomic.Uint64
 }
 
 // C exposes the event channel.
@@ -238,6 +269,8 @@ func (s *Subscription) Close() {
 	if !s.closed.CompareAndSwap(false, true) {
 		return
 	}
+
+	s.stopOverflow()
 
 	s.bus.mu.Lock()
 	defer s.bus.mu.Unlock()
@@ -255,7 +288,18 @@ func (s *Subscription) closeLocked() {
 		return
 	}
 	s.closed.Store(true)
+	s.stopOverflow()
 	close(s.ch)
+}
+
+// stopOverflow cancels the drain goroutine and waits for it to exit.
+func (s *Subscription) stopOverflow() {
+	if s.ovfCancel != nil {
+		s.ovfCancel()
+	}
+	if s.ovf != nil {
+		<-s.ovf.done
+	}
 }
 
 func (s *Subscription) deliver(ctx context.Context, env Envelope, logger *log.Logger) {
@@ -269,13 +313,36 @@ func (s *Subscription) deliver(ctx context.Context, env Envelope, logger *log.Lo
 	default:
 	}
 
+	// Overflow strategy: always route through the overflow buffer to preserve FIFO ordering.
+	// Direct channel sends would race with the drain goroutine and break ordering.
+	if s.policy.Strategy == StrategyOverflow && s.ovf != nil {
+		if s.ovf.push(env) {
+			s.overflow.Add(1)
+			s.bus.overflowTotal.Add(1)
+			return
+		}
+		// Overflow full — fall back to drop-oldest on the channel.
+		s.dropOldestAndEnqueue(env, logger)
+		return
+	}
+
+	// Fast path: non-blocking send.
 	select {
 	case s.ch <- env:
 		return
 	default:
 	}
 
-	// drop oldest
+	// Channel full — apply policy.
+	switch s.policy.Strategy {
+	case StrategyDropNewest:
+		s.recordDrop(logger, "drop-newest")
+	default: // StrategyDropOldest
+		s.dropOldestAndEnqueue(env, logger)
+	}
+}
+
+func (s *Subscription) dropOldestAndEnqueue(env Envelope, logger *log.Logger) {
 	select {
 	case <-s.ch:
 		s.recordDrop(logger, "drop-oldest")
@@ -284,9 +351,7 @@ func (s *Subscription) deliver(ctx context.Context, env Envelope, logger *log.Lo
 
 	select {
 	case s.ch <- env:
-		return
 	default:
-		// channel is still full (likely zero-buffer); drop event entirely
 		s.recordDrop(logger, "drop-current")
 	}
 }
@@ -307,17 +372,19 @@ func (s *Subscription) recordDrop(logger *log.Logger, reason string) {
 
 // Metrics exposes aggregated bus metrics.
 type Metrics struct {
-	PublishTotal uint64
-	DroppedTotal uint64
-	LatencyP50   time.Duration
-	LatencyP99   time.Duration
+	PublishTotal  uint64
+	DroppedTotal  uint64
+	OverflowTotal uint64
+	LatencyP50    time.Duration
+	LatencyP99    time.Duration
 }
 
 // Metrics returns the current metrics snapshot.
 func (b *Bus) Metrics() Metrics {
 	metrics := Metrics{
-		PublishTotal: b.publishTotal.Load(),
-		DroppedTotal: b.droppedTotal.Load(),
+		PublishTotal:  b.publishTotal.Load(),
+		DroppedTotal:  b.droppedTotal.Load(),
+		OverflowTotal: b.overflowTotal.Load(),
 	}
 
 	samples := b.collectLatencySamples()
@@ -438,7 +505,7 @@ func (b *Bus) StartMetricsReporter(ctx context.Context, interval time.Duration, 
 				return
 			case <-ticker.C:
 				metrics := b.Metrics()
-				logger.Printf("[eventbus] metrics publish_total=%d dropped_total=%d latency_p50=%s latency_p99=%s", metrics.PublishTotal, metrics.DroppedTotal, metrics.LatencyP50, metrics.LatencyP99)
+				logger.Printf("[eventbus] metrics publish_total=%d dropped_total=%d overflow_total=%d latency_p50=%s latency_p99=%s", metrics.PublishTotal, metrics.DroppedTotal, metrics.OverflowTotal, metrics.LatencyP50, metrics.LatencyP99)
 			}
 		}
 	}()
