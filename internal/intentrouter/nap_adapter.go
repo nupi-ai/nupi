@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"strings"
 	"sync"
@@ -14,6 +15,8 @@ import (
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/napdial"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -39,6 +42,12 @@ type NAPAdapterParams struct {
 // dialTimeout is the maximum time to wait for gRPC connection establishment.
 const dialTimeout = 10 * time.Second
 
+// requestTimeout is the maximum time for a single ResolveIntent RPC call.
+const requestTimeout = 30 * time.Second
+
+// capabilitiesProbeTimeout is the time allowed for the best-effort capabilities probe.
+const capabilitiesProbeTimeout = 3 * time.Second
+
 // NewNAPAdapter creates a new NAP AI adapter that connects to a gRPC endpoint.
 func NewNAPAdapter(ctx context.Context, params NAPAdapterParams) (*NAPAdapter, error) {
 	transport := strings.TrimSpace(params.Endpoint.Transport)
@@ -57,7 +66,16 @@ func NewNAPAdapter(ctx context.Context, params NAPAdapterParams) (*NAPAdapter, e
 		return nil, fmt.Errorf("ai: adapter %s missing address", params.AdapterID)
 	}
 
-	dialOpts := napdial.DialOptions(ctx)
+	tlsCfg := napdial.TLSConfigFromFields(
+		params.Endpoint.TLSCertPath,
+		params.Endpoint.TLSKeyPath,
+		params.Endpoint.TLSCACertPath,
+		params.Endpoint.TLSInsecure,
+	)
+	dialOpts, err := napdial.DialOptions(ctx, tlsCfg, napdial.DefaultQoS())
+	if err != nil {
+		return nil, fmt.Errorf("ai: adapter %s: %w", params.AdapterID, err)
+	}
 
 	// Apply dial timeout to prevent hanging on bad addresses
 	// The parent context may be long-lived (e.g., context.Background),
@@ -80,7 +98,32 @@ func NewNAPAdapter(ctx context.Context, params NAPAdapterParams) (*NAPAdapter, e
 		ready:     true,
 	}
 
+	// Best-effort capabilities probe — runs in background, never prevents startup.
+	go probeCapabilities(client, params.AdapterID)
+
 	return adapter, nil
+}
+
+// probeCapabilities calls GetCapabilities on the adapter to log supported features.
+// This is best-effort: UNIMPLEMENTED is expected for older adapters and silently ignored.
+func probeCapabilities(client napv1.IntentResolutionServiceClient, adapterID string) {
+	probeCtx, probeCancel := context.WithTimeout(context.Background(), capabilitiesProbeTimeout)
+	defer probeCancel()
+
+	resp, err := client.GetCapabilities(probeCtx, &napv1.GetCapabilitiesRequest{})
+	if err != nil {
+		if s, ok := status.FromError(err); ok && s.Code() == codes.Unimplemented {
+			log.Printf("[NAPAdapter] %s: GetCapabilities not implemented (ok)", adapterID)
+			return
+		}
+		log.Printf("[NAPAdapter] %s: GetCapabilities probe failed: %v", adapterID, err)
+		return
+	}
+	log.Printf("[NAPAdapter] %s: adapter=%s version=%s capabilities=%d",
+		adapterID, resp.GetAdapterName(), resp.GetAdapterVersion(), len(resp.GetCapabilities()))
+	for _, c := range resp.GetCapabilities() {
+		log.Printf("[NAPAdapter] %s:   capability: %s v%s", adapterID, c.GetName(), c.GetVersion())
+	}
 }
 
 // Name returns the adapter's identifier.
@@ -151,8 +194,12 @@ func (a *NAPAdapter) ResolveIntent(ctx context.Context, req IntentRequest) (*Int
 		})
 	}
 
+	// Apply per-request timeout to bound AI processing time.
+	reqCtx, reqCancel := context.WithTimeout(ctx, requestTimeout)
+	defer reqCancel()
+
 	// Call the adapter
-	grpcResp, err := a.client.ResolveIntent(ctx, grpcReq)
+	grpcResp, err := a.client.ResolveIntent(reqCtx, grpcReq)
 	if err != nil {
 		return nil, fmt.Errorf("ai: resolve intent: %w", err)
 	}
@@ -273,7 +320,6 @@ func timestampOrNil(t time.Time) *timestamppb.Timestamp {
 	}
 	return ts
 }
-
 
 // ContextWithDialer attaches a custom dialer to the context.
 // This is primarily for tests using bufconn without real network sockets.

@@ -105,6 +105,13 @@ func Open(opts Options) (*Store, error) {
 	}
 
 	if !opts.ReadOnly {
+		if err := applyMigrations(ctx, db); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
+
+	if !opts.ReadOnly {
 		if err := seedDefaults(ctx, db, opts.InstanceName, opts.ProfileName); err != nil {
 			db.Close()
 			return nil, err

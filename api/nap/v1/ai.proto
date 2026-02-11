@@ -140,6 +140,36 @@ message ResolveIntentResponse {
   string error_message = 6;
 }
 
+// Capability describes a single feature or protocol supported by the adapter.
+message Capability {
+  // name is the feature or protocol identifier (e.g., "streaming", "tool_use").
+  string name = 1;
+
+  // version is the capability version string (e.g., "1.0").
+  string version = 2;
+
+  // metadata contains additional capability-specific key-value pairs.
+  map<string, string> metadata = 3;
+}
+
+// GetCapabilitiesRequest is sent to discover adapter capabilities.
+message GetCapabilitiesRequest {}
+
+// GetCapabilitiesResponse reports what the adapter supports.
+message GetCapabilitiesResponse {
+  // adapter_name is the human-readable name of the adapter implementation.
+  string adapter_name = 1;
+
+  // adapter_version is the semantic version of the adapter.
+  string adapter_version = 2;
+
+  // capabilities lists the features and protocols supported by the adapter.
+  repeated Capability capabilities = 3;
+
+  // metadata contains additional adapter-level key-value pairs.
+  map<string, string> metadata = 4;
+}
+
 // IntentResolutionService exposes the NAP contract for AI adapters.
 // AI adapters implement this service to receive user intents and return actions.
 //
@@ -154,4 +184,9 @@ message ResolveIntentResponse {
 service IntentResolutionService {
   // ResolveIntent processes user input and returns intended action(s).
   rpc ResolveIntent(ResolveIntentRequest) returns (ResolveIntentResponse);
+
+  // GetCapabilities returns the adapter's supported features and version info.
+  // Adapters that do not implement this RPC will return UNIMPLEMENTED, which
+  // callers should treat as "capabilities unknown" and proceed normally.
+  rpc GetCapabilities(GetCapabilitiesRequest) returns (GetCapabilitiesResponse);
 }

@@ -537,6 +537,12 @@ func (b *AdapterBridge) createAdapter(ctx context.Context, adapterID string, run
 		Transport: transport,
 		Address:   address,
 	}
+	if runtime != nil {
+		endpoint.TLSCertPath = strings.TrimSpace(runtime[adapters.RuntimeExtraTLSCertPath])
+		endpoint.TLSKeyPath = strings.TrimSpace(runtime[adapters.RuntimeExtraTLSKeyPath])
+		endpoint.TLSCACertPath = strings.TrimSpace(runtime[adapters.RuntimeExtraTLSCACertPath])
+		endpoint.TLSInsecure = strings.TrimSpace(runtime[adapters.RuntimeExtraTLSInsecure]) == "true"
+	}
 
 	napAdapter, err := NewNAPAdapter(ctx, NAPAdapterParams{
 		AdapterID: adapterID,

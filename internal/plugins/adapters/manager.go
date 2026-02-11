@@ -512,6 +512,18 @@ func (m *Manager) startAdapter(ctx context.Context, plan bindingPlan) (*adapterI
 			RuntimeExtraTransport: transport,
 			RuntimeExtraAddress:   addr,
 		}
+		if endpoint.TLSCertPath != "" {
+			plan.binding.Runtime[RuntimeExtraTLSCertPath] = endpoint.TLSCertPath
+		}
+		if endpoint.TLSKeyPath != "" {
+			plan.binding.Runtime[RuntimeExtraTLSKeyPath] = endpoint.TLSKeyPath
+		}
+		if endpoint.TLSCACertPath != "" {
+			plan.binding.Runtime[RuntimeExtraTLSCACertPath] = endpoint.TLSCACertPath
+		}
+		if endpoint.TLSInsecure {
+			plan.binding.Runtime[RuntimeExtraTLSInsecure] = "true"
+		}
 		plan.fingerprint = computePlanFingerprint(plan.binding, plan.manifest, plan.adapter.Manifest, plan.endpoint)
 		plan.binding.Fingerprint = plan.fingerprint
 
@@ -1016,6 +1028,15 @@ func computePlanFingerprint(binding Binding, manifest *manifest.Manifest, manife
 			write(k)
 			write(endpoint.Env[k])
 		}
+	}
+	// TLS configuration affects connectivity — changes require restart.
+	write(endpoint.TLSCertPath)
+	write(endpoint.TLSKeyPath)
+	write(endpoint.TLSCACertPath)
+	if endpoint.TLSInsecure {
+		write("tls_insecure:true")
+	} else {
+		write("tls_insecure:false")
 	}
 	return hex.EncodeToString(h.Sum(nil))
 }

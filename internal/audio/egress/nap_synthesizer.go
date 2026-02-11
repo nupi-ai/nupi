@@ -39,7 +39,11 @@ func newNAPSynthesizer(ctx context.Context, params SessionParams, endpoint confi
 		return nil, fmt.Errorf("tts: adapter %s missing address", endpoint.AdapterID)
 	}
 
-	dialOpts := napdial.DialOptions(ctx)
+	tlsCfg := napdial.TLSConfigFromFields(endpoint.TLSCertPath, endpoint.TLSKeyPath, endpoint.TLSCACertPath, endpoint.TLSInsecure)
+	dialOpts, err := napdial.DialOptions(ctx, tlsCfg, napdial.DefaultQoS())
+	if err != nil {
+		return nil, fmt.Errorf("tts: adapter %s: %w", endpoint.AdapterID, err)
+	}
 	conn, err := grpc.DialContext(ctx, address, dialOpts...)
 	if err != nil {
 		if s, ok := status.FromError(err); ok && s.Code() == codes.Unavailable {
