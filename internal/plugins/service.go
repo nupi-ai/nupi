@@ -353,7 +353,6 @@ func (s *Service) startJSRuntime(ctx context.Context) error {
 }
 
 // JSRuntime returns the active JS runtime, or nil if not available.
-// Deprecated: Use runtime() internally. This is kept for backward compatibility.
 func (s *Service) JSRuntime() *jsruntime.Runtime {
 	return s.runtime()
 }
