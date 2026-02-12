@@ -12,6 +12,7 @@ import (
 	"time"
 
 	napv1 "github.com/nupi-ai/nupi/api/nap/v1"
+	"github.com/nupi-ai/nupi/internal/audio/streammanager"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/napdial"
@@ -274,7 +275,7 @@ func (a *napAnalyzer) drainError() error {
 func speechEventToDetection(evt *napv1.SpeechEvent) Detection {
 	det := Detection{
 		Confidence: evt.GetConfidence(),
-		Metadata:   copyMetadata(evt.GetMetadata()),
+		Metadata:   streammanager.CopyMetadata(evt.GetMetadata()),
 	}
 	switch evt.GetType() {
 	case napv1.SpeechEventType_SPEECH_EVENT_TYPE_START,

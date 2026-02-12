@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/nupi-ai/nupi/internal/audio/streammanager"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/voice/slots"
 )
@@ -30,6 +31,12 @@ const (
 
 	defaultStreamID = slots.TTS
 )
+
+// copyMetadata is a convenience alias for streammanager.CopyMetadata.
+var copyMetadata = streammanager.CopyMetadata
+
+// SessionParams is an alias for backward compatibility.
+type SessionParams = streammanager.SessionParams
 
 // SpeakRequest represents a text-to-speech invocation.
 type SpeakRequest struct {
@@ -66,16 +73,6 @@ type FactoryFunc func(ctx context.Context, params SessionParams) (Synthesizer, e
 // Create invokes the underlying function.
 func (f FactoryFunc) Create(ctx context.Context, params SessionParams) (Synthesizer, error) {
 	return f(ctx, params)
-}
-
-// SessionParams describes synthesizer initialisation parameters.
-type SessionParams struct {
-	SessionID string
-	StreamID  string
-	Format    eventbus.AudioFormat
-	Metadata  map[string]string
-	AdapterID string
-	Config    map[string]any
 }
 
 // Option configures the Service.
@@ -148,11 +145,7 @@ type Service struct {
 	bargeSub *eventbus.Subscription
 	wg       sync.WaitGroup
 
-	mu      sync.Mutex
-	streams map[string]*stream
-
-	pendingMu sync.Mutex
-	pending   map[string]*pendingQueue
+	manager *streammanager.Manager[speakRequest]
 
 	activeStreams atomic.Int64
 }
@@ -160,10 +153,8 @@ type Service struct {
 // New constructs an audio egress service.
 func New(bus *eventbus.Bus, opts ...Option) *Service {
 	svc := &Service{
-		bus:     bus,
-		logger:  log.Default(),
-		streams: make(map[string]*stream),
-		pending: make(map[string]*pendingQueue),
+		bus:    bus,
+		logger: log.Default(),
 		format: eventbus.AudioFormat{
 			Encoding:      eventbus.AudioEncodingPCM16,
 			SampleRate:    16000,
@@ -210,6 +201,24 @@ func (s *Service) Start(ctx context.Context) error {
 
 	s.ctx, s.cancel = context.WithCancel(ctx)
 
+	s.manager = streammanager.New(streammanager.Config[speakRequest]{
+		Tag:        "TTS",
+		MaxPending: maxPendingRequests,
+		Retry: streammanager.RetryConfig{
+			Initial: s.retryInitial,
+			Max:     s.retryMax,
+		},
+		Factory: streammanager.StreamFactoryFunc[speakRequest](s.createStreamHandle),
+		Callbacks: streammanager.Callbacks[speakRequest]{
+			OnStreamRegistered:  s.onStreamRegistered,
+			OnStreamRemoved:     s.onStreamRemoved,
+			ClassifyCreateError: s.classifyError,
+			OnEnqueueError:      s.onEnqueueError,
+		},
+		Logger: s.logger,
+		Ctx:    s.ctx,
+	})
+
 	replySub := s.bus.Subscribe(eventbus.TopicConversationReply, eventbus.WithSubscriptionName("audio_egress_reply"))
 	speakSub := s.bus.Subscribe(eventbus.TopicConversationSpeak, eventbus.WithSubscriptionName("audio_egress_speak"))
 	lifecycleSub := s.bus.Subscribe(eventbus.TopicSessionsLifecycle, eventbus.WithSubscriptionName("audio_egress_lifecycle"))
@@ -248,40 +257,18 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		return ctx.Err()
 	}
 
-	streams := s.closeStreams()
-	for _, st := range streams {
-		st.wait(ctx)
+	var handles []streammanager.StreamHandle[speakRequest]
+	if s.manager != nil {
+		handles = s.manager.CloseAllStreams()
+	}
+	for _, h := range handles {
+		h.Wait(ctx)
 	}
 
-	s.pendingMu.Lock()
-	for key, queue := range s.pending {
-		if queue != nil {
-			queue.stopTimer()
-		}
-		delete(s.pending, key)
+	if s.manager != nil {
+		s.manager.ShutdownPending()
 	}
-	s.pendingMu.Unlock()
 	return nil
-}
-
-func (s *Service) closeStreams() []*stream {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	streams := make([]*stream, 0, len(s.streams))
-	for key, st := range s.streams {
-		streams = append(streams, st)
-		delete(s.streams, key)
-	}
-	if count := len(streams); count > 0 {
-		s.activeStreams.Add(-int64(count))
-		if s.logger != nil {
-			s.logger.Printf("[TTS] closing %d active streams", count)
-		}
-	}
-	for _, st := range streams {
-		st.stop()
-	}
-	return streams
 }
 
 func (s *Service) consumeReplies(sub *eventbus.Subscription) {
@@ -361,7 +348,9 @@ func (s *Service) consumeLifecycle(sub *eventbus.Subscription) {
 				continue
 			}
 			if msg.State == eventbus.SessionStateStopped {
-				s.removeStream(msg.SessionID)
+				if s.manager != nil {
+					s.manager.RemoveStreamByKey(streammanager.StreamKey(msg.SessionID, s.streamID))
+				}
 			}
 		}
 	}
@@ -409,17 +398,17 @@ func (s *Service) handleSpeakRequest(req speakRequest) {
 	if req.SessionID == "" || req.StreamID == "" || req.Text == "" {
 		return
 	}
-	key := streamKey(req.SessionID, req.StreamID)
+	key := streammanager.StreamKey(req.SessionID, req.StreamID)
 
-	if st, ok := s.stream(key); ok {
-		if err := st.enqueue(req); err == nil {
+	if h, ok := s.manager.Stream(key); ok {
+		if err := h.Enqueue(req); err == nil {
 			return
 		}
 		// Enqueue failed — stream is dying (rebuffer/interrupt) or service
 		// shutting down.  If the service is still running, buffer the request
 		// so it survives the stream transition rather than being dropped.
 		if s.ctx.Err() == nil {
-			s.bufferPending(key, SessionParams{
+			s.manager.BufferPending(key, SessionParams{
 				SessionID: req.SessionID,
 				StreamID:  req.StreamID,
 				Format:    s.format,
@@ -436,18 +425,18 @@ func (s *Service) handleSpeakRequest(req speakRequest) {
 		Metadata:  copyMetadata(req.Metadata),
 	}
 
-	stream, err := s.createStream(key, params)
+	h, err := s.manager.CreateStream(key, params)
 	switch {
 	case err == nil:
-		if err := stream.enqueue(req); err != nil {
+		if err := h.Enqueue(req); err != nil {
 			if errors.Is(err, errStreamRebuffering) {
-				s.bufferPending(key, params, req)
+				s.manager.BufferPending(key, params, req)
 			} else if !errors.Is(err, context.Canceled) {
 				s.logger.Printf("[TTS] enqueue request session=%s stream=%s failed: %v", req.SessionID, req.StreamID, err)
 			}
 		}
 	case errors.Is(err, ErrAdapterUnavailable):
-		s.bufferPending(key, params, req)
+		s.manager.BufferPending(key, params, req)
 	case errors.Is(err, ErrFactoryUnavailable):
 		s.logger.Printf("[TTS] factory unavailable session=%s stream=%s, dropping request", params.SessionID, params.StreamID)
 	default:
@@ -455,25 +444,58 @@ func (s *Service) handleSpeakRequest(req speakRequest) {
 	}
 }
 
-func (s *Service) stream(key string) (*stream, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	st, ok := s.streams[key]
-	return st, ok
+func (s *Service) interruptStream(sessionID, streamID, reason string, ts time.Time, metadata map[string]string) {
+	if s.manager == nil {
+		return
+	}
+	if streamID == "" {
+		streamID = s.streamID
+	}
+	key := streammanager.StreamKey(sessionID, streamID)
+	h, ok := s.manager.Stream(key)
+	if !ok {
+		return
+	}
+	if ts.IsZero() {
+		ts = time.Now().UTC()
+	}
+	s.manager.ClearPending(key)
+	st := h.(*stream)
+	st.interrupt(reasonOrDefault(reason), ts, metadata)
 }
 
-func (s *Service) createStream(key string, params SessionParams) (*stream, error) {
+func (s *Service) classifyError(err error) (adapterUnavailable, factoryUnavailable bool) {
+	return errors.Is(err, ErrAdapterUnavailable), errors.Is(err, ErrFactoryUnavailable)
+}
+
+func (s *Service) onStreamRegistered(_ string, _ streammanager.StreamHandle[speakRequest]) {
+	s.activeStreams.Add(1)
+}
+
+func (s *Service) onStreamRemoved(_ string, _ streammanager.StreamHandle[speakRequest]) {
+	s.activeStreams.Add(-1)
+}
+
+func (s *Service) onEnqueueError(key string, item speakRequest, err error) (handled bool) {
+	if errors.Is(err, errStreamRebuffering) {
+		s.manager.BufferPending(key, SessionParams{
+			SessionID: item.SessionID,
+			StreamID:  item.StreamID,
+			Format:    s.format,
+			Metadata:  copyMetadata(item.Metadata),
+		}, item)
+		return true
+	}
+	if !errors.Is(err, context.Canceled) {
+		s.logger.Printf("[TTS] enqueue pending request session=%s stream=%s failed: %v", item.SessionID, item.StreamID, err)
+	}
+	return true
+}
+
+// createStreamHandle is the StreamFactory callback for the manager.
+func (s *Service) createStreamHandle(ctx context.Context, key string, params SessionParams) (streammanager.StreamHandle[speakRequest], error) {
 	if s.factory == nil {
 		return nil, ErrFactoryUnavailable
-	}
-
-	if st, ok := s.stream(key); ok {
-		return st, nil
-	}
-
-	ctx := s.ctx
-	if ctx == nil {
-		ctx = context.Background()
 	}
 
 	synth, err := s.factory.Create(ctx, params)
@@ -481,89 +503,18 @@ func (s *Service) createStream(key string, params SessionParams) (*stream, error
 		return nil, err
 	}
 
-	stream := newStream(key, s, params, synth)
-
-	s.mu.Lock()
-	if existing, ok := s.streams[key]; ok {
-		s.mu.Unlock()
-		stream.stop()
-		return existing, nil
-	}
-	s.streams[key] = stream
-	s.activeStreams.Add(1)
-	s.mu.Unlock()
-	if s.logger != nil {
-		s.logger.Printf("[TTS] stream opened session=%s stream=%s", params.SessionID, params.StreamID)
-	}
-
-	s.flushPending(key, stream)
-	return stream, nil
+	return newStream(key, s, params, synth), nil
 }
 
-func (s *Service) removeStream(key string) {
-	var (
-		st      *stream
-		removed bool
-	)
-	s.mu.Lock()
-	if existing, ok := s.streams[key]; ok {
-		st = existing
-		delete(s.streams, key)
-		removed = true
-	}
-	s.mu.Unlock()
-	if removed {
-		s.activeStreams.Add(-1)
-		if s.logger != nil {
-			s.logger.Printf("[TTS] stream stop requested session=%s stream=%s", st.sessionID, st.streamID)
-		}
-	}
-	if st != nil {
-		st.stop()
-	}
-}
-
-func (s *Service) interruptStream(sessionID, streamID, reason string, ts time.Time, metadata map[string]string) {
-	if streamID == "" {
-		streamID = s.streamID
-	}
-	key := streamKey(sessionID, streamID)
-	st, ok := s.stream(key)
-	if !ok {
-		return
-	}
-	if ts.IsZero() {
-		ts = time.Now().UTC()
-	}
-	s.clearPending(key)
-	st.interrupt(reasonOrDefault(reason), ts, metadata)
-}
-
-func (s *Service) clearPending(key string) {
-	s.pendingMu.Lock()
-	if queue, ok := s.pending[key]; ok {
-		queue.stopTimer()
-		delete(s.pending, key)
-	}
-	s.pendingMu.Unlock()
-}
-
+// onStreamClosed is called from the stream's run() goroutine when it exits.
 func (s *Service) onStreamClosed(key string, st *stream) {
-	removed := false
-	s.mu.Lock()
-	if current, ok := s.streams[key]; ok && current == st {
-		delete(s.streams, key)
-		removed = true
-	}
-	s.mu.Unlock()
-	if removed {
-		s.activeStreams.Add(-1)
-		if s.logger != nil {
-			s.logger.Printf("[TTS] stream closed session=%s stream=%s interrupted=%t", st.sessionID, st.streamID, st.interrupted)
-		}
+	if s.manager != nil {
+		s.manager.RemoveStream(key, st)
 	}
 	if !st.keepPending {
-		s.clearPending(key)
+		if s.manager != nil {
+			s.manager.ClearPending(key)
+		}
 		return
 	}
 	// Drain any requests that arrived between rebufferPending and stream
@@ -581,139 +532,11 @@ func (s *Service) onStreamClosed(key string, st *stream) {
 			if !ok {
 				return
 			}
-			s.bufferPending(st.key, params, req)
+			s.manager.BufferPending(st.key, params, req)
 		default:
 			return
 		}
 	}
-}
-
-type pendingQueue struct {
-	params  SessionParams
-	records []speakRequest
-	timer   *time.Timer
-	delay   time.Duration
-}
-
-func (pq *pendingQueue) scheduleRetry(s *Service, key string) {
-	if pq.timer != nil {
-		return
-	}
-
-	delay := pq.delay
-	if delay <= 0 {
-		delay = s.retryInitial
-	} else {
-		delay *= 2
-		if delay > s.retryMax {
-			delay = s.retryMax
-		}
-	}
-	pq.delay = delay
-	pq.timer = time.AfterFunc(delay, func() {
-		s.retryPending(key)
-	})
-	if s.logger != nil {
-		sessionID, streamID := splitStreamKey(key)
-		s.logger.Printf("[TTS] scheduling adapter retry session=%s stream=%s in %s", sessionID, streamID, delay)
-	}
-}
-
-func (pq *pendingQueue) stopTimer() {
-	if pq.timer != nil {
-		pq.timer.Stop()
-		pq.timer = nil
-	}
-	pq.delay = 0
-}
-
-func (s *Service) bufferPending(key string, params SessionParams, req speakRequest) {
-	s.pendingMu.Lock()
-	defer s.pendingMu.Unlock()
-
-	queue, ok := s.pending[key]
-	if !ok {
-		queue = &pendingQueue{
-			params: params,
-		}
-		s.pending[key] = queue
-	}
-	if len(queue.records) >= maxPendingRequests {
-		queue.records = queue.records[1:]
-		s.logger.Printf("[TTS] pending buffer full session=%s stream=%s, dropping oldest request", queue.params.SessionID, queue.params.StreamID)
-	}
-	queue.records = append(queue.records, req)
-	if s.logger != nil {
-		s.logger.Printf("[TTS] buffered speak request session=%s stream=%s pending=%d prompt=%s", req.SessionID, req.StreamID, len(queue.records), strings.TrimSpace(req.PromptID))
-	}
-	queue.scheduleRetry(s, key)
-}
-
-func (s *Service) flushPending(key string, st *stream) {
-	s.pendingMu.Lock()
-	queue, ok := s.pending[key]
-	if ok {
-		queue.stopTimer()
-		records := append([]speakRequest(nil), queue.records...)
-		delete(s.pending, key)
-		s.pendingMu.Unlock()
-		if len(records) > 0 && s.logger != nil {
-			s.logger.Printf("[TTS] replaying %d buffered requests session=%s stream=%s", len(records), st.sessionID, st.streamID)
-		}
-
-		for _, req := range records {
-			if err := st.enqueue(req); err != nil {
-				if errors.Is(err, errStreamRebuffering) {
-					s.bufferPending(key, SessionParams{
-						SessionID: st.sessionID,
-						StreamID:  st.streamID,
-						Format:    st.format,
-						Metadata:  copyMetadata(st.metadata),
-					}, req)
-				} else if !errors.Is(err, context.Canceled) {
-					s.logger.Printf("[TTS] enqueue pending request session=%s stream=%s failed: %v", req.SessionID, req.StreamID, err)
-				}
-			}
-		}
-		return
-	}
-	s.pendingMu.Unlock()
-}
-
-func (s *Service) retryPending(key string) {
-	s.pendingMu.Lock()
-	queue, ok := s.pending[key]
-	if !ok {
-		s.pendingMu.Unlock()
-		return
-	}
-	queue.timer = nil
-	params := queue.params
-	s.pendingMu.Unlock()
-
-	stream, err := s.createStream(key, params)
-	if err != nil {
-		if errors.Is(err, ErrAdapterUnavailable) {
-			s.pendingMu.Lock()
-			if queue, ok := s.pending[key]; ok {
-				queue.scheduleRetry(s, key)
-			}
-			s.pendingMu.Unlock()
-			return
-		}
-		if !errors.Is(err, context.Canceled) {
-			s.logger.Printf("[TTS] retry stream session=%s stream=%s permanent error, dropping pending: %v", params.SessionID, params.StreamID, err)
-		}
-		s.pendingMu.Lock()
-		if queue, ok := s.pending[key]; ok {
-			queue.stopTimer()
-			delete(s.pending, key)
-		}
-		s.pendingMu.Unlock()
-		return
-	}
-
-	s.flushPending(key, stream)
 }
 
 type stream struct {
@@ -802,7 +625,8 @@ func (st *stream) decorateMetadata(meta map[string]string) map[string]string {
 	return meta
 }
 
-func (st *stream) enqueue(req speakRequest) error {
+// Enqueue implements streammanager.StreamHandle.
+func (st *stream) Enqueue(req speakRequest) error {
 	st.mu.RLock()
 	stopped := st.stopped
 	st.mu.RUnlock()
@@ -821,6 +645,27 @@ func (st *stream) enqueue(req speakRequest) error {
 		return nil
 	case <-st.ctx.Done():
 		return context.Canceled
+	}
+}
+
+// Stop implements streammanager.StreamHandle.
+func (st *stream) Stop() {
+	st.mu.Lock()
+	st.stopped = true
+	st.mu.Unlock()
+	st.cancel()
+}
+
+// Wait implements streammanager.StreamHandle.
+func (st *stream) Wait(ctx context.Context) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		st.wg.Wait()
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
 	}
 }
 
@@ -936,7 +781,7 @@ func (st *stream) rebufferPending(failedReq speakRequest) {
 		Format:    st.format,
 		Metadata:  copyMetadata(st.metadata),
 	}
-	st.service.bufferPending(st.key, params, failedReq)
+	st.service.manager.BufferPending(st.key, params, failedReq)
 
 	// Cancel context BEFORE draining so that racing enqueue calls
 	// see ctx.Done in their first select and fail fast.  Any request
@@ -951,30 +796,10 @@ func (st *stream) rebufferPending(failedReq speakRequest) {
 			if !ok {
 				return
 			}
-			st.service.bufferPending(st.key, params, req)
+			st.service.manager.BufferPending(st.key, params, req)
 		default:
 			return
 		}
-	}
-}
-
-func (st *stream) stop() {
-	st.mu.Lock()
-	st.stopped = true
-	st.mu.Unlock()
-	st.cancel()
-	close(st.requestCh)
-}
-
-func (st *stream) wait(ctx context.Context) {
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		st.wg.Wait()
-	}()
-	select {
-	case <-done:
-	case <-ctx.Done():
 	}
 }
 
@@ -1029,17 +854,6 @@ func (s *Service) publishPlayback(evt eventbus.AudioEgressPlaybackEvent) {
 	})
 }
 
-func copyMetadata(src map[string]string) map[string]string {
-	if len(src) == 0 {
-		return nil
-	}
-	dst := make(map[string]string, len(src))
-	for k, v := range src {
-		dst[k] = v
-	}
-	return dst
-}
-
 func mergeMetadata(base map[string]string, chunk map[string]string, req map[string]string) map[string]string {
 	size := len(base) + len(chunk) + len(req)
 	if size == 0 {
@@ -1056,18 +870,6 @@ func mergeMetadata(base map[string]string, chunk map[string]string, req map[stri
 		out[k] = v
 	}
 	return out
-}
-
-func splitStreamKey(key string) (string, string) {
-	const sep = "::"
-	if idx := strings.Index(key, sep); idx >= 0 {
-		return key[:idx], key[idx+len(sep):]
-	}
-	return key, ""
-}
-
-func streamKey(sessionID, streamID string) string {
-	return sessionID + "::" + streamID
 }
 
 func reasonOrDefault(reason string) string {

@@ -1,7 +1,11 @@
 package jsruntime
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
+	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -51,7 +55,7 @@ func TestNewRuntime(t *testing.T) {
 	defer cancel()
 
 	hostScript := hostScriptPath(t)
-	rt, err := New(ctx, "", hostScript)
+	rt, err := New(ctx, "", hostScript, WithRunDir(t.TempDir()))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -90,7 +94,7 @@ module.exports = {
 	defer cancel()
 
 	hostScript := hostScriptPath(t)
-	rt, err := New(ctx, "", hostScript)
+	rt, err := New(ctx, "", hostScript, WithRunDir(t.TempDir()))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -136,7 +140,7 @@ module.exports = {
 	defer cancel()
 
 	hostScript := hostScriptPath(t)
-	rt, err := New(ctx, "", hostScript)
+	rt, err := New(ctx, "", hostScript, WithRunDir(t.TempDir()))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -193,7 +197,7 @@ module.exports = {
 	defer cancel()
 
 	hostScript := hostScriptPath(t)
-	rt, err := New(ctx, "", hostScript)
+	rt, err := New(ctx, "", hostScript, WithRunDir(t.TempDir()))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -230,7 +234,7 @@ func TestShutdown(t *testing.T) {
 	defer cancel()
 
 	hostScript := hostScriptPath(t)
-	rt, err := New(ctx, "", hostScript)
+	rt, err := New(ctx, "", hostScript, WithRunDir(t.TempDir()))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -275,7 +279,7 @@ module.exports = {
 	defer cancel()
 
 	hostScript := hostScriptPath(t)
-	rt, err := New(ctx, "", hostScript)
+	rt, err := New(ctx, "", hostScript, WithRunDir(t.TempDir()))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -300,7 +304,7 @@ func TestCallUnloadedPlugin(t *testing.T) {
 	defer cancel()
 
 	hostScript := hostScriptPath(t)
-	rt, err := New(ctx, "", hostScript)
+	rt, err := New(ctx, "", hostScript, WithRunDir(t.TempDir()))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -310,5 +314,193 @@ func TestCallUnloadedPlugin(t *testing.T) {
 	_, err = rt.Call(ctx, "/nonexistent/plugin.js", "detect", "test")
 	if err == nil {
 		t.Fatal("expected error for unloaded plugin")
+	}
+}
+
+// TestSocketCleanup verifies the socket file is removed after shutdown.
+func TestSocketCleanup(t *testing.T) {
+	skipIfNoBun(t)
+
+	runDir := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	hostScript := hostScriptPath(t)
+	rt, err := New(ctx, "", hostScript, WithRunDir(runDir))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	socketPath := rt.socketPath
+	// Socket file should exist while runtime is up.
+	if _, err := os.Stat(socketPath); err != nil {
+		t.Fatalf("socket file should exist: %v", err)
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer shutdownCancel()
+	if err := rt.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
+	}
+
+	// Socket file should be removed after shutdown.
+	if _, err := os.Stat(socketPath); !os.IsNotExist(err) {
+		t.Errorf("socket file should be removed after shutdown, got err = %v", err)
+	}
+}
+
+// TestStdoutDoesNotCorruptProtocol verifies that a plugin writing to
+// process.stdout does not break the IPC protocol (since we use a socket now).
+func TestStdoutDoesNotCorruptProtocol(t *testing.T) {
+	skipIfNoBun(t)
+
+	tmpDir := t.TempDir()
+	pluginPath := filepath.Join(tmpDir, "stdout-writer.js")
+	pluginCode := `
+module.exports = {
+  name: "stdout-writer",
+  commands: [],
+  doWork: function() {
+    // This would have broken the old stdin/stdout protocol.
+    process.stdout.write("GARBAGE ON STDOUT\n");
+    return "ok";
+  }
+};
+`
+	if err := os.WriteFile(pluginPath, []byte(pluginCode), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	hostScript := hostScriptPath(t)
+	rt, err := New(ctx, "", hostScript, WithRunDir(t.TempDir()))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer rt.Shutdown(context.Background())
+
+	if _, err := rt.LoadPlugin(ctx, pluginPath); err != nil {
+		t.Fatalf("LoadPlugin() error = %v", err)
+	}
+
+	// Call the function that writes to stdout - should not break the protocol.
+	result, err := rt.Call(ctx, pluginPath, "doWork")
+	if err != nil {
+		t.Fatalf("Call(doWork) error = %v", err)
+	}
+	if result != "ok" {
+		t.Errorf("doWork() = %v, want %q", result, "ok")
+	}
+
+	// Verify further calls still work.
+	result, err = rt.Call(ctx, pluginPath, "doWork")
+	if err != nil {
+		t.Fatalf("second Call(doWork) error = %v", err)
+	}
+	if result != "ok" {
+		t.Errorf("second doWork() = %v, want %q", result, "ok")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests for frame framing (writeFrame / readFrame)
+// ---------------------------------------------------------------------------
+
+func TestWriteReadFrame(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	payload := []byte(`{"id":1,"method":"ping"}`)
+
+	// Write in a goroutine.
+	go func() {
+		if err := writeFrame(client, payload); err != nil {
+			t.Errorf("writeFrame error: %v", err)
+		}
+	}()
+
+	got, err := readFrame(server)
+	if err != nil {
+		t.Fatalf("readFrame error: %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Errorf("readFrame = %q, want %q", got, payload)
+	}
+}
+
+func TestWriteReadFrameEmpty(t *testing.T) {
+	client, server := net.Pipe()
+	defer server.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- writeFrame(client, []byte{})
+		client.Close()
+	}()
+
+	got, err := readFrame(server)
+	if err != nil {
+		t.Fatalf("readFrame error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("readFrame = %q, want empty", got)
+	}
+	if err := <-errCh; err != nil {
+		t.Errorf("writeFrame error: %v", err)
+	}
+}
+
+func TestReadFrameTooLarge(t *testing.T) {
+	client, server := net.Pipe()
+	defer server.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// Write a header claiming a payload larger than max.
+		var header [4]byte
+		binary.BigEndian.PutUint32(header[:], maxFramePayload+1)
+		client.Write(header[:])
+		client.Close()
+	}()
+
+	_, err := readFrame(server)
+	if err == nil {
+		t.Fatal("expected error for oversized frame")
+	}
+	<-done
+}
+
+func TestReadFrameMultiple(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	messages := []string{
+		`{"id":1,"method":"ping"}`,
+		`{"id":2,"method":"loadPlugin","params":{"path":"/foo"}}`,
+		`{"id":3,"method":"shutdown"}`,
+	}
+
+	go func() {
+		for _, msg := range messages {
+			if err := writeFrame(client, []byte(msg)); err != nil {
+				t.Errorf("writeFrame error: %v", err)
+			}
+		}
+	}()
+
+	reader := io.Reader(server)
+	for i, want := range messages {
+		got, err := readFrame(reader)
+		if err != nil {
+			t.Fatalf("readFrame[%d] error: %v", i, err)
+		}
+		if string(got) != want {
+			t.Errorf("readFrame[%d] = %q, want %q", i, got, want)
+		}
 	}
 }

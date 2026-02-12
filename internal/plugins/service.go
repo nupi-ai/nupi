@@ -19,6 +19,7 @@ import (
 // Service manages plugin assets and metadata for the daemon.
 type Service struct {
 	pluginDir   string
+	runDir      string // directory for runtime sockets (IPC)
 	pipelineIdx map[string]*pipelinecleaners.PipelinePlugin
 	pipelineMu  sync.RWMutex
 
@@ -35,8 +36,10 @@ type Service struct {
 // NewService constructs a plugin service rooted in the given instance directory.
 func NewService(instanceDir string) *Service {
 	pluginDir := filepath.Join(instanceDir, "plugins")
+	runDir := filepath.Join(instanceDir, "run")
 	return &Service{
 		pluginDir:       pluginDir,
+		runDir:          runDir,
 		pipelineIdx:     make(map[string]*pipelinecleaners.PipelinePlugin),
 		toolHandlerIdx: make(map[string]*toolhandlers.JSPlugin),
 	}
@@ -323,8 +326,9 @@ func (s *Service) Shutdown(ctx context.Context) error {
 // Uses embedded host.js script - no external file needed.
 // The supervised runtime will automatically restart if the process crashes.
 func (s *Service) startJSRuntime(ctx context.Context) error {
-	// Pass empty strings - NewSupervised() will use embedded host.js and resolve bun
-	srt, err := jsruntime.NewSupervised(ctx, "", "")
+	// Pass empty strings - NewSupervised() will use embedded host.js and resolve bun.
+	// WithRunDir tells the runtime where to place the IPC socket.
+	srt, err := jsruntime.NewSupervised(ctx, "", "", jsruntime.WithRunDir(s.runDir))
 	if err != nil {
 		return err
 	}

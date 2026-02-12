@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nupi-ai/nupi/internal/audio/streammanager"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 )
 
@@ -176,6 +177,12 @@ func TestServiceMetricsSegments(t *testing.T) {
 		t.Fatalf("expected initial SegmentsTotal to be 0, got %d", metrics.SegmentsTotal)
 	}
 
+	// Need to call Start to initialise manager.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	svc.Start(ctx)
+	defer svc.Shutdown(context.Background())
+
 	segment := eventbus.AudioIngressSegmentEvent{
 		SessionID: "metrics-session",
 		StreamID:  "mic",
@@ -327,10 +334,8 @@ func TestServiceDoesNotBufferWhenFactoryUnavailable(t *testing.T) {
 	case <-time.After(50 * time.Millisecond):
 	}
 
-	svc.pendingMu.Lock()
-	defer svc.pendingMu.Unlock()
-	if len(svc.pending) != 0 {
-		t.Fatalf("expected no pending entries when factory unavailable, got %d", len(svc.pending))
+	if svc.manager.PendingCount() != 0 {
+		t.Fatalf("expected no pending entries when factory unavailable, got %d", svc.manager.PendingCount())
 	}
 }
 
@@ -465,9 +470,7 @@ func TestServiceRetryDropsPendingOnPermanentError(t *testing.T) {
 	// Poll until the retry fires and hits the permanent error.
 	deadline := time.After(time.Second)
 	for {
-		svc.pendingMu.Lock()
-		pending := len(svc.pending)
-		svc.pendingMu.Unlock()
+		pending := svc.manager.PendingCount()
 		if pending == 0 {
 			mu.Lock()
 			a := attempts
@@ -547,8 +550,8 @@ func TestSTTRecoversMidStreamAdapterFailure(t *testing.T) {
 	bus := eventbus.New()
 
 	var (
-		mu       sync.Mutex
-		callNum  int
+		mu      sync.Mutex
+		callNum int
 	)
 
 	factory := FactoryFunc(func(ctx context.Context, params SessionParams) (Transcriber, error) {
@@ -557,15 +560,10 @@ func TestSTTRecoversMidStreamAdapterFailure(t *testing.T) {
 		callNum++
 		switch callNum {
 		case 1:
-			// First transcriber: will fail on second segment.
-			return &failingTranscriber{
-				failOnSeq: 2,
-			}, nil
+			return &failingTranscriber{failOnSeq: 2}, nil
 		case 2:
-			// Second transcriber (recovery attempt): factory still unavailable.
 			return nil, ErrAdapterUnavailable
 		default:
-			// Third call: factory recovers.
 			return &scriptedTranscriber{
 				outputs: map[uint64][]Transcription{
 					3: {
@@ -607,7 +605,6 @@ func TestSTTRecoversMidStreamAdapterFailure(t *testing.T) {
 		Duration: 20 * time.Millisecond,
 	}
 
-	// Segment 1: succeeds on first transcriber.
 	seg1 := baseSegment
 	seg1.Sequence = 1
 	seg1.First = true
@@ -617,7 +614,6 @@ func TestSTTRecoversMidStreamAdapterFailure(t *testing.T) {
 	})
 	time.Sleep(20 * time.Millisecond)
 
-	// Segment 2: first transcriber returns ErrAdapterUnavailable, triggers recovery.
 	seg2 := baseSegment
 	seg2.Sequence = 2
 	bus.Publish(context.Background(), eventbus.Envelope{
@@ -626,8 +622,6 @@ func TestSTTRecoversMidStreamAdapterFailure(t *testing.T) {
 	})
 	time.Sleep(20 * time.Millisecond)
 
-	// Segment 3: factory returns ErrAdapterUnavailable, segment dropped.
-	// (reconnect attempt #2 in factory)
 	seg3drop := baseSegment
 	seg3drop.Sequence = 99
 	bus.Publish(context.Background(), eventbus.Envelope{
@@ -636,7 +630,6 @@ func TestSTTRecoversMidStreamAdapterFailure(t *testing.T) {
 	})
 	time.Sleep(20 * time.Millisecond)
 
-	// Segment 4: factory succeeds, new transcriber produces output.
 	seg3 := baseSegment
 	seg3.Sequence = 3
 	seg3.Last = true
@@ -651,8 +644,6 @@ func TestSTTRecoversMidStreamAdapterFailure(t *testing.T) {
 	}
 }
 
-// failingTranscriber returns ErrAdapterUnavailable on a specific sequence,
-// optionally returning partial results alongside the error (matching NAP contract).
 type failingTranscriber struct {
 	mu            sync.Mutex
 	failOnSeq     uint64
@@ -727,3 +718,6 @@ func TestSTTPublishesPartialResultsBeforeRecovery(t *testing.T) {
 		t.Fatalf("expected partial transcript to be published before recovery, got %q", tr.Text)
 	}
 }
+
+// Ensure the import is used.
+var _ = streammanager.StreamKey

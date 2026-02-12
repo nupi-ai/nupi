@@ -29,7 +29,7 @@ func newRuntime(t *testing.T) *jsruntime.Runtime {
 	t.Helper()
 
 	// Use empty hostScript to use embedded host.js
-	rt, err := jsruntime.New(context.Background(), "", "")
+	rt, err := jsruntime.New(context.Background(), "", "", jsruntime.WithRunDir(t.TempDir()))
 	if err != nil {
 		t.Fatalf("jsruntime.New() error = %v", err)
 	}
