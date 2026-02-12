@@ -302,7 +302,7 @@ func (s *APIServer) handleAudioEgress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sub := s.eventBus.Subscribe(
+	sub := eventbus.Subscribe[eventbus.AudioEgressPlaybackEvent](s.eventBus,
 		eventbus.TopicAudioEgressPlayback,
 		eventbus.WithSubscriptionName(fmt.Sprintf("http_audio_out_%s_%s_%d", sessionID, streamID, time.Now().UnixNano())),
 		eventbus.WithSubscriptionBuffer(64),
@@ -331,8 +331,8 @@ func (s *APIServer) handleAudioEgress(w http.ResponseWriter, r *http.Request) {
 				flusher.Flush()
 				return
 			}
-			evt, ok := env.Payload.(eventbus.AudioEgressPlaybackEvent)
-			if !ok || evt.SessionID != sessionID || evt.StreamID != streamID {
+			evt := env.Payload
+			if evt.SessionID != sessionID || evt.StreamID != streamID {
 				continue
 			}
 
@@ -622,7 +622,7 @@ func (s *APIServer) handleAudioEgressWS(w http.ResponseWriter, r *http.Request) 
 		return conn.SetReadDeadline(time.Now().Add(websocketHeartbeatTimeout))
 	})
 
-	sub := s.eventBus.Subscribe(
+	sub := eventbus.Subscribe[eventbus.AudioEgressPlaybackEvent](s.eventBus,
 		eventbus.TopicAudioEgressPlayback,
 		eventbus.WithSubscriptionName(fmt.Sprintf("ws_audio_out_%s_%s_%d", sessionID, streamID, time.Now().UnixNano())),
 		eventbus.WithSubscriptionBuffer(64),
@@ -650,8 +650,8 @@ func (s *APIServer) handleAudioEgressWS(w http.ResponseWriter, r *http.Request) 
 				_ = conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseInternalServerErr, "playback subscription closed"))
 				return
 			}
-			evt, ok := env.Payload.(eventbus.AudioEgressPlaybackEvent)
-			if !ok || evt.SessionID != sessionID || evt.StreamID != streamID {
+			evt := env.Payload
+			if evt.SessionID != sessionID || evt.StreamID != streamID {
 				continue
 			}
 

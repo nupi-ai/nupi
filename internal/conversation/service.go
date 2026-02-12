@@ -87,9 +87,14 @@ type Service struct {
 	summaryThreshold int      // trigger summarization when len(history) >= this
 	summaryBatchSize int      // number of oldest turns to summarize
 
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
-	subs   []*eventbus.Subscription
+	cancel        context.CancelFunc
+	wg            sync.WaitGroup
+	cleanedSub    *eventbus.TypedSubscription[eventbus.PipelineMessageEvent]
+	lifecycleSub  *eventbus.TypedSubscription[eventbus.SessionLifecycleEvent]
+	replySub      *eventbus.TypedSubscription[eventbus.ConversationReplyEvent]
+	bargeSub      *eventbus.TypedSubscription[eventbus.SpeechBargeInEvent]
+	toolSub       *eventbus.TypedSubscription[eventbus.SessionToolEvent]
+	toolChangeSub *eventbus.TypedSubscription[eventbus.SessionToolChangedEvent]
 }
 
 const (
@@ -147,21 +152,20 @@ func (s *Service) Start(ctx context.Context) error {
 	derivedCtx, cancel := context.WithCancel(ctx)
 	s.cancel = cancel
 
-	cleanedSub := s.bus.Subscribe(eventbus.TopicPipelineCleaned, eventbus.WithSubscriptionName("conversation_pipeline"))
-	lifecycleSub := s.bus.Subscribe(eventbus.TopicSessionsLifecycle, eventbus.WithSubscriptionName("conversation_lifecycle"))
-	replySub := s.bus.Subscribe(eventbus.TopicConversationReply, eventbus.WithSubscriptionName("conversation_reply"))
-	bargeSub := s.bus.Subscribe(eventbus.TopicSpeechBargeIn, eventbus.WithSubscriptionName("conversation_barge"))
-	toolSub := s.bus.Subscribe(eventbus.TopicSessionsTool, eventbus.WithSubscriptionName("conversation_tool"))
-	toolChangeSub := s.bus.Subscribe(eventbus.TopicSessionsToolChanged, eventbus.WithSubscriptionName("conversation_tool_changed"))
-	s.subs = []*eventbus.Subscription{cleanedSub, lifecycleSub, replySub, bargeSub, toolSub, toolChangeSub}
+	s.cleanedSub = eventbus.Subscribe[eventbus.PipelineMessageEvent](s.bus, eventbus.TopicPipelineCleaned, eventbus.WithSubscriptionName("conversation_pipeline"))
+	s.lifecycleSub = eventbus.Subscribe[eventbus.SessionLifecycleEvent](s.bus, eventbus.TopicSessionsLifecycle, eventbus.WithSubscriptionName("conversation_lifecycle"))
+	s.replySub = eventbus.Subscribe[eventbus.ConversationReplyEvent](s.bus, eventbus.TopicConversationReply, eventbus.WithSubscriptionName("conversation_reply"))
+	s.bargeSub = eventbus.Subscribe[eventbus.SpeechBargeInEvent](s.bus, eventbus.TopicSpeechBargeIn, eventbus.WithSubscriptionName("conversation_barge"))
+	s.toolSub = eventbus.Subscribe[eventbus.SessionToolEvent](s.bus, eventbus.TopicSessionsTool, eventbus.WithSubscriptionName("conversation_tool"))
+	s.toolChangeSub = eventbus.Subscribe[eventbus.SessionToolChangedEvent](s.bus, eventbus.TopicSessionsToolChanged, eventbus.WithSubscriptionName("conversation_tool_changed"))
 
 	s.wg.Add(6)
-	go s.consumePipeline(derivedCtx, cleanedSub)
-	go s.consumeLifecycle(derivedCtx, lifecycleSub)
-	go s.consumeReplies(derivedCtx, replySub)
-	go s.consumeBarge(derivedCtx, bargeSub)
-	go s.consumeToolEvents(derivedCtx, toolSub)
-	go s.consumeToolChangeEvents(derivedCtx, toolChangeSub)
+	go s.consumePipeline(derivedCtx)
+	go s.consumeLifecycle(derivedCtx)
+	go s.consumeReplies(derivedCtx)
+	go s.consumeBarge(derivedCtx)
+	go s.consumeToolEvents(derivedCtx)
+	go s.consumeToolChangeEvents(derivedCtx)
 	return nil
 }
 
@@ -170,10 +174,23 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	if s.cancel != nil {
 		s.cancel()
 	}
-	for _, sub := range s.subs {
-		if sub != nil {
-			sub.Close()
-		}
+	if s.cleanedSub != nil {
+		s.cleanedSub.Close()
+	}
+	if s.lifecycleSub != nil {
+		s.lifecycleSub.Close()
+	}
+	if s.replySub != nil {
+		s.replySub.Close()
+	}
+	if s.bargeSub != nil {
+		s.bargeSub.Close()
+	}
+	if s.toolSub != nil {
+		s.toolSub.Close()
+	}
+	if s.toolChangeSub != nil {
+		s.toolChangeSub.Close()
 	}
 
 	// Stop all pending summary timers to prevent goroutine leaks
@@ -199,9 +216,9 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-func (s *Service) consumePipeline(ctx context.Context, sub *eventbus.Subscription) {
+func (s *Service) consumePipeline(ctx context.Context) {
 	defer s.wg.Done()
-	if sub == nil {
+	if s.cleanedSub == nil {
 		return
 	}
 
@@ -209,22 +226,18 @@ func (s *Service) consumePipeline(ctx context.Context, sub *eventbus.Subscriptio
 		select {
 		case <-ctx.Done():
 			return
-		case env, ok := <-sub.C():
+		case env, ok := <-s.cleanedSub.C():
 			if !ok {
 				return
 			}
-			msg, ok := env.Payload.(eventbus.PipelineMessageEvent)
-			if !ok {
-				continue
-			}
-			s.handlePipelineMessage(env.Timestamp, msg)
+			s.handlePipelineMessage(env.Timestamp, env.Payload)
 		}
 	}
 }
 
-func (s *Service) consumeLifecycle(ctx context.Context, sub *eventbus.Subscription) {
+func (s *Service) consumeLifecycle(ctx context.Context) {
 	defer s.wg.Done()
-	if sub == nil {
+	if s.lifecycleSub == nil {
 		return
 	}
 
@@ -232,14 +245,11 @@ func (s *Service) consumeLifecycle(ctx context.Context, sub *eventbus.Subscripti
 		select {
 		case <-ctx.Done():
 			return
-		case env, ok := <-sub.C():
+		case env, ok := <-s.lifecycleSub.C():
 			if !ok {
 				return
 			}
-			msg, ok := env.Payload.(eventbus.SessionLifecycleEvent)
-			if !ok {
-				continue
-			}
+			msg := env.Payload
 			switch msg.State {
 			case eventbus.SessionStateStopped:
 				s.clearSession(msg.SessionID)
@@ -255,9 +265,9 @@ func (s *Service) consumeLifecycle(ctx context.Context, sub *eventbus.Subscripti
 	}
 }
 
-func (s *Service) consumeReplies(ctx context.Context, sub *eventbus.Subscription) {
+func (s *Service) consumeReplies(ctx context.Context) {
 	defer s.wg.Done()
-	if sub == nil {
+	if s.replySub == nil {
 		return
 	}
 
@@ -265,22 +275,18 @@ func (s *Service) consumeReplies(ctx context.Context, sub *eventbus.Subscription
 		select {
 		case <-ctx.Done():
 			return
-		case env, ok := <-sub.C():
+		case env, ok := <-s.replySub.C():
 			if !ok {
 				return
 			}
-			msg, ok := env.Payload.(eventbus.ConversationReplyEvent)
-			if !ok {
-				continue
-			}
-			s.handleReplyMessage(env.Timestamp, msg)
+			s.handleReplyMessage(env.Timestamp, env.Payload)
 		}
 	}
 }
 
-func (s *Service) consumeBarge(ctx context.Context, sub *eventbus.Subscription) {
+func (s *Service) consumeBarge(ctx context.Context) {
 	defer s.wg.Done()
-	if sub == nil {
+	if s.bargeSub == nil {
 		return
 	}
 
@@ -288,22 +294,18 @@ func (s *Service) consumeBarge(ctx context.Context, sub *eventbus.Subscription) 
 		select {
 		case <-ctx.Done():
 			return
-		case env, ok := <-sub.C():
+		case env, ok := <-s.bargeSub.C():
 			if !ok {
 				return
 			}
-			event, ok := env.Payload.(eventbus.SpeechBargeInEvent)
-			if !ok {
-				continue
-			}
-			s.handleBargeEvent(event)
+			s.handleBargeEvent(env.Payload)
 		}
 	}
 }
 
-func (s *Service) consumeToolEvents(ctx context.Context, sub *eventbus.Subscription) {
+func (s *Service) consumeToolEvents(ctx context.Context) {
 	defer s.wg.Done()
-	if sub == nil {
+	if s.toolSub == nil {
 		return
 	}
 
@@ -311,22 +313,18 @@ func (s *Service) consumeToolEvents(ctx context.Context, sub *eventbus.Subscript
 		select {
 		case <-ctx.Done():
 			return
-		case env, ok := <-sub.C():
+		case env, ok := <-s.toolSub.C():
 			if !ok {
 				return
 			}
-			event, ok := env.Payload.(eventbus.SessionToolEvent)
-			if !ok {
-				continue
-			}
-			s.updateToolCache(event.SessionID, event.ToolName)
+			s.updateToolCache(env.Payload.SessionID, env.Payload.ToolName)
 		}
 	}
 }
 
-func (s *Service) consumeToolChangeEvents(ctx context.Context, sub *eventbus.Subscription) {
+func (s *Service) consumeToolChangeEvents(ctx context.Context) {
 	defer s.wg.Done()
-	if sub == nil {
+	if s.toolChangeSub == nil {
 		return
 	}
 
@@ -334,15 +332,11 @@ func (s *Service) consumeToolChangeEvents(ctx context.Context, sub *eventbus.Sub
 		select {
 		case <-ctx.Done():
 			return
-		case env, ok := <-sub.C():
+		case env, ok := <-s.toolChangeSub.C():
 			if !ok {
 				return
 			}
-			event, ok := env.Payload.(eventbus.SessionToolChangedEvent)
-			if !ok {
-				continue
-			}
-			s.updateToolCache(event.SessionID, event.NewTool)
+			s.updateToolCache(env.Payload.SessionID, env.Payload.NewTool)
 		}
 	}
 }

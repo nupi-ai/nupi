@@ -37,7 +37,11 @@ type Service struct {
 	mu     sync.RWMutex
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
-	subs   []*eventbus.Subscription
+
+	promptSub     *eventbus.TypedSubscription[eventbus.ConversationPromptEvent]
+	toolSub       *eventbus.TypedSubscription[eventbus.SessionToolEvent]
+	toolChangeSub *eventbus.TypedSubscription[eventbus.SessionToolChangedEvent]
+	lifecycleSub  *eventbus.TypedSubscription[eventbus.SessionLifecycleEvent]
 
 	// Tool cache - tracks current tool per session for prompt context
 	toolCache map[string]string
@@ -76,27 +80,16 @@ func (s *Service) Start(ctx context.Context) error {
 	derivedCtx, cancel := context.WithCancel(ctx)
 	s.cancel = cancel
 
-	// Subscribe to conversation prompts (user messages ready for AI processing)
-	promptSub := s.bus.Subscribe(eventbus.TopicConversationPrompt, eventbus.WithSubscriptionName("intent_router_prompt"))
-	s.subs = append(s.subs, promptSub)
-
-	// Subscribe to tool detection events (initial detection)
-	toolSub := s.bus.Subscribe(eventbus.TopicSessionsTool, eventbus.WithSubscriptionName("intent_router_tool"))
-	s.subs = append(s.subs, toolSub)
-
-	// Subscribe to tool change events (continuous detection)
-	toolChangeSub := s.bus.Subscribe(eventbus.TopicSessionsToolChanged, eventbus.WithSubscriptionName("intent_router_tool_changed"))
-	s.subs = append(s.subs, toolChangeSub)
-
-	// Subscribe to session lifecycle for tool cache cleanup
-	lifecycleSub := s.bus.Subscribe(eventbus.TopicSessionsLifecycle, eventbus.WithSubscriptionName("intent_router_lifecycle"))
-	s.subs = append(s.subs, lifecycleSub)
+	s.promptSub = eventbus.Subscribe[eventbus.ConversationPromptEvent](s.bus, eventbus.TopicConversationPrompt, eventbus.WithSubscriptionName("intent_router_prompt"))
+	s.toolSub = eventbus.Subscribe[eventbus.SessionToolEvent](s.bus, eventbus.TopicSessionsTool, eventbus.WithSubscriptionName("intent_router_tool"))
+	s.toolChangeSub = eventbus.Subscribe[eventbus.SessionToolChangedEvent](s.bus, eventbus.TopicSessionsToolChanged, eventbus.WithSubscriptionName("intent_router_tool_changed"))
+	s.lifecycleSub = eventbus.Subscribe[eventbus.SessionLifecycleEvent](s.bus, eventbus.TopicSessionsLifecycle, eventbus.WithSubscriptionName("intent_router_lifecycle"))
 
 	s.wg.Add(4)
-	go s.consumePrompts(derivedCtx, promptSub)
-	go s.consumeToolEvents(derivedCtx, toolSub)
-	go s.consumeToolChangeEvents(derivedCtx, toolChangeSub)
-	go s.consumeLifecycleEvents(derivedCtx, lifecycleSub)
+	go s.consumePrompts(derivedCtx)
+	go s.consumeToolEvents(derivedCtx)
+	go s.consumeToolChangeEvents(derivedCtx)
+	go s.consumeLifecycleEvents(derivedCtx)
 
 	s.mu.RLock()
 	adapterConfigured := s.adapter != nil
@@ -116,10 +109,17 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		s.cancel()
 	}
 
-	for _, sub := range s.subs {
-		if sub != nil {
-			sub.Close()
-		}
+	if s.promptSub != nil {
+		s.promptSub.Close()
+	}
+	if s.toolSub != nil {
+		s.toolSub.Close()
+	}
+	if s.toolChangeSub != nil {
+		s.toolChangeSub.Close()
+	}
+	if s.lifecycleSub != nil {
+		s.lifecycleSub.Close()
 	}
 
 	done := make(chan struct{})
@@ -172,9 +172,9 @@ func (s *Service) SetPromptEngine(engine PromptEngine) {
 	}
 }
 
-func (s *Service) consumePrompts(ctx context.Context, sub *eventbus.Subscription) {
+func (s *Service) consumePrompts(ctx context.Context) {
 	defer s.wg.Done()
-	if sub == nil {
+	if s.promptSub == nil {
 		return
 	}
 
@@ -182,24 +182,19 @@ func (s *Service) consumePrompts(ctx context.Context, sub *eventbus.Subscription
 		select {
 		case <-ctx.Done():
 			return
-		case env, ok := <-sub.C():
+		case env, ok := <-s.promptSub.C():
 			if !ok {
 				return
 			}
 
-			prompt, ok := env.Payload.(eventbus.ConversationPromptEvent)
-			if !ok {
-				continue
-			}
-
-			s.handlePrompt(ctx, prompt)
+			s.handlePrompt(ctx, env.Payload)
 		}
 	}
 }
 
-func (s *Service) consumeToolEvents(ctx context.Context, sub *eventbus.Subscription) {
+func (s *Service) consumeToolEvents(ctx context.Context) {
 	defer s.wg.Done()
-	if sub == nil {
+	if s.toolSub == nil {
 		return
 	}
 
@@ -207,24 +202,19 @@ func (s *Service) consumeToolEvents(ctx context.Context, sub *eventbus.Subscript
 		select {
 		case <-ctx.Done():
 			return
-		case env, ok := <-sub.C():
+		case env, ok := <-s.toolSub.C():
 			if !ok {
 				return
 			}
 
-			event, ok := env.Payload.(eventbus.SessionToolEvent)
-			if !ok {
-				continue
-			}
-
-			s.updateToolCache(event.SessionID, event.ToolName)
+			s.updateToolCache(env.Payload.SessionID, env.Payload.ToolName)
 		}
 	}
 }
 
-func (s *Service) consumeToolChangeEvents(ctx context.Context, sub *eventbus.Subscription) {
+func (s *Service) consumeToolChangeEvents(ctx context.Context) {
 	defer s.wg.Done()
-	if sub == nil {
+	if s.toolChangeSub == nil {
 		return
 	}
 
@@ -232,19 +222,14 @@ func (s *Service) consumeToolChangeEvents(ctx context.Context, sub *eventbus.Sub
 		select {
 		case <-ctx.Done():
 			return
-		case env, ok := <-sub.C():
+		case env, ok := <-s.toolChangeSub.C():
 			if !ok {
 				return
 			}
 
-			event, ok := env.Payload.(eventbus.SessionToolChangedEvent)
-			if !ok {
-				continue
-			}
-
-			s.updateToolCache(event.SessionID, event.NewTool)
+			s.updateToolCache(env.Payload.SessionID, env.Payload.NewTool)
 			log.Printf("[IntentRouter] Tool changed for session %s: %s -> %s",
-				event.SessionID, event.PreviousTool, event.NewTool)
+				env.Payload.SessionID, env.Payload.PreviousTool, env.Payload.NewTool)
 		}
 	}
 }
@@ -339,9 +324,9 @@ func (s *Service) selectTargetSession(prompt eventbus.ConversationPromptEvent, p
 	return ""
 }
 
-func (s *Service) consumeLifecycleEvents(ctx context.Context, sub *eventbus.Subscription) {
+func (s *Service) consumeLifecycleEvents(ctx context.Context) {
 	defer s.wg.Done()
-	if sub == nil {
+	if s.lifecycleSub == nil {
 		return
 	}
 
@@ -349,20 +334,15 @@ func (s *Service) consumeLifecycleEvents(ctx context.Context, sub *eventbus.Subs
 		select {
 		case <-ctx.Done():
 			return
-		case env, ok := <-sub.C():
+		case env, ok := <-s.lifecycleSub.C():
 			if !ok {
 				return
 			}
 
-			event, ok := env.Payload.(eventbus.SessionLifecycleEvent)
-			if !ok {
-				continue
-			}
-
 			// Clean up tool cache when session stops or detaches
-			switch event.State {
+			switch env.Payload.State {
 			case eventbus.SessionStateStopped, eventbus.SessionStateDetached:
-				s.clearToolCache(event.SessionID)
+				s.clearToolCache(env.Payload.SessionID)
 			}
 		}
 	}

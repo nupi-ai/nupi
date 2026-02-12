@@ -2554,37 +2554,35 @@ func (s *localHTTPServer) Close() {
 }
 
 func TestFilterAdapterLogEvent(t *testing.T) {
-	baseEnv := eventbus.Envelope{
-		Topic: eventbus.TopicAdaptersLog,
-		Payload: eventbus.AdapterLogEvent{
-			AdapterID: "example",
-			Message:   "hello",
-			Fields: map[string]string{
-				"slot": "stt",
-			},
+	baseEvent := eventbus.AdapterLogEvent{
+		AdapterID: "example",
+		Message:   "hello",
+		Fields: map[string]string{
+			"slot": "stt",
 		},
-		Timestamp: time.Unix(10, 0),
 	}
+	baseTimestamp := time.Unix(10, 0)
 
 	tests := []struct {
 		name          string
-		env           eventbus.Envelope
+		event         eventbus.AdapterLogEvent
+		timestamp     time.Time
 		slotFilter    string
 		adapter       string
 		expectEmit    bool
 		expectSlot    string
 		expectAdapter string
 	}{
-		{name: "match slot", env: baseEnv, slotFilter: "stt", expectEmit: true, expectSlot: "stt", expectAdapter: "example"},
-		{name: "case insensitive slot", env: baseEnv, slotFilter: "STT", expectEmit: true},
-		{name: "mismatched slot", env: baseEnv, slotFilter: "tts", expectEmit: false},
-		{name: "adapter filter", env: baseEnv, adapter: "example", expectEmit: true},
-		{name: "adapter mismatch", env: baseEnv, adapter: "other", expectEmit: false},
+		{name: "match slot", event: baseEvent, timestamp: baseTimestamp, slotFilter: "stt", expectEmit: true, expectSlot: "stt", expectAdapter: "example"},
+		{name: "case insensitive slot", event: baseEvent, timestamp: baseTimestamp, slotFilter: "STT", expectEmit: true},
+		{name: "mismatched slot", event: baseEvent, timestamp: baseTimestamp, slotFilter: "tts", expectEmit: false},
+		{name: "adapter filter", event: baseEvent, timestamp: baseTimestamp, adapter: "example", expectEmit: true},
+		{name: "adapter mismatch", event: baseEvent, timestamp: baseTimestamp, adapter: "other", expectEmit: false},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			entry, ok := filterAdapterLogEvent(tc.env, strings.ToLower(tc.slotFilter), strings.ToLower(tc.adapter))
+			entry, ok := filterAdapterLogEvent(tc.event, tc.timestamp, strings.ToLower(tc.slotFilter), strings.ToLower(tc.adapter))
 			if ok != tc.expectEmit {
 				t.Fatalf("expected emit=%v, got %v", tc.expectEmit, ok)
 			}
@@ -2602,17 +2600,14 @@ func TestFilterAdapterLogEvent(t *testing.T) {
 }
 
 func TestMakeTranscriptEntry(t *testing.T) {
-	env := eventbus.Envelope{
-		Topic: eventbus.TopicSpeechTranscriptFinal,
-		Payload: eventbus.SpeechTranscriptEvent{
-			SessionID:  "abc",
-			StreamID:   "mic",
-			Text:       "hello",
-			Confidence: 0.5,
-			Final:      true,
-		},
+	event := eventbus.SpeechTranscriptEvent{
+		SessionID:  "abc",
+		StreamID:   "mic",
+		Text:       "hello",
+		Confidence: 0.5,
+		Final:      true,
 	}
-	entry, ok := makeTranscriptEntry(env)
+	entry, ok := makeTranscriptEntry(event, time.Unix(10, 0))
 	if !ok {
 		t.Fatalf("expected entry to be emitted")
 	}
@@ -2620,8 +2615,7 @@ func TestMakeTranscriptEntry(t *testing.T) {
 		t.Fatalf("unexpected entry: %+v", entry)
 	}
 
-	env.Timestamp = time.Time{}
-	entry, ok = makeTranscriptEntry(env)
+	entry, ok = makeTranscriptEntry(event, time.Time{})
 	if !ok {
 		t.Fatalf("expected entry to be emitted")
 	}

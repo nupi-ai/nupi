@@ -58,7 +58,7 @@ type AdapterBridge struct {
 	mu             sync.Mutex
 	cancel         context.CancelFunc
 	wg             sync.WaitGroup
-	sub            *eventbus.Subscription
+	sub            *eventbus.TypedSubscription[eventbus.AdapterStatusEvent]
 	current        string        // currently active adapter ID
 	currentAddress string        // currently active adapter endpoint address
 	adapter        IntentAdapter // currently active adapter
@@ -136,7 +136,7 @@ func (b *AdapterBridge) Start(ctx context.Context) error {
 
 	// Subscribe to adapter status events BEFORE initial sync
 	// This ensures we don't miss events that occur during sync
-	b.sub = b.bus.Subscribe(
+	b.sub = eventbus.Subscribe[eventbus.AdapterStatusEvent](b.bus,
 		eventbus.TopicAdaptersStatus,
 		eventbus.WithSubscriptionName("intent_router_adapter_bridge"),
 	)
@@ -271,12 +271,7 @@ func (b *AdapterBridge) consumeEvents(ctx context.Context) {
 				return
 			}
 
-			evt, ok := env.Payload.(eventbus.AdapterStatusEvent)
-			if !ok {
-				continue
-			}
-
-			b.handleAdapterStatus(ctx, evt)
+			b.handleAdapterStatus(ctx, env.Payload)
 		}
 	}
 }

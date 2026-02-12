@@ -141,9 +141,11 @@ type Service struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	subs     []*eventbus.Subscription
-	bargeSub *eventbus.Subscription
-	wg       sync.WaitGroup
+	replySub     *eventbus.TypedSubscription[eventbus.ConversationReplyEvent]
+	speakSub     *eventbus.TypedSubscription[eventbus.ConversationSpeakEvent]
+	lifecycleSub *eventbus.TypedSubscription[eventbus.SessionLifecycleEvent]
+	bargeSub     *eventbus.TypedSubscription[eventbus.SpeechBargeInEvent]
+	wg           sync.WaitGroup
 
 	manager *streammanager.Manager[speakRequest]
 
@@ -219,18 +221,16 @@ func (s *Service) Start(ctx context.Context) error {
 		Ctx:    s.ctx,
 	})
 
-	replySub := s.bus.Subscribe(eventbus.TopicConversationReply, eventbus.WithSubscriptionName("audio_egress_reply"))
-	speakSub := s.bus.Subscribe(eventbus.TopicConversationSpeak, eventbus.WithSubscriptionName("audio_egress_speak"))
-	lifecycleSub := s.bus.Subscribe(eventbus.TopicSessionsLifecycle, eventbus.WithSubscriptionName("audio_egress_lifecycle"))
-	bargeSub := s.bus.Subscribe(eventbus.TopicSpeechBargeIn, eventbus.WithSubscriptionName("audio_egress_barge"))
-	s.subs = []*eventbus.Subscription{replySub, speakSub, lifecycleSub, bargeSub}
-	s.bargeSub = bargeSub
+	s.replySub = eventbus.Subscribe[eventbus.ConversationReplyEvent](s.bus, eventbus.TopicConversationReply, eventbus.WithSubscriptionName("audio_egress_reply"))
+	s.speakSub = eventbus.Subscribe[eventbus.ConversationSpeakEvent](s.bus, eventbus.TopicConversationSpeak, eventbus.WithSubscriptionName("audio_egress_speak"))
+	s.lifecycleSub = eventbus.Subscribe[eventbus.SessionLifecycleEvent](s.bus, eventbus.TopicSessionsLifecycle, eventbus.WithSubscriptionName("audio_egress_lifecycle"))
+	s.bargeSub = eventbus.Subscribe[eventbus.SpeechBargeInEvent](s.bus, eventbus.TopicSpeechBargeIn, eventbus.WithSubscriptionName("audio_egress_barge"))
 
 	s.wg.Add(4)
-	go s.consumeReplies(replySub)
-	go s.consumeSpeak(speakSub)
-	go s.consumeLifecycle(lifecycleSub)
-	go s.consumeBarge(bargeSub)
+	go s.consumeReplies()
+	go s.consumeSpeak()
+	go s.consumeLifecycle()
+	go s.consumeBarge()
 	return nil
 }
 
@@ -239,10 +239,17 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	if s.cancel != nil {
 		s.cancel()
 	}
-	for _, sub := range s.subs {
-		if sub != nil {
-			sub.Close()
-		}
+	if s.replySub != nil {
+		s.replySub.Close()
+	}
+	if s.speakSub != nil {
+		s.speakSub.Close()
+	}
+	if s.lifecycleSub != nil {
+		s.lifecycleSub.Close()
+	}
+	if s.bargeSub != nil {
+		s.bargeSub.Close()
 	}
 
 	done := make(chan struct{})
@@ -271,9 +278,9 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-func (s *Service) consumeReplies(sub *eventbus.Subscription) {
+func (s *Service) consumeReplies() {
 	defer s.wg.Done()
-	if sub == nil {
+	if s.replySub == nil {
 		return
 	}
 
@@ -281,14 +288,11 @@ func (s *Service) consumeReplies(sub *eventbus.Subscription) {
 		select {
 		case <-s.ctx.Done():
 			return
-		case env, ok := <-sub.C():
+		case env, ok := <-s.replySub.C():
 			if !ok {
 				return
 			}
-			reply, ok := env.Payload.(eventbus.ConversationReplyEvent)
-			if !ok {
-				continue
-			}
+			reply := env.Payload
 			s.handleSpeakRequest(speakRequest{
 				SessionID: reply.SessionID,
 				StreamID:  s.streamID,
@@ -300,9 +304,9 @@ func (s *Service) consumeReplies(sub *eventbus.Subscription) {
 	}
 }
 
-func (s *Service) consumeSpeak(sub *eventbus.Subscription) {
+func (s *Service) consumeSpeak() {
 	defer s.wg.Done()
-	if sub == nil {
+	if s.speakSub == nil {
 		return
 	}
 
@@ -310,14 +314,11 @@ func (s *Service) consumeSpeak(sub *eventbus.Subscription) {
 		select {
 		case <-s.ctx.Done():
 			return
-		case env, ok := <-sub.C():
+		case env, ok := <-s.speakSub.C():
 			if !ok {
 				return
 			}
-			event, ok := env.Payload.(eventbus.ConversationSpeakEvent)
-			if !ok {
-				continue
-			}
+			event := env.Payload
 			s.handleSpeakRequest(speakRequest{
 				SessionID: event.SessionID,
 				StreamID:  s.streamID,
@@ -329,9 +330,9 @@ func (s *Service) consumeSpeak(sub *eventbus.Subscription) {
 	}
 }
 
-func (s *Service) consumeLifecycle(sub *eventbus.Subscription) {
+func (s *Service) consumeLifecycle() {
 	defer s.wg.Done()
-	if sub == nil {
+	if s.lifecycleSub == nil {
 		return
 	}
 
@@ -339,14 +340,11 @@ func (s *Service) consumeLifecycle(sub *eventbus.Subscription) {
 		select {
 		case <-s.ctx.Done():
 			return
-		case env, ok := <-sub.C():
+		case env, ok := <-s.lifecycleSub.C():
 			if !ok {
 				return
 			}
-			msg, ok := env.Payload.(eventbus.SessionLifecycleEvent)
-			if !ok {
-				continue
-			}
+			msg := env.Payload
 			if msg.State == eventbus.SessionStateStopped {
 				if s.manager != nil {
 					s.manager.RemoveStreamByKey(streammanager.StreamKey(msg.SessionID, s.streamID))
@@ -356,9 +354,9 @@ func (s *Service) consumeLifecycle(sub *eventbus.Subscription) {
 	}
 }
 
-func (s *Service) consumeBarge(sub *eventbus.Subscription) {
+func (s *Service) consumeBarge() {
 	defer s.wg.Done()
-	if sub == nil {
+	if s.bargeSub == nil {
 		return
 	}
 
@@ -366,15 +364,11 @@ func (s *Service) consumeBarge(sub *eventbus.Subscription) {
 		select {
 		case <-s.ctx.Done():
 			return
-		case env, ok := <-sub.C():
+		case env, ok := <-s.bargeSub.C():
 			if !ok {
 				return
 			}
-			evt, ok := env.Payload.(eventbus.SpeechBargeInEvent)
-			if !ok {
-				continue
-			}
-			s.handleBargeEvent(evt)
+			s.handleBargeEvent(env.Payload)
 		}
 	}
 }

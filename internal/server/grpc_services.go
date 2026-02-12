@@ -272,7 +272,7 @@ func (a *audioService) StreamAudioOut(req *apiv1.StreamAudioOutRequest, srv apiv
 		return status.Error(codes.FailedPrecondition, message)
 	}
 
-	sub := a.api.eventBus.Subscribe(
+	sub := eventbus.Subscribe[eventbus.AudioEgressPlaybackEvent](a.api.eventBus,
 		eventbus.TopicAudioEgressPlayback,
 		eventbus.WithSubscriptionName(fmt.Sprintf("grpc_audio_out_%s_%s_%d", sessionID, streamID, time.Now().UnixNano())),
 		eventbus.WithSubscriptionBuffer(64),
@@ -290,10 +290,7 @@ func (a *audioService) StreamAudioOut(req *apiv1.StreamAudioOutRequest, srv apiv
 			if !ok {
 				return status.Error(codes.Unavailable, "playback subscription closed")
 			}
-			evt, ok := env.Payload.(eventbus.AudioEgressPlaybackEvent)
-			if !ok {
-				continue
-			}
+			evt := env.Payload
 			if evt.SessionID != sessionID || evt.StreamID != streamID {
 				continue
 			}
