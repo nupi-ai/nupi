@@ -37,7 +37,10 @@ type Service struct {
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 
-	subs []*eventbus.Subscription
+	toolSub       *eventbus.TypedSubscription[eventbus.SessionToolEvent]
+	outputSub     *eventbus.TypedSubscription[eventbus.SessionOutputEvent]
+	lifecycleSub  *eventbus.TypedSubscription[eventbus.SessionLifecycleEvent]
+	transcriptSub *eventbus.TypedSubscription[eventbus.SpeechTranscriptEvent]
 
 	logger          *log.Logger
 	metricsInterval time.Duration
@@ -104,17 +107,16 @@ func (s *Service) Start(ctx context.Context) error {
 	derivedCtx, cancel := context.WithCancel(ctx)
 	s.cancel = cancel
 
-	toolSub := s.bus.Subscribe(eventbus.TopicSessionsTool, eventbus.WithSubscriptionName("pipeline_tool"))
-	outputSub := s.bus.Subscribe(eventbus.TopicSessionsOutput, eventbus.WithSubscriptionName("pipeline_output"))
-	lifecycleSub := s.bus.Subscribe(eventbus.TopicSessionsLifecycle, eventbus.WithSubscriptionName("pipeline_lifecycle"))
-	transcriptSub := s.bus.Subscribe(eventbus.TopicSpeechTranscriptFinal, eventbus.WithSubscriptionName("pipeline_transcripts"))
-	s.subs = []*eventbus.Subscription{toolSub, outputSub, lifecycleSub, transcriptSub}
+	s.toolSub = eventbus.Subscribe[eventbus.SessionToolEvent](s.bus, eventbus.TopicSessionsTool, eventbus.WithSubscriptionName("pipeline_tool"))
+	s.outputSub = eventbus.Subscribe[eventbus.SessionOutputEvent](s.bus, eventbus.TopicSessionsOutput, eventbus.WithSubscriptionName("pipeline_output"))
+	s.lifecycleSub = eventbus.Subscribe[eventbus.SessionLifecycleEvent](s.bus, eventbus.TopicSessionsLifecycle, eventbus.WithSubscriptionName("pipeline_lifecycle"))
+	s.transcriptSub = eventbus.Subscribe[eventbus.SpeechTranscriptEvent](s.bus, eventbus.TopicSpeechTranscriptFinal, eventbus.WithSubscriptionName("pipeline_transcripts"))
 
 	s.wg.Add(4)
-	go s.consumeToolEvents(derivedCtx, toolSub)
-	go s.consumeOutputEvents(derivedCtx, outputSub)
-	go s.consumeLifecycleEvents(derivedCtx, lifecycleSub)
-	go s.consumeTranscriptEvents(derivedCtx, transcriptSub)
+	go s.consumeToolEvents(derivedCtx)
+	go s.consumeOutputEvents(derivedCtx)
+	go s.consumeLifecycleEvents(derivedCtx)
+	go s.consumeTranscriptEvents(derivedCtx)
 	s.startMetricsReporter(derivedCtx)
 
 	return nil
@@ -148,10 +150,17 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		return true
 	})
 
-	for _, sub := range s.subs {
-		if sub != nil {
-			sub.Close()
-		}
+	if s.toolSub != nil {
+		s.toolSub.Close()
+	}
+	if s.outputSub != nil {
+		s.outputSub.Close()
+	}
+	if s.lifecycleSub != nil {
+		s.lifecycleSub.Close()
+	}
+	if s.transcriptSub != nil {
+		s.transcriptSub.Close()
 	}
 	done := make(chan struct{})
 	go func() {
@@ -167,23 +176,20 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-func (s *Service) consumeToolEvents(ctx context.Context, sub *eventbus.Subscription) {
+func (s *Service) consumeToolEvents(ctx context.Context) {
 	defer s.wg.Done()
-	if sub == nil {
+	if s.toolSub == nil {
 		return
 	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case env, ok := <-sub.C():
+		case env, ok := <-s.toolSub.C():
 			if !ok {
 				return
 			}
-			payload, ok := env.Payload.(eventbus.SessionToolEvent)
-			if !ok {
-				continue
-			}
+			payload := env.Payload
 			if payload.SessionID == "" {
 				continue
 			}
@@ -209,45 +215,38 @@ func (s *Service) consumeToolEvents(ctx context.Context, sub *eventbus.Subscript
 	}
 }
 
-func (s *Service) consumeOutputEvents(ctx context.Context, sub *eventbus.Subscription) {
+func (s *Service) consumeOutputEvents(ctx context.Context) {
 	defer s.wg.Done()
-	if sub == nil {
+	if s.outputSub == nil {
 		return
 	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case env, ok := <-sub.C():
+		case env, ok := <-s.outputSub.C():
 			if !ok {
 				return
 			}
-			payload, ok := env.Payload.(eventbus.SessionOutputEvent)
-			if !ok {
-				continue
-			}
-			s.handleSessionOutput(ctx, payload)
+			s.handleSessionOutput(ctx, env.Payload)
 		}
 	}
 }
 
-func (s *Service) consumeLifecycleEvents(ctx context.Context, sub *eventbus.Subscription) {
+func (s *Service) consumeLifecycleEvents(ctx context.Context) {
 	defer s.wg.Done()
-	if sub == nil {
+	if s.lifecycleSub == nil {
 		return
 	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case env, ok := <-sub.C():
+		case env, ok := <-s.lifecycleSub.C():
 			if !ok {
 				return
 			}
-			payload, ok := env.Payload.(eventbus.SessionLifecycleEvent)
-			if !ok {
-				continue
-			}
+			payload := env.Payload
 			if payload.SessionID == "" {
 				continue
 			}
@@ -264,24 +263,20 @@ func (s *Service) consumeLifecycleEvents(ctx context.Context, sub *eventbus.Subs
 	}
 }
 
-func (s *Service) consumeTranscriptEvents(ctx context.Context, sub *eventbus.Subscription) {
+func (s *Service) consumeTranscriptEvents(ctx context.Context) {
 	defer s.wg.Done()
-	if sub == nil {
+	if s.transcriptSub == nil {
 		return
 	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case env, ok := <-sub.C():
+		case env, ok := <-s.transcriptSub.C():
 			if !ok {
 				return
 			}
-			payload, ok := env.Payload.(eventbus.SpeechTranscriptEvent)
-			if !ok {
-				continue
-			}
-			s.handleTranscript(payload)
+			s.handleTranscript(env.Payload)
 		}
 	}
 }

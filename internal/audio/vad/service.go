@@ -105,7 +105,7 @@ type Service struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	sub *eventbus.Subscription
+	sub *eventbus.TypedSubscription[eventbus.AudioIngressSegmentEvent]
 	wg  sync.WaitGroup
 
 	manager *streammanager.Manager[eventbus.AudioIngressSegmentEvent]
@@ -157,7 +157,7 @@ func (s *Service) Start(ctx context.Context) error {
 		Ctx:    s.ctx,
 	})
 
-	s.sub = s.bus.Subscribe(eventbus.TopicAudioIngressSegment, eventbus.WithSubscriptionName("audio_vad_segments"))
+	s.sub = eventbus.Subscribe[eventbus.AudioIngressSegmentEvent](s.bus, eventbus.TopicAudioIngressSegment, eventbus.WithSubscriptionName("audio_vad_segments"))
 
 	s.wg.Add(1)
 	go s.consumeSegments()
@@ -212,11 +212,7 @@ func (s *Service) consumeSegments() {
 			if !ok {
 				return
 			}
-			segment, ok := env.Payload.(eventbus.AudioIngressSegmentEvent)
-			if !ok {
-				continue
-			}
-			s.handleSegment(segment)
+			s.handleSegment(env.Payload)
 		}
 	}
 }

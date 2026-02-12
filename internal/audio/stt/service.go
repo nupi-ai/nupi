@@ -130,7 +130,7 @@ type Service struct {
 
 	manager *streammanager.Manager[eventbus.AudioIngressSegmentEvent]
 
-	sub *eventbus.Subscription
+	sub *eventbus.TypedSubscription[eventbus.AudioIngressSegmentEvent]
 	wg  sync.WaitGroup
 
 	segmentsTotal atomic.Uint64
@@ -178,7 +178,7 @@ func (s *Service) Start(ctx context.Context) error {
 		Ctx:    s.ctx,
 	})
 
-	s.sub = s.bus.Subscribe(
+	s.sub = eventbus.Subscribe[eventbus.AudioIngressSegmentEvent](s.bus,
 		eventbus.TopicAudioIngressSegment,
 		eventbus.WithSubscriptionName("audio_stt_segments"),
 	)
@@ -239,11 +239,7 @@ func (s *Service) consumeSegments() {
 			if !ok {
 				return
 			}
-			segment, ok := env.Payload.(eventbus.AudioIngressSegmentEvent)
-			if !ok {
-				continue
-			}
-			s.handleSegment(segment)
+			s.handleSegment(env.Payload)
 		}
 	}
 }

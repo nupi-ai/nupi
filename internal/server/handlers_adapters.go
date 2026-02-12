@@ -212,11 +212,11 @@ func (s *APIServer) handleAdaptersLogs(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	subLogs := s.eventBus.Subscribe(eventbus.TopicAdaptersLog)
+	subLogs := eventbus.Subscribe[eventbus.AdapterLogEvent](s.eventBus, eventbus.TopicAdaptersLog)
 	defer subLogs.Close()
-	subPartial := s.eventBus.Subscribe(eventbus.TopicSpeechTranscriptPartial)
+	subPartial := eventbus.Subscribe[eventbus.SpeechTranscriptEvent](s.eventBus, eventbus.TopicSpeechTranscriptPartial)
 	defer subPartial.Close()
-	subFinal := s.eventBus.Subscribe(eventbus.TopicSpeechTranscriptFinal)
+	subFinal := eventbus.Subscribe[eventbus.SpeechTranscriptEvent](s.eventBus, eventbus.TopicSpeechTranscriptFinal)
 	defer subFinal.Close()
 
 	logCh := subLogs.C()
@@ -241,7 +241,7 @@ func (s *APIServer) handleAdaptersLogs(w http.ResponseWriter, r *http.Request) {
 				logCh = nil
 				continue
 			}
-			entry, emit := filterAdapterLogEvent(env, slotFilter, adapterFilter)
+			entry, emit := filterAdapterLogEvent(env.Payload, env.Timestamp, slotFilter, adapterFilter)
 			if !emit {
 				continue
 			}
@@ -260,7 +260,7 @@ func (s *APIServer) handleAdaptersLogs(w http.ResponseWriter, r *http.Request) {
 				partialCh = nil
 				continue
 			}
-			entry, emit := makeTranscriptEntry(env)
+			entry, emit := makeTranscriptEntry(env.Payload, env.Timestamp)
 			if !emit || (slotFilter != "" && adapterFilter != "") {
 				// transcripts cannot currently be mapped to slot/adapter; when both filters
 				// are provided, skip to avoid confusion.
@@ -281,7 +281,7 @@ func (s *APIServer) handleAdaptersLogs(w http.ResponseWriter, r *http.Request) {
 				finalCh = nil
 				continue
 			}
-			entry, emit := makeTranscriptEntry(env)
+			entry, emit := makeTranscriptEntry(env.Payload, env.Timestamp)
 			if !emit || (slotFilter != "" && adapterFilter != "") {
 				continue
 			}
@@ -450,12 +450,7 @@ func (s *APIServer) handleAdaptersRegister(w http.ResponseWriter, r *http.Reques
 	}
 }
 
-func filterAdapterLogEvent(env eventbus.Envelope, slotFilter, adapterFilter string) (apihttp.AdapterLogStreamEntry, bool) {
-	event, ok := env.Payload.(eventbus.AdapterLogEvent)
-	if !ok {
-		return apihttp.AdapterLogStreamEntry{}, false
-	}
-
+func filterAdapterLogEvent(event eventbus.AdapterLogEvent, timestamp time.Time, slotFilter, adapterFilter string) (apihttp.AdapterLogStreamEntry, bool) {
 	slotValue := strings.TrimSpace(event.Fields["slot"])
 	if slotFilter != "" && strings.ToLower(slotValue) != slotFilter {
 		return apihttp.AdapterLogStreamEntry{}, false
@@ -464,7 +459,6 @@ func filterAdapterLogEvent(env eventbus.Envelope, slotFilter, adapterFilter stri
 		return apihttp.AdapterLogStreamEntry{}, false
 	}
 
-	timestamp := env.Timestamp
 	if timestamp.IsZero() {
 		timestamp = time.Now().UTC()
 	}
@@ -479,13 +473,7 @@ func filterAdapterLogEvent(env eventbus.Envelope, slotFilter, adapterFilter stri
 	}, true
 }
 
-func makeTranscriptEntry(env eventbus.Envelope) (apihttp.AdapterLogStreamEntry, bool) {
-	event, ok := env.Payload.(eventbus.SpeechTranscriptEvent)
-	if !ok {
-		return apihttp.AdapterLogStreamEntry{}, false
-	}
-
-	timestamp := env.Timestamp
+func makeTranscriptEntry(event eventbus.SpeechTranscriptEvent, timestamp time.Time) (apihttp.AdapterLogStreamEntry, bool) {
 	if timestamp.IsZero() {
 		timestamp = time.Now().UTC()
 	}
