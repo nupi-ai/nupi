@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/nupi-ai/nupi/internal/audio/barge"
@@ -28,6 +27,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/intentrouter"
 	"github.com/nupi-ai/nupi/internal/observability"
 	"github.com/nupi-ai/nupi/internal/plugins"
+	"github.com/nupi-ai/nupi/internal/procutil"
 	"github.com/nupi-ai/nupi/internal/prompts"
 	adapters "github.com/nupi-ai/nupi/internal/plugins/adapters"
 	daemonruntime "github.com/nupi-ai/nupi/internal/runtime"
@@ -635,12 +635,7 @@ func IsRunning() bool {
 		return false
 	}
 
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-
-	if err := process.Signal(syscall.Signal(0)); err != nil {
+	if !procutil.IsProcessAlive(pid) {
 		os.Remove(paths.Lock)
 		return false
 	}

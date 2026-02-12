@@ -182,6 +182,24 @@ func (s *APIServer) SetShutdownFunc(fn func(context.Context) error) {
 	s.shutdownMu.Unlock()
 }
 
+// RequestShutdown triggers a graceful daemon shutdown using the registered
+// shutdown function. It is safe to call from any goroutine and returns
+// immediately — the actual shutdown proceeds asynchronously.
+func (s *APIServer) RequestShutdown() {
+	s.shutdownMu.RLock()
+	fn := s.shutdownFn
+	s.shutdownMu.RUnlock()
+	if fn != nil {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			if err := fn(ctx); err != nil {
+				log.Printf("[APIServer] shutdown error: %v", err)
+			}
+		}()
+	}
+}
+
 // SetConversationStore wires the conversation state provider used by HTTP handlers.
 func (s *APIServer) SetConversationStore(store ConversationStore) {
 	s.conversation = store

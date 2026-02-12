@@ -19,7 +19,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"text/tabwriter"
 	"time"
 
@@ -31,6 +30,7 @@ import (
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/grpcclient"
 	manifestpkg "github.com/nupi-ai/nupi/internal/plugins/manifest"
+	"github.com/nupi-ai/nupi/internal/procutil"
 	"github.com/nupi-ai/nupi/internal/protocol"
 	nupiversion "github.com/nupi-ai/nupi/internal/version"
 	"github.com/spf13/cobra"
@@ -740,7 +740,7 @@ func attachToExistingSession(c *client.Client, sessionID string, includeHistory 
 
 	// Handle signals
 	sigChan := make(chan os.Signal, 2)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGWINCH)
+	notifyAttachSignals(sigChan)
 	defer signal.Stop(sigChan)
 
 	sendResize := func() {
@@ -791,14 +791,14 @@ func attachToExistingSession(c *client.Client, sessionID string, includeHistory 
 	for {
 		select {
 		case sig := <-sigChan:
-			switch sig {
-			case syscall.SIGWINCH:
+			if isResizeSignal(sig) {
 				sendResize()
-			case syscall.SIGINT, syscall.SIGTERM:
-				fmt.Println("\nDetaching from session...")
-				c.DetachSession()
-				return nil
+				continue
 			}
+			// Non-resize signal (SIGINT or SIGTERM) — detach.
+			fmt.Println("\nDetaching from session...")
+			c.DetachSession()
+			return nil
 		case err := <-errChan:
 			if err != nil && !strings.Contains(err.Error(), "EOF") {
 				return err
@@ -3039,11 +3039,11 @@ func daemonStop(cmd *cobra.Command, args []string) error {
 		return out.Error("Invalid daemon PID file", err)
 	}
 
-	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+	if err := procutil.TerminateByPID(pid); err != nil {
 		return out.Error("Failed to signal daemon", err)
 	}
 
-	return out.Success("Sent SIGTERM to daemon", map[string]any{
+	return out.Success("Sent termination signal to daemon", map[string]any{
 		"pid":          pid,
 		"method":       "signal",
 		"api_fallback": apiFallback || apiErr != nil,
