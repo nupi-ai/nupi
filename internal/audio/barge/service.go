@@ -63,9 +63,9 @@ type Service struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	vadSub      *eventbus.Subscription
-	clientSub   *eventbus.Subscription
-	playbackSub *eventbus.Subscription
+	vadSub      *eventbus.TypedSubscription[eventbus.SpeechVADEvent]
+	clientSub   *eventbus.TypedSubscription[eventbus.AudioInterruptEvent]
+	playbackSub *eventbus.TypedSubscription[eventbus.AudioEgressPlaybackEvent]
 	wg          sync.WaitGroup
 
 	mu             sync.Mutex
@@ -110,9 +110,9 @@ func (s *Service) Start(ctx context.Context) error {
 		return nil
 	}
 	s.ctx, s.cancel = context.WithCancel(ctx)
-	s.vadSub = s.bus.Subscribe(eventbus.TopicSpeechVADDetected, eventbus.WithSubscriptionName("barge_vad"))
-	s.clientSub = s.bus.Subscribe(eventbus.TopicAudioInterrupt, eventbus.WithSubscriptionName("barge_client"))
-	s.playbackSub = s.bus.Subscribe(eventbus.TopicAudioEgressPlayback, eventbus.WithSubscriptionName("barge_playback"))
+	s.vadSub = eventbus.Subscribe[eventbus.SpeechVADEvent](s.bus, eventbus.TopicSpeechVADDetected, eventbus.WithSubscriptionName("barge_vad"))
+	s.clientSub = eventbus.Subscribe[eventbus.AudioInterruptEvent](s.bus, eventbus.TopicAudioInterrupt, eventbus.WithSubscriptionName("barge_client"))
+	s.playbackSub = eventbus.Subscribe[eventbus.AudioEgressPlaybackEvent](s.bus, eventbus.TopicAudioEgressPlayback, eventbus.WithSubscriptionName("barge_playback"))
 	s.wg.Add(3)
 	go s.consumeVAD()
 	go s.consumeClient()
@@ -162,11 +162,7 @@ func (s *Service) consumeVAD() {
 			if !ok {
 				return
 			}
-			event, ok := env.Payload.(eventbus.SpeechVADEvent)
-			if !ok {
-				continue
-			}
-			s.handleVADEvent(event)
+			s.handleVADEvent(env.Payload)
 		}
 	}
 }
@@ -185,11 +181,7 @@ func (s *Service) consumeClient() {
 			if !ok {
 				return
 			}
-			event, ok := env.Payload.(eventbus.AudioInterruptEvent)
-			if !ok {
-				continue
-			}
-			s.handleClientEvent(event)
+			s.handleClientEvent(env.Payload)
 		}
 	}
 }
@@ -208,15 +200,11 @@ func (s *Service) consumePlayback() {
 			if !ok {
 				return
 			}
-			event, ok := env.Payload.(eventbus.AudioEgressPlaybackEvent)
-			if !ok {
-				continue
-			}
 			ts := env.Timestamp
 			if ts.IsZero() {
 				ts = time.Now().UTC()
 			}
-			s.handlePlaybackEvent(event, ts)
+			s.handlePlaybackEvent(env.Payload, ts)
 		}
 	}
 }

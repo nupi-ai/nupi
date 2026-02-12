@@ -1,7 +1,10 @@
 // Package jsruntime provides a persistent JavaScript runtime using Bun.
-// It manages a subprocess that executes JS code via JSON-RPC over a Unix
-// domain socket with length-prefixed framing, enabling fast (<5ms) JS
-// function calls without per-call process spawn overhead.
+// It manages a subprocess that executes JS code via JSON-RPC over an IPC
+// channel with length-prefixed framing, enabling fast (<5ms) JS function
+// calls without per-call process spawn overhead.
+//
+// On Unix the IPC channel is a Unix domain socket. On Windows it uses
+// TCP on localhost (127.0.0.1) with a dynamic port.
 package jsruntime
 
 import (
@@ -110,7 +113,7 @@ type Runtime struct {
 	reader *bufio.Reader
 	stderr io.ReadCloser
 
-	socketPath string // UDS path, cleaned up on shutdown
+	socketPath string // IPC address: UDS path (Unix) or TCP addr (Windows)
 
 	mu        sync.Mutex
 	requestID atomic.Uint64
@@ -143,7 +146,8 @@ func WithLogger(logger Logger) Option {
 	}
 }
 
-// WithRunDir sets the directory for IPC socket files.
+// WithRunDir sets the base directory for IPC socket files (Unix only).
+// On Windows this option is ignored since TCP localhost is used instead.
 // If not set, os.TempDir() is used.
 func WithRunDir(dir string) Option {
 	return func(r *Runtime) {

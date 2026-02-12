@@ -1,14 +1,15 @@
 #!/usr/bin/env bun
 // host.js - Bun host script for Nupi JS runtime
-// Receives JSON-RPC commands via a Unix domain socket with 4-byte
-// length-prefixed framing.  Responds on the same connection.
+// Receives JSON-RPC commands via IPC (Unix domain socket or TCP localhost)
+// with 4-byte length-prefixed framing.  Responds on the same connection.
 // Supports: loadPlugin, call, shutdown
 
 const { createConnection } = require('node:net');
 const { readFileSync } = require('node:fs');
 
-// Redirect console.log/warn/error to stderr to prevent plugin logging
-// from corrupting the IPC protocol
+// Redirect console.log/warn/error to stderr for observability.
+// Plugin log output is prefixed and written to stderr so it appears
+// in daemon logs via the readStderr() goroutine on the Go side.
 const originalConsole = { ...console };
 console.log = (...args) => {
   process.stderr.write('[plugin:log] ' + args.map(a =>
@@ -228,7 +229,15 @@ function main() {
     process.exit(1);
   }
 
-  const socket = createConnection({ path: socketPath }, () => {
+  // Detect transport: TCP address (Windows) vs Unix domain socket (Unix).
+  const isTCP = socketPath.includes(':') && !socketPath.startsWith('/') && !socketPath.startsWith('.');
+  const connectOpts = isTCP
+    ? (() => {
+        const lastColon = socketPath.lastIndexOf(':');
+        return { host: socketPath.slice(0, lastColon), port: parseInt(socketPath.slice(lastColon + 1), 10) };
+      })()
+    : { path: socketPath };
+  const socket = createConnection(connectOpts, () => {
     // Connected - ready to receive frames
   });
 
