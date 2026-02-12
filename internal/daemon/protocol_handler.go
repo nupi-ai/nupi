@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -462,12 +461,11 @@ func (h *ProtocolHandler) handleShutdown(req *protocol.Request) {
 	h.encoder.Encode(resp)
 	h.encoderMu.Unlock()
 
-	// Shutdown daemon gracefully in a goroutine
-	// to allow response to be sent
+	// Shutdown daemon gracefully via the API server's shutdown mechanism.
+	// Small delay allows the response to be flushed first.
 	go func() {
 		time.Sleep(100 * time.Millisecond)
-		// Send SIGTERM to self
-		syscall.Kill(syscall.Getpid(), syscall.SIGTERM)
+		h.apiServer.RequestShutdown()
 	}()
 }
 

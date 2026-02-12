@@ -9,12 +9,13 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"syscall"
 	"time"
+
+	"github.com/nupi-ai/nupi/internal/procutil"
 )
 
 // DefaultGracefulShutdownTimeout is the maximum time to wait for adapter process
-// to exit after SIGTERM before sending SIGKILL.
+// to exit after graceful termination before force-killing.
 const DefaultGracefulShutdownTimeout = 15 * time.Second
 
 var (
@@ -101,8 +102,8 @@ func (h *execHandle) StopWithTimeout(ctx context.Context, gracefulTimeout time.D
 	default:
 	}
 
-	// Send SIGTERM for graceful shutdown
-	if err := h.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+	// Request graceful shutdown (SIGTERM on Unix, TerminateProcess on Windows)
+	if err := procutil.GracefulTerminate(h.cmd.Process); err != nil {
 		// Process may have already exited
 		if errors.Is(err, os.ErrProcessDone) {
 			select {
@@ -112,7 +113,7 @@ func (h *execHandle) StopWithTimeout(ctx context.Context, gracefulTimeout time.D
 				return nil
 			}
 		}
-		// Fall through to SIGKILL if SIGTERM fails
+		// Fall through to force-kill if graceful termination fails
 	}
 
 	// Respect context deadline if it's shorter than our timeout
@@ -130,19 +131,19 @@ func (h *execHandle) StopWithTimeout(ctx context.Context, gracefulTimeout time.D
 	case err := <-h.done:
 		return normalizeExitError(err, false)
 	case <-gracefulTimer.C:
-		log.Printf("[Adapters] adapter pid=%d did not exit within %v after SIGTERM, sending SIGKILL", pid, gracefulTimeout)
+		log.Printf("[Adapters] adapter pid=%d did not exit within %v after graceful termination, force-killing", pid, gracefulTimeout)
 	case <-ctx.Done():
-		log.Printf("[Adapters] context cancelled while stopping adapter pid=%d, sending SIGKILL", pid)
+		log.Printf("[Adapters] context cancelled while stopping adapter pid=%d, force-killing", pid)
 	}
 
-	// Send SIGKILL
+	// Force-kill the process
 	if err := h.cmd.Process.Kill(); err != nil {
 		if !errors.Is(err, os.ErrProcessDone) {
 			return fmt.Errorf("adapters: kill adapter: %w", err)
 		}
 	}
 
-	// Wait for process to finish after SIGKILL
+	// Wait for process to finish after force-kill
 	select {
 	case err := <-h.done:
 		return normalizeExitError(err, true)

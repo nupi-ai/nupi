@@ -2,6 +2,7 @@ package pty
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -10,10 +11,10 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	ptyDevice "github.com/creack/pty"
+	"github.com/nupi-ai/nupi/internal/procutil"
 	"golang.org/x/crypto/ssh/terminal"
 )
 
@@ -350,6 +351,14 @@ func (w *Wrapper) notifyResize(rows, cols int) {
 	}
 }
 
+// isExpectedTerminationError reports whether err is a normal process exit
+// caused by graceful termination (SIGTERM on Unix, TerminateProcess on Windows).
+// This is called only after GracefulTerminate succeeded, so any ExitError is expected.
+func isExpectedTerminationError(err error) bool {
+	var exitErr *exec.ExitError
+	return errors.As(err, &exitErr)
+}
+
 // Stop stops the PTY process gracefully with timeout.
 func (w *Wrapper) Stop(timeout time.Duration) error {
 	if !w.isRunning.Load() {
@@ -367,7 +376,7 @@ func (w *Wrapper) Stop(timeout time.Duration) error {
 		return nil
 	}
 
-	if err := proc.Signal(syscall.SIGTERM); err != nil {
+	if err := procutil.GracefulTerminate(proc); err != nil {
 		return err
 	}
 
@@ -385,7 +394,7 @@ func (w *Wrapper) Stop(timeout time.Duration) error {
 			w.eventsClosed = true
 		}
 		w.eventsMutex.Unlock()
-		if err != nil && err.Error() == "signal: terminated" {
+		if err != nil && isExpectedTerminationError(err) {
 			return nil
 		}
 		return err
@@ -411,7 +420,7 @@ func (w *Wrapper) Stop(timeout time.Duration) error {
 		}
 		w.eventsMutex.Unlock()
 		err := <-done
-		if err != nil && err.Error() == "signal: killed" {
+		if err != nil && isExpectedTerminationError(err) {
 			return nil
 		}
 		return err
