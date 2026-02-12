@@ -1,6 +1,7 @@
 // Package jsruntime provides a persistent JavaScript runtime using Bun.
-// It manages a subprocess that executes JS code via JSON-RPC over stdio,
-// enabling fast (<5ms) JS function calls without per-call process spawn overhead.
+// It manages a subprocess that executes JS code via JSON-RPC over a Unix
+// domain socket with length-prefixed framing, enabling fast (<5ms) JS
+// function calls without per-call process spawn overhead.
 package jsruntime
 
 import (
@@ -11,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"strings"
@@ -104,9 +106,11 @@ type LoadPluginOptions struct {
 // Runtime manages a persistent Bun subprocess for fast JS execution.
 type Runtime struct {
 	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	stdout *bufio.Reader
+	conn   net.Conn
+	reader *bufio.Reader
 	stderr io.ReadCloser
+
+	socketPath string // UDS path, cleaned up on shutdown
 
 	mu        sync.Mutex
 	requestID atomic.Uint64
@@ -118,9 +122,10 @@ type Runtime struct {
 	errOnce sync.Once
 	err     error
 
-	logger       Logger
-	hostScript   string // path to host.js (temp file if embedded)
+	logger        Logger
+	hostScript    string // path to host.js (temp file if embedded)
 	cleanupScript bool   // whether to remove hostScript on shutdown
+	runDir        string // directory for IPC sockets
 }
 
 // Logger is an optional interface for logging runtime events.
@@ -135,6 +140,14 @@ type Option func(*Runtime)
 func WithLogger(logger Logger) Option {
 	return func(r *Runtime) {
 		r.logger = logger
+	}
+}
+
+// WithRunDir sets the directory for IPC socket files.
+// If not set, os.TempDir() is used.
+func WithRunDir(dir string) Option {
+	return func(r *Runtime) {
+		r.runDir = dir
 	}
 }
 
@@ -170,37 +183,7 @@ func New(ctx context.Context, bunPath, hostScript string, opts ...Option) (*Runt
 		cleanupScript = true
 	}
 
-	cmd := exec.CommandContext(ctx, bunPath, "run", hostScript)
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		if cleanupScript {
-			os.Remove(hostScript)
-		}
-		return nil, fmt.Errorf("jsruntime: stdin pipe: %w", err)
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		stdin.Close()
-		if cleanupScript {
-			os.Remove(hostScript)
-		}
-		return nil, fmt.Errorf("jsruntime: stdout pipe: %w", err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		stdin.Close()
-		stdout.Close()
-		if cleanupScript {
-			os.Remove(hostScript)
-		}
-		return nil, fmt.Errorf("jsruntime: stderr pipe: %w", err)
-	}
-
 	r := &Runtime{
-		cmd:           cmd,
-		stdin:         stdin,
-		stdout:        bufio.NewReader(stdout),
-		stderr:        stderr,
 		pending:       make(map[uint64]chan Response),
 		done:          make(chan struct{}),
 		hostScript:    hostScript,
@@ -211,15 +194,61 @@ func New(ctx context.Context, bunPath, hostScript string, opts ...Option) (*Runt
 		opt(r)
 	}
 
+	// Determine socket directory.
+	runDir := r.runDir
+	if runDir == "" {
+		runDir = os.TempDir()
+	}
+
+	// Create IPC socket before starting the process.
+	suffix := fmt.Sprintf("%d-%d", os.Getpid(), time.Now().UnixNano()%1e9)
+	socketPath, listener, err := createIPCSocket(runDir, suffix)
+	if err != nil {
+		if cleanupScript {
+			os.Remove(hostScript)
+		}
+		return nil, err
+	}
+	r.socketPath = socketPath
+
+	cmd := exec.CommandContext(ctx, bunPath, "run", hostScript)
+	cmd.Env = append(os.Environ(), "NUPI_IPC_SOCKET="+socketPath)
+
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		listener.Close()
+		cleanupSocket(socketPath)
+		if cleanupScript {
+			os.Remove(hostScript)
+		}
+		return nil, fmt.Errorf("jsruntime: stderr pipe: %w", err)
+	}
+
+	r.cmd = cmd
+	r.stderr = stderr
+
 	if err := cmd.Start(); err != nil {
-		stdin.Close()
-		stdout.Close()
+		listener.Close()
+		cleanupSocket(socketPath)
 		stderr.Close()
 		if cleanupScript {
 			os.Remove(hostScript)
 		}
 		return nil, fmt.Errorf("jsruntime: start bun: %w", err)
 	}
+
+	// Wait for the JS process to connect to our socket.
+	conn, err := acceptSingleConn(listener, acceptTimeout)
+	if err != nil {
+		cmd.Process.Kill()
+		cleanupSocket(socketPath)
+		if cleanupScript {
+			os.Remove(hostScript)
+		}
+		return nil, err
+	}
+	r.conn = conn
+	r.reader = bufio.NewReader(conn)
 
 	go r.readResponses()
 	go r.readStderr()
@@ -228,21 +257,22 @@ func New(ctx context.Context, bunPath, hostScript string, opts ...Option) (*Runt
 	return r, nil
 }
 
-// readResponses reads JSON responses from stdout and dispatches to pending requests.
+// readResponses reads length-prefixed frames from the IPC socket and dispatches
+// to pending requests.
 func (r *Runtime) readResponses() {
 	for {
-		line, err := r.stdout.ReadBytes('\n')
+		data, err := readFrame(r.reader)
 		if err != nil {
 			if !r.stopped.Load() {
-				r.setError(fmt.Errorf("jsruntime: read stdout: %w", err))
+				r.setError(fmt.Errorf("jsruntime: read IPC frame: %w", err))
 			}
 			return
 		}
 
 		var resp Response
-		if err := json.Unmarshal(line, &resp); err != nil {
+		if err := json.Unmarshal(data, &resp); err != nil {
 			if r.logger != nil {
-				r.logger.Printf("[jsruntime] invalid response: %s", string(line))
+				r.logger.Printf("[jsruntime] invalid response: %s", string(data))
 			}
 			continue
 		}
@@ -322,9 +352,8 @@ func (r *Runtime) call(ctx context.Context, method string, params map[string]any
 		r.mu.Unlock()
 		return nil, fmt.Errorf("jsruntime: marshal request: %w", err)
 	}
-	data = append(data, '\n')
 
-	if _, err := r.stdin.Write(data); err != nil {
+	if err := writeFrame(r.conn, data); err != nil {
 		r.mu.Unlock()
 		return nil, fmt.Errorf("jsruntime: write request: %w", err)
 	}
@@ -400,15 +429,23 @@ func (r *Runtime) CallWithTimeout(pluginPath, fnName string, timeout time.Durati
 
 // Shutdown gracefully stops the Bun subprocess.
 func (r *Runtime) Shutdown(ctx context.Context) error {
-	if r.stopped.Swap(true) {
+	if !r.stopped.CompareAndSwap(false, true) {
 		return nil // Already stopped
 	}
 
-	// Send shutdown command
-	_, _ = r.call(ctx, "shutdown", nil)
+	// Send shutdown command directly via the IPC frame (bypassing call()
+	// which would short-circuit because stopped is already true).
+	r.mu.Lock()
+	if r.conn != nil {
+		data, _ := json.Marshal(Request{ID: r.requestID.Add(1), Method: "shutdown"})
+		writeFrame(r.conn, data)
+	}
+	r.mu.Unlock()
 
-	// Close stdin to signal EOF
-	r.stdin.Close()
+	// Close IPC connection to signal the JS process.
+	if r.conn != nil {
+		r.conn.Close()
+	}
 
 	// Wait for process to exit
 	select {
@@ -419,6 +456,9 @@ func (r *Runtime) Shutdown(ctx context.Context) error {
 			r.cmd.Process.Kill()
 		}
 	}
+
+	// Cleanup socket file
+	cleanupSocket(r.socketPath)
 
 	// Cleanup temp host script if we created it
 	if r.cleanupScript && r.hostScript != "" {

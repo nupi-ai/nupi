@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nupi-ai/nupi/internal/audio/streammanager"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/plugins/adapters"
@@ -206,12 +207,10 @@ func TestServiceMetricsActiveStreams(t *testing.T) {
 	svc := New(bus, WithFactory(FactoryFunc(func(context.Context, SessionParams) (Synthesizer, error) {
 		return &noopSynth{}, nil
 	})))
-	svc.ctx, svc.cancel = context.WithCancel(context.Background())
-	t.Cleanup(func() {
-		if svc.cancel != nil {
-			svc.cancel()
-		}
-	})
+	if err := svc.Start(context.Background()); err != nil {
+		t.Fatalf("start service: %v", err)
+	}
+	t.Cleanup(func() { svc.Shutdown(context.Background()) })
 
 	if metrics := svc.Metrics(); metrics.ActiveStreams != 0 {
 		t.Fatalf("expected initial ActiveStreams = 0, got %d", metrics.ActiveStreams)
@@ -229,16 +228,18 @@ func TestServiceMetricsActiveStreams(t *testing.T) {
 		},
 	}
 
-	stream, err := svc.createStream(streamKey(params.SessionID, params.StreamID), params)
+	key := streammanager.StreamKey(params.SessionID, params.StreamID)
+	h, err := svc.manager.CreateStream(key, params)
 	if err != nil {
 		t.Fatalf("create stream: %v", err)
 	}
+	st := h.(*stream)
 
 	if metrics := svc.Metrics(); metrics.ActiveStreams != 1 {
 		t.Fatalf("expected ActiveStreams = 1, got %d", metrics.ActiveStreams)
 	}
 
-	svc.onStreamClosed(streamKey(params.SessionID, params.StreamID), stream)
+	svc.onStreamClosed(key, st)
 	if metrics := svc.Metrics(); metrics.ActiveStreams != 0 {
 		t.Fatalf("expected ActiveStreams to return to 0, got %d", metrics.ActiveStreams)
 	}
@@ -246,19 +247,20 @@ func TestServiceMetricsActiveStreams(t *testing.T) {
 	params2 := params
 	params2.SessionID = "sess-metrics-2"
 	params2.StreamID = "stream-2"
-	if _, err := svc.createStream(streamKey(params.SessionID, params.StreamID), params); err != nil {
+	if _, err := svc.manager.CreateStream(key, params); err != nil {
 		t.Fatalf("create stream 2: %v", err)
 	}
-	if _, err := svc.createStream(streamKey(params2.SessionID, params2.StreamID), params2); err != nil {
+	key2 := streammanager.StreamKey(params2.SessionID, params2.StreamID)
+	if _, err := svc.manager.CreateStream(key2, params2); err != nil {
 		t.Fatalf("create stream 3: %v", err)
 	}
 
-	streams := svc.closeStreams()
-	if len(streams) != 2 {
-		t.Fatalf("expected closeStreams to return 2 streams, got %d", len(streams))
+	handles := svc.manager.CloseAllStreams()
+	if len(handles) != 2 {
+		t.Fatalf("expected CloseAllStreams to return 2 handles, got %d", len(handles))
 	}
 	if metrics := svc.Metrics(); metrics.ActiveStreams != 0 {
-		t.Fatalf("expected ActiveStreams = 0 after closeStreams, got %d", metrics.ActiveStreams)
+		t.Fatalf("expected ActiveStreams = 0 after CloseAllStreams, got %d", metrics.ActiveStreams)
 	}
 }
 
@@ -360,9 +362,7 @@ func TestServiceRetryDropsPendingOnPermanentError(t *testing.T) {
 	// Poll until the retry fires and hits the permanent error.
 	deadline := time.After(time.Second)
 	for {
-		svc.pendingMu.Lock()
-		pending := len(svc.pending)
-		svc.pendingMu.Unlock()
+		pending := svc.manager.PendingCount()
 		if pending == 0 {
 			mu.Lock()
 			a := attempts
@@ -449,7 +449,9 @@ func TestEnqueueRejectsAfterRebufferStarted(t *testing.T) {
 	svc := New(bus, WithFactory(FactoryFunc(func(context.Context, SessionParams) (Synthesizer, error) {
 		return &noopSynth{}, nil
 	})))
-	svc.ctx, svc.cancel = context.WithCancel(context.Background())
+	if err := svc.Start(context.Background()); err != nil {
+		t.Fatalf("start service: %v", err)
+	}
 
 	params := SessionParams{
 		SessionID: "sess-rej",
@@ -462,18 +464,20 @@ func TestEnqueueRejectsAfterRebufferStarted(t *testing.T) {
 		},
 	}
 
-	st, err := svc.createStream(streamKey(params.SessionID, params.StreamID), params)
+	key := streammanager.StreamKey(params.SessionID, params.StreamID)
+	h, err := svc.manager.CreateStream(key, params)
 	if err != nil {
 		t.Fatalf("create stream: %v", err)
 	}
-	t.Cleanup(func() { svc.cancel(); st.wg.Wait() })
+	st := h.(*stream)
+	t.Cleanup(func() { svc.Shutdown(context.Background()); st.wg.Wait() })
 
 	// Simulate rebuffer: set stopped = true under lock.
 	st.mu.Lock()
 	st.stopped = true
 	st.mu.Unlock()
 
-	err = st.enqueue(speakRequest{
+	err = st.Enqueue(speakRequest{
 		SessionID: "sess-rej",
 		StreamID:  "tts",
 		Text:      "should be rejected",
@@ -483,12 +487,76 @@ func TestEnqueueRejectsAfterRebufferStarted(t *testing.T) {
 	}
 }
 
+func TestInterruptBeforeStartDoesNotPanic(t *testing.T) {
+	bus := eventbus.New()
+	svc := New(bus, WithFactory(FactoryFunc(func(context.Context, SessionParams) (Synthesizer, error) {
+		return &noopSynth{}, nil
+	})))
+	// Do NOT call Start() — manager is nil.
+	// Interrupt should be a safe no-op.
+	svc.Interrupt("sess-nostart", "", "test", nil)
+}
+
+func TestLifecycleStopRemovesStream(t *testing.T) {
+	bus := eventbus.New()
+	svc := New(bus, WithFactory(FactoryFunc(func(context.Context, SessionParams) (Synthesizer, error) {
+		return &noopSynth{}, nil
+	})))
+	if err := svc.Start(context.Background()); err != nil {
+		t.Fatalf("start service: %v", err)
+	}
+	t.Cleanup(func() { svc.Shutdown(context.Background()) })
+
+	sessionID := "sess-lifecycle"
+	key := streammanager.StreamKey(sessionID, svc.DefaultStreamID())
+
+	// Create a stream.
+	h, err := svc.manager.CreateStream(key, SessionParams{
+		SessionID: sessionID,
+		StreamID:  svc.DefaultStreamID(),
+		Format:    svc.PlaybackFormat(),
+	})
+	if err != nil {
+		t.Fatalf("create stream: %v", err)
+	}
+	if h == nil {
+		t.Fatal("expected non-nil handle")
+	}
+	if _, ok := svc.manager.Stream(key); !ok {
+		t.Fatal("expected stream to exist after create")
+	}
+
+	// Publish lifecycle stopped event.
+	bus.Publish(context.Background(), eventbus.Envelope{
+		Topic: eventbus.TopicSessionsLifecycle,
+		Payload: eventbus.SessionLifecycleEvent{
+			SessionID: sessionID,
+			State:     eventbus.SessionStateStopped,
+		},
+	})
+
+	// Wait for the lifecycle handler to process.
+	deadline := time.After(time.Second)
+	for {
+		if _, ok := svc.manager.Stream(key); !ok {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timeout waiting for lifecycle handler to remove stream")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+}
+
 func TestHandleSpeakRequestBuffersOnRebuffering(t *testing.T) {
 	bus := eventbus.New()
 	svc := New(bus, WithFactory(FactoryFunc(func(context.Context, SessionParams) (Synthesizer, error) {
 		return &noopSynth{}, nil
 	})))
-	svc.ctx, svc.cancel = context.WithCancel(context.Background())
+	if err := svc.Start(context.Background()); err != nil {
+		t.Fatalf("start service: %v", err)
+	}
 
 	params := SessionParams{
 		SessionID: "sess-buf",
@@ -500,13 +568,14 @@ func TestHandleSpeakRequestBuffersOnRebuffering(t *testing.T) {
 			BitDepth:   16,
 		},
 	}
-	key := streamKey(params.SessionID, params.StreamID)
+	key := streammanager.StreamKey(params.SessionID, params.StreamID)
 
-	st, err := svc.createStream(key, params)
+	h, err := svc.manager.CreateStream(key, params)
 	if err != nil {
 		t.Fatalf("create stream: %v", err)
 	}
-	t.Cleanup(func() { svc.cancel(); st.wg.Wait() })
+	st := h.(*stream)
+	t.Cleanup(func() { svc.Shutdown(context.Background()); st.wg.Wait() })
 
 	// Simulate rebuffer state.
 	st.mu.Lock()
@@ -520,15 +589,8 @@ func TestHandleSpeakRequestBuffersOnRebuffering(t *testing.T) {
 		Text:      "should be buffered",
 	})
 
-	svc.pendingMu.Lock()
-	queue, ok := svc.pending[key]
-	var count int
-	if ok {
-		count = len(queue.records)
-	}
-	svc.pendingMu.Unlock()
-
-	if !ok || count == 0 {
-		t.Fatalf("expected request to be buffered in pending queue, found=%t count=%d", ok, count)
+	pq, ok := svc.manager.GetPendingQueue(key)
+	if !ok || len(pq.Items) == 0 {
+		t.Fatalf("expected request to be buffered in pending queue, found=%t", ok)
 	}
 }

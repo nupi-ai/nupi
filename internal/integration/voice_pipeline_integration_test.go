@@ -3335,7 +3335,7 @@ func TestVoiceFallbackEgressBuffersWithAdapterFactory(t *testing.T) {
 
 	// Verify the buffer+retry path was taken (not the drop path).
 	logOutput := egressLog.String()
-	if !strings.Contains(logOutput, "[TTS] buffered speak request") {
+	if !strings.Contains(logOutput, "[TTS] buffered item") {
 		t.Errorf("expected buffer log from ErrAdapterUnavailable path, got: %s", logOutput)
 	}
 	if strings.Contains(logOutput, "[TTS] factory unavailable") {
@@ -3428,7 +3428,7 @@ func TestVoiceFallbackSTTBuffersWithAdapterFactory(t *testing.T) {
 
 	// Verify the buffer+retry path was taken (not the drop path).
 	logOutput := sttLog.String()
-	if !strings.Contains(logOutput, "[STT] buffered segment") {
+	if !strings.Contains(logOutput, "[STT] buffered item") {
 		t.Errorf("expected buffer log from ErrAdapterUnavailable path, got: %s", logOutput)
 	}
 	if strings.Contains(logOutput, "[STT] factory unavailable") {

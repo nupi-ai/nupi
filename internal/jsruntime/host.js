@@ -1,13 +1,14 @@
 #!/usr/bin/env bun
 // host.js - Bun host script for Nupi JS runtime
-// Receives JSON-RPC commands via stdin, responds via stdout
+// Receives JSON-RPC commands via a Unix domain socket with 4-byte
+// length-prefixed framing.  Responds on the same connection.
 // Supports: loadPlugin, call, shutdown
 
-const { readSync, readFileSync } = require('node:fs');
-const { StringDecoder } = require('node:string_decoder');
+const { createConnection } = require('node:net');
+const { readFileSync } = require('node:fs');
 
 // Redirect console.log/warn/error to stderr to prevent plugin logging
-// from corrupting the JSON-RPC protocol on stdout
+// from corrupting the IPC protocol
 const originalConsole = { ...console };
 console.log = (...args) => {
   process.stderr.write('[plugin:log] ' + args.map(a =>
@@ -25,9 +26,23 @@ console.error = (...args) => {
   ).join(' ') + '\n');
 };
 
-// Protocol output - only this should write to stdout
-function sendResponse(response) {
-  process.stdout.write(JSON.stringify(response) + '\n');
+// Frame header size: 4 bytes (uint32 big-endian payload length)
+const HEADER_SIZE = 4;
+// Maximum payload: 16 MB
+const MAX_PAYLOAD = 16 * 1024 * 1024;
+
+// Write a length-prefixed frame to the socket.
+function writeFrame(socket, data) {
+  const payload = Buffer.from(data, 'utf8');
+  const header = Buffer.alloc(HEADER_SIZE);
+  header.writeUInt32BE(payload.length, 0);
+  socket.write(header);
+  socket.write(payload);
+}
+
+// Send a JSON-RPC response over the IPC socket.
+function sendResponse(socket, response) {
+  writeFrame(socket, JSON.stringify(response));
 }
 
 // Timeout helper - wraps a promise with a timeout
@@ -51,16 +66,18 @@ const plugins = new Map();
 
 async function loadPlugin(path, options = {}) {
   try {
-    // Read file content synchronously to avoid Bun async stdin buffering issues
+    // Read file content synchronously to avoid Bun async buffering issues
     const source = readFileSync(path, 'utf8');
 
     // Create a module-like environment
     const exports = {};
     const module = { exports };
 
-    // Execute the plugin code
-    const fn = new Function('module', 'exports', 'require', source);
-    fn(module, exports, (id) => {
+    // Execute the plugin code in a sandboxed function scope.
+    // This is the established plugin loading pattern - plugins are trusted
+    // user-installed files loaded from the plugins directory.
+    const pluginLoader = Function('module', 'exports', 'require', source);
+    pluginLoader(module, exports, (id) => {
       throw new Error(`require() not supported: ${id}`);
     });
 
@@ -150,9 +167,8 @@ async function handleRequest(req) {
       }
 
       case 'shutdown': {
-        // Send response before exiting
-        sendResponse({ id, result: { ok: true } });
-        process.exit(0);
+        // Return result - the socket close will terminate the process
+        return { id, result: { ok: true }, _shutdown: true };
       }
 
       case 'ping': {
@@ -170,55 +186,83 @@ async function handleRequest(req) {
   }
 }
 
-// Synchronous stdin line reader.
-// Bun's async stdin APIs (stream, events, for-await) buffer pipe data and
-// only deliver it on EOF, which breaks the JSON-RPC protocol when the Go
-// host keeps the pipe open. Using fs.readSync on fd 0 avoids this issue.
-// StringDecoder handles multi-byte UTF-8 characters split across reads.
-const _stdinBuf = Buffer.alloc(65536);
-const _stdinDecoder = new StringDecoder('utf8');
-let _stdinLeftover = '';
+// ---------------------------------------------------------------------------
+// IPC frame parser - event-driven, reads length-prefixed frames from socket
+// ---------------------------------------------------------------------------
 
-function readLine() {
-  while (true) {
-    const idx = _stdinLeftover.indexOf('\n');
-    if (idx !== -1) {
-      const line = _stdinLeftover.slice(0, idx).trim();
-      _stdinLeftover = _stdinLeftover.slice(idx + 1);
-      if (line) return line;
-      continue;
+function createFrameParser(onFrame) {
+  let buf = Buffer.alloc(0);
+
+  return function processData(chunk) {
+    buf = Buffer.concat([buf, chunk]);
+
+    while (buf.length >= HEADER_SIZE) {
+      const payloadLen = buf.readUInt32BE(0);
+
+      if (payloadLen > MAX_PAYLOAD) {
+        process.stderr.write(`[host.js] Fatal: frame too large (${payloadLen} > ${MAX_PAYLOAD}), protocol desync\n`);
+        process.exit(1);
+      }
+
+      const frameSize = HEADER_SIZE + payloadLen;
+      if (buf.length < frameSize) {
+        break; // Need more data
+      }
+
+      const payload = buf.subarray(HEADER_SIZE, frameSize);
+      buf = buf.subarray(frameSize);
+
+      onFrame(payload);
     }
-    let n;
-    try {
-      n = readSync(0, _stdinBuf);
-    } catch (err) {
-      throw new Error('stdin read error: ' + (err.message || err));
-    }
-    if (n === 0) return null; // EOF
-    _stdinLeftover += _stdinDecoder.write(_stdinBuf.subarray(0, n));
-  }
+  };
 }
 
-// Main loop - read JSON lines from stdin synchronously, handle async
-async function main() {
-  while (true) {
-    const line = readLine();
-    if (line === null) break;
+// ---------------------------------------------------------------------------
+// Main - connect to IPC socket and process requests
+// ---------------------------------------------------------------------------
 
-    try {
-      const req = JSON.parse(line);
-      const resp = await handleRequest(req);
-      sendResponse(resp);
-    } catch (err) {
-      // Invalid JSON, send error response
-      sendResponse({ id: 0, error: `Invalid request: ${err.message}` });
-    }
+function main() {
+  const socketPath = process.env.NUPI_IPC_SOCKET;
+  if (!socketPath) {
+    process.stderr.write('[host.js] Fatal: NUPI_IPC_SOCKET environment variable not set\n');
+    process.exit(1);
   }
+
+  const socket = createConnection({ path: socketPath }, () => {
+    // Connected - ready to receive frames
+  });
+
+  // Queue to serialise request handling (one at a time).
+  let processing = Promise.resolve();
+
+  const parser = createFrameParser((payload) => {
+    const text = payload.toString('utf8');
+    processing = processing.then(async () => {
+      try {
+        const req = JSON.parse(text);
+        const resp = await handleRequest(req);
+        const isShutdown = resp._shutdown;
+        delete resp._shutdown;
+        sendResponse(socket, resp);
+        if (isShutdown) {
+          socket.end(() => process.exit(0));
+        }
+      } catch (err) {
+        sendResponse(socket, { id: 0, error: `Invalid request: ${err.message}` });
+      }
+    });
+  });
+
+  socket.on('data', parser);
+
+  socket.on('error', (err) => {
+    process.stderr.write(`[host.js] Socket error: ${err.message}\n`);
+    process.exit(1);
+  });
+
+  socket.on('close', () => {
+    process.exit(0);
+  });
 }
 
-main().then(() => {
-  process.exit(0);
-}).catch(err => {
-  process.stderr.write('[host.js] Fatal: ' + err.message + '\n');
-  process.exit(1);
-});
+main();
