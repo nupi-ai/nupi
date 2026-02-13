@@ -345,6 +345,87 @@ const (
 	BridgeDiagnosticCleared BridgeDiagnosticType = "cleared"
 )
 
+// ---------------------------------------------------------------------------
+// Typed topic descriptors
+// ---------------------------------------------------------------------------
+// Each TopicDef binds a Topic constant to its payload type, enabling
+// compile-time enforcement via Publish[T] and SubscribeTo[T].
+
+// Sessions groups session-related topic descriptors.
+var Sessions = struct {
+	Output      TopicDef[SessionOutputEvent]
+	Lifecycle   TopicDef[SessionLifecycleEvent]
+	Tool        TopicDef[SessionToolEvent]
+	ToolChanged TopicDef[SessionToolChangedEvent]
+}{
+	Output:      NewTopicDef[SessionOutputEvent](TopicSessionsOutput),
+	Lifecycle:   NewTopicDef[SessionLifecycleEvent](TopicSessionsLifecycle),
+	Tool:        NewTopicDef[SessionToolEvent](TopicSessionsTool),
+	ToolChanged: NewTopicDef[SessionToolChangedEvent](TopicSessionsToolChanged),
+}
+
+// Pipeline groups content-pipeline topic descriptors.
+var Pipeline = struct {
+	Cleaned TopicDef[PipelineMessageEvent]
+	Error   TopicDef[PipelineErrorEvent]
+}{
+	Cleaned: NewTopicDef[PipelineMessageEvent](TopicPipelineCleaned),
+	Error:   NewTopicDef[PipelineErrorEvent](TopicPipelineError),
+}
+
+// Conversation groups conversation topic descriptors.
+var Conversation = struct {
+	Prompt TopicDef[ConversationPromptEvent]
+	Reply  TopicDef[ConversationReplyEvent]
+	Speak  TopicDef[ConversationSpeakEvent]
+}{
+	Prompt: NewTopicDef[ConversationPromptEvent](TopicConversationPrompt),
+	Reply:  NewTopicDef[ConversationReplyEvent](TopicConversationReply),
+	Speak:  NewTopicDef[ConversationSpeakEvent](TopicConversationSpeak),
+}
+
+// Audio groups audio topic descriptors.
+var Audio = struct {
+	IngressRaw     TopicDef[AudioIngressRawEvent]
+	IngressSegment TopicDef[AudioIngressSegmentEvent]
+	EgressPlayback TopicDef[AudioEgressPlaybackEvent]
+	Interrupt      TopicDef[AudioInterruptEvent]
+}{
+	IngressRaw:     NewTopicDef[AudioIngressRawEvent](TopicAudioIngressRaw),
+	IngressSegment: NewTopicDef[AudioIngressSegmentEvent](TopicAudioIngressSegment),
+	EgressPlayback: NewTopicDef[AudioEgressPlaybackEvent](TopicAudioEgressPlayback),
+	Interrupt:      NewTopicDef[AudioInterruptEvent](TopicAudioInterrupt),
+}
+
+// Speech groups speech-related topic descriptors.
+var Speech = struct {
+	TranscriptPartial TopicDef[SpeechTranscriptEvent]
+	TranscriptFinal   TopicDef[SpeechTranscriptEvent]
+	VADDetected       TopicDef[SpeechVADEvent]
+	BargeIn           TopicDef[SpeechBargeInEvent]
+}{
+	TranscriptPartial: NewTopicDef[SpeechTranscriptEvent](TopicSpeechTranscriptPartial),
+	TranscriptFinal:   NewTopicDef[SpeechTranscriptEvent](TopicSpeechTranscriptFinal),
+	VADDetected:       NewTopicDef[SpeechVADEvent](TopicSpeechVADDetected),
+	BargeIn:           NewTopicDef[SpeechBargeInEvent](TopicSpeechBargeIn),
+}
+
+// Adapters groups adapter topic descriptors.
+var Adapters = struct {
+	Status TopicDef[AdapterStatusEvent]
+	Log    TopicDef[AdapterLogEvent]
+}{
+	Status: NewTopicDef[AdapterStatusEvent](TopicAdaptersStatus),
+	Log:    NewTopicDef[AdapterLogEvent](TopicAdaptersLog),
+}
+
+// IntentRouter groups intent router topic descriptors.
+var IntentRouter = struct {
+	Diagnostics TopicDef[BridgeDiagnosticEvent]
+}{
+	Diagnostics: NewTopicDef[BridgeDiagnosticEvent](TopicIntentRouterDiagnostics),
+}
+
 // BridgeDiagnosticEvent reports intent router bridge state changes.
 // Published on TopicIntentRouterDiagnostics, separate from adapter lifecycle events.
 //

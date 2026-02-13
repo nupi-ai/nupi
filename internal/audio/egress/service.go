@@ -837,15 +837,7 @@ func (st *stream) closeSynthesizer(reason string) {
 }
 
 func (s *Service) publishPlayback(evt eventbus.AudioEgressPlaybackEvent) {
-	if s.bus == nil {
-		return
-	}
-
-	s.bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicAudioEgressPlayback,
-		Source:  eventbus.SourceAudioEgress,
-		Payload: evt,
-	})
+	eventbus.Publish(context.Background(), s.bus, eventbus.Audio.EgressPlayback, eventbus.SourceAudioEgress, evt)
 }
 
 func mergeMetadata(base map[string]string, chunk map[string]string, req map[string]string) map[string]string {

@@ -522,11 +522,7 @@ func (s *Service) publishPrompt(sessionID string, ctxTurns []eventbus.Conversati
 		Metadata: metadata,
 	}
 
-	s.bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicConversationPrompt,
-		Source:  eventbus.SourceConversation,
-		Payload: prompt,
-	})
+	eventbus.Publish(context.Background(), s.bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, prompt)
 }
 
 func (s *Service) clearSession(sessionID string) {
@@ -619,11 +615,7 @@ func (s *Service) requestSummary(sessionID string) {
 		},
 	}
 
-	s.bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicConversationPrompt,
-		Source:  eventbus.SourceConversation,
-		Payload: prompt,
-	})
+	eventbus.Publish(context.Background(), s.bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, prompt)
 }
 
 // handleSummaryReply processes an AI reply to a history_summary prompt,

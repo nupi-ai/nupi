@@ -374,11 +374,7 @@ func (s *Service) publishBargeIn(sessionID, streamID string, ts time.Time, reaso
 		Metadata:  metadata,
 	}
 
-	s.bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicSpeechBargeIn,
-		Source:  eventbus.SourceSpeechBarge,
-		Payload: payload,
-	})
+	eventbus.Publish(context.Background(), s.bus, eventbus.Speech.BargeIn, eventbus.SourceSpeechBarge, payload)
 }
 
 type playbackState struct {

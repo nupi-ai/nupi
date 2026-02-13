@@ -324,15 +324,11 @@ func (s *Service) publishTranscript(st *stream, tr Transcription) {
 		Metadata:   streammanager.CopyMetadata(tr.Metadata),
 	}
 
-	specificTopic := eventbus.TopicSpeechTranscriptPartial
+	td := eventbus.Speech.TranscriptPartial
 	if tr.Final {
-		specificTopic = eventbus.TopicSpeechTranscriptFinal
+		td = eventbus.Speech.TranscriptFinal
 	}
-	s.bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   specificTopic,
-		Source:  eventbus.SourceAudioSTT,
-		Payload: evt,
-	})
+	eventbus.Publish(context.Background(), s.bus, td, eventbus.SourceAudioSTT, evt)
 }
 
 // stream is the internal per-key audio processing goroutine.

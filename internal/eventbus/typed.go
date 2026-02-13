@@ -6,10 +6,9 @@ import (
 	"time"
 )
 
-// PublishTyped is a convenience wrapper around Bus.Publish that constructs the
-// Envelope with a typed payload. It enforces the payload type at the call-site
-// via generics, reducing the risk of accidentally publishing wrong types on a
-// topic. If bus is nil the call is a no-op.
+// Deprecated: Use Publish with a TopicDef descriptor instead, which provides
+// compile-time enforcement that the payload type matches the topic.
+// Example: eventbus.Publish(ctx, bus, eventbus.Sessions.Output, source, payload)
 func PublishTyped[T any](ctx context.Context, bus *Bus, topic Topic, source Source, payload T) {
 	if bus == nil {
 		return
@@ -46,7 +45,7 @@ type TypedSubscription[T any] struct {
 // to the typed channel. Payloads that don't match T are silently dropped.
 //
 // If bus is nil the returned subscription's channel is immediately closed
-// and Close is a no-op — symmetric with PublishTyped's nil-bus handling.
+// and Close is a no-op — symmetric with Publish's nil-bus handling.
 //
 // The typed channel is unbuffered — backpressure is handled by the raw
 // subscription's existing buffer.

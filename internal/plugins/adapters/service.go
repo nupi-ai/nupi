@@ -274,14 +274,7 @@ func (s *Service) publishStatus(ctx context.Context, evt eventbus.AdapterStatusE
 	if evt.Status != eventbus.AdapterHealthError {
 		s.clearLastError()
 	}
-	if s.bus == nil {
-		return
-	}
-	s.bus.Publish(ctx, eventbus.Envelope{
-		Topic:   eventbus.TopicAdaptersStatus,
-		Source:  eventbus.SourceAdaptersService,
-		Payload: evt,
-	})
+	eventbus.Publish(ctx, s.bus, eventbus.Adapters.Status, eventbus.SourceAdaptersService, evt)
 }
 
 func (s *Service) publishError(ctx context.Context, err error) {
@@ -299,13 +292,9 @@ func (s *Service) publishError(ctx context.Context, err error) {
 	s.lastErr = msg
 	s.errMu.Unlock()
 
-	s.bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicAdaptersStatus,
-		Source: eventbus.SourceAdaptersService,
-		Payload: eventbus.AdapterStatusEvent{
-			Status:  eventbus.AdapterHealthError,
-			Message: msg,
-		},
+	eventbus.Publish(ctx, s.bus, eventbus.Adapters.Status, eventbus.SourceAdaptersService, eventbus.AdapterStatusEvent{
+		Status:  eventbus.AdapterHealthError,
+		Message: msg,
 	})
 }
 

@@ -222,11 +222,7 @@ func (st *Stream) publishRaw(data []byte, received time.Time) {
 		Received:  received,
 		Metadata:  copyMetadata(st.metadata),
 	}
-	st.service.bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicAudioIngressRaw,
-		Source:  eventbus.SourceAudioIngress,
-		Payload: evt,
-	})
+	eventbus.Publish(context.Background(), st.service.bus, eventbus.Audio.IngressRaw, eventbus.SourceAudioIngress, evt)
 }
 
 func (st *Stream) flushSegmentsLocked(closing bool) {
@@ -281,11 +277,7 @@ func (st *Stream) emitSegment(data []byte, duration time.Duration, final bool) {
 	}
 	st.first = false
 	st.segmentStart = endedAt
-	st.service.bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicAudioIngressSegment,
-		Source:  eventbus.SourceAudioIngress,
-		Payload: evt,
-	})
+	eventbus.Publish(context.Background(), st.service.bus, eventbus.Audio.IngressSegment, eventbus.SourceAudioIngress, evt)
 	st.lastSent = final && len(segmentCopy) > 0
 }
 
@@ -313,11 +305,7 @@ func (st *Stream) emitTerminalLocked() {
 	st.first = false
 	st.lastSent = true
 	st.segmentStart = start
-	st.service.bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicAudioIngressSegment,
-		Source:  eventbus.SourceAudioIngress,
-		Payload: evt,
-	})
+	eventbus.Publish(context.Background(), st.service.bus, eventbus.Audio.IngressSegment, eventbus.SourceAudioIngress, evt)
 }
 
 func validateFormat(format eventbus.AudioFormat) error {

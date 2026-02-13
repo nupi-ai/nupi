@@ -182,23 +182,15 @@ func (m *Manager) notifyListeners(event string, session *Session) {
 	}
 }
 
-func (m *Manager) publish(topic eventbus.Topic, source eventbus.Source, payload any) {
+func (m *Manager) getBus() *eventbus.Bus {
 	m.mu.RLock()
 	bus := m.eventBus
 	m.mu.RUnlock()
-	if bus == nil {
-		return
-	}
-
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   topic,
-		Source:  source,
-		Payload: payload,
-	})
+	return bus
 }
 
 func (m *Manager) publishLifecycle(session *Session, state eventbus.SessionState, exitCode *int, reason string) {
-	m.publish(eventbus.TopicSessionsLifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{
+	eventbus.Publish(context.Background(), m.getBus(), eventbus.Sessions.Lifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{
 		SessionID: session.ID,
 		State:     state,
 		ExitCode:  exitCode,
@@ -586,11 +578,7 @@ func (s *eventBusSink) Write(data []byte) error {
 		Mode:      string(s.session.CurrentStatus()),
 	}
 
-	s.bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicSessionsOutput,
-		Source:  eventbus.SourceSessionManager,
-		Payload: payload,
-	})
+	eventbus.Publish(context.Background(), s.bus, eventbus.Sessions.Output, eventbus.SourceSessionManager, payload)
 
 	return nil
 }
@@ -615,7 +603,7 @@ func (m *Manager) monitorDetection(session *Session, toolHandler *toolhandlers.T
 
 		log.Printf("[Manager] Tool detected for session %s: %s", session.ID, event.Tool)
 
-		m.publish(eventbus.TopicSessionsTool, eventbus.SourcePluginService, eventbus.SessionToolEvent{
+		eventbus.Publish(context.Background(), m.getBus(), eventbus.Sessions.Tool, eventbus.SourcePluginService, eventbus.SessionToolEvent{
 			SessionID: session.ID,
 			ToolName:  event.Tool,
 			ToolID:    event.Tool,
@@ -640,7 +628,7 @@ func (m *Manager) monitorDetection(session *Session, toolHandler *toolhandlers.T
 				session.ID, changeEvent.PreviousTool, changeEvent.NewTool)
 
 			// Publish tool change event
-			m.publish(eventbus.TopicSessionsToolChanged, eventbus.SourcePluginService, eventbus.SessionToolChangedEvent{
+			eventbus.Publish(context.Background(), m.getBus(), eventbus.Sessions.ToolChanged, eventbus.SourcePluginService, eventbus.SessionToolChangedEvent{
 				SessionID:    session.ID,
 				PreviousTool: changeEvent.PreviousTool,
 				NewTool:      changeEvent.NewTool,
@@ -648,7 +636,7 @@ func (m *Manager) monitorDetection(session *Session, toolHandler *toolhandlers.T
 			})
 
 			// Also publish updated tool event for current state
-			m.publish(eventbus.TopicSessionsTool, eventbus.SourcePluginService, eventbus.SessionToolEvent{
+			eventbus.Publish(context.Background(), m.getBus(), eventbus.Sessions.Tool, eventbus.SourcePluginService, eventbus.SessionToolEvent{
 				SessionID: session.ID,
 				ToolName:  changeEvent.NewTool,
 				ToolID:    changeEvent.NewTool,

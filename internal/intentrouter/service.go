@@ -603,15 +603,11 @@ func (s *Service) executeSpeak(ctx context.Context, prompt eventbus.Conversation
 	}
 
 	// Publish speak event for TTS
-	s.bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicConversationSpeak,
-		Source: eventbus.SourceIntentRouter,
-		Payload: eventbus.ConversationSpeakEvent{
-			SessionID: sessionID,
-			PromptID:  prompt.PromptID,
-			Text:      action.Text,
-			Metadata:  action.Metadata,
-		},
+	eventbus.Publish(ctx, s.bus, eventbus.Conversation.Speak, eventbus.SourceIntentRouter, eventbus.ConversationSpeakEvent{
+		SessionID: sessionID,
+		PromptID:  prompt.PromptID,
+		Text:      action.Text,
+		Metadata:  action.Metadata,
 	})
 
 	// Also publish as conversation reply for history tracking
@@ -637,16 +633,12 @@ func (s *Service) executeClarify(ctx context.Context, prompt eventbus.Conversati
 	}
 
 	// Publish speak event with clarification
-	s.bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicConversationSpeak,
-		Source: eventbus.SourceIntentRouter,
-		Payload: eventbus.ConversationSpeakEvent{
-			SessionID: sessionID,
-			PromptID:  prompt.PromptID,
-			Text:      action.Text,
-			Metadata: map[string]string{
-				"type": "clarification",
-			},
+	eventbus.Publish(ctx, s.bus, eventbus.Conversation.Speak, eventbus.SourceIntentRouter, eventbus.ConversationSpeakEvent{
+		SessionID: sessionID,
+		PromptID:  prompt.PromptID,
+		Text:      action.Text,
+		Metadata: map[string]string{
+			"type": "clarification",
 		},
 	})
 
@@ -668,55 +660,35 @@ func (s *Service) executeClarify(ctx context.Context, prompt eventbus.Conversati
 }
 
 func (s *Service) publishReply(sessionID, promptID, text string, actions []eventbus.ConversationAction, metadata map[string]string) {
-	if s.bus == nil {
-		return
-	}
-
-	s.bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:  eventbus.TopicConversationReply,
-		Source: eventbus.SourceIntentRouter,
-		Payload: eventbus.ConversationReplyEvent{
-			SessionID: sessionID,
-			PromptID:  promptID,
-			Text:      text,
-			Actions:   actions,
-			Metadata:  metadata,
-		},
+	eventbus.Publish(context.Background(), s.bus, eventbus.Conversation.Reply, eventbus.SourceIntentRouter, eventbus.ConversationReplyEvent{
+		SessionID: sessionID,
+		PromptID:  promptID,
+		Text:      text,
+		Actions:   actions,
+		Metadata:  metadata,
 	})
 }
 
 func (s *Service) publishError(sessionID, promptID string, err error) {
-	if s.bus == nil {
-		return
-	}
-
-	s.bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:  eventbus.TopicConversationReply,
-		Source: eventbus.SourceIntentRouter,
-		Payload: eventbus.ConversationReplyEvent{
-			SessionID: sessionID,
-			PromptID:  promptID,
-			Text:      fmt.Sprintf("Error: %v", err),
-			Metadata: map[string]string{
-				"error":       "true",
-				"error_type":  errorType(err),
-				"recoverable": recoverableError(err),
-			},
+	eventbus.Publish(context.Background(), s.bus, eventbus.Conversation.Reply, eventbus.SourceIntentRouter, eventbus.ConversationReplyEvent{
+		SessionID: sessionID,
+		PromptID:  promptID,
+		Text:      fmt.Sprintf("Error: %v", err),
+		Metadata: map[string]string{
+			"error":       "true",
+			"error_type":  errorType(err),
+			"recoverable": recoverableError(err),
 		},
 	})
 
 	// Also publish speak for TTS feedback
-	s.bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:  eventbus.TopicConversationSpeak,
-		Source: eventbus.SourceIntentRouter,
-		Payload: eventbus.ConversationSpeakEvent{
-			SessionID: sessionID,
-			PromptID:  promptID,
-			Text:      userFriendlyError(err),
-			Metadata: map[string]string{
-				"type":  "error",
-				"error": err.Error(),
-			},
+	eventbus.Publish(context.Background(), s.bus, eventbus.Conversation.Speak, eventbus.SourceIntentRouter, eventbus.ConversationSpeakEvent{
+		SessionID: sessionID,
+		PromptID:  promptID,
+		Text:      userFriendlyError(err),
+		Metadata: map[string]string{
+			"type":  "error",
+			"error": err.Error(),
 		},
 	})
 }
