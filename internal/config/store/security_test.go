@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	storecrypto "github.com/nupi-ai/nupi/internal/config/store/crypto"
 )
 
 func TestSecuritySettingsPersistence(t *testing.T) {
@@ -146,8 +148,8 @@ func TestSecuritySettingsEncryptedAtRest(t *testing.T) {
 	}
 
 	// The raw value must have the encryption prefix.
-	if !strings.HasPrefix(rawValue, encPrefix) {
-		t.Fatalf("expected encrypted value with %q prefix, got %q", encPrefix, rawValue[:20])
+	if !strings.HasPrefix(rawValue, storecrypto.EncPrefix) {
+		t.Fatalf("expected encrypted value with %q prefix, got %q", storecrypto.EncPrefix, rawValue[:20])
 	}
 }
 
@@ -171,7 +173,7 @@ func TestOpenRWFailsWhenKeyMissingButEncryptedValuesExist(t *testing.T) {
 	store.Close()
 
 	// Delete the encryption key to simulate key loss.
-	keyPath := encryptionKeyPath(dbPath)
+	keyPath := storecrypto.KeyPath(dbPath)
 	if err := os.Remove(keyPath); err != nil {
 		t.Fatalf("remove key: %v", err)
 	}
@@ -200,7 +202,7 @@ func TestOpenRWCreatesKeyWhenNoEncryptedValues(t *testing.T) {
 	store.Close()
 
 	// Key file must exist.
-	keyPath := encryptionKeyPath(dbPath)
+	keyPath := storecrypto.KeyPath(dbPath)
 	if _, err := os.Stat(keyPath); err != nil {
 		t.Fatalf("expected key file to exist: %v", err)
 	}
@@ -275,8 +277,8 @@ func TestOpenRWMigratesPlaintextToEncrypted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("raw query: %v", err)
 	}
-	if !strings.HasPrefix(rawValue, encPrefix) {
-		t.Fatalf("expected migrated value to have %q prefix, got %q", encPrefix, rawValue[:min(20, len(rawValue))])
+	if !strings.HasPrefix(rawValue, storecrypto.EncPrefix) {
+		t.Fatalf("expected migrated value to have %q prefix, got %q", storecrypto.EncPrefix, rawValue[:min(20, len(rawValue))])
 	}
 	if rawValue == "plaintext-secret-value" {
 		t.Fatal("migration did not encrypt the plaintext value")
@@ -300,7 +302,7 @@ func TestOpenRWMigratesPrefixCollisionCorrectly(t *testing.T) {
 	// Manually insert a plaintext value that starts with the enc:v1: prefix,
 	// simulating a prefix collision. The migration must detect that this does
 	// not decrypt successfully and re-encrypt the entire raw string.
-	collisionValue := encPrefix + "this-is-not-actually-encrypted"
+	collisionValue := storecrypto.EncPrefix + "this-is-not-actually-encrypted"
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		t.Fatalf("open raw db: %v", err)
@@ -344,8 +346,8 @@ func TestOpenRWMigratesPrefixCollisionCorrectly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("raw query: %v", err)
 	}
-	if !strings.HasPrefix(rawValue, encPrefix) {
-		t.Fatalf("expected encrypted value with %q prefix, got %q", encPrefix, rawValue[:min(20, len(rawValue))])
+	if !strings.HasPrefix(rawValue, storecrypto.EncPrefix) {
+		t.Fatalf("expected encrypted value with %q prefix, got %q", storecrypto.EncPrefix, rawValue[:min(20, len(rawValue))])
 	}
 	if rawValue == collisionValue {
 		t.Fatal("migration did not re-encrypt the collision value")
@@ -372,7 +374,7 @@ func TestSecuritySettingsReadOnlyWithMissingKeyReturnsError(t *testing.T) {
 	store.Close()
 
 	// Delete the encryption key file to simulate missing key.
-	keyPath := encryptionKeyPath(dbPath)
+	keyPath := storecrypto.KeyPath(dbPath)
 	if err := os.Remove(keyPath); err != nil {
 		t.Fatalf("remove key file: %v", err)
 	}

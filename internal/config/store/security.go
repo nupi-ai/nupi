@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+
+	storecrypto "github.com/nupi-ai/nupi/internal/config/store/crypto"
 )
 
 // SaveSecuritySettings upserts secret entries for the active profile.
@@ -32,7 +34,7 @@ func (s *Store) SaveSecuritySettings(ctx context.Context, values map[string]stri
 		for key, value := range values {
 			storedValue := value
 			if s.encryptionKey != nil {
-				encrypted, err := encryptValue(s.encryptionKey, value)
+				encrypted, err := storecrypto.EncryptValue(s.encryptionKey, value)
 				if err != nil {
 					return fmt.Errorf("config: encrypt security %q: %w", key, err)
 				}
@@ -74,7 +76,7 @@ func (s *Store) LoadSecuritySettings(ctx context.Context, keys ...string) (map[s
 		if s.encryptionKey == nil {
 			return nil, fmt.Errorf("config: security %q is encrypted but no decryption key is available", key)
 		}
-		decrypted, err := decryptValue(s.encryptionKey, value)
+		decrypted, err := storecrypto.DecryptValue(s.encryptionKey, value)
 		if err != nil {
 			return nil, fmt.Errorf("config: decrypt security %q: %w", key, err)
 		}

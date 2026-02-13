@@ -1,28 +1,30 @@
-package store
+package crypto_test
 
 import (
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
+
+	storecrypto "github.com/nupi-ai/nupi/internal/config/store/crypto"
 )
 
 func TestEncryptDecryptRoundTrip(t *testing.T) {
 	t.Parallel()
 
-	key := make([]byte, keySize)
+	key := make([]byte, storecrypto.KeySize)
 	for i := range key {
 		key[i] = byte(i)
 	}
 
 	plaintext := "my-secret-api-key-12345"
-	encrypted, err := encryptValue(key, plaintext)
+	encrypted, err := storecrypto.EncryptValue(key, plaintext)
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
 
 	// Encrypted value must have the prefix.
-	if len(encrypted) < len(encPrefix) || encrypted[:len(encPrefix)] != encPrefix {
+	if len(encrypted) < len(storecrypto.EncPrefix) || encrypted[:len(storecrypto.EncPrefix)] != storecrypto.EncPrefix {
 		t.Fatalf("expected enc:v1: prefix, got %q", encrypted[:20])
 	}
 
@@ -31,7 +33,7 @@ func TestEncryptDecryptRoundTrip(t *testing.T) {
 		t.Fatal("encrypted value must differ from plaintext")
 	}
 
-	decrypted, err := decryptValue(key, encrypted)
+	decrypted, err := storecrypto.DecryptValue(key, encrypted)
 	if err != nil {
 		t.Fatalf("decrypt: %v", err)
 	}
@@ -43,10 +45,10 @@ func TestEncryptDecryptRoundTrip(t *testing.T) {
 func TestDecryptPlaintextRejectsUnprefixedValue(t *testing.T) {
 	t.Parallel()
 
-	key := make([]byte, keySize)
+	key := make([]byte, storecrypto.KeySize)
 	// Plaintext value without enc:v1: prefix must be rejected — all values
 	// should have been migrated to encrypted form during Open().
-	_, err := decryptValue(key, "legacy-plaintext-secret")
+	_, err := storecrypto.DecryptValue(key, "legacy-plaintext-secret")
 	if err == nil {
 		t.Fatal("expected error for plaintext value without encryption prefix")
 	}
@@ -55,18 +57,18 @@ func TestDecryptPlaintextRejectsUnprefixedValue(t *testing.T) {
 func TestDecryptWithWrongKeyFails(t *testing.T) {
 	t.Parallel()
 
-	keyA := make([]byte, keySize)
-	keyB := make([]byte, keySize)
+	keyA := make([]byte, storecrypto.KeySize)
+	keyB := make([]byte, storecrypto.KeySize)
 	for i := range keyB {
 		keyB[i] = 0xFF
 	}
 
-	encrypted, err := encryptValue(keyA, "secret")
+	encrypted, err := storecrypto.EncryptValue(keyA, "secret")
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
 
-	_, err = decryptValue(keyB, encrypted)
+	_, err = storecrypto.DecryptValue(keyB, encrypted)
 	if err == nil {
 		t.Fatal("expected decryption with wrong key to fail")
 	}
@@ -77,12 +79,12 @@ func TestCreateEncryptionKeyCreatesFile(t *testing.T) {
 
 	keyPath := filepath.Join(t.TempDir(), ".secrets.key")
 
-	key, err := createEncryptionKey(keyPath)
+	key, err := storecrypto.CreateKey(keyPath)
 	if err != nil {
 		t.Fatalf("create key: %v", err)
 	}
-	if len(key) != keySize {
-		t.Fatalf("expected key size %d, got %d", keySize, len(key))
+	if len(key) != storecrypto.KeySize {
+		t.Fatalf("expected key size %d, got %d", storecrypto.KeySize, len(key))
 	}
 
 	// File must exist with correct permissions.
@@ -95,7 +97,7 @@ func TestCreateEncryptionKeyCreatesFile(t *testing.T) {
 	}
 
 	// Load must return the same key.
-	key2, err := loadEncryptionKey(keyPath)
+	key2, err := storecrypto.LoadKey(keyPath)
 	if err != nil {
 		t.Fatalf("load existing key: %v", err)
 	}
@@ -108,7 +110,7 @@ func TestLoadEncryptionKeyMissingFileReturnsNil(t *testing.T) {
 	t.Parallel()
 
 	keyPath := filepath.Join(t.TempDir(), "nonexistent.key")
-	key, err := loadEncryptionKey(keyPath)
+	key, err := storecrypto.LoadKey(keyPath)
 	if err != nil {
 		t.Fatalf("expected nil error for missing file, got %v", err)
 	}
@@ -126,7 +128,7 @@ func TestLoadEncryptionKeyCorruptFile(t *testing.T) {
 		t.Fatalf("write corrupt key: %v", err)
 	}
 
-	_, err := loadEncryptionKey(keyPath)
+	_, err := storecrypto.LoadKey(keyPath)
 	if err == nil {
 		t.Fatal("expected error for corrupt key file")
 	}
@@ -149,7 +151,7 @@ func TestCreateEncryptionKeyConcurrentRace(t *testing.T) {
 	for i := 0; i < goroutines; i++ {
 		go func(idx int) {
 			defer wg.Done()
-			keys[idx], errs[idx] = createEncryptionKey(keyPath)
+			keys[idx], errs[idx] = storecrypto.CreateKey(keyPath)
 		}(i)
 	}
 	wg.Wait()
@@ -160,7 +162,7 @@ func TestCreateEncryptionKeyConcurrentRace(t *testing.T) {
 		if errs[i] != nil {
 			t.Fatalf("goroutine %d failed: %v", i, errs[i])
 		}
-		if len(keys[i]) != keySize {
+		if len(keys[i]) != storecrypto.KeySize {
 			t.Fatalf("goroutine %d returned key with size %d", i, len(keys[i]))
 		}
 		if referenceKey == nil {
