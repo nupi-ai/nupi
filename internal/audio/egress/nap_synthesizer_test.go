@@ -457,16 +457,14 @@ func TestAdapterFactoryProcessTransportUsesRuntimeAddress(t *testing.T) {
 
 func TestAdapterFactoryRuntimeLookupErrors(t *testing.T) {
 	t.Run("awaiting address returns ErrAdapterUnavailable", func(t *testing.T) {
-		factory := adapterFactory{
-			runtime: runtimeSourceStub{statuses: []adapters.BindingStatus{
-				{
-					AdapterID: strPtr("adapter.tts"),
-					Status:    configstore.BindingStatusActive,
-					Runtime:   nil,
-				},
-			}},
-		}
-		_, err := factory.lookupRuntimeAddress(context.Background(), "adapter.tts")
+		runtime := runtimeSourceStub{statuses: []adapters.BindingStatus{
+			{
+				AdapterID: strPtr("adapter.tts"),
+				Status:    configstore.BindingStatusActive,
+				Runtime:   nil,
+			},
+		}}
+		_, err := adapterutil.LookupRuntimeAddress(context.Background(), runtime, "adapter.tts", "tts", ErrAdapterUnavailable)
 		if err == nil {
 			t.Fatalf("expected error")
 		}
@@ -479,14 +477,12 @@ func TestAdapterFactoryRuntimeLookupErrors(t *testing.T) {
 	})
 
 	t.Run("not running returns ErrAdapterUnavailable", func(t *testing.T) {
-		factory := adapterFactory{
-			runtime: runtimeSourceStub{statuses: []adapters.BindingStatus{
-				{
-					AdapterID: strPtr("another.adapter"),
-				},
-			}},
-		}
-		_, err := factory.lookupRuntimeAddress(context.Background(), "adapter.tts")
+		runtime := runtimeSourceStub{statuses: []adapters.BindingStatus{
+			{
+				AdapterID: strPtr("another.adapter"),
+			},
+		}}
+		_, err := adapterutil.LookupRuntimeAddress(context.Background(), runtime, "adapter.tts", "tts", ErrAdapterUnavailable)
 		if err == nil {
 			t.Fatalf("expected error")
 		}
@@ -499,13 +495,11 @@ func TestAdapterFactoryRuntimeLookupErrors(t *testing.T) {
 	})
 
 	t.Run("duplicate entries is not ErrAdapterUnavailable", func(t *testing.T) {
-		factory := adapterFactory{
-			runtime: runtimeSourceStub{statuses: []adapters.BindingStatus{
-				{AdapterID: strPtr("adapter.tts")},
-				{AdapterID: strPtr("adapter.tts")},
-			}},
-		}
-		_, err := factory.lookupRuntimeAddress(context.Background(), "adapter.tts")
+		runtime := runtimeSourceStub{statuses: []adapters.BindingStatus{
+			{AdapterID: strPtr("adapter.tts")},
+			{AdapterID: strPtr("adapter.tts")},
+		}}
+		_, err := adapterutil.LookupRuntimeAddress(context.Background(), runtime, "adapter.tts", "tts", ErrAdapterUnavailable)
 		if err == nil {
 			t.Fatalf("expected error")
 		}
@@ -515,18 +509,16 @@ func TestAdapterFactoryRuntimeLookupErrors(t *testing.T) {
 	})
 
 	t.Run("duplicate entries with address is still duplicate error", func(t *testing.T) {
-		factory := adapterFactory{
-			runtime: runtimeSourceStub{statuses: []adapters.BindingStatus{
-				{
-					AdapterID: strPtr("adapter.tts"),
-					Runtime: &adapters.RuntimeStatus{
-						Extra: map[string]string{adapters.RuntimeExtraAddress: "127.0.0.1:9000"},
-					},
+		runtime := runtimeSourceStub{statuses: []adapters.BindingStatus{
+			{
+				AdapterID: strPtr("adapter.tts"),
+				Runtime: &adapters.RuntimeStatus{
+					Extra: map[string]string{adapters.RuntimeExtraAddress: "127.0.0.1:9000"},
 				},
-				{AdapterID: strPtr("adapter.tts")},
-			}},
-		}
-		_, err := factory.lookupRuntimeAddress(context.Background(), "adapter.tts")
+			},
+			{AdapterID: strPtr("adapter.tts")},
+		}}
+		_, err := adapterutil.LookupRuntimeAddress(context.Background(), runtime, "adapter.tts", "tts", ErrAdapterUnavailable)
 		if err == nil {
 			t.Fatalf("expected error due to duplicate runtime entries even when address present")
 		}
@@ -536,8 +528,7 @@ func TestAdapterFactoryRuntimeLookupErrors(t *testing.T) {
 	})
 
 	t.Run("nil runtime", func(t *testing.T) {
-		factory := adapterFactory{runtime: nil}
-		_, err := factory.lookupRuntimeAddress(context.Background(), "adapter.tts")
+		_, err := adapterutil.LookupRuntimeAddress(context.Background(), nil, "adapter.tts", "tts", ErrAdapterUnavailable)
 		if err == nil {
 			t.Fatalf("expected error")
 		}
@@ -983,10 +974,8 @@ func TestNAPSynthesizerEnforceFinalOnStreamEnd(t *testing.T) {
 }
 
 func TestAdapterFactoryRuntimeOverviewErrorMapsToUnavailable(t *testing.T) {
-	factory := adapterFactory{
-		runtime: runtimeSourceStub{err: errors.New("service temporarily unavailable")},
-	}
-	_, err := factory.lookupRuntimeAddress(context.Background(), "adapter.tts")
+	runtime := runtimeSourceStub{err: errors.New("service temporarily unavailable")}
+	_, err := adapterutil.LookupRuntimeAddress(context.Background(), runtime, "adapter.tts", "tts", ErrAdapterUnavailable)
 	if err == nil {
 		t.Fatalf("expected error")
 	}
@@ -1000,20 +989,18 @@ func TestAdapterFactoryRuntimeOverviewErrorMapsToUnavailable(t *testing.T) {
 
 func TestAdapterFactoryRuntimeLookupTimeout(t *testing.T) {
 	block := make(chan struct{})
-	factory := adapterFactory{
-		runtime: blockingRuntimeSource{block: block},
-	}
+	runtime := blockingRuntimeSource{block: block}
 
 	start := time.Now()
-	_, err := factory.lookupRuntimeAddress(context.Background(), "adapter.tts")
+	_, err := adapterutil.LookupRuntimeAddress(context.Background(), runtime, "adapter.tts", "tts", ErrAdapterUnavailable)
 	if err == nil {
 		t.Fatalf("expected timeout error")
 	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context deadline exceeded, got %v", err)
+	}
 	if !errors.Is(err, ErrAdapterUnavailable) {
 		t.Fatalf("expected ErrAdapterUnavailable, got %v", err)
-	}
-	if !strings.Contains(err.Error(), "deadline") {
-		t.Fatalf("expected deadline info in error message, got %v", err)
 	}
 	if elapsed := time.Since(start); elapsed < adapterutil.RuntimeLookupTimeout {
 		t.Fatalf("expected lookup to last at least %v, got %v", adapterutil.RuntimeLookupTimeout, elapsed)

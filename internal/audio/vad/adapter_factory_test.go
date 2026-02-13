@@ -484,8 +484,7 @@ func TestAdapterFactoryProcessTransportPendingReturnsUnavailable(t *testing.T) {
 }
 
 func TestAdapterFactoryLookupRuntimeWithoutSource(t *testing.T) {
-	factory := adapterFactory{runtime: nil}
-	_, err := factory.lookupRuntimeAddress(context.Background(), "adapter.process")
+	_, err := adapterutil.LookupRuntimeAddress(context.Background(), nil, "adapter.process", "vad", ErrAdapterUnavailable)
 	if err == nil {
 		t.Fatalf("expected error due to missing runtime metadata")
 	}
@@ -496,13 +495,11 @@ func TestAdapterFactoryLookupRuntimeWithoutSource(t *testing.T) {
 
 func TestAdapterFactoryLookupRuntimeTimeout(t *testing.T) {
 	block := make(chan struct{})
-	factory := adapterFactory{
-		runtime: blockingRuntimeSource{block: block},
-	}
+	runtime := blockingRuntimeSource{block: block}
 
 	ctx := context.Background()
 	start := time.Now()
-	_, err := factory.lookupRuntimeAddress(ctx, "adapter.process")
+	_, err := adapterutil.LookupRuntimeAddress(ctx, runtime, "adapter.process", "vad", ErrAdapterUnavailable)
 	if err == nil {
 		t.Fatalf("expected timeout error")
 	}
@@ -518,17 +515,15 @@ func TestAdapterFactoryLookupRuntimeTimeout(t *testing.T) {
 }
 
 func TestAdapterFactoryLookupRuntimePendingAddress(t *testing.T) {
-	factory := adapterFactory{
-		runtime: runtimeSourceStub{statuses: []adapters.BindingStatus{
-			{
-				AdapterID: strPtr("adapter.process"),
-				Status:    configstore.BindingStatusActive,
-				Runtime:   nil,
-			},
-		}},
-	}
+	runtime := runtimeSourceStub{statuses: []adapters.BindingStatus{
+		{
+			AdapterID: strPtr("adapter.process"),
+			Status:    configstore.BindingStatusActive,
+			Runtime:   nil,
+		},
+	}}
 
-	_, err := factory.lookupRuntimeAddress(context.Background(), "adapter.process")
+	_, err := adapterutil.LookupRuntimeAddress(context.Background(), runtime, "adapter.process", "vad", ErrAdapterUnavailable)
 	if err == nil {
 		t.Fatalf("expected error when runtime address missing")
 	}
@@ -541,15 +536,13 @@ func TestAdapterFactoryLookupRuntimePendingAddress(t *testing.T) {
 }
 
 func TestAdapterFactoryLookupRuntimeAdapterNotRunning(t *testing.T) {
-	factory := adapterFactory{
-		runtime: runtimeSourceStub{statuses: []adapters.BindingStatus{
-			{
-				AdapterID: strPtr("another.adapter"),
-			},
-		}},
-	}
+	runtime := runtimeSourceStub{statuses: []adapters.BindingStatus{
+		{
+			AdapterID: strPtr("another.adapter"),
+		},
+	}}
 
-	_, err := factory.lookupRuntimeAddress(context.Background(), "adapter.process")
+	_, err := adapterutil.LookupRuntimeAddress(context.Background(), runtime, "adapter.process", "vad", ErrAdapterUnavailable)
 	if err == nil {
 		t.Fatalf("expected error when adapter not running")
 	}
@@ -562,18 +555,16 @@ func TestAdapterFactoryLookupRuntimeAdapterNotRunning(t *testing.T) {
 }
 
 func TestAdapterFactoryLookupRuntimeDuplicateStatuses(t *testing.T) {
-	factory := adapterFactory{
-		runtime: runtimeSourceStub{statuses: []adapters.BindingStatus{
-			{
-				AdapterID: strPtr("adapter.process"),
-			},
-			{
-				AdapterID: strPtr("adapter.process"),
-			},
-		}},
-	}
+	runtime := runtimeSourceStub{statuses: []adapters.BindingStatus{
+		{
+			AdapterID: strPtr("adapter.process"),
+		},
+		{
+			AdapterID: strPtr("adapter.process"),
+		},
+	}}
 
-	_, err := factory.lookupRuntimeAddress(context.Background(), "adapter.process")
+	_, err := adapterutil.LookupRuntimeAddress(context.Background(), runtime, "adapter.process", "vad", ErrAdapterUnavailable)
 	if err == nil {
 		t.Fatalf("expected error due to duplicate runtime entries")
 	}
@@ -586,21 +577,19 @@ func TestAdapterFactoryLookupRuntimeDuplicateStatuses(t *testing.T) {
 }
 
 func TestAdapterFactoryLookupRuntimeDuplicateWithAddress(t *testing.T) {
-	factory := adapterFactory{
-		runtime: runtimeSourceStub{statuses: []adapters.BindingStatus{
-			{
-				AdapterID: strPtr("adapter.process"),
-				Runtime: &adapters.RuntimeStatus{
-					Extra: map[string]string{adapters.RuntimeExtraAddress: "127.0.0.1:9000"},
-				},
+	runtime := runtimeSourceStub{statuses: []adapters.BindingStatus{
+		{
+			AdapterID: strPtr("adapter.process"),
+			Runtime: &adapters.RuntimeStatus{
+				Extra: map[string]string{adapters.RuntimeExtraAddress: "127.0.0.1:9000"},
 			},
-			{
-				AdapterID: strPtr("adapter.process"),
-			},
-		}},
-	}
+		},
+		{
+			AdapterID: strPtr("adapter.process"),
+		},
+	}}
 
-	_, err := factory.lookupRuntimeAddress(context.Background(), "adapter.process")
+	_, err := adapterutil.LookupRuntimeAddress(context.Background(), runtime, "adapter.process", "vad", ErrAdapterUnavailable)
 	if err == nil {
 		t.Fatalf("expected error due to duplicate runtime entries even when address present")
 	}

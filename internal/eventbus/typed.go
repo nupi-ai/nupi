@@ -1,9 +1,25 @@
 package eventbus
 
 import (
+	"context"
 	"sync"
 	"time"
 )
+
+// PublishTyped is a convenience wrapper around Bus.Publish that constructs the
+// Envelope with a typed payload. It enforces the payload type at the call-site
+// via generics, reducing the risk of accidentally publishing wrong types on a
+// topic. If bus is nil the call is a no-op.
+func PublishTyped[T any](ctx context.Context, bus *Bus, topic Topic, source Source, payload T) {
+	if bus == nil {
+		return
+	}
+	bus.Publish(ctx, Envelope{
+		Topic:   topic,
+		Source:  source,
+		Payload: payload,
+	})
+}
 
 // TypedEnvelope is a generic wrapper around Envelope with a typed payload.
 type TypedEnvelope[T any] struct {
@@ -29,9 +45,24 @@ type TypedSubscription[T any] struct {
 // type assertion on each Envelope.Payload, and forwards matching events
 // to the typed channel. Payloads that don't match T are silently dropped.
 //
+// If bus is nil the returned subscription's channel is immediately closed
+// and Close is a no-op — symmetric with PublishTyped's nil-bus handling.
+//
 // The typed channel is unbuffered — backpressure is handled by the raw
 // subscription's existing buffer.
 func Subscribe[T any](bus *Bus, topic Topic, opts ...SubscriptionOption) *TypedSubscription[T] {
+	if bus == nil {
+		ch := make(chan TypedEnvelope[T])
+		done := make(chan struct{})
+		close(ch)
+		close(done)
+		return &TypedSubscription[T]{
+			ch:   ch,
+			done: done,
+			quit: make(chan struct{}),
+		}
+	}
+
 	raw := bus.Subscribe(topic, opts...)
 
 	ts := &TypedSubscription[T]{
@@ -55,9 +86,11 @@ func (ts *TypedSubscription[T]) C() <-chan TypedEnvelope[T] {
 func (ts *TypedSubscription[T]) Close() {
 	ts.closeOnce.Do(func() {
 		close(ts.quit)
+		if ts.raw != nil {
+			ts.raw.Close()
+		}
+		<-ts.done
 	})
-	ts.raw.Close()
-	<-ts.done
 }
 
 func (ts *TypedSubscription[T]) bridge() {

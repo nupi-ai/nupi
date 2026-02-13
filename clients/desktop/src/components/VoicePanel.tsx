@@ -1,27 +1,8 @@
 import { useCallback, useMemo, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
+import { useVoiceStream } from "../hooks/useVoiceStream";
 
-type JsonValue = unknown;
-
-const MAX_METADATA_ENTRIES = 32;
-const MAX_METADATA_KEY_LENGTH = 64;
-const MAX_METADATA_VALUE_LENGTH = 512;
-const MAX_METADATA_TOTAL_BYTES = 4096;
-
-const CANCELLED_MESSAGE = "Voice stream cancelled by user";
-
-let fallbackOperationCounter = 0;
-
-function createOperationId(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  fallbackOperationCounter += 1;
-  return `voice-${Date.now()}-${fallbackOperationCounter}-${Math.random().toString(36).slice(2)}`;
-}
-
-function stringify(value: JsonValue): string {
+function stringify(value: unknown): string {
   if (value === null || value === undefined) {
     return "";
   }
@@ -32,101 +13,37 @@ function stringify(value: JsonValue): string {
   }
 }
 
-function normalizeMetadataMap(entries: Record<string, string>): Record<string, string> {
-  const normalized: Record<string, string> = {};
-  const seen = new Set<string>();
-  Object.entries(entries ?? {}).forEach(([rawKey, rawValue]) => {
-    const key = rawKey.trim();
-    if (!key || seen.has(key)) {
-      if (key && seen.has(key)) {
-        console.warn(`Duplicate metadata key after normalization ignored: "${key}"`);
-      }
-      return;
-    }
-    seen.add(key);
-    normalized[key] = (rawValue ?? "").toString().trim();
-  });
-  return normalized;
-}
-
-function utf8ByteLength(value: string): number {
-  return new TextEncoder().encode(value).length;
-}
-
-function validateMetadataMap(
-  entries: Record<string, string>,
-): { metadata: Record<string, string>; error?: string } {
-  const metadata = normalizeMetadataMap(entries);
-  const pairs = Object.entries(metadata);
-
-  if (pairs.length > MAX_METADATA_ENTRIES) {
-    return {
-      metadata,
-      error: `Metadata includes ${pairs.length} entries (limit ${MAX_METADATA_ENTRIES})`,
-    };
-  }
-
-  let total = 0;
-  for (const [key, value] of pairs) {
-    const keyBytes = utf8ByteLength(key);
-    const valueBytes = utf8ByteLength(value);
-
-    if (keyBytes > MAX_METADATA_KEY_LENGTH) {
-      return {
-        metadata,
-        error: `Metadata key “${key}” exceeds ${MAX_METADATA_KEY_LENGTH} characters`,
-      };
-    }
-    if (valueBytes > MAX_METADATA_VALUE_LENGTH) {
-      return {
-        metadata,
-        error: `Metadata value for “${key}” exceeds ${MAX_METADATA_VALUE_LENGTH} characters`,
-      };
-    }
-
-    total += keyBytes + valueBytes;
-    if (total > MAX_METADATA_TOTAL_BYTES) {
-      return {
-        metadata,
-        error: `Metadata payload exceeds ${MAX_METADATA_TOTAL_BYTES} characters in total`,
-      };
-    }
-  }
-
-  return { metadata };
-}
-
-function extractPlaybackError(payload: JsonValue): string | null {
-  if (payload && typeof payload === "object" && !Array.isArray(payload)) {
-    const candidate = (payload as Record<string, unknown>).playback_error;
-    if (typeof candidate === "string") {
-      const trimmed = candidate.trim();
-      if (trimmed.length > 0) {
-        return trimmed;
-      }
-    }
-  }
-  return null;
-}
-
 export function VoicePanel() {
   const [sessionId, setSessionId] = useState("");
   const [streamId, setStreamId] = useState("mic");
   const [inputPath, setInputPath] = useState<string | null>(null);
   const [outputPath, setOutputPath] = useState<string | null>(null);
   const [disablePlayback, setDisablePlayback] = useState(true);
-  const [status, setStatus] = useState<string>("Awaiting input");
-  const [result, setResult] = useState<JsonValue>(null);
-  const [capabilities, setCapabilities] = useState<JsonValue>(null);
-  const [isBusy, setBusy] = useState(false);
-  const [playbackError, setPlaybackError] = useState<string | null>(null);
-  const [activeOperationId, setActiveOperationId] = useState<string | null>(null);
-  const [isCancelling, setCancelling] = useState(false);
 
   const metadata = useMemo(() => ({ client: "desktop" }), []);
 
+  const {
+    status,
+    result,
+    isBusy,
+    playbackError,
+    activeOperationId,
+    isCancelling,
+    capabilities,
+    performUpload,
+    performInterrupt,
+    cancelUpload,
+    fetchCapabilities,
+  } = useVoiceStream({
+    sessionId,
+    streamId,
+    inputPath,
+    outputPath,
+    disablePlayback,
+    metadata,
+  });
+
   const pickInput = useCallback(async () => {
-    setStatus("Opening file picker…");
     try {
       const selected = await open({
         multiple: false,
@@ -138,20 +55,16 @@ export function VoicePanel() {
       });
 
       if (!selected) {
-        setStatus("File selection cancelled");
         return;
       }
 
       setInputPath(selected);
-      setStatus(`Selected file: ${selected}`);
     } catch (error) {
       console.error("Failed to open audio picker", error);
-      setStatus("Unable to open file picker");
     }
   }, []);
 
   const pickOutput = useCallback(async () => {
-    setStatus("Choosing output file…");
     try {
       const saved = await save({
         defaultPath: "nupi-playback.wav",
@@ -160,14 +73,10 @@ export function VoicePanel() {
 
       if (saved) {
         setOutputPath(saved);
-        setStatus(`Playback audio will be saved to ${saved}`);
         setDisablePlayback(false);
-      } else {
-        setStatus("Playback output selection cancelled");
       }
     } catch (error) {
       console.error("Failed to open save dialog", error);
-      setStatus("Unable to open save dialog");
     }
   }, []);
 
@@ -175,156 +84,6 @@ export function VoicePanel() {
     setOutputPath(null);
     setDisablePlayback(true);
   }, []);
-
-  const performUpload = useCallback(async () => {
-    if (!inputPath) {
-      setStatus("Select an input audio file first");
-      return;
-    }
-    if (!sessionId.trim()) {
-      setStatus("Provide a target session identifier");
-      return;
-    }
-
-    const metadataValidation = validateMetadataMap(metadata);
-    if (metadataValidation.error) {
-      setStatus(`Invalid metadata: ${metadataValidation.error}`);
-      return;
-    }
-
-    setBusy(true);
-    setStatus("Streaming audio…");
-    setResult(null);
-    setPlaybackError(null);
-    const operationId = createOperationId();
-    setActiveOperationId(operationId);
-    try {
-      const payload = await invoke<JsonValue>("voice_stream_from_file", {
-        sessionId: sessionId.trim(),
-        streamId: streamId.trim() || null,
-        inputPath,
-        playbackOutput: outputPath,
-        disablePlayback,
-        metadata: metadataValidation.metadata,
-        operationId,
-      });
-      setResult(payload);
-      const playbackIssue = extractPlaybackError(payload);
-      if (playbackIssue) {
-        setPlaybackError(playbackIssue);
-        setStatus(`Voice stream completed (playback warning: ${playbackIssue})`);
-      } else {
-        setPlaybackError(null);
-        setStatus("Voice stream completed");
-      }
-    } catch (error) {
-      console.error(error);
-      setPlaybackError(null);
-      const message = error instanceof Error ? error.message : String(error);
-      if (message.trim().toLowerCase() === CANCELLED_MESSAGE.toLowerCase()) {
-        setStatus("Voice stream cancelled");
-      } else {
-        setStatus(`Voice stream failed: ${message}`);
-      }
-    } finally {
-      setBusy(false);
-      setActiveOperationId(null);
-      setCancelling(false);
-    }
-  }, [disablePlayback, inputPath, metadata, outputPath, sessionId, streamId]);
-
-  const performInterrupt = useCallback(async () => {
-    if (!sessionId.trim()) {
-      setStatus("Provide a target session identifier");
-      return;
-    }
-
-    const metadataValidation = validateMetadataMap(metadata);
-    if (metadataValidation.error) {
-      setStatus(`Invalid metadata: ${metadataValidation.error}`);
-      return;
-    }
-
-    setBusy(true);
-    setStatus("Sending interrupt…");
-    try {
-      const payload = await invoke<JsonValue>("voice_interrupt_command", {
-        sessionId: sessionId.trim(),
-        streamId: streamId.trim() || null,
-        metadata: metadataValidation.metadata,
-      });
-      setResult(payload);
-      setPlaybackError(null);
-      setStatus("Interrupt sent");
-    } catch (error) {
-      console.error(error);
-      setPlaybackError(null);
-      setStatus(
-        `Interrupt failed: ${
-          error instanceof Error ? error.message : String(error)
-        }`
-      );
-    } finally {
-      setBusy(false);
-    }
-  }, [metadata, sessionId, streamId]);
-
-  const cancelUpload = useCallback(async () => {
-    if (!activeOperationId || isCancelling) {
-      return;
-    }
-    setCancelling(true);
-    setStatus("Cancelling voice stream…");
-    try {
-      const cancelled = await invoke<boolean>("voice_cancel_stream", {
-        operationId: activeOperationId,
-      });
-      if (!cancelled) {
-        setStatus("No active voice upload to cancel");
-        setCancelling(false);
-        setBusy(false);
-        setActiveOperationId(null);
-      }
-    } catch (error) {
-      console.error(error);
-      const message = error instanceof Error ? error.message : String(error);
-      setStatus(`Cancel request failed: ${message}`);
-      setCancelling(false);
-    }
-  }, [activeOperationId, isCancelling]);
-
-  const fetchCapabilities = useCallback(async () => {
-    setBusy(true);
-    setStatus("Fetching audio capabilities…");
-    try {
-      const payload = await invoke<JsonValue>("voice_status_command", {
-        sessionId: sessionId.trim() || null,
-      });
-      setCapabilities(payload);
-      if (
-        payload &&
-        typeof payload === "object" &&
-        payload !== null &&
-        "message" in payload &&
-        typeof (payload as Record<string, unknown>).message === "string"
-      ) {
-        setStatus(
-          (payload as Record<string, unknown>).message as string
-        );
-      } else {
-        setStatus("Capabilities updated");
-      }
-    } catch (error) {
-      console.error(error);
-      setStatus(
-        `Failed to fetch capabilities: ${
-          error instanceof Error ? error.message : String(error)
-        }`
-      );
-    } finally {
-      setBusy(false);
-    }
-  }, [sessionId]);
 
   return (
     <div style={{
@@ -468,7 +227,7 @@ export function VoicePanel() {
               cursor: isBusy ? "wait" : "pointer",
             }}
           >
-            {isBusy ? "Streaming…" : "Send Audio"}
+            {isBusy ? "Streaming\u2026" : "Send Audio"}
           </button>
           <button
             onClick={performInterrupt}
@@ -511,7 +270,7 @@ export function VoicePanel() {
                 cursor: isCancelling ? "wait" : "pointer",
               }}
             >
-              {isCancelling ? "Cancelling…" : "Cancel Upload"}
+              {isCancelling ? "Cancelling\u2026" : "Cancel Upload"}
             </button>
           )}
         </div>
@@ -552,7 +311,7 @@ export function VoicePanel() {
           maxHeight: "220px",
           overflow: "auto",
         }}>
-{stringify(capabilities) || "Use “Refresh Capabilities” to fetch the latest capture/playback configuration."}
+{stringify(capabilities) || "Use \u201cRefresh Capabilities\u201d to fetch the latest capture/playback configuration."}
         </pre>
       </section>
 

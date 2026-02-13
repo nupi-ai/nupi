@@ -249,45 +249,8 @@ func (m *Manager) CreateSession(opts pty.StartOptions, inspect bool) (*Session, 
 		}
 	}
 
-	// Set up tool handler with continuous mode for detecting tool changes
-	if m.pluginDir != "" {
-		handlerOpts := []toolhandlers.HandlerOption{toolhandlers.WithContinuousMode(true)}
-		m.mu.RLock()
-		runtimeFunc := m.jsRuntimeFunc
-		m.mu.RUnlock()
-		if runtimeFunc != nil {
-			handlerOpts = append(handlerOpts, toolhandlers.WithJSRuntimeFunc(runtimeFunc))
-		}
-		toolHandler := toolhandlers.NewToolHandler(sessionID, m.pluginDir, handlerOpts...)
-		if err := toolHandler.Initialize(); err != nil {
-			log.Printf("[Manager] Failed to initialize handler: %v", err)
-		} else {
-			session.Handler = toolHandler
-
-			// Start detection
-			if err := toolHandler.OnSessionStart(opts.Command, opts.Args); err != nil {
-				log.Printf("[Manager] Failed to start detection: %v", err)
-			}
-
-			// Monitor detection events (initial and changes)
-			go m.monitorDetection(session, toolHandler)
-
-			// Add output sink for handler
-			ptyWrapper.AddSink(&handlerSink{
-				handler: toolHandler,
-			})
-		}
-	}
-
-	m.mu.RLock()
-	bus := m.eventBus
-	m.mu.RUnlock()
-	if bus != nil {
-		session.PTY.AddSink(&eventBusSink{
-			bus:     bus,
-			session: session,
-		})
-	}
+	m.setupToolHandler(session, opts)
+	m.setupEventBusSink(session)
 
 	// Monitor session status
 	go m.monitorSession(session)
@@ -304,6 +267,53 @@ func (m *Manager) CreateSession(opts pty.StartOptions, inspect bool) (*Session, 
 	m.publishLifecycle(session, eventbus.SessionStateRunning, nil, "session_started")
 
 	return session, nil
+}
+
+// setupToolHandler initialises the tool-handler plugin for a session, starts
+// detection monitoring, and wires a handler output sink into the PTY.
+func (m *Manager) setupToolHandler(session *Session, opts pty.StartOptions) {
+	m.mu.RLock()
+	pluginDir := m.pluginDir
+	runtimeFunc := m.jsRuntimeFunc
+	m.mu.RUnlock()
+
+	if pluginDir == "" {
+		return
+	}
+	handlerOpts := []toolhandlers.HandlerOption{toolhandlers.WithContinuousMode(true)}
+	if runtimeFunc != nil {
+		handlerOpts = append(handlerOpts, toolhandlers.WithJSRuntimeFunc(runtimeFunc))
+	}
+	toolHandler := toolhandlers.NewToolHandler(session.ID, pluginDir, handlerOpts...)
+	if err := toolHandler.Initialize(); err != nil {
+		log.Printf("[Manager] Failed to initialize handler: %v", err)
+		return
+	}
+	session.Handler = toolHandler
+
+	if err := toolHandler.OnSessionStart(opts.Command, opts.Args); err != nil {
+		log.Printf("[Manager] Failed to start detection: %v", err)
+	}
+
+	go m.monitorDetection(session, toolHandler)
+
+	session.PTY.AddSink(&handlerSink{
+		handler: toolHandler,
+	})
+}
+
+// setupEventBusSink adds an event-bus output sink to the session PTY so that
+// session output is published on the bus.
+func (m *Manager) setupEventBusSink(session *Session) {
+	m.mu.RLock()
+	bus := m.eventBus
+	m.mu.RUnlock()
+	if bus != nil {
+		session.PTY.AddSink(&eventBusSink{
+			bus:     bus,
+			session: session,
+		})
+	}
 }
 
 // monitorSession monitors PTY events and updates session status
