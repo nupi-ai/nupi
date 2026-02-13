@@ -148,69 +148,6 @@ func TestTypedSubscribeCloseWhileBridgeBlocked(t *testing.T) {
 	}
 }
 
-func TestPublishTypedDeliversPayload(t *testing.T) {
-	bus := New()
-	defer bus.Shutdown()
-
-	sub := Subscribe[SpeechVADEvent](bus, TopicSpeechVADDetected)
-	defer sub.Close()
-
-	want := SpeechVADEvent{
-		SessionID:  "s1",
-		StreamID:   "mic",
-		Active:     true,
-		Confidence: 0.85,
-	}
-	PublishTyped(context.Background(), bus, TopicSpeechVADDetected, SourceSpeechVAD, want)
-
-	select {
-	case got := <-sub.C():
-		if got.Payload.SessionID != want.SessionID || got.Payload.StreamID != want.StreamID ||
-			got.Payload.Active != want.Active || got.Payload.Confidence != want.Confidence {
-			t.Fatalf("payload mismatch: got %+v, want %+v", got.Payload, want)
-		}
-		if got.Source != SourceSpeechVAD {
-			t.Errorf("Source: got %v, want %v", got.Source, SourceSpeechVAD)
-		}
-		if got.Topic != TopicSpeechVADDetected {
-			t.Errorf("Topic: got %v, want %v", got.Topic, TopicSpeechVADDetected)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for typed event")
-	}
-}
-
-func TestPublishTypedSetsTimestamp(t *testing.T) {
-	bus := New()
-	defer bus.Shutdown()
-
-	sub := Subscribe[SessionLifecycleEvent](bus, TopicSessionsLifecycle)
-	defer sub.Close()
-
-	before := time.Now().UTC()
-	PublishTyped(context.Background(), bus, TopicSessionsLifecycle, SourceSessionManager, SessionLifecycleEvent{
-		SessionID: "s1",
-		State:     SessionStateCreated,
-	})
-
-	select {
-	case got := <-sub.C():
-		if got.Timestamp.Before(before) {
-			t.Errorf("Timestamp %v is before publish time %v", got.Timestamp, before)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for typed event")
-	}
-}
-
-func TestPublishTypedNilBusNoPanic(t *testing.T) {
-	// A nil bus should be a safe no-op.
-	PublishTyped(context.Background(), nil, TopicSpeechVADDetected, SourceSpeechVAD, SpeechVADEvent{
-		SessionID: "s1",
-		Active:    true,
-	})
-}
-
 func TestSubscribeNilBusReturnsClosedChannel(t *testing.T) {
 	sub := Subscribe[SpeechVADEvent](nil, TopicSpeechVADDetected)
 	// Channel should already be closed.

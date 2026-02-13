@@ -1,24 +1,9 @@
 package eventbus
 
 import (
-	"context"
 	"sync"
 	"time"
 )
-
-// Deprecated: Use Publish with a TopicDef descriptor instead, which provides
-// compile-time enforcement that the payload type matches the topic.
-// Example: eventbus.Publish(ctx, bus, eventbus.Sessions.Output, source, payload)
-func PublishTyped[T any](ctx context.Context, bus *Bus, topic Topic, source Source, payload T) {
-	if bus == nil {
-		return
-	}
-	bus.Publish(ctx, Envelope{
-		Topic:   topic,
-		Source:  source,
-		Payload: payload,
-	})
-}
 
 // TypedEnvelope is a generic wrapper around Envelope with a typed payload.
 type TypedEnvelope[T any] struct {
