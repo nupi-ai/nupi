@@ -14,6 +14,9 @@ func (s *Store) SaveSecuritySettings(ctx context.Context, values map[string]stri
 	if s.readOnly {
 		return fmt.Errorf("config: save security settings: store opened read-only")
 	}
+	if s.encryptionKey == nil {
+		return fmt.Errorf("config: save security settings: encryption key not available")
+	}
 	if len(values) == 0 {
 		return nil
 	}
@@ -32,15 +35,11 @@ func (s *Store) SaveSecuritySettings(ctx context.Context, values map[string]stri
 		defer stmt.Close()
 
 		for key, value := range values {
-			storedValue := value
-			if s.encryptionKey != nil {
-				encrypted, err := storecrypto.EncryptValue(s.encryptionKey, value)
-				if err != nil {
-					return fmt.Errorf("config: encrypt security %q: %w", key, err)
-				}
-				storedValue = encrypted
+			encrypted, err := storecrypto.EncryptValue(s.encryptionKey, value)
+			if err != nil {
+				return fmt.Errorf("config: encrypt security %q: %w", key, err)
 			}
-			if _, err := stmt.ExecContext(ctx, s.instanceName, s.profileName, key, storedValue); err != nil {
+			if _, err := stmt.ExecContext(ctx, s.instanceName, s.profileName, key, encrypted); err != nil {
 				return fmt.Errorf("config: exec save security %q: %w", key, err)
 			}
 		}
@@ -74,7 +73,7 @@ func (s *Store) LoadSecuritySettings(ctx context.Context, keys ...string) (map[s
 			return nil, fmt.Errorf("config: scan security row: %w", err)
 		}
 		if s.encryptionKey == nil {
-			return nil, fmt.Errorf("config: security %q is encrypted but no decryption key is available", key)
+			return nil, fmt.Errorf("config: load security settings: encryption key not available")
 		}
 		decrypted, err := storecrypto.DecryptValue(s.encryptionKey, value)
 		if err != nil {
