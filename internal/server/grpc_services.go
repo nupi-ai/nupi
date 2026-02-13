@@ -789,6 +789,9 @@ func copyStringMap(in map[string]string) map[string]string {
 }
 
 func (c *configService) GetTransportConfig(ctx context.Context, _ *emptypb.Empty) (*apiv1.TransportConfig, error) {
+	if _, err := c.api.requireRoleGRPC(ctx, roleAdmin); err != nil {
+		return nil, err
+	}
 	if c.api.configStore == nil {
 		return nil, status.Error(codes.Unavailable, "configuration store unavailable")
 	}
@@ -800,6 +803,9 @@ func (c *configService) GetTransportConfig(ctx context.Context, _ *emptypb.Empty
 }
 
 func (c *configService) UpdateTransportConfig(ctx context.Context, req *apiv1.UpdateTransportConfigRequest) (*apiv1.TransportConfig, error) {
+	if _, err := c.api.requireRoleGRPC(ctx, roleAdmin); err != nil {
+		return nil, err
+	}
 	if c.api.configStore == nil {
 		return nil, status.Error(codes.Unavailable, "configuration store unavailable")
 	}
@@ -830,7 +836,10 @@ func (c *configService) UpdateTransportConfig(ctx context.Context, req *apiv1.Up
 	if err := c.api.configStore.SaveTransportConfig(ctx, storeCfg); err != nil {
 		return nil, status.Errorf(codes.Internal, "save transport config: %v", err)
 	}
-	c.api.notifyTransportChanged()
+
+	if _, err := c.api.applyTransportConfig(ctx, storeCfg); err != nil {
+		return nil, status.Errorf(codes.Internal, "apply transport config: %v", err)
+	}
 
 	return transportConfigToProto(storeCfg, c.api.AuthRequired()), nil
 }

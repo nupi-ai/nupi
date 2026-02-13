@@ -842,3 +842,37 @@ func (f *fakeAudioOutServer) SendHeader(metadata.MD) error { return nil }
 func (f *fakeAudioOutServer) SetTrailer(metadata.MD)       {}
 func (f *fakeAudioOutServer) SendMsg(interface{}) error    { return nil }
 func (f *fakeAudioOutServer) RecvMsg(interface{}) error    { return nil }
+
+func TestConfigServiceTransportAuthRequired(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+
+	// Enable auth so that requireRoleGRPC actually checks credentials.
+	apiServer.authMu.Lock()
+	apiServer.authRequired = true
+	apiServer.authMu.Unlock()
+
+	service := newConfigService(apiServer)
+	ctx := context.Background() // no auth token
+
+	t.Run("GetTransportConfig", func(t *testing.T) {
+		_, err := service.GetTransportConfig(ctx, &emptypb.Empty{})
+		if err == nil {
+			t.Fatal("expected auth error, got nil")
+		}
+		if status.Code(err) != codes.Unauthenticated {
+			t.Fatalf("expected Unauthenticated, got %v", status.Code(err))
+		}
+	})
+
+	t.Run("UpdateTransportConfig", func(t *testing.T) {
+		_, err := service.UpdateTransportConfig(ctx, &apiv1.UpdateTransportConfigRequest{
+			Config: &apiv1.TransportConfig{Binding: "loopback"},
+		})
+		if err == nil {
+			t.Fatal("expected auth error, got nil")
+		}
+		if status.Code(err) != codes.Unauthenticated {
+			t.Fatalf("expected Unauthenticated, got %v", status.Code(err))
+		}
+	})
+}
