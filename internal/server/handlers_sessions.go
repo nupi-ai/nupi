@@ -442,7 +442,7 @@ func (s *APIServer) onSessionEvent(event string, sess *session.Session) {
 }
 
 func (s *APIServer) registerSessionListener() {
-	s.listenerOnce.Do(func() {
+	s.lifecycle.listenerOnce.Do(func() {
 		s.sessionManager.AddEventListener(func(event string, sess *session.Session) {
 			s.onSessionEvent(event, sess)
 		})

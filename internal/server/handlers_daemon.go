@@ -133,7 +133,7 @@ func (s *APIServer) handlePluginWarnings(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if s.pluginWarnings == nil {
+	if s.observability.pluginWarnings == nil {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
 			"count":    0,
@@ -142,7 +142,7 @@ func (s *APIServer) handlePluginWarnings(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	warnings := s.pluginWarnings.GetDiscoveryWarnings()
+	warnings := s.observability.pluginWarnings.GetDiscoveryWarnings()
 	response := map[string]any{
 		"count":    len(warnings),
 		"warnings": warnings,
@@ -170,9 +170,9 @@ func (s *APIServer) handleDaemonShutdown(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	s.shutdownMu.RLock()
-	shutdown := s.shutdownFn
-	s.shutdownMu.RUnlock()
+	s.lifecycle.shutdownMu.RLock()
+	shutdown := s.lifecycle.shutdownFn
+	s.lifecycle.shutdownMu.RUnlock()
 
 	if shutdown == nil {
 		http.Error(w, "daemon shutdown not available", http.StatusNotImplemented)

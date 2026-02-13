@@ -22,7 +22,6 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// APIServer handles WebSocket connections only
 // RuntimeInfoProvider defines methods required to expose runtime metadata.
 type RuntimeInfoProvider interface {
 	Port() int
@@ -182,6 +181,25 @@ func (a *authState) setAuthTokens(tokens []storedToken, authRequired bool) {
 	a.authMu.Unlock()
 }
 
+// lifecycleState groups synchronisation primitives and shutdown coordination.
+type lifecycleState struct {
+	listenerOnce   sync.Once
+	wsRunOnce      sync.Once
+	hookMu         sync.RWMutex
+	transportHooks []func()
+	shutdownMu     sync.RWMutex
+	shutdownFn     func(context.Context) error
+}
+
+// observabilityState groups optional diagnostic providers.
+// All fields must be set before Start() is called; they are never mutated
+// after the server begins accepting requests, so no mutex is required.
+type observabilityState struct {
+	metricsExporter PrometheusExporter
+	pluginWarnings  PluginWarningsProvider
+}
+
+// APIServer exposes the HTTP, WebSocket and gRPC API surface for the Nupi daemon.
 type APIServer struct {
 	// Service dependencies (immutable after init)
 	sessionManager *session.Manager
@@ -196,23 +214,15 @@ type APIServer struct {
 	resizeManager  *termresize.Manager
 	httpServer     *http.Server
 
-	// Lifecycle sync
-	listenerOnce   sync.Once
-	wsRunOnce      sync.Once
-	hookMu         sync.Mutex
-	transportHooks []func()
-
 	// Grouped state (embedded — fields promoted)
 	transportConfig
 	authState
 
-	// Shutdown
-	shutdownMu sync.RWMutex
-	shutdownFn func(context.Context) error
+	// Lifecycle & shutdown coordination
+	lifecycle lifecycleState
 
-	// Observability
-	metricsExporter PrometheusExporter
-	pluginWarnings  PluginWarningsProvider
+	// Observability (optional providers, immutable after Start)
+	observability observabilityState
 }
 
 // TransportSnapshot captures the runtime server transport settings.
@@ -253,18 +263,18 @@ func NewAPIServer(sessionManager *session.Manager, configStore *configstore.Stor
 
 // SetShutdownFunc registers a handler invoked when /daemon/shutdown is called.
 func (s *APIServer) SetShutdownFunc(fn func(context.Context) error) {
-	s.shutdownMu.Lock()
-	s.shutdownFn = fn
-	s.shutdownMu.Unlock()
+	s.lifecycle.shutdownMu.Lock()
+	s.lifecycle.shutdownFn = fn
+	s.lifecycle.shutdownMu.Unlock()
 }
 
 // RequestShutdown triggers a graceful daemon shutdown using the registered
 // shutdown function. It is safe to call from any goroutine and returns
 // immediately — the actual shutdown proceeds asynchronously.
 func (s *APIServer) RequestShutdown() {
-	s.shutdownMu.RLock()
-	fn := s.shutdownFn
-	s.shutdownMu.RUnlock()
+	s.lifecycle.shutdownMu.RLock()
+	fn := s.lifecycle.shutdownFn
+	s.lifecycle.shutdownMu.RUnlock()
 	if fn != nil {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -302,13 +312,15 @@ func (s *APIServer) SetEventBus(bus *eventbus.Bus) {
 }
 
 // SetMetricsExporter wires the metrics exporter used by the /metrics endpoint.
+// Must be called before Start.
 func (s *APIServer) SetMetricsExporter(exporter PrometheusExporter) {
-	s.metricsExporter = exporter
+	s.observability.metricsExporter = exporter
 }
 
 // SetPluginWarningsProvider wires the plugin warnings provider used by the /plugins/warnings endpoint.
+// Must be called before Start.
 func (s *APIServer) SetPluginWarningsProvider(provider PluginWarningsProvider) {
-	s.pluginWarnings = provider
+	s.observability.pluginWarnings = provider
 }
 
 func websocketScheme(r *http.Request) string {
@@ -338,7 +350,6 @@ func (s *APIServer) wrapWithCORS(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
-
 
 func (s *APIServer) wrapWithSecurity(next http.Handler) http.Handler {
 	corsHandler := s.wrapWithCORS(next)
@@ -376,7 +387,6 @@ func isPublicAuthEndpoint(r *http.Request) bool {
 	}
 	return false
 }
-
 
 func (s *APIServer) validateToken(token string) bool {
 	_, ok := s.lookupToken(token)
@@ -597,7 +607,7 @@ func (s *APIServer) Prepare(ctx context.Context) (*PreparedHTTPServer, error) {
 	s.registerSessionListener()
 
 	// Start WebSocket server goroutine once
-	s.wsRunOnce.Do(func() {
+	s.lifecycle.wsRunOnce.Do(func() {
 		go s.wsServer.Run()
 	})
 
@@ -789,15 +799,16 @@ func (s *APIServer) AddTransportListener(fn func()) {
 		return
 	}
 
-	s.hookMu.Lock()
-	s.transportHooks = append(s.transportHooks, fn)
-	s.hookMu.Unlock()
+	s.lifecycle.hookMu.Lock()
+	s.lifecycle.transportHooks = append(s.lifecycle.transportHooks, fn)
+	s.lifecycle.hookMu.Unlock()
 }
 
 func (s *APIServer) notifyTransportChanged() {
-	s.hookMu.Lock()
-	hooks := append([]func(){}, s.transportHooks...)
-	s.hookMu.Unlock()
+	s.lifecycle.hookMu.RLock()
+	hooks := make([]func(), len(s.lifecycle.transportHooks))
+	copy(hooks, s.lifecycle.transportHooks)
+	s.lifecycle.hookMu.RUnlock()
 
 	for _, hook := range hooks {
 		go hook()
@@ -821,12 +832,12 @@ func (s *APIServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *APIServer) serveMetrics(w http.ResponseWriter, r *http.Request) {
-	if s.metricsExporter == nil {
+	if s.observability.metricsExporter == nil {
 		http.Error(w, "metrics exporter not configured", http.StatusServiceUnavailable)
 		return
 	}
 
-	payload := s.metricsExporter.Export()
+	payload := s.observability.metricsExporter.Export()
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 	w.Header().Set("Cache-Control", "no-cache")
 	if _, err := w.Write(payload); err != nil {
