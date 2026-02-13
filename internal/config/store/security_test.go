@@ -391,8 +391,32 @@ func TestSecuritySettingsReadOnlyWithMissingKeyReturnsError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when loading encrypted value without key")
 	}
-	if !strings.Contains(err.Error(), "no decryption key") {
-		t.Fatalf("expected 'no decryption key' error, got: %v", err)
+	if !strings.Contains(err.Error(), "encryption key not available") {
+		t.Fatalf("expected 'encryption key not available' error, got: %v", err)
+	}
+}
+
+func TestSaveSecuritySettingsNilKeyGuard(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "config.db")
+	ctx := context.Background()
+
+	store, err := Open(Options{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	// Simulate a regression where encryptionKey becomes nil after Open.
+	store.encryptionKey = nil
+
+	err = store.SaveSecuritySettings(ctx, map[string]string{"api_key": "secret"})
+	if err == nil {
+		t.Fatal("expected error when saving with nil encryption key")
+	}
+	if !strings.Contains(err.Error(), "encryption key not available") {
+		t.Fatalf("expected 'encryption key not available' error, got: %v", err)
 	}
 }
 

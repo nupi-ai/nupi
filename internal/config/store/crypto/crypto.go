@@ -9,7 +9,9 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"log"
 	"os"
+	"runtime"
 	"path/filepath"
 	"strings"
 )
@@ -25,11 +27,29 @@ const (
 // LoadKey reads an existing encryption key from keyPath.
 // Returns nil, nil if the file doesn't exist (key not yet created).
 func LoadKey(keyPath string) ([]byte, error) {
-	data, err := os.ReadFile(keyPath)
+	f, err := os.Open(keyPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
+		return nil, fmt.Errorf("config: read encryption key: %w", err)
+	}
+	defer f.Close()
+
+	// Check permissions on the same file descriptor to avoid TOCTOU races.
+	// Skip on Windows where Go returns synthetic mode bits (0666/0444).
+	if runtime.GOOS != "windows" {
+		if info, statErr := f.Stat(); statErr == nil {
+			if perm := info.Mode().Perm(); perm&0o077 != 0 {
+				log.Printf("[Config] WARNING: encryption key %s has overly permissive mode 0%o (expected 0600)", keyPath, perm)
+			}
+		} else {
+			log.Printf("[Config] WARNING: could not check permissions on encryption key %s: %v", keyPath, statErr)
+		}
+	}
+
+	data, err := io.ReadAll(f)
+	if err != nil {
 		return nil, fmt.Errorf("config: read encryption key: %w", err)
 	}
 	if len(data) != KeySize {
@@ -72,7 +92,10 @@ func CreateKey(keyPath string) ([]byte, error) {
 		os.Remove(tmpPath)
 		return nil, fmt.Errorf("config: chmod encryption key temp: %w", err)
 	}
-	tmpFile.Close()
+	if err := tmpFile.Close(); err != nil {
+		os.Remove(tmpPath)
+		return nil, fmt.Errorf("config: close encryption key temp: %w", err)
+	}
 
 	// Atomic link: creates keyPath pointing to the fully-written temp file.
 	// Fails with EEXIST if another process/goroutine already created keyPath.
@@ -80,7 +103,14 @@ func CreateKey(keyPath string) ([]byte, error) {
 		os.Remove(tmpPath)
 		if os.IsExist(err) {
 			// Another process won the race — read the key it created.
-			return LoadKey(keyPath)
+			raceKey, loadErr := LoadKey(keyPath)
+			if loadErr != nil {
+				return nil, loadErr
+			}
+			if raceKey == nil {
+				return nil, fmt.Errorf("config: encryption key %s disappeared after race (created by another process but now missing)", keyPath)
+			}
+			return raceKey, nil
 		}
 		return nil, fmt.Errorf("config: link encryption key: %w", err)
 	}

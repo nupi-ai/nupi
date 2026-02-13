@@ -3,6 +3,7 @@ package crypto_test
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 
@@ -87,12 +88,13 @@ func TestCreateEncryptionKeyCreatesFile(t *testing.T) {
 		t.Fatalf("expected key size %d, got %d", storecrypto.KeySize, len(key))
 	}
 
-	// File must exist with correct permissions.
+	// File must exist with correct permissions (skip on Windows where
+	// Go returns synthetic mode bits).
 	info, err := os.Stat(keyPath)
 	if err != nil {
 		t.Fatalf("stat key file: %v", err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("expected 0600 permissions, got %o", info.Mode().Perm())
 	}
 
@@ -170,5 +172,66 @@ func TestCreateEncryptionKeyConcurrentRace(t *testing.T) {
 		} else if string(keys[i]) != string(referenceKey) {
 			t.Fatalf("goroutine %d returned a different key — atomic link race protection failed", i)
 		}
+	}
+}
+
+func TestLoadKeyWarnsOnOverlyPermissiveFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission check skipped on Windows")
+	}
+	t.Parallel()
+
+	keyPath := filepath.Join(t.TempDir(), ".secrets.key")
+	key := make([]byte, storecrypto.KeySize)
+	for i := range key {
+		key[i] = byte(i)
+	}
+	// Write with overly permissive 0644 — LoadKey should still succeed (warn-only).
+	if err := os.WriteFile(keyPath, key, 0o644); err != nil {
+		t.Fatalf("write key: %v", err)
+	}
+
+	loaded, err := storecrypto.LoadKey(keyPath)
+	if err != nil {
+		t.Fatalf("expected no error for permissive file, got: %v", err)
+	}
+	if string(loaded) != string(key) {
+		t.Fatal("loaded key does not match written key")
+	}
+}
+
+func TestLoadKeyUnreadableFileReturnsError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission-based open errors behave differently on Windows")
+	}
+	t.Parallel()
+
+	keyPath := filepath.Join(t.TempDir(), ".secrets.key")
+	key := make([]byte, storecrypto.KeySize)
+	if err := os.WriteFile(keyPath, key, 0o000); err != nil {
+		t.Fatalf("write key: %v", err)
+	}
+
+	_, err := storecrypto.LoadKey(keyPath)
+	if err == nil {
+		t.Fatal("expected error when key file is unreadable")
+	}
+}
+
+func TestCreateKeyRaceLossWithCorruptFileReturnsError(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, ".secrets.key")
+
+	// Pre-create a file with wrong size so os.Link fails with EEXIST,
+	// then LoadKey returns an error (invalid size).
+	if err := os.WriteFile(keyPath, []byte("wrong-size"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := storecrypto.CreateKey(keyPath)
+	if err == nil {
+		t.Fatal("expected error when race-loss LoadKey finds corrupt file")
 	}
 }
