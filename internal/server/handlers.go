@@ -102,7 +102,88 @@ type pairingEntry struct {
 
 type authContextKey struct{}
 
+// transportConfig groups network transport settings protected by a single
+// read-write mutex. Embedded in APIServer so that promoted fields keep existing
+// call-sites compiling without changes.
+type transportConfig struct {
+	transportMu    sync.RWMutex
+	binding        string
+	port           int
+	tlsCertPath    string
+	tlsKeyPath     string
+	allowedOrigins []string
+	grpcBinding    string
+	grpcPort       int
+}
+
+// originAllowed reports whether the given Origin header is acceptable.
+func (tc *transportConfig) originAllowed(origin string) bool {
+	if origin == "" {
+		return false
+	}
+
+	if origin == "tauri://localhost" ||
+		origin == "https://tauri.localhost" ||
+		origin == "https://tauri.local" ||
+		strings.HasPrefix(origin, "https://tauri.local:") ||
+		origin == "http://localhost" ||
+		origin == "http://127.0.0.1" ||
+		strings.HasPrefix(origin, "http://localhost:") ||
+		strings.HasPrefix(origin, "http://127.0.0.1:") {
+		return true
+	}
+
+	tc.transportMu.RLock()
+	defer tc.transportMu.RUnlock()
+	for _, allowed := range tc.allowedOrigins {
+		if allowed == origin {
+			return true
+		}
+	}
+	return false
+}
+
+// authState groups authentication tokens and settings protected by a single
+// read-write mutex.
+type authState struct {
+	authMu       sync.RWMutex
+	authTokens   map[string]storedToken
+	authRequired bool
+}
+
+// lookupToken retrieves a stored token by its raw value.
+func (a *authState) lookupToken(token string) (storedToken, bool) {
+	if token == "" {
+		return storedToken{}, false
+	}
+	a.authMu.RLock()
+	defer a.authMu.RUnlock()
+	entry, ok := a.authTokens[token]
+	return entry, ok
+}
+
+// isAuthRequired reports whether token-based authentication is enforced.
+func (a *authState) isAuthRequired() bool {
+	a.authMu.RLock()
+	defer a.authMu.RUnlock()
+	return a.authRequired
+}
+
+// setAuthTokens replaces the active token set atomically.
+func (a *authState) setAuthTokens(tokens []storedToken, authRequired bool) {
+	tokenMap := make(map[string]storedToken, len(tokens))
+	for _, token := range sanitizeStoredTokens(tokens) {
+		tokenMap[token.Token] = token
+	}
+
+	a.authMu.Lock()
+	a.authTokens = tokenMap
+	a.authRequired = authRequired
+	a.authMu.Unlock()
+}
+
 type APIServer struct {
+	// Service dependencies (immutable after init)
 	sessionManager *session.Manager
 	configStore    *configstore.Store
 	runtime        RuntimeInfoProvider
@@ -113,28 +194,23 @@ type APIServer struct {
 	audioEgress    AudioPlaybackController
 	eventBus       *eventbus.Bus
 	resizeManager  *termresize.Manager
-	port           int
 	httpServer     *http.Server
+
+	// Lifecycle sync
 	listenerOnce   sync.Once
 	wsRunOnce      sync.Once
 	hookMu         sync.Mutex
 	transportHooks []func()
 
-	transportMu    sync.RWMutex
-	binding        string
-	tlsCertPath    string
-	tlsKeyPath     string
-	allowedOrigins []string
-	grpcBinding    string
-	grpcPort       int
+	// Grouped state (embedded — fields promoted)
+	transportConfig
+	authState
 
-	authMu       sync.RWMutex
-	authTokens   map[string]storedToken
-	authRequired bool
-
+	// Shutdown
 	shutdownMu sync.RWMutex
 	shutdownFn func(context.Context) error
 
+	// Observability
 	metricsExporter PrometheusExporter
 	pluginWarnings  PluginWarningsProvider
 }
@@ -167,8 +243,8 @@ func NewAPIServer(sessionManager *session.Manager, configStore *configstore.Stor
 		runtime:        runtime,
 		wsServer:       wsServer,
 		resizeManager:  resizeManager,
-		port:           port,
 	}
+	apiServer.port = port
 
 	apiServer.registerSessionListener()
 
@@ -263,31 +339,6 @@ func (s *APIServer) wrapWithCORS(next http.Handler) http.Handler {
 	})
 }
 
-func (s *APIServer) originAllowed(origin string) bool {
-	if origin == "" {
-		return false
-	}
-
-	if origin == "tauri://localhost" ||
-		origin == "https://tauri.localhost" ||
-		origin == "https://tauri.local" ||
-		strings.HasPrefix(origin, "https://tauri.local:") ||
-		origin == "http://localhost" ||
-		origin == "http://127.0.0.1" ||
-		strings.HasPrefix(origin, "http://localhost:") ||
-		strings.HasPrefix(origin, "http://127.0.0.1:") {
-		return true
-	}
-
-	s.transportMu.RLock()
-	defer s.transportMu.RUnlock()
-	for _, allowed := range s.allowedOrigins {
-		if allowed == origin {
-			return true
-		}
-	}
-	return false
-}
 
 func (s *APIServer) wrapWithSecurity(next http.Handler) http.Handler {
 	corsHandler := s.wrapWithCORS(next)
@@ -326,15 +377,6 @@ func isPublicAuthEndpoint(r *http.Request) bool {
 	return false
 }
 
-func (s *APIServer) lookupToken(token string) (storedToken, bool) {
-	if token == "" {
-		return storedToken{}, false
-	}
-	s.authMu.RLock()
-	defer s.authMu.RUnlock()
-	entry, ok := s.authTokens[token]
-	return entry, ok
-}
 
 func (s *APIServer) validateToken(token string) bool {
 	_, ok := s.lookupToken(token)
@@ -410,27 +452,9 @@ func (s *APIServer) requireRole(w http.ResponseWriter, r *http.Request, allowed 
 	return storedToken{}, false
 }
 
-func (s *APIServer) isAuthRequired() bool {
-	s.authMu.RLock()
-	defer s.authMu.RUnlock()
-	return s.authRequired
-}
-
 // AuthRequired reports whether transport-level authentication is enforced.
 func (s *APIServer) AuthRequired() bool {
 	return s.isAuthRequired()
-}
-
-func (s *APIServer) setAuthTokens(tokens []storedToken, authRequired bool) {
-	tokenMap := make(map[string]storedToken, len(tokens))
-	for _, token := range sanitizeStoredTokens(tokens) {
-		tokenMap[token.Token] = token
-	}
-
-	s.authMu.Lock()
-	s.authTokens = tokenMap
-	s.authRequired = authRequired
-	s.authMu.Unlock()
 }
 
 func (s *APIServer) loadAuthTokens(ctx context.Context) ([]storedToken, error) {
@@ -577,9 +601,13 @@ func (s *APIServer) Prepare(ctx context.Context) (*PreparedHTTPServer, error) {
 		go s.wsServer.Run()
 	})
 
+	s.transportMu.RLock()
+	fallbackPort := s.port
+	s.transportMu.RUnlock()
+
 	cfg := configstore.TransportConfig{
 		Binding:     "loopback",
-		Port:        s.port,
+		Port:        fallbackPort,
 		GRPCBinding: "",
 		GRPCPort:    0,
 	}
