@@ -131,12 +131,7 @@ func (w *adapterLogWriter) publish(message string) {
 		Timestamp: now.UTC(),
 		Fields:    fields,
 	}
-	w.bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:     eventbus.TopicAdaptersLog,
-		Source:    eventbus.SourceAdapterProcess,
-		Payload:   event,
-		Timestamp: now,
-	})
+	eventbus.PublishWithOpts(context.Background(), w.bus, eventbus.Adapters.Log, eventbus.SourceAdapterProcess, event, eventbus.WithTimestamp(now))
 
 	// Periodically report dropped messages.
 	w.reportDroppedMessages(now)
@@ -188,12 +183,7 @@ func (w *adapterLogWriter) reportDroppedMessages(now time.Time) {
 		Timestamp: now.UTC(),
 		Fields:    fields,
 	}
-	w.bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:     eventbus.TopicAdaptersLog,
-		Source:    eventbus.SourceAdapterProcess,
-		Payload:   event,
-		Timestamp: now,
-	})
+	eventbus.PublishWithOpts(context.Background(), w.bus, eventbus.Adapters.Log, eventbus.SourceAdapterProcess, event, eventbus.WithTimestamp(now))
 
 	// Reset counters.
 	w.droppedCount = 0

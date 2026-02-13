@@ -565,15 +565,11 @@ func (s *Service) flushAndProcess(ctx context.Context, sessionID string, buf *Ou
 		if err != nil {
 			s.errorTotal.Add(1)
 			log.Printf("[ContentPipeline] transform error for session %s: %v", sessionID, err)
-			s.bus.Publish(context.Background(), eventbus.Envelope{
-				Topic:  eventbus.TopicPipelineError,
-				Source: eventbus.SourceContentPipeline,
-				Payload: eventbus.PipelineErrorEvent{
-					SessionID:   sessionID,
-					Stage:       plugin.Name,
-					Message:     err.Error(),
-					Recoverable: true,
-				},
+			eventbus.Publish(context.Background(), s.bus, eventbus.Pipeline.Error, eventbus.SourceContentPipeline, eventbus.PipelineErrorEvent{
+				SessionID:   sessionID,
+				Stage:       plugin.Name,
+				Message:     err.Error(),
+				Recoverable: true,
 			})
 		} else {
 			text = newText
@@ -643,11 +639,7 @@ func (s *Service) handleTranscript(evt eventbus.SpeechTranscriptEvent) {
 }
 
 func (s *Service) publishPipelineMessage(evt eventbus.PipelineMessageEvent) {
-	s.bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicPipelineCleaned,
-		Source:  eventbus.SourceContentPipeline,
-		Payload: evt,
-	})
+	eventbus.Publish(context.Background(), s.bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, evt)
 }
 
 // Metrics aggregates processed/error counters.

@@ -315,11 +315,7 @@ func (s *Service) publishDetection(sessionID, streamID string, segment eventbus.
 
 	s.detectionsTotal.Add(1)
 
-	s.bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicSpeechVADDetected,
-		Source:  eventbus.SourceSpeechVAD,
-		Payload: event,
-	})
+	eventbus.Publish(context.Background(), s.bus, eventbus.Speech.VADDetected, eventbus.SourceSpeechVAD, event)
 }
 
 // stream is the internal per-key processing goroutine.

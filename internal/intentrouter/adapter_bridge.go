@@ -672,16 +672,12 @@ func (b *AdapterBridge) publishBridgeDiagnostic(ctx context.Context, adapterID, 
 	// Determine if error is recoverable based on type
 	recoverable := diagnosticType != eventbus.BridgeDiagnosticConfigInvalid
 
-	b.bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicIntentRouterDiagnostics,
-		Source: eventbus.SourceIntentRouterBridge,
-		Payload: eventbus.BridgeDiagnosticEvent{
-			AdapterID:   adapterID,
-			Type:        diagnosticType,
-			Message:     message,
-			Recoverable: recoverable,
-			Timestamp:   time.Now(),
-		},
+	eventbus.Publish(ctx, b.bus, eventbus.IntentRouter.Diagnostics, eventbus.SourceIntentRouterBridge, eventbus.BridgeDiagnosticEvent{
+		AdapterID:   adapterID,
+		Type:        diagnosticType,
+		Message:     message,
+		Recoverable: recoverable,
+		Timestamp:   time.Now(),
 	})
 }
 

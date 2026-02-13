@@ -117,11 +117,7 @@ func (s *APIServer) publishAudioInterrupt(sessionID, streamID, reason string, me
 		Metadata:  cloneStringMap(metadata),
 	}
 
-	s.eventBus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicAudioInterrupt,
-		Source:  eventbus.SourceClient,
-		Payload: event,
-	})
+	eventbus.Publish(context.Background(), s.eventBus, eventbus.Audio.Interrupt, eventbus.SourceClient, event)
 }
 
 func (s *APIServer) handleAudioIngress(w http.ResponseWriter, r *http.Request) {

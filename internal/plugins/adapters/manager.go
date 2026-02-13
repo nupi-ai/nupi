@@ -1094,16 +1094,9 @@ func logError(bus *eventbus.Bus, err error) {
 		return
 	}
 	log.Printf("[Adapters] %v", err)
-	if bus == nil {
-		return
-	}
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:  eventbus.TopicAdaptersStatus,
-		Source: eventbus.SourceAdaptersService,
-		Payload: eventbus.AdapterStatusEvent{
-			Status:  eventbus.AdapterHealthError,
-			Message: err.Error(),
-		},
+	eventbus.Publish(context.Background(), bus, eventbus.Adapters.Status, eventbus.SourceAdaptersService, eventbus.AdapterStatusEvent{
+		Status:  eventbus.AdapterHealthError,
+		Message: err.Error(),
 	})
 }
 
