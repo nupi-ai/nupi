@@ -1,4 +1,4 @@
-package store
+package crypto
 
 import (
 	"context"
@@ -15,16 +15,16 @@ import (
 )
 
 const (
-	keySize     = 32 // AES-256
-	keyFileName = ".secrets.key"
-	// encPrefix marks encrypted values in the database.
+	KeySize     = 32 // AES-256
+	KeyFileName = ".secrets.key"
+	// EncPrefix marks encrypted values in the database.
 	// Plaintext values (pre-encryption migration) lack this prefix.
-	encPrefix = "enc:v1:"
+	EncPrefix = "enc:v1:"
 )
 
-// loadEncryptionKey reads an existing encryption key from keyPath.
+// LoadKey reads an existing encryption key from keyPath.
 // Returns nil, nil if the file doesn't exist (key not yet created).
-func loadEncryptionKey(keyPath string) ([]byte, error) {
+func LoadKey(keyPath string) ([]byte, error) {
 	data, err := os.ReadFile(keyPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -32,13 +32,13 @@ func loadEncryptionKey(keyPath string) ([]byte, error) {
 		}
 		return nil, fmt.Errorf("config: read encryption key: %w", err)
 	}
-	if len(data) != keySize {
-		return nil, fmt.Errorf("config: encryption key at %s has invalid size %d (expected %d)", keyPath, len(data), keySize)
+	if len(data) != KeySize {
+		return nil, fmt.Errorf("config: encryption key at %s has invalid size %d (expected %d)", keyPath, len(data), KeySize)
 	}
 	return data, nil
 }
 
-// createEncryptionKey generates a new 32-byte AES key and writes it to keyPath.
+// CreateKey generates a new 32-byte AES key and writes it to keyPath.
 // Uses a temp-file + hard-link pattern for atomic creation to prevent race
 // conditions when multiple processes open the store concurrently.
 //
@@ -49,8 +49,8 @@ func loadEncryptionKey(keyPath string) ([]byte, error) {
 //
 // Callers must verify that creating a new key is safe (i.e. no existing
 // encrypted values in the DB) before calling this function.
-func createEncryptionKey(keyPath string) ([]byte, error) {
-	key := make([]byte, keySize)
+func CreateKey(keyPath string) ([]byte, error) {
+	key := make([]byte, KeySize)
 	if _, err := io.ReadFull(rand.Reader, key); err != nil {
 		return nil, fmt.Errorf("config: generate encryption key: %w", err)
 	}
@@ -80,7 +80,7 @@ func createEncryptionKey(keyPath string) ([]byte, error) {
 		os.Remove(tmpPath)
 		if os.IsExist(err) {
 			// Another process won the race — read the key it created.
-			return loadEncryptionKey(keyPath)
+			return LoadKey(keyPath)
 		}
 		return nil, fmt.Errorf("config: link encryption key: %w", err)
 	}
@@ -89,19 +89,19 @@ func createEncryptionKey(keyPath string) ([]byte, error) {
 	return key, nil
 }
 
-// encryptionKeyPath returns the path for the encryption key relative to the DB.
-func encryptionKeyPath(dbPath string) string {
-	return filepath.Join(filepath.Dir(dbPath), keyFileName)
+// KeyPath returns the path for the encryption key relative to the DB.
+func KeyPath(dbPath string) string {
+	return filepath.Join(filepath.Dir(dbPath), KeyFileName)
 }
 
-// hasEncryptedValues checks whether the security_settings table contains any
+// HasEncryptedValues checks whether the security_settings table contains any
 // values with the enc:v1: prefix. Used to prevent creating a new encryption
 // key when existing encrypted data would become permanently unreadable.
-func hasEncryptedValues(ctx context.Context, db *sql.DB) (bool, error) {
+func HasEncryptedValues(ctx context.Context, db *sql.DB) (bool, error) {
 	var count int
 	err := db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM security_settings WHERE value LIKE ?`,
-		encPrefix+"%",
+		EncPrefix+"%",
 	).Scan(&count)
 	if err != nil {
 		return false, fmt.Errorf("config: check encrypted values: %w", err)
@@ -109,7 +109,7 @@ func hasEncryptedValues(ctx context.Context, db *sql.DB) (bool, error) {
 	return count > 0, nil
 }
 
-// migrateEncryptPlaintext ensures every row in security_settings is properly
+// MigratePlaintext ensures every row in security_settings is properly
 // encrypted. Called during Open() in RW mode.
 //
 // For each row the function decides what to do:
@@ -120,7 +120,7 @@ func hasEncryptedValues(ctx context.Context, db *sql.DB) (bool, error) {
 //     encrypt the entire raw value.
 //
 // Returns the number of rows migrated.
-func migrateEncryptPlaintext(ctx context.Context, db *sql.DB, key []byte) (int, error) {
+func MigratePlaintext(ctx context.Context, db *sql.DB, key []byte) (int, error) {
 	rows, err := db.QueryContext(ctx,
 		`SELECT rowid, value FROM security_settings`,
 	)
@@ -142,17 +142,17 @@ func migrateEncryptPlaintext(ctx context.Context, db *sql.DB, key []byte) (int, 
 			return 0, fmt.Errorf("config: scan secret for migration: %w", err)
 		}
 
-		if strings.HasPrefix(raw, encPrefix) {
+		if strings.HasPrefix(raw, EncPrefix) {
 			// Try to decrypt — if it succeeds the value is already properly
 			// encrypted and we leave it alone.
-			if _, err := decryptValue(key, raw); err == nil {
+			if _, err := DecryptValue(key, raw); err == nil {
 				continue
 			}
 			// Decryption failed: the raw string is plaintext that happens to
 			// start with the enc:v1: prefix. Fall through to encrypt it.
 		}
 
-		encrypted, err := encryptValue(key, raw)
+		encrypted, err := EncryptValue(key, raw)
 		if err != nil {
 			return 0, fmt.Errorf("config: encrypt during migration: %w", err)
 		}
@@ -193,8 +193,8 @@ func migrateEncryptPlaintext(ctx context.Context, db *sql.DB, key []byte) (int, 
 	return len(updates), nil
 }
 
-// encryptValue encrypts plaintext using AES-256-GCM and returns a prefixed base64 string.
-func encryptValue(key []byte, plaintext string) (string, error) {
+// EncryptValue encrypts plaintext using AES-256-GCM and returns a prefixed base64 string.
+func EncryptValue(key []byte, plaintext string) (string, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return "", err
@@ -210,18 +210,18 @@ func encryptValue(key []byte, plaintext string) (string, error) {
 	}
 
 	ciphertext := gcm.Seal(nonce, nonce, []byte(plaintext), nil)
-	return encPrefix + base64.StdEncoding.EncodeToString(ciphertext), nil
+	return EncPrefix + base64.StdEncoding.EncodeToString(ciphertext), nil
 }
 
-// decryptValue decrypts an encrypted value. The value must have the enc:v1:
+// DecryptValue decrypts an encrypted value. The value must have the enc:v1:
 // prefix; values without it are rejected as invalid (plaintext values should
 // have been migrated during Open).
-func decryptValue(key []byte, stored string) (string, error) {
-	if !strings.HasPrefix(stored, encPrefix) {
-		return "", fmt.Errorf("config: value is not encrypted (missing %s prefix)", encPrefix)
+func DecryptValue(key []byte, stored string) (string, error) {
+	if !strings.HasPrefix(stored, EncPrefix) {
+		return "", fmt.Errorf("config: value is not encrypted (missing %s prefix)", EncPrefix)
 	}
 
-	data, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(stored, encPrefix))
+	data, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(stored, EncPrefix))
 	if err != nil {
 		return "", fmt.Errorf("config: decode encrypted value: %w", err)
 	}

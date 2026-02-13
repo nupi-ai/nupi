@@ -10,6 +10,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/nupi-ai/nupi/internal/config"
+	storecrypto "github.com/nupi-ai/nupi/internal/config/store/crypto"
 )
 
 const (
@@ -124,10 +125,10 @@ func Open(opts Options) (*Store, error) {
 	// enc:v1: values. If the key file is missing but encrypted rows already
 	// exist, Open fails fast to prevent permanent data loss (old secrets
 	// would become undecryptable with a freshly-generated key).
-	keyPath := encryptionKeyPath(dbPath)
+	keyPath := storecrypto.KeyPath(dbPath)
 	var encKey []byte
 	if !opts.ReadOnly {
-		encKey, err = loadEncryptionKey(keyPath)
+		encKey, err = storecrypto.LoadKey(keyPath)
 		if err != nil {
 			db.Close()
 			return nil, err
@@ -135,7 +136,7 @@ func Open(opts Options) (*Store, error) {
 		if encKey == nil {
 			// Key file does not exist. Safe to create only if the DB has
 			// no previously-encrypted values.
-			hasEnc, checkErr := hasEncryptedValues(ctx, db)
+			hasEnc, checkErr := storecrypto.HasEncryptedValues(ctx, db)
 			if checkErr != nil {
 				db.Close()
 				return nil, checkErr
@@ -144,7 +145,7 @@ func Open(opts Options) (*Store, error) {
 				db.Close()
 				return nil, fmt.Errorf("config: encryption key %s is missing but the database already contains encrypted values — refusing to create a new key to prevent data loss; restore the original key file or remove the encrypted rows manually", keyPath)
 			}
-			encKey, err = createEncryptionKey(keyPath)
+			encKey, err = storecrypto.CreateKey(keyPath)
 			if err != nil {
 				db.Close()
 				return nil, err
@@ -154,7 +155,7 @@ func Open(opts Options) (*Store, error) {
 		// Read-only mode: only load existing key, never create.
 		// A missing key is normal (first open); a corrupt key is logged.
 		var keyErr error
-		encKey, keyErr = loadEncryptionKey(keyPath)
+		encKey, keyErr = storecrypto.LoadKey(keyPath)
 		if keyErr != nil {
 			log.Printf("[Config] WARNING: failed to load encryption key (read-only): %v — encrypted settings will be unreadable", keyErr)
 		}
@@ -163,7 +164,7 @@ func Open(opts Options) (*Store, error) {
 	// Backfill: re-encrypt any legacy plaintext secrets left over from
 	// before encryption was introduced. This ensures full encryption at rest.
 	if !opts.ReadOnly && encKey != nil {
-		if migrated, err := migrateEncryptPlaintext(ctx, db, encKey); err != nil {
+		if migrated, err := storecrypto.MigratePlaintext(ctx, db, encKey); err != nil {
 			db.Close()
 			return nil, fmt.Errorf("config: migrate plaintext secrets: %w", err)
 		} else if migrated > 0 {
