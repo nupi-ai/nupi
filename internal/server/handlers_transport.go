@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -37,12 +38,9 @@ type transportRequest struct {
 // CurrentTransportSnapshot returns the currently applied transport configuration.
 func (s *APIServer) CurrentTransportSnapshot() TransportSnapshot {
 	s.transportMu.RLock()
-	defer s.transportMu.RUnlock()
-
 	origins := make([]string, len(s.allowedOrigins))
 	copy(origins, s.allowedOrigins)
-
-	return TransportSnapshot{
+	snap := TransportSnapshot{
 		Binding:        s.binding,
 		Port:           s.port,
 		TLSCertPath:    s.tlsCertPath,
@@ -50,9 +48,43 @@ func (s *APIServer) CurrentTransportSnapshot() TransportSnapshot {
 		AllowedOrigins: origins,
 		GRPCBinding:    s.grpcBinding,
 		GRPCPort:       s.grpcPort,
-		TLSCertModTime: modTimeOrZero(s.tlsCertPath),
-		TLSKeyModTime:  modTimeOrZero(s.tlsKeyPath),
 	}
+	s.transportMu.RUnlock()
+
+	snap.TLSCertModTime = modTimeOrZero(snap.TLSCertPath)
+	snap.TLSKeyModTime = modTimeOrZero(snap.TLSKeyPath)
+	return snap
+}
+
+// applyTransportConfig updates auth tokens and in-memory transport state after
+// a configuration has been persisted to the store. It returns the new auth
+// token (non-empty when auth is required) or an error.
+func (s *APIServer) applyTransportConfig(ctx context.Context, cfg configstore.TransportConfig) (string, error) {
+	rawGRPC := strings.TrimSpace(cfg.GRPCBinding)
+	if rawGRPC == "" {
+		rawGRPC = cfg.Binding
+	}
+	binding := normalizeBinding(cfg.Binding)
+	grpcBinding := normalizeBinding(rawGRPC)
+	authRequired := binding != "loopback" || grpcBinding != "loopback"
+
+	_, newToken, err := s.ensureAuthTokens(ctx, authRequired)
+	if err != nil {
+		return "", err
+	}
+
+	s.transportMu.Lock()
+	s.binding = binding
+	s.port = cfg.Port
+	s.tlsCertPath = strings.TrimSpace(cfg.TLSCertPath)
+	s.tlsKeyPath = strings.TrimSpace(cfg.TLSKeyPath)
+	s.allowedOrigins = sanitizeOrigins(cfg.AllowedOrigins)
+	s.grpcBinding = grpcBinding
+	s.grpcPort = cfg.GRPCPort
+	s.transportMu.Unlock()
+
+	s.notifyTransportChanged()
+	return newToken, nil
 }
 
 // EqualConfig compares the snapshot with a transport configuration fetched from the store.
@@ -316,46 +348,21 @@ func (s *APIServer) handleTransportUpdate(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	binding := current.Binding
-	var newToken string
-
-	authRequired := binding != "loopback" || current.GRPCBinding != "loopback"
-
-	if authRequired {
-		_, nt, err := s.ensureAuthTokens(r.Context(), true)
-		if err != nil {
-			http.Error(w, fmt.Sprintf("failed to ensure auth token: %v", err), http.StatusInternalServerError)
-			return
-		}
-		newToken = nt
-	} else {
-		if _, _, err := s.ensureAuthTokens(r.Context(), false); err != nil {
-			http.Error(w, fmt.Sprintf("failed to update auth tokens: %v", err), http.StatusInternalServerError)
-			return
-		}
-	}
-
 	if err := s.configStore.SaveTransportConfig(r.Context(), current); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	s.transportMu.Lock()
-	s.binding = binding
-	s.port = current.Port
-	s.tlsCertPath = current.TLSCertPath
-	s.tlsKeyPath = current.TLSKeyPath
-	s.allowedOrigins = current.AllowedOrigins
-	s.grpcBinding = current.GRPCBinding
-	s.grpcPort = current.GRPCPort
-	s.transportMu.Unlock()
-
-	s.notifyTransportChanged()
+	newToken, err := s.applyTransportConfig(r.Context(), current)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("failed to apply transport config: %v", err), http.StatusInternalServerError)
+		return
+	}
 
 	if newToken != "" {
 		response := map[string]interface{}{
 			"status":        "ok",
-			"binding":       binding,
+			"binding":       current.Binding,
 			"auth_token":    newToken,
 			"grpc_binding":  current.GRPCBinding,
 			"grpc_port":     current.GRPCPort,
