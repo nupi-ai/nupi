@@ -291,7 +291,7 @@ func TestRetryDropsPendingOnPermanentError(t *testing.T) {
 	}
 }
 
-func TestOnRetryFailedCallback(t *testing.T) {
+func TestRetryAbandonWithMaxFailures(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -300,13 +300,13 @@ func TestOnRetryFailedCallback(t *testing.T) {
 		attempts int
 	)
 
-	var failureCountSeen int
 	mgr := New(Config[string]{
 		Tag: "TEST",
 		Ctx: ctx,
 		Retry: RetryConfig{
-			Initial: 5 * time.Millisecond,
-			Max:     20 * time.Millisecond,
+			Initial:     5 * time.Millisecond,
+			Max:         20 * time.Millisecond,
+			MaxFailures: 1,
 		},
 		Factory: StreamFactoryFunc[string](func(_ context.Context, _ string, _ SessionParams) (StreamHandle[string], error) {
 			mu.Lock()
@@ -319,12 +319,6 @@ func TestOnRetryFailedCallback(t *testing.T) {
 		}),
 		Callbacks: Callbacks[string]{
 			ClassifyCreateError: classifyTestError,
-			OnRetryFailed: func(key string, params SessionParams, err error) bool {
-				mu.Lock()
-				failureCountSeen = attempts
-				mu.Unlock()
-				return true // abandon
-			},
 		},
 	})
 
@@ -350,11 +344,8 @@ func TestOnRetryFailedCallback(t *testing.T) {
 		}
 	}
 
-	mu.Lock()
-	fc := failureCountSeen
-	mu.Unlock()
-	if fc < 2 {
-		t.Fatalf("expected OnRetryFailed to be called, failureCountSeen=%d", fc)
+	if mgr.RetryAbandoned() != 1 {
+		t.Fatalf("expected RetryAbandoned() = 1, got %d", mgr.RetryAbandoned())
 	}
 }
 
@@ -362,37 +353,35 @@ func TestRemoveStream(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	var removed int
 	mgr := New(Config[string]{
 		Tag: "TEST",
 		Ctx: ctx,
 		Factory: StreamFactoryFunc[string](func(_ context.Context, key string, _ SessionParams) (StreamHandle[string], error) {
 			return newMockHandle(key), nil
 		}),
-		Callbacks: Callbacks[string]{
-			OnStreamRemoved: func(key string, handle StreamHandle[string]) {
-				removed++
-			},
-		},
 	})
 
 	key := StreamKey("s1", "mic")
 	params := SessionParams{SessionID: "s1", StreamID: "mic"}
 
 	h, _ := mgr.CreateStream(key, params)
+	if mgr.ActiveStreamCount() != 1 {
+		t.Fatalf("expected ActiveStreamCount() = 1, got %d", mgr.ActiveStreamCount())
+	}
+
 	mgr.RemoveStream(key, h)
 
 	if _, ok := mgr.Stream(key); ok {
 		t.Fatal("expected stream to be removed")
 	}
-	if removed != 1 {
-		t.Fatalf("expected OnStreamRemoved called once, got %d", removed)
+	if mgr.ActiveStreamCount() != 0 {
+		t.Fatalf("expected ActiveStreamCount() = 0, got %d", mgr.ActiveStreamCount())
 	}
 
 	// Removing again is a no-op.
 	mgr.RemoveStream(key, h)
-	if removed != 1 {
-		t.Fatalf("expected no duplicate remove callback, got %d", removed)
+	if mgr.ActiveStreamCount() != 0 {
+		t.Fatalf("expected ActiveStreamCount() still 0, got %d", mgr.ActiveStreamCount())
 	}
 }
 
@@ -411,9 +400,16 @@ func TestCloseAllStreams(t *testing.T) {
 	mgr.CreateStream(StreamKey("s1", "mic"), SessionParams{SessionID: "s1", StreamID: "mic"})
 	mgr.CreateStream(StreamKey("s2", "mic"), SessionParams{SessionID: "s2", StreamID: "mic"})
 
+	if mgr.ActiveStreamCount() != 2 {
+		t.Fatalf("expected ActiveStreamCount() = 2, got %d", mgr.ActiveStreamCount())
+	}
+
 	handles := mgr.CloseAllStreams()
 	if len(handles) != 2 {
 		t.Fatalf("expected 2 handles, got %d", len(handles))
+	}
+	if mgr.ActiveStreamCount() != 0 {
+		t.Fatalf("expected ActiveStreamCount() = 0 after close, got %d", mgr.ActiveStreamCount())
 	}
 }
 
@@ -473,34 +469,28 @@ func TestShutdownPending(t *testing.T) {
 	}
 }
 
-func TestOnStreamRegisteredCallback(t *testing.T) {
+func TestActiveStreamCountOnCreate(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	var registered int
 	mgr := New(Config[string]{
 		Tag: "TEST",
 		Ctx: ctx,
 		Factory: StreamFactoryFunc[string](func(_ context.Context, key string, _ SessionParams) (StreamHandle[string], error) {
 			return newMockHandle(key), nil
 		}),
-		Callbacks: Callbacks[string]{
-			OnStreamRegistered: func(key string, handle StreamHandle[string]) {
-				registered++
-			},
-		},
 	})
 
 	key := StreamKey("s1", "mic")
 	mgr.CreateStream(key, SessionParams{SessionID: "s1", StreamID: "mic"})
-	if registered != 1 {
-		t.Fatalf("expected OnStreamRegistered called once, got %d", registered)
+	if mgr.ActiveStreamCount() != 1 {
+		t.Fatalf("expected ActiveStreamCount() = 1, got %d", mgr.ActiveStreamCount())
 	}
 
-	// Duplicate create should not trigger again.
+	// Duplicate create should not increment again.
 	mgr.CreateStream(key, SessionParams{SessionID: "s1", StreamID: "mic"})
-	if registered != 1 {
-		t.Fatalf("expected no duplicate register callback, got %d", registered)
+	if mgr.ActiveStreamCount() != 1 {
+		t.Fatalf("expected ActiveStreamCount() still 1, got %d", mgr.ActiveStreamCount())
 	}
 }
 
@@ -574,5 +564,133 @@ func TestConcurrentCreateStream(t *testing.T) {
 	// but only one stream registered.
 	if _, ok := mgr.Stream(key); !ok {
 		t.Fatal("expected stream to be registered")
+	}
+}
+
+func TestRetryAbandonWithMaxDuration(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mgr := New(Config[string]{
+		Tag: "TEST",
+		Ctx: ctx,
+		Retry: RetryConfig{
+			Initial:     5 * time.Millisecond,
+			Max:         10 * time.Millisecond,
+			MaxFailures: 1000, // high limit so duration triggers first
+			MaxDuration: 50 * time.Millisecond,
+		},
+		Factory: StreamFactoryFunc[string](func(_ context.Context, _ string, _ SessionParams) (StreamHandle[string], error) {
+			return nil, errPermanent
+		}),
+		Callbacks: Callbacks[string]{
+			ClassifyCreateError: classifyTestError,
+		},
+	})
+
+	key := StreamKey("s1", "mic")
+	params := SessionParams{SessionID: "s1", StreamID: "mic"}
+
+	mgr.BufferPending(key, params, "seg-1")
+
+	deadline := time.After(2 * time.Second)
+	for {
+		if mgr.PendingCount() == 0 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timeout waiting for duration-based abandon")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+
+	if mgr.RetryAbandoned() != 1 {
+		t.Fatalf("expected RetryAbandoned() = 1, got %d", mgr.RetryAbandoned())
+	}
+}
+
+func TestRetryAttemptsCounter(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var (
+		mu    sync.Mutex
+		ready bool
+	)
+
+	mgr := New(Config[string]{
+		Tag: "TEST",
+		Ctx: ctx,
+		Retry: RetryConfig{
+			Initial: 5 * time.Millisecond,
+			Max:     20 * time.Millisecond,
+		},
+		Factory: StreamFactoryFunc[string](func(_ context.Context, key string, _ SessionParams) (StreamHandle[string], error) {
+			mu.Lock()
+			defer mu.Unlock()
+			if !ready {
+				return nil, errAdapterUnavailable
+			}
+			return newMockHandle(key), nil
+		}),
+		Callbacks: Callbacks[string]{
+			ClassifyCreateError: classifyTestError,
+		},
+	})
+
+	key := StreamKey("s1", "mic")
+	mgr.BufferPending(key, SessionParams{SessionID: "s1", StreamID: "mic"}, "seg-1")
+
+	// Let a few retries fire.
+	time.Sleep(30 * time.Millisecond)
+
+	mu.Lock()
+	ready = true
+	mu.Unlock()
+
+	deadline := time.After(time.Second)
+	for {
+		if _, ok := mgr.Stream(key); ok {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timeout waiting for stream")
+		case <-time.After(2 * time.Millisecond):
+		}
+	}
+
+	if mgr.RetryAttempts() == 0 {
+		t.Fatal("expected RetryAttempts() > 0")
+	}
+}
+
+func TestRemoveStreamByKeyUpdatesCounter(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mgr := New(Config[string]{
+		Tag: "TEST",
+		Ctx: ctx,
+		Factory: StreamFactoryFunc[string](func(_ context.Context, key string, _ SessionParams) (StreamHandle[string], error) {
+			return newMockHandle(key), nil
+		}),
+	})
+
+	key := StreamKey("s1", "mic")
+	mgr.CreateStream(key, SessionParams{SessionID: "s1", StreamID: "mic"})
+
+	if mgr.ActiveStreamCount() != 1 {
+		t.Fatalf("expected ActiveStreamCount() = 1, got %d", mgr.ActiveStreamCount())
+	}
+
+	mgr.RemoveStreamByKey(key)
+
+	if mgr.ActiveStreamCount() != 0 {
+		t.Fatalf("expected ActiveStreamCount() = 0, got %d", mgr.ActiveStreamCount())
+	}
+	if _, ok := mgr.Stream(key); ok {
+		t.Fatal("expected stream to be removed")
 	}
 }

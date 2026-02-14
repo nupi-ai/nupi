@@ -48,8 +48,10 @@ func CopyMetadata(src map[string]string) map[string]string {
 
 // RetryConfig holds backoff parameters for pending stream retries.
 type RetryConfig struct {
-	Initial time.Duration
-	Max     time.Duration
+	Initial     time.Duration
+	Max         time.Duration
+	MaxFailures int           // Permanent errors before abandoning queue. 0 = abandon immediately (default).
+	MaxDuration time.Duration // Max time since first failure. 0 = no time limit.
 }
 
 // DefaultRetryConfig returns sensible retry defaults.

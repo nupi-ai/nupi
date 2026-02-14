@@ -6,9 +6,9 @@ package streammanager
 
 import (
 	"context"
-	"errors"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -45,24 +45,6 @@ func (f StreamFactoryFunc[T]) CreateStream(ctx context.Context, key string, para
 // Callbacks allows per-service customisation of manager behaviour.
 // All fields are optional – nil callbacks are never invoked.
 type Callbacks[T any] struct {
-	// OnStreamRegistered is called when a new stream is stored in the map.
-	// TTS uses this to increment activeStreams.
-	OnStreamRegistered func(key string, handle StreamHandle[T])
-
-	// OnStreamRemoved is called when a stream is removed from the map.
-	// TTS uses this to decrement activeStreams and drain pending.
-	OnStreamRemoved func(key string, handle StreamHandle[T])
-
-	// OnRetryAttempt is called before each retry of pending items.
-	// VAD uses this to track retry metrics.
-	OnRetryAttempt func(key string, params SessionParams)
-
-	// OnRetryFailed is called when a retry attempt results in a
-	// non-recoverable error.  Return true to abandon (delete) the
-	// pending queue immediately.
-	// VAD uses this for failure-count / max-duration tracking.
-	OnRetryFailed func(key string, params SessionParams, err error) (abandon bool)
-
 	// OnEnqueueError is called when enqueueing an item into an existing
 	// stream fails.  Return true if the error was handled (e.g. rebuffered).
 	// TTS uses this for rebuffering on errStreamRebuffering.
@@ -165,6 +147,10 @@ type Manager[T any] struct {
 
 	pendingMu sync.Mutex
 	pending   map[string]*PendingQueue[T]
+
+	activeStreams  atomic.Int64
+	retryAttempts  atomic.Uint64
+	retryAbandoned atomic.Uint64
 }
 
 // New constructs a Manager from the provided Config.
@@ -241,9 +227,7 @@ func (m *Manager[T]) CreateStream(key string, params SessionParams) (StreamHandl
 	m.streams[key] = handle
 	m.mu.Unlock()
 
-	if cb := m.callbacks.OnStreamRegistered; cb != nil {
-		cb(key, handle)
-	}
+	m.activeStreams.Add(1)
 
 	if m.logger != nil {
 		sid, strid := SplitStreamKey(key)
@@ -266,9 +250,7 @@ func (m *Manager[T]) RemoveStream(key string, handle StreamHandle[T]) {
 	m.mu.Unlock()
 
 	if ok {
-		if cb := m.callbacks.OnStreamRemoved; cb != nil {
-			cb(key, handle)
-		}
+		m.activeStreams.Add(-1)
 	}
 }
 
@@ -283,9 +265,7 @@ func (m *Manager[T]) RemoveStreamByKey(key string) {
 	m.mu.Unlock()
 
 	if handle != nil {
-		if cb := m.callbacks.OnStreamRemoved; cb != nil {
-			cb(key, handle)
-		}
+		m.activeStreams.Add(-1)
 		handle.Stop()
 	}
 }
@@ -308,9 +288,7 @@ func (m *Manager[T]) CloseAllStreams() []StreamHandle[T] {
 	handles := make([]StreamHandle[T], 0, len(entries))
 	for _, e := range entries {
 		handles = append(handles, e.handle)
-		if cb := m.callbacks.OnStreamRemoved; cb != nil {
-			cb(e.key, e.handle)
-		}
+		m.activeStreams.Add(-1)
 		e.handle.Stop()
 	}
 	return handles
@@ -387,9 +365,7 @@ func (m *Manager[T]) retryPending(key string) {
 	params := pq.Params
 	m.pendingMu.Unlock()
 
-	if cb := m.callbacks.OnRetryAttempt; cb != nil {
-		cb(key, params)
-	}
+	m.retryAttempts.Add(1)
 
 	handle, err := m.CreateStream(key, params)
 	if err != nil {
@@ -403,49 +379,36 @@ func (m *Manager[T]) retryPending(key string) {
 			return
 		}
 
-		// Non-recoverable error or context cancelled.
-		if cb := m.callbacks.OnRetryFailed; cb != nil {
-			m.pendingMu.Lock()
-			pq, ok := m.pending[key]
-			if ok {
-				pq.FailureCount++
-				if pq.FirstFailureAt.IsZero() {
-					pq.FirstFailureAt = time.Now()
-				}
-			}
-			m.pendingMu.Unlock()
-
-			if ok && cb(key, params, err) {
-				// Callback says abandon.
-				m.pendingMu.Lock()
-				if pq, ok := m.pending[key]; ok {
-					pq.stopTimer()
-					delete(m.pending, key)
-				}
-				m.pendingMu.Unlock()
-				return
+		// Non-recoverable error — update failure tracking.
+		m.pendingMu.Lock()
+		pq, ok = m.pending[key]
+		if ok {
+			pq.FailureCount++
+			if pq.FirstFailureAt.IsZero() {
+				pq.FirstFailureAt = time.Now()
 			}
 
-			// Callback did not abandon — schedule another retry.
-			m.pendingMu.Lock()
-			if pq, ok := m.pending[key]; ok {
+			abandon := false
+			if m.retryCfg.MaxFailures <= 0 {
+				abandon = true // default: abandon on first permanent error
+			} else if pq.FailureCount >= m.retryCfg.MaxFailures {
+				abandon = true
+			}
+			if !abandon && m.retryCfg.MaxDuration > 0 && time.Since(pq.FirstFailureAt) >= m.retryCfg.MaxDuration {
+				abandon = true
+			}
+
+			if abandon {
+				m.retryAbandoned.Add(1)
+				if m.logger != nil {
+					sid, strid := SplitStreamKey(key)
+					m.logger.Printf("[%s] retry stream session=%s stream=%s permanent error, dropping pending: %v", m.tag, sid, strid, err)
+				}
+				pq.stopTimer()
+				delete(m.pending, key)
+			} else {
 				pq.scheduleRetry(m, key)
 			}
-			m.pendingMu.Unlock()
-			return
-		}
-
-		// No OnRetryFailed callback — default: drop on permanent error.
-		if !isContextError(err) {
-			if m.logger != nil {
-				sid, strid := SplitStreamKey(key)
-				m.logger.Printf("[%s] retry stream session=%s stream=%s permanent error, dropping pending: %v", m.tag, sid, strid, err)
-			}
-		}
-		m.pendingMu.Lock()
-		if pq, ok := m.pending[key]; ok {
-			pq.stopTimer()
-			delete(m.pending, key)
 		}
 		m.pendingMu.Unlock()
 		return
@@ -493,6 +456,22 @@ func (m *Manager[T]) PendingCount() int {
 	return len(m.pending)
 }
 
+// ActiveStreamCount returns the number of currently registered streams.
+func (m *Manager[T]) ActiveStreamCount() int64 {
+	return m.activeStreams.Load()
+}
+
+// RetryAttempts returns the cumulative number of retry attempts.
+func (m *Manager[T]) RetryAttempts() uint64 {
+	return m.retryAttempts.Load()
+}
+
+// RetryAbandoned returns the number of pending queues abandoned after
+// exhausting retry limits.
+func (m *Manager[T]) RetryAbandoned() uint64 {
+	return m.retryAbandoned.Load()
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -502,10 +481,6 @@ func (m *Manager[T]) classifyError(err error) (adapterUnavailable, factoryUnavai
 		return cb(err)
 	}
 	return false, false
-}
-
-func isContextError(err error) bool {
-	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // isSameHandle compares two interface values by identity.
