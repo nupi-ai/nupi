@@ -17,6 +17,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/nupi-ai/nupi/internal/tlswarn"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
@@ -67,10 +68,27 @@ func (t *TLSConfig) buildTLSConfig() (*tls.Config, error) {
 		return nil, fmt.Errorf("mTLS requires both CertPath and KeyPath (got cert=%q, key=%q)", t.CertPath, t.KeyPath)
 	}
 
+	if t.InsecureSkipVerify {
+		tlswarn.LogInsecure()
+		cfg := &tls.Config{
+			MinVersion:         tls.VersionTLS12,
+			ServerName:         t.ServerName,
+			InsecureSkipVerify: true, //nolint:gosec // dev-only flag
+		}
+		// Still load client certificates for mTLS identity even in insecure mode.
+		if t.CertPath != "" && t.KeyPath != "" {
+			cert, err := tls.LoadX509KeyPair(t.CertPath, t.KeyPath)
+			if err != nil {
+				return nil, err
+			}
+			cfg.Certificates = []tls.Certificate{cert}
+		}
+		return cfg, nil
+	}
+
 	cfg := &tls.Config{
-		MinVersion:         tls.VersionTLS12,
-		ServerName:         t.ServerName,
-		InsecureSkipVerify: t.InsecureSkipVerify, //nolint:gosec // dev-only flag
+		MinVersion: tls.VersionTLS12,
+		ServerName: t.ServerName,
 	}
 
 	// Load CA cert pool

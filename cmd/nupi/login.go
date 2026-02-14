@@ -14,6 +14,7 @@ import (
 
 	"github.com/nupi-ai/nupi/internal/bootstrap"
 	"github.com/nupi-ai/nupi/internal/client"
+	"github.com/nupi-ai/nupi/internal/tlswarn"
 	"github.com/spf13/cobra"
 )
 
@@ -249,8 +250,8 @@ func pairClaim(cmd *cobra.Command, args []string) error {
 
 	httpClient := &http.Client{Timeout: 10 * time.Second}
 	if insecure {
-		fmt.Fprintln(os.Stderr, "WARNING: TLS certificate verification is disabled. This is insecure and should only be used for testing.")
-		httpClient.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} //nolint:gosec // user explicitly requested --insecure
+		tlswarn.LogInsecure()
+		httpClient.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12}} //nolint:gosec // user explicitly requested --insecure
 	}
 
 	req, err := http.NewRequest(http.MethodPost, pairURL, bytes.NewReader(body))
