@@ -8,6 +8,8 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"io"
+	"log"
 	"math/big"
 	"net"
 	"os"
@@ -196,12 +198,14 @@ func TestTLSConfigFromFieldsInsecureOnly(t *testing.T) {
 	}
 }
 
-func TestBuildTLSConfig(t *testing.T) {
-	dir := t.TempDir()
-	caPath, _ := writeTestCert(t, dir, true)
+// TestBuildTLSConfigInsecure must NOT use t.Parallel() because it mutates
+// global log output.
+func TestBuildTLSConfigInsecure(t *testing.T) {
+	// Suppress the TLS insecure warning that buildTLSConfig emits via tlswarn.LogInsecure().
+	log.SetOutput(io.Discard)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 
 	cfg := &TLSConfig{
-		CACertPath:         caPath,
 		ServerName:         "test-server",
 		InsecureSkipVerify: true,
 	}
@@ -215,6 +219,34 @@ func TestBuildTLSConfig(t *testing.T) {
 	}
 	if !tlsCfg.InsecureSkipVerify {
 		t.Fatal("expected InsecureSkipVerify=true")
+	}
+	// Insecure mode early-returns without loading CA certs.
+	if tlsCfg.RootCAs != nil {
+		t.Fatal("expected RootCAs to be nil in insecure mode")
+	}
+	if tlsCfg.MinVersion != tls.VersionTLS12 {
+		t.Fatalf("expected MinVersion TLS 1.2 (%d), got %d", tls.VersionTLS12, tlsCfg.MinVersion)
+	}
+}
+
+func TestBuildTLSConfigWithCA(t *testing.T) {
+	dir := t.TempDir()
+	caPath, _ := writeTestCert(t, dir, true)
+
+	cfg := &TLSConfig{
+		CACertPath: caPath,
+		ServerName: "test-server",
+	}
+
+	tlsCfg, err := cfg.buildTLSConfig()
+	if err != nil {
+		t.Fatalf("buildTLSConfig: %v", err)
+	}
+	if tlsCfg.ServerName != "test-server" {
+		t.Fatalf("expected ServerName test-server, got %s", tlsCfg.ServerName)
+	}
+	if tlsCfg.InsecureSkipVerify {
+		t.Fatal("expected InsecureSkipVerify=false")
 	}
 	if tlsCfg.RootCAs == nil {
 		t.Fatal("expected RootCAs to be populated")

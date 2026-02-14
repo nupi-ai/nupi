@@ -3,11 +3,13 @@ use std::{
     env, fs,
     path::PathBuf,
     sync::{
-        Arc,
+        Arc, Once,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
+
+static TLS_INSECURE_WARN: Once = Once::new();
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use bytes::Bytes;
@@ -653,7 +655,12 @@ impl RestClient {
             .unwrap_or(false);
 
         if insecure {
-            builder = builder.danger_accept_invalid_certs(true);
+            TLS_INSECURE_WARN.call_once(|| {
+                eprintln!("[TLS] WARNING: TLS certificate and hostname verification is disabled. Do NOT use in production.");
+            });
+            builder = builder
+                .danger_accept_invalid_certs(true)
+                .danger_accept_invalid_hostnames(true);
         } else if tls_enabled {
             let cert_path =
                 PathBuf::from(snapshot.tls_cert_path.as_ref().ok_or_else(|| {
@@ -711,6 +718,9 @@ impl RestClient {
         let insecure = insecure_env || insecure_override;
 
         if insecure {
+            TLS_INSECURE_WARN.call_once(|| {
+                eprintln!("[TLS] WARNING: TLS certificate and hostname verification is disabled. Do NOT use in production.");
+            });
             builder = builder
                 .danger_accept_invalid_certs(true)
                 .danger_accept_invalid_hostnames(true);
@@ -1416,6 +1426,9 @@ pub async fn claim_pairing_token(
 ) -> Result<ClaimedToken, RestClientError> {
     let mut builder = Client::builder().timeout(Duration::from_secs(10));
     if insecure {
+        TLS_INSECURE_WARN.call_once(|| {
+            eprintln!("[TLS] WARNING: TLS certificate and hostname verification is disabled. Do NOT use in production.");
+        });
         builder = builder
             .danger_accept_invalid_certs(true)
             .danger_accept_invalid_hostnames(true);

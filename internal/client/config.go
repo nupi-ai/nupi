@@ -11,6 +11,7 @@ import (
 
 	"github.com/nupi-ai/nupi/internal/bootstrap"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
+	"github.com/nupi-ai/nupi/internal/tlswarn"
 )
 
 // TLSExplicitOptions drives TLS configuration when the client is configured
@@ -69,12 +70,13 @@ func DetermineHost(binding string, tlsEnabled bool) string {
 
 // PrepareTLSConfig builds a tls.Config using the transport configuration.
 func PrepareTLSConfig(cfg configstore.TransportConfig, host string, enabled bool) (*tls.Config, error) {
-	if strings.TrimSpace(os.Getenv("NUPI_TLS_INSECURE")) == "1" {
-		return &tls.Config{InsecureSkipVerify: true}, nil
-	}
-
 	if !enabled {
 		return nil, nil
+	}
+
+	if strings.TrimSpace(os.Getenv("NUPI_TLS_INSECURE")) == "1" {
+		tlswarn.LogInsecure()
+		return &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12}, nil //nolint:gosec // dev-only env override
 	}
 
 	certPath := strings.TrimSpace(cfg.TLSCertPath)
@@ -107,12 +109,13 @@ func PrepareTLSConfig(cfg configstore.TransportConfig, host string, enabled bool
 	return &tls.Config{
 		RootCAs:    roots,
 		ServerName: serverName,
+		MinVersion: tls.VersionTLS12,
 	}, nil
 }
 
 // TLSConfigForExplicit mirrors TLS configuration when base URL is provided via env/bootstrap.
 func TLSConfigForExplicit(u *url.URL, opts *TLSExplicitOptions) (*tls.Config, error) {
-	if strings.EqualFold(u.Scheme, "https") == false {
+	if !strings.EqualFold(u.Scheme, "https") {
 		return nil, nil
 	}
 
@@ -121,7 +124,8 @@ func TLSConfigForExplicit(u *url.URL, opts *TLSExplicitOptions) (*tls.Config, er
 	}
 
 	if opts.Insecure {
-		return &tls.Config{InsecureSkipVerify: true}, nil
+		tlswarn.LogInsecure()
+		return &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12}, nil //nolint:gosec // user explicitly requested insecure
 	}
 
 	var roots *x509.CertPool
@@ -136,7 +140,7 @@ func TLSConfigForExplicit(u *url.URL, opts *TLSExplicitOptions) (*tls.Config, er
 		}
 	}
 
-	cfg := &tls.Config{}
+	cfg := &tls.Config{MinVersion: tls.VersionTLS12}
 	if roots != nil {
 		cfg.RootCAs = roots
 	}
