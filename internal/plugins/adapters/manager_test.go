@@ -2338,6 +2338,468 @@ spec:
 	}
 }
 
+// TestFingerprintSensitivity verifies that computePlanFingerprint detects
+// changes in every field that should trigger an adapter restart. If a new
+// runtime-relevant field is added to Binding, AdapterEndpoint, or AdapterSpec
+// but not wired into computePlanFingerprint, the corresponding sub-test will
+// fail — catching the "forgot to update the hash" class of bug at CI time.
+func TestFingerprintSensitivity(t *testing.T) {
+	baseManifestYAML := `apiVersion: nap.nupi.ai/v1alpha1
+kind: Plugin
+type: adapter
+metadata:
+  name: Test Adapter
+  slug: test-adapter
+spec:
+  slot: stt
+  entrypoint:
+    runtime: binary
+    command: ./adapter
+    args: ["--mode", "fast"]
+    transport: process
+    listenEnv: LISTEN_ADDR
+    workingDir: /opt/adapter
+    readyTimeout: 10s
+    shutdownTimeout: 5s
+  telemetry:
+    stdout: true
+    stderr: false
+  assets:
+    models:
+      cacheDirEnv: MODEL_CACHE
+  options:
+    model:
+      type: string
+      description: Model name
+      default: base`
+
+	baseMF, err := manifestpkg.Parse([]byte(baseManifestYAML))
+	if err != nil {
+		t.Fatalf("parse base manifest: %v", err)
+	}
+
+	trueVal := true
+	falseVal := false
+
+	baseBinding := Binding{
+		Slot:      SlotSTT,
+		AdapterID: "adapter.test",
+		RawConfig: `{"model":"base"}`,
+	}
+
+	baseEndpoint := configstore.AdapterEndpoint{
+		AdapterID:     "adapter.test",
+		Transport:     "process",
+		Command:       "./adapter",
+		Args:          []string{"--mode", "fast"},
+		Env:           map[string]string{"API_KEY": "secret", "REGION": "us"},
+		TLSCertPath:   "/certs/client.pem",
+		TLSKeyPath:    "/certs/client-key.pem",
+		TLSCACertPath: "/certs/ca.pem",
+		TLSInsecure:   false,
+	}
+
+	baseFP := computePlanFingerprint(baseBinding, baseMF, baseManifestYAML, baseEndpoint)
+	if baseFP == "" {
+		t.Fatal("base fingerprint should not be empty")
+	}
+
+	// Helper: clone the base manifest struct so each sub-test can modify
+	// a single field without copy-pasting 30-line YAML blocks.
+	cloneManifest := func() *manifestpkg.Manifest {
+		cp := *baseMF
+		if baseMF.Adapter != nil {
+			spec := *baseMF.Adapter
+			if baseMF.Adapter.Telemetry.Stdout != nil {
+				v := *baseMF.Adapter.Telemetry.Stdout
+				spec.Telemetry.Stdout = &v
+			}
+			if baseMF.Adapter.Telemetry.Stderr != nil {
+				v := *baseMF.Adapter.Telemetry.Stderr
+				spec.Telemetry.Stderr = &v
+			}
+			if baseMF.Adapter.Entrypoint.Args != nil {
+				spec.Entrypoint.Args = append([]string(nil), baseMF.Adapter.Entrypoint.Args...)
+			}
+			if baseMF.Adapter.Options != nil {
+				spec.Options = make(map[string]manifestpkg.AdapterOption, len(baseMF.Adapter.Options))
+				for k, v := range baseMF.Adapter.Options {
+					optCopy := v
+					if v.Values != nil {
+						optCopy.Values = append([]any(nil), v.Values...)
+					}
+					spec.Options[k] = optCopy
+				}
+			}
+			cp.Adapter = &spec
+		}
+		return &cp
+	}
+
+	assertChanged := func(t *testing.T, fp string) {
+		t.Helper()
+		if fp == baseFP {
+			t.Fatal("fingerprint should have changed but didn't")
+		}
+	}
+
+	assertUnchanged := func(t *testing.T, fp string) {
+		t.Helper()
+		if fp != baseFP {
+			t.Fatal("fingerprint should NOT have changed but did")
+		}
+	}
+
+	// Sanity: unmodified clone must produce identical fingerprint.
+	// Guards against a broken cloneManifest causing false-positive assertChanged tests.
+	t.Run("clone_sanity", func(t *testing.T) {
+		cloneFP := computePlanFingerprint(baseBinding, cloneManifest(), baseManifestYAML, baseEndpoint)
+		if cloneFP != baseFP {
+			t.Fatalf("unmodified clone fingerprint %q differs from base %q — cloneManifest is broken", cloneFP, baseFP)
+		}
+	})
+
+	// --- Binding fields ---
+
+	t.Run("binding/AdapterID", func(t *testing.T) {
+		b := baseBinding
+		b.AdapterID = "adapter.other"
+		assertChanged(t, computePlanFingerprint(b, baseMF, baseManifestYAML, baseEndpoint))
+	})
+
+	t.Run("binding/RawConfig", func(t *testing.T) {
+		b := baseBinding
+		b.RawConfig = `{"model":"large"}`
+		assertChanged(t, computePlanFingerprint(b, baseMF, baseManifestYAML, baseEndpoint))
+	})
+
+	t.Run("binding/Config_when_RawConfig_empty", func(t *testing.T) {
+		b := baseBinding
+		b.RawConfig = ""
+		b.Config = map[string]any{"model": "base"}
+		fp1 := computePlanFingerprint(b, baseMF, baseManifestYAML, baseEndpoint)
+
+		b2 := baseBinding
+		b2.RawConfig = ""
+		b2.Config = map[string]any{"model": "large"}
+		fp2 := computePlanFingerprint(b2, baseMF, baseManifestYAML, baseEndpoint)
+
+		if fp1 == fp2 {
+			t.Fatal("fingerprint should differ when Config map values differ")
+		}
+	})
+
+	t.Run("binding/Slot_ignored", func(t *testing.T) {
+		b := baseBinding
+		b.Slot = SlotVAD
+		assertUnchanged(t, computePlanFingerprint(b, baseMF, baseManifestYAML, baseEndpoint))
+	})
+
+	t.Run("binding/Fingerprint_ignored", func(t *testing.T) {
+		b := baseBinding
+		b.Fingerprint = "should-be-ignored"
+		assertUnchanged(t, computePlanFingerprint(b, baseMF, baseManifestYAML, baseEndpoint))
+	})
+
+	t.Run("binding/Runtime_ignored", func(t *testing.T) {
+		b := baseBinding
+		b.Runtime = map[string]string{"transport": "process", "address": "127.0.0.1:5555"}
+		assertUnchanged(t, computePlanFingerprint(b, baseMF, baseManifestYAML, baseEndpoint))
+	})
+
+	// --- Endpoint fields ---
+
+	t.Run("endpoint/Transport", func(t *testing.T) {
+		e := baseEndpoint
+		e.Transport = "grpc"
+		assertChanged(t, computePlanFingerprint(baseBinding, baseMF, baseManifestYAML, e))
+	})
+
+	t.Run("endpoint/Address_nonprocess", func(t *testing.T) {
+		e := baseEndpoint
+		e.Transport = "grpc"
+		e.Address = "localhost:9090"
+		fp1 := computePlanFingerprint(baseBinding, baseMF, baseManifestYAML, e)
+
+		e2 := e
+		e2.Address = "localhost:9091"
+		fp2 := computePlanFingerprint(baseBinding, baseMF, baseManifestYAML, e2)
+		if fp1 == fp2 {
+			t.Fatal("address change should affect fingerprint for non-process transport")
+		}
+	})
+
+	t.Run("endpoint/Address_process_ignored", func(t *testing.T) {
+		e := baseEndpoint
+		e.Transport = "process"
+		e.Address = "127.0.0.1:12345"
+		fp1 := computePlanFingerprint(baseBinding, baseMF, baseManifestYAML, e)
+
+		e2 := e
+		e2.Address = "127.0.0.1:54321"
+		fp2 := computePlanFingerprint(baseBinding, baseMF, baseManifestYAML, e2)
+		if fp1 != fp2 {
+			t.Fatal("address change should NOT affect fingerprint for process transport")
+		}
+	})
+
+	t.Run("endpoint/Command", func(t *testing.T) {
+		e := baseEndpoint
+		e.Command = "./other-binary"
+		assertChanged(t, computePlanFingerprint(baseBinding, baseMF, baseManifestYAML, e))
+	})
+
+	t.Run("endpoint/Args_value_changed", func(t *testing.T) {
+		e := baseEndpoint
+		e.Args = []string{"--mode", "slow"}
+		assertChanged(t, computePlanFingerprint(baseBinding, baseMF, baseManifestYAML, e))
+	})
+
+	t.Run("endpoint/Args_added", func(t *testing.T) {
+		e := baseEndpoint
+		e.Args = append(append([]string(nil), baseEndpoint.Args...), "--extra")
+		assertChanged(t, computePlanFingerprint(baseBinding, baseMF, baseManifestYAML, e))
+	})
+
+	t.Run("endpoint/Args_empty", func(t *testing.T) {
+		e := baseEndpoint
+		e.Args = nil
+		assertChanged(t, computePlanFingerprint(baseBinding, baseMF, baseManifestYAML, e))
+	})
+
+	t.Run("endpoint/Env_value_changed", func(t *testing.T) {
+		e := baseEndpoint
+		e.Env = map[string]string{"API_KEY": "changed", "REGION": "us"}
+		assertChanged(t, computePlanFingerprint(baseBinding, baseMF, baseManifestYAML, e))
+	})
+
+	t.Run("endpoint/Env_key_added", func(t *testing.T) {
+		e := baseEndpoint
+		e.Env = map[string]string{"API_KEY": "secret", "REGION": "us", "NEW": "val"}
+		assertChanged(t, computePlanFingerprint(baseBinding, baseMF, baseManifestYAML, e))
+	})
+
+	t.Run("endpoint/Env_key_removed", func(t *testing.T) {
+		e := baseEndpoint
+		e.Env = map[string]string{"API_KEY": "secret"}
+		assertChanged(t, computePlanFingerprint(baseBinding, baseMF, baseManifestYAML, e))
+	})
+
+	t.Run("endpoint/TLSCertPath", func(t *testing.T) {
+		e := baseEndpoint
+		e.TLSCertPath = "/other/cert.pem"
+		assertChanged(t, computePlanFingerprint(baseBinding, baseMF, baseManifestYAML, e))
+	})
+
+	t.Run("endpoint/TLSKeyPath", func(t *testing.T) {
+		e := baseEndpoint
+		e.TLSKeyPath = "/other/key.pem"
+		assertChanged(t, computePlanFingerprint(baseBinding, baseMF, baseManifestYAML, e))
+	})
+
+	t.Run("endpoint/TLSCACertPath", func(t *testing.T) {
+		e := baseEndpoint
+		e.TLSCACertPath = "/other/ca.pem"
+		assertChanged(t, computePlanFingerprint(baseBinding, baseMF, baseManifestYAML, e))
+	})
+
+	t.Run("endpoint/TLSInsecure", func(t *testing.T) {
+		e := baseEndpoint
+		e.TLSInsecure = true
+		assertChanged(t, computePlanFingerprint(baseBinding, baseMF, baseManifestYAML, e))
+	})
+
+	t.Run("endpoint/AdapterID_ignored", func(t *testing.T) {
+		e := baseEndpoint
+		e.AdapterID = "something-else"
+		assertUnchanged(t, computePlanFingerprint(baseBinding, baseMF, baseManifestYAML, e))
+	})
+
+	t.Run("endpoint/CreatedAt_ignored", func(t *testing.T) {
+		e := baseEndpoint
+		e.CreatedAt = "2025-01-01T00:00:00Z"
+		assertUnchanged(t, computePlanFingerprint(baseBinding, baseMF, baseManifestYAML, e))
+	})
+
+	t.Run("endpoint/UpdatedAt_ignored", func(t *testing.T) {
+		e := baseEndpoint
+		e.UpdatedAt = "2025-01-01T00:00:00Z"
+		assertUnchanged(t, computePlanFingerprint(baseBinding, baseMF, baseManifestYAML, e))
+	})
+
+	// --- Manifest entrypoint fields (modify cloned struct, not YAML) ---
+
+	t.Run("manifest/entrypoint/Runtime", func(t *testing.T) {
+		mf := cloneManifest()
+		mf.Adapter.Entrypoint.Runtime = "js"
+		assertChanged(t, computePlanFingerprint(baseBinding, mf, baseManifestYAML, baseEndpoint))
+	})
+
+	t.Run("manifest/entrypoint/Command", func(t *testing.T) {
+		mf := cloneManifest()
+		mf.Adapter.Entrypoint.Command = "./other-adapter"
+		assertChanged(t, computePlanFingerprint(baseBinding, mf, baseManifestYAML, baseEndpoint))
+	})
+
+	t.Run("manifest/entrypoint/Args", func(t *testing.T) {
+		mf := cloneManifest()
+		mf.Adapter.Entrypoint.Args = []string{"--mode", "slow"}
+		assertChanged(t, computePlanFingerprint(baseBinding, mf, baseManifestYAML, baseEndpoint))
+	})
+
+	t.Run("manifest/entrypoint/Transport", func(t *testing.T) {
+		mf := cloneManifest()
+		mf.Adapter.Entrypoint.Transport = "grpc"
+		assertChanged(t, computePlanFingerprint(baseBinding, mf, baseManifestYAML, baseEndpoint))
+	})
+
+	t.Run("manifest/entrypoint/ListenEnv", func(t *testing.T) {
+		mf := cloneManifest()
+		mf.Adapter.Entrypoint.ListenEnv = "OTHER_LISTEN"
+		assertChanged(t, computePlanFingerprint(baseBinding, mf, baseManifestYAML, baseEndpoint))
+	})
+
+	t.Run("manifest/entrypoint/WorkingDir", func(t *testing.T) {
+		mf := cloneManifest()
+		mf.Adapter.Entrypoint.WorkingDir = "/other/dir"
+		assertChanged(t, computePlanFingerprint(baseBinding, mf, baseManifestYAML, baseEndpoint))
+	})
+
+	t.Run("manifest/entrypoint/ReadyTimeout", func(t *testing.T) {
+		mf := cloneManifest()
+		mf.Adapter.Entrypoint.ReadyTimeout = "30s"
+		assertChanged(t, computePlanFingerprint(baseBinding, mf, baseManifestYAML, baseEndpoint))
+	})
+
+	t.Run("manifest/entrypoint/ShutdownTimeout", func(t *testing.T) {
+		mf := cloneManifest()
+		mf.Adapter.Entrypoint.ShutdownTimeout = "60s"
+		assertChanged(t, computePlanFingerprint(baseBinding, mf, baseManifestYAML, baseEndpoint))
+	})
+
+	// --- Manifest telemetry ---
+
+	t.Run("manifest/telemetry/Stdout_changed", func(t *testing.T) {
+		mf := cloneManifest()
+		mf.Adapter.Telemetry.Stdout = &falseVal
+		assertChanged(t, computePlanFingerprint(baseBinding, mf, baseManifestYAML, baseEndpoint))
+	})
+
+	t.Run("manifest/telemetry/Stderr_changed", func(t *testing.T) {
+		mf := cloneManifest()
+		mf.Adapter.Telemetry.Stderr = &trueVal
+		assertChanged(t, computePlanFingerprint(baseBinding, mf, baseManifestYAML, baseEndpoint))
+	})
+
+	t.Run("manifest/telemetry/Stdout_nil_vs_explicit", func(t *testing.T) {
+		mf := cloneManifest()
+		mf.Adapter.Telemetry.Stdout = nil
+		fpNil := computePlanFingerprint(baseBinding, mf, baseManifestYAML, baseEndpoint)
+
+		mf2 := cloneManifest()
+		mf2.Adapter.Telemetry.Stdout = &trueVal
+		fpExplicit := computePlanFingerprint(baseBinding, mf2, baseManifestYAML, baseEndpoint)
+
+		if fpNil == fpExplicit {
+			t.Fatal("nil Stdout pointer should produce different fingerprint than explicit true")
+		}
+	})
+
+	// --- Manifest assets ---
+
+	t.Run("manifest/assets/CacheDirEnv", func(t *testing.T) {
+		mf := cloneManifest()
+		mf.Adapter.Assets.Models.CacheDirEnv = "OTHER_CACHE"
+		assertChanged(t, computePlanFingerprint(baseBinding, mf, baseManifestYAML, baseEndpoint))
+	})
+
+	// --- Manifest slot ---
+
+	t.Run("manifest/Slot", func(t *testing.T) {
+		mf := cloneManifest()
+		mf.Adapter.Slot = "vad"
+		assertChanged(t, computePlanFingerprint(baseBinding, mf, baseManifestYAML, baseEndpoint))
+	})
+
+	// --- Manifest options ---
+
+	t.Run("manifest/options/default_changed", func(t *testing.T) {
+		mf := cloneManifest()
+		opt := mf.Adapter.Options["model"]
+		opt.Default = "large"
+		mf.Adapter.Options["model"] = opt
+		assertChanged(t, computePlanFingerprint(baseBinding, mf, baseManifestYAML, baseEndpoint))
+	})
+
+	t.Run("manifest/options/new_option_added", func(t *testing.T) {
+		mf := cloneManifest()
+		mf.Adapter.Options["lang"] = manifestpkg.AdapterOption{
+			Type:        "string",
+			Description: "Language",
+			Default:     "en",
+		}
+		assertChanged(t, computePlanFingerprint(baseBinding, mf, baseManifestYAML, baseEndpoint))
+	})
+
+	t.Run("manifest/options/type_changed", func(t *testing.T) {
+		mf := cloneManifest()
+		opt := mf.Adapter.Options["model"]
+		opt.Type = "enum"
+		opt.Values = []any{"base", "large"}
+		mf.Adapter.Options["model"] = opt
+		assertChanged(t, computePlanFingerprint(baseBinding, mf, baseManifestYAML, baseEndpoint))
+	})
+
+	t.Run("manifest/options/description_changed", func(t *testing.T) {
+		mf := cloneManifest()
+		opt := mf.Adapter.Options["model"]
+		opt.Description = "Changed description"
+		mf.Adapter.Options["model"] = opt
+		assertChanged(t, computePlanFingerprint(baseBinding, mf, baseManifestYAML, baseEndpoint))
+	})
+
+	t.Run("manifest/options/values_changed", func(t *testing.T) {
+		mf := cloneManifest()
+		opt := mf.Adapter.Options["model"]
+		opt.Values = []any{"base", "large", "tiny"}
+		mf.Adapter.Options["model"] = opt
+		assertChanged(t, computePlanFingerprint(baseBinding, mf, baseManifestYAML, baseEndpoint))
+	})
+
+	t.Run("manifest/options/all_removed", func(t *testing.T) {
+		mf := cloneManifest()
+		mf.Adapter.Options = nil
+		assertChanged(t, computePlanFingerprint(baseBinding, mf, baseManifestYAML, baseEndpoint))
+	})
+
+	t.Run("manifest/options/Required_ignored", func(t *testing.T) {
+		mf := cloneManifest()
+		opt := mf.Adapter.Options["model"]
+		opt.Required = true
+		mf.Adapter.Options["model"] = opt
+		assertUnchanged(t, computePlanFingerprint(baseBinding, mf, baseManifestYAML, baseEndpoint))
+	})
+
+	// --- Nil manifest falls back to raw YAML ---
+
+	t.Run("nil_manifest_uses_raw", func(t *testing.T) {
+		fp1 := computePlanFingerprint(baseBinding, nil, "manifest-v1", baseEndpoint)
+		fp2 := computePlanFingerprint(baseBinding, nil, "manifest-v2", baseEndpoint)
+		if fp1 == fp2 {
+			t.Fatal("fingerprint should change when raw manifest string changes")
+		}
+	})
+
+	t.Run("nil_adapter_spec_uses_raw", func(t *testing.T) {
+		mf := &manifestpkg.Manifest{Adapter: nil}
+		fp1 := computePlanFingerprint(baseBinding, mf, "raw-v1", baseEndpoint)
+		fp2 := computePlanFingerprint(baseBinding, mf, "raw-v2", baseEndpoint)
+		if fp1 == fp2 {
+			t.Fatal("nil Adapter should fall back to raw YAML comparison")
+		}
+	})
+}
+
 func TestDiscoveredManifestFeedsManagerPlan(t *testing.T) {
 	t.Cleanup(SetReadinessChecker(func(context.Context, string) error { return nil }))
 
