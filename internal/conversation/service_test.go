@@ -23,21 +23,9 @@ func TestConversationStoresHistoryWithLimit(t *testing.T) {
 	}
 	defer svc.Shutdown(context.Background())
 
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicPipelineCleaned,
-		Source:  eventbus.SourceContentPipeline,
-		Payload: eventbus.PipelineMessageEvent{SessionID: "s", Origin: eventbus.OriginTool, Text: "first"},
-	})
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicPipelineCleaned,
-		Source:  eventbus.SourceContentPipeline,
-		Payload: eventbus.PipelineMessageEvent{SessionID: "s", Origin: eventbus.OriginTool, Text: "second"},
-	})
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicPipelineCleaned,
-		Source:  eventbus.SourceContentPipeline,
-		Payload: eventbus.PipelineMessageEvent{SessionID: "s", Origin: eventbus.OriginTool, Text: "third"},
-	})
+	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{SessionID: "s", Origin: eventbus.OriginTool, Text: "first"})
+	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{SessionID: "s", Origin: eventbus.OriginTool, Text: "second"})
+	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{SessionID: "s", Origin: eventbus.OriginTool, Text: "third"})
 
 	time.Sleep(50 * time.Millisecond)
 
@@ -65,17 +53,9 @@ func TestConversationPublishesPromptOnUserInput(t *testing.T) {
 	promptSub := bus.Subscribe(eventbus.TopicConversationPrompt)
 	defer promptSub.Close()
 
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicPipelineCleaned,
-		Source:  eventbus.SourceContentPipeline,
-		Payload: eventbus.PipelineMessageEvent{SessionID: "chat", Origin: eventbus.OriginTool, Text: "previous"},
-	})
+	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{SessionID: "chat", Origin: eventbus.OriginTool, Text: "previous"})
 
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicPipelineCleaned,
-		Source:  eventbus.SourceContentPipeline,
-		Payload: eventbus.PipelineMessageEvent{SessionID: "chat", Origin: eventbus.OriginUser, Text: "hello"},
-	})
+	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{SessionID: "chat", Origin: eventbus.OriginUser, Text: "hello"})
 
 	select {
 	case env := <-promptSub.C():
@@ -210,17 +190,9 @@ func TestConversationStoresReplies(t *testing.T) {
 	}
 	defer svc.Shutdown(context.Background())
 
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicPipelineCleaned,
-		Source:  eventbus.SourceContentPipeline,
-		Payload: eventbus.PipelineMessageEvent{SessionID: "reply", Origin: eventbus.OriginUser, Text: "hi"},
-	})
+	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{SessionID: "reply", Origin: eventbus.OriginUser, Text: "hi"})
 
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicConversationReply,
-		Source:  eventbus.SourceConversation,
-		Payload: eventbus.ConversationReplyEvent{SessionID: "reply", Text: "hello there"},
-	})
+	eventbus.Publish(context.Background(), bus, eventbus.Conversation.Reply, eventbus.SourceConversation, eventbus.ConversationReplyEvent{SessionID: "reply", Text: "hello there"})
 
 	deadlineReply := time.Now().Add(500 * time.Millisecond)
 	for {
@@ -251,11 +223,7 @@ func TestConversationSliceWindow(t *testing.T) {
 	defer svc.Shutdown(context.Background())
 
 	for i := 0; i < 5; i++ {
-		bus.Publish(context.Background(), eventbus.Envelope{
-			Topic:   eventbus.TopicPipelineCleaned,
-			Source:  eventbus.SourceContentPipeline,
-			Payload: eventbus.PipelineMessageEvent{SessionID: "window", Origin: eventbus.OriginUser, Text: strconv.Itoa(i)},
-		})
+		eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{SessionID: "window", Origin: eventbus.OriginUser, Text: strconv.Itoa(i)})
 	}
 
 	deadline := time.Now().Add(500 * time.Millisecond)
@@ -293,30 +261,22 @@ func TestConversationMetadataLimits(t *testing.T) {
 		annotations[key] = value
 	}
 
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicPipelineCleaned,
-		Source:  eventbus.SourceContentPipeline,
-		Payload: eventbus.PipelineMessageEvent{SessionID: "metadata", Origin: eventbus.OriginUser, Text: "payload", Annotations: annotations},
-	})
+	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{SessionID: "metadata", Origin: eventbus.OriginUser, Text: "payload", Annotations: annotations})
 
 	replyMeta := map[string]string{
 		" prompt ": strings.Repeat("z", maxMetadataValueRunes+50),
 	}
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:  eventbus.TopicConversationReply,
-		Source: eventbus.SourceConversation,
-		Payload: eventbus.ConversationReplyEvent{
-			SessionID: "metadata",
-			Text:      "reply",
-			Metadata:  replyMeta,
-			PromptID:  strings.Repeat("p", maxMetadataValueRunes+20),
-			Actions: []eventbus.ConversationAction{
-				{
-					Type:   strings.Repeat("t", maxMetadataValueRunes+20),
-					Target: strings.Repeat("target", 30),
-					Args: map[string]string{
-						"payload": strings.Repeat("value", 100),
-					},
+	eventbus.Publish(context.Background(), bus, eventbus.Conversation.Reply, eventbus.SourceConversation, eventbus.ConversationReplyEvent{
+		SessionID: "metadata",
+		Text:      "reply",
+		Metadata:  replyMeta,
+		PromptID:  strings.Repeat("p", maxMetadataValueRunes+20),
+		Actions: []eventbus.ConversationAction{
+			{
+				Type:   strings.Repeat("t", maxMetadataValueRunes+20),
+				Target: strings.Repeat("target", 30),
+				Args: map[string]string{
+					"payload": strings.Repeat("value", 100),
 				},
 			},
 		},
@@ -381,11 +341,7 @@ func TestConversationSessionlessMessage(t *testing.T) {
 	defer svc.Shutdown(context.Background())
 
 	// Send a sessionless message (empty SessionID)
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicPipelineCleaned,
-		Source:  eventbus.SourceContentPipeline,
-		Payload: eventbus.PipelineMessageEvent{SessionID: "", Origin: eventbus.OriginUser, Text: "hello world"},
-	})
+	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{SessionID: "", Origin: eventbus.OriginUser, Text: "hello world"})
 
 	time.Sleep(50 * time.Millisecond)
 
@@ -423,20 +379,12 @@ func TestConversationSessionlessPrompt(t *testing.T) {
 	defer promptSub.Close()
 
 	// Add context first
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicPipelineCleaned,
-		Source:  eventbus.SourceContentPipeline,
-		Payload: eventbus.PipelineMessageEvent{SessionID: "", Origin: eventbus.OriginTool, Text: "context message"},
-	})
+	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{SessionID: "", Origin: eventbus.OriginTool, Text: "context message"})
 
 	time.Sleep(20 * time.Millisecond)
 
 	// Now send user message which should trigger prompt
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicPipelineCleaned,
-		Source:  eventbus.SourceContentPipeline,
-		Payload: eventbus.PipelineMessageEvent{SessionID: "", Origin: eventbus.OriginUser, Text: "list sessions"},
-	})
+	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{SessionID: "", Origin: eventbus.OriginUser, Text: "list sessions"})
 
 	select {
 	case env := <-promptSub.C():
@@ -472,18 +420,10 @@ func TestConversationSessionlessReply(t *testing.T) {
 	defer svc.Shutdown(context.Background())
 
 	// Send user message
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicPipelineCleaned,
-		Source:  eventbus.SourceContentPipeline,
-		Payload: eventbus.PipelineMessageEvent{SessionID: "", Origin: eventbus.OriginUser, Text: "what sessions?"},
-	})
+	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{SessionID: "", Origin: eventbus.OriginUser, Text: "what sessions?"})
 
 	// Send AI reply
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicConversationReply,
-		Source:  eventbus.SourceConversation,
-		Payload: eventbus.ConversationReplyEvent{SessionID: "", Text: "You have no active sessions."},
-	})
+	eventbus.Publish(context.Background(), bus, eventbus.Conversation.Reply, eventbus.SourceConversation, eventbus.ConversationReplyEvent{SessionID: "", Text: "You have no active sessions."})
 
 	deadline := time.Now().Add(500 * time.Millisecond)
 	for {
@@ -582,11 +522,7 @@ func TestConversationSessionlessIgnoredWithoutGlobalStore(t *testing.T) {
 	defer promptSub.Close()
 
 	// Send sessionless message - should be ignored without globalStore
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicPipelineCleaned,
-		Source:  eventbus.SourceContentPipeline,
-		Payload: eventbus.PipelineMessageEvent{SessionID: "", Origin: eventbus.OriginUser, Text: "hello"},
-	})
+	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{SessionID: "", Origin: eventbus.OriginUser, Text: "hello"})
 
 	select {
 	case <-promptSub.C():
@@ -612,20 +548,19 @@ func TestConversation_SessionOutputRateLimiting(t *testing.T) {
 	defer promptSub.Close()
 
 	// First notable event should trigger prompt
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:  eventbus.TopicPipelineCleaned,
-		Source: eventbus.SourceContentPipeline,
-		Payload: eventbus.PipelineMessageEvent{
-			SessionID:   "rate-limit-test",
-			Origin:      eventbus.OriginTool,
-			Text:        "first notable output",
-			Annotations: map[string]string{"notable": "true"},
-		},
+	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{
+		SessionID:   "rate-limit-test",
+		Origin:      eventbus.OriginTool,
+		Text:        "first notable output",
+		Annotations: map[string]string{"notable": "true"},
 	})
 
 	select {
 	case env := <-promptSub.C():
-		prompt := env.Payload.(eventbus.ConversationPromptEvent)
+		prompt, ok := env.Payload.(eventbus.ConversationPromptEvent)
+		if !ok {
+			t.Fatalf("expected ConversationPromptEvent, got %T", env.Payload)
+		}
 		if prompt.Metadata["event_type"] != "session_output" {
 			t.Fatalf("expected event_type=session_output, got %q", prompt.Metadata["event_type"])
 		}
@@ -634,15 +569,11 @@ func TestConversation_SessionOutputRateLimiting(t *testing.T) {
 	}
 
 	// Second notable event immediately after should be blocked (within 2s)
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:  eventbus.TopicPipelineCleaned,
-		Source: eventbus.SourceContentPipeline,
-		Payload: eventbus.PipelineMessageEvent{
-			SessionID:   "rate-limit-test",
-			Origin:      eventbus.OriginTool,
-			Text:        "second notable output",
-			Annotations: map[string]string{"notable": "true"},
-		},
+	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{
+		SessionID:   "rate-limit-test",
+		Origin:      eventbus.OriginTool,
+		Text:        "second notable output",
+		Annotations: map[string]string{"notable": "true"},
 	})
 
 	select {
@@ -656,20 +587,19 @@ func TestConversation_SessionOutputRateLimiting(t *testing.T) {
 	svc.lastSessionOutput.Store("rate-limit-test", time.Now().Add(-3*time.Second))
 
 	// Third notable event after rate limit should trigger
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:  eventbus.TopicPipelineCleaned,
-		Source: eventbus.SourceContentPipeline,
-		Payload: eventbus.PipelineMessageEvent{
-			SessionID:   "rate-limit-test",
-			Origin:      eventbus.OriginTool,
-			Text:        "third notable output",
-			Annotations: map[string]string{"notable": "true"},
-		},
+	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{
+		SessionID:   "rate-limit-test",
+		Origin:      eventbus.OriginTool,
+		Text:        "third notable output",
+		Annotations: map[string]string{"notable": "true"},
 	})
 
 	select {
 	case env := <-promptSub.C():
-		prompt := env.Payload.(eventbus.ConversationPromptEvent)
+		prompt, ok := env.Payload.(eventbus.ConversationPromptEvent)
+		if !ok {
+			t.Fatalf("expected ConversationPromptEvent, got %T", env.Payload)
+		}
 		if prompt.NewMessage.Text != "third notable output" {
 			t.Fatalf("expected third output text, got %q", prompt.NewMessage.Text)
 		}
@@ -694,14 +624,10 @@ func TestConversation_NotableTriggersAI(t *testing.T) {
 	defer promptSub.Close()
 
 	// Message without notable=true should NOT trigger prompt (unless from user)
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:  eventbus.TopicPipelineCleaned,
-		Source: eventbus.SourceContentPipeline,
-		Payload: eventbus.PipelineMessageEvent{
-			SessionID: "notable-test",
-			Origin:    eventbus.OriginTool,
-			Text:      "regular output without notable",
-		},
+	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{
+		SessionID: "notable-test",
+		Origin:    eventbus.OriginTool,
+		Text:      "regular output without notable",
 	})
 
 	select {
@@ -712,20 +638,19 @@ func TestConversation_NotableTriggersAI(t *testing.T) {
 	}
 
 	// Message with notable=true SHOULD trigger prompt
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:  eventbus.TopicPipelineCleaned,
-		Source: eventbus.SourceContentPipeline,
-		Payload: eventbus.PipelineMessageEvent{
-			SessionID:   "notable-test",
-			Origin:      eventbus.OriginTool,
-			Text:        "error: compilation failed",
-			Annotations: map[string]string{"notable": "true", "severity": "error"},
-		},
+	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{
+		SessionID:   "notable-test",
+		Origin:      eventbus.OriginTool,
+		Text:        "error: compilation failed",
+		Annotations: map[string]string{"notable": "true", "severity": "error"},
 	})
 
 	select {
 	case env := <-promptSub.C():
-		prompt := env.Payload.(eventbus.ConversationPromptEvent)
+		prompt, ok := env.Payload.(eventbus.ConversationPromptEvent)
+		if !ok {
+			t.Fatalf("expected ConversationPromptEvent, got %T", env.Payload)
+		}
 		if prompt.Metadata["event_type"] != "session_output" {
 			t.Fatalf("expected event_type=session_output, got %q", prompt.Metadata["event_type"])
 		}
@@ -756,27 +681,26 @@ func TestConversation_SessionOutputMetadataPropagation(t *testing.T) {
 	defer promptSub.Close()
 
 	// Send notable message with full annotations
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:  eventbus.TopicPipelineCleaned,
-		Source: eventbus.SourceContentPipeline,
-		Payload: eventbus.PipelineMessageEvent{
-			SessionID: "metadata-test",
-			Origin:    eventbus.OriginTool,
-			Text:      "tool output text",
-			Annotations: map[string]string{
-				"notable":      "true",
-				"tool":         "TestTool",
-				"tool_id":      "test-tool",
-				"tool_changed": "true",
-				"idle_state":   "prompt",
-				"waiting_for":  "user_input",
-			},
+	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{
+		SessionID: "metadata-test",
+		Origin:    eventbus.OriginTool,
+		Text:      "tool output text",
+		Annotations: map[string]string{
+			"notable":      "true",
+			"tool":         "TestTool",
+			"tool_id":      "test-tool",
+			"tool_changed": "true",
+			"idle_state":   "prompt",
+			"waiting_for":  "user_input",
 		},
 	})
 
 	select {
 	case env := <-promptSub.C():
-		prompt := env.Payload.(eventbus.ConversationPromptEvent)
+		prompt, ok := env.Payload.(eventbus.ConversationPromptEvent)
+		if !ok {
+			t.Fatalf("expected ConversationPromptEvent, got %T", env.Payload)
+		}
 
 		// Verify event_type
 		if prompt.Metadata["event_type"] != "session_output" {
@@ -880,7 +804,10 @@ func TestSummaryTrigger(t *testing.T) {
 	for {
 		select {
 		case env := <-promptSub.C():
-			prompt := env.Payload.(eventbus.ConversationPromptEvent)
+			prompt, ok := env.Payload.(eventbus.ConversationPromptEvent)
+			if !ok {
+				continue
+			}
 			if prompt.Metadata["event_type"] == "history_summary" {
 				summaryPrompt = &prompt
 			}

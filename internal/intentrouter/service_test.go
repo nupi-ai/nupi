@@ -192,14 +192,10 @@ func TestServiceNoAdapterPublishesError(t *testing.T) {
 	}
 
 	// Publish a prompt without adapter configured
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicConversationPrompt,
-		Source: eventbus.SourceConversation,
-		Payload: eventbus.ConversationPromptEvent{
-			SessionID:  "test-session",
-			PromptID:   "test-prompt",
-			NewMessage: eventbus.ConversationMessage{Text: "hello"},
-		},
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+		SessionID:  "test-session",
+		PromptID:   "test-prompt",
+		NewMessage: eventbus.ConversationMessage{Text: "hello"},
 	})
 
 	// Should receive error reply
@@ -263,14 +259,10 @@ func TestServiceAdapterNotReady(t *testing.T) {
 		t.Fatalf("Start() failed: %v", err)
 	}
 
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicConversationPrompt,
-		Source: eventbus.SourceConversation,
-		Payload: eventbus.ConversationPromptEvent{
-			SessionID:  "test-session",
-			PromptID:   "test-prompt",
-			NewMessage: eventbus.ConversationMessage{Text: "hello"},
-		},
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+		SessionID:  "test-session",
+		PromptID:   "test-prompt",
+		NewMessage: eventbus.ConversationMessage{Text: "hello"},
 	})
 
 	// Should receive error with recoverable=true
@@ -340,15 +332,11 @@ func TestServiceCommandAction(t *testing.T) {
 		t.Fatalf("Start() failed: %v", err)
 	}
 
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicConversationPrompt,
-		Source: eventbus.SourceConversation,
-		Payload: eventbus.ConversationPromptEvent{
-			SessionID: "session-1",
-			PromptID:  "test-prompt",
-			NewMessage: eventbus.ConversationMessage{
-				Text: "run tests",
-			},
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+		SessionID: "session-1",
+		PromptID:  "test-prompt",
+		NewMessage: eventbus.ConversationMessage{
+			Text: "run tests",
 		},
 	})
 
@@ -430,15 +418,11 @@ func TestServiceSpeakAction(t *testing.T) {
 		t.Fatalf("Start() failed: %v", err)
 	}
 
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicConversationPrompt,
-		Source: eventbus.SourceConversation,
-		Payload: eventbus.ConversationPromptEvent{
-			SessionID: "session-1",
-			PromptID:  "test-prompt",
-			NewMessage: eventbus.ConversationMessage{
-				Text: "hello",
-			},
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+		SessionID: "session-1",
+		PromptID:  "test-prompt",
+		NewMessage: eventbus.ConversationMessage{
+			Text: "hello",
 		},
 	})
 
@@ -510,15 +494,11 @@ func TestServiceClarifyAction(t *testing.T) {
 		t.Fatalf("Start() failed: %v", err)
 	}
 
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicConversationPrompt,
-		Source: eventbus.SourceConversation,
-		Payload: eventbus.ConversationPromptEvent{
-			SessionID: "session-1",
-			PromptID:  "test-prompt",
-			NewMessage: eventbus.ConversationMessage{
-				Text: "run tests",
-			},
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+		SessionID: "session-1",
+		PromptID:  "test-prompt",
+		NewMessage: eventbus.ConversationMessage{
+			Text: "run tests",
 		},
 	})
 
@@ -567,15 +547,11 @@ func TestServiceAdapterError(t *testing.T) {
 		t.Fatalf("Start() failed: %v", err)
 	}
 
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicConversationPrompt,
-		Source: eventbus.SourceConversation,
-		Payload: eventbus.ConversationPromptEvent{
-			SessionID: "session-1",
-			PromptID:  "test-prompt",
-			NewMessage: eventbus.ConversationMessage{
-				Text: "hello",
-			},
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+		SessionID: "session-1",
+		PromptID:  "test-prompt",
+		NewMessage: eventbus.ConversationMessage{
+			Text: "hello",
 		},
 	})
 
@@ -643,15 +619,11 @@ func TestServiceNoCommandExecutorPublishesError(t *testing.T) {
 		t.Fatalf("Start() failed: %v", err)
 	}
 
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicConversationPrompt,
-		Source: eventbus.SourceConversation,
-		Payload: eventbus.ConversationPromptEvent{
-			SessionID: "session-1",
-			PromptID:  "test-prompt",
-			NewMessage: eventbus.ConversationMessage{
-				Text: "run test",
-			},
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+		SessionID: "session-1",
+		PromptID:  "test-prompt",
+		NewMessage: eventbus.ConversationMessage{
+			Text: "run test",
 		},
 	})
 
@@ -719,15 +691,11 @@ func TestServiceInvalidSession(t *testing.T) {
 		t.Fatalf("Start() failed: %v", err)
 	}
 
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicConversationPrompt,
-		Source: eventbus.SourceConversation,
-		Payload: eventbus.ConversationPromptEvent{
-			SessionID: "session-1",
-			PromptID:  "test-prompt",
-			NewMessage: eventbus.ConversationMessage{
-				Text: "run test",
-			},
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+		SessionID: "session-1",
+		PromptID:  "test-prompt",
+		NewMessage: eventbus.ConversationMessage{
+			Text: "run test",
 		},
 	})
 
@@ -789,18 +757,14 @@ func TestServiceContextPassedToAdapter(t *testing.T) {
 		t.Fatalf("Start() failed: %v", err)
 	}
 
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicConversationPrompt,
-		Source: eventbus.SourceConversation,
-		Payload: eventbus.ConversationPromptEvent{
-			SessionID: "session-1",
-			PromptID:  "test-prompt",
-			Context: []eventbus.ConversationTurn{
-				{Origin: eventbus.OriginUser, Text: "previous message"},
-			},
-			NewMessage: eventbus.ConversationMessage{
-				Text: "new message",
-			},
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+		SessionID: "session-1",
+		PromptID:  "test-prompt",
+		Context: []eventbus.ConversationTurn{
+			{Origin: eventbus.OriginUser, Text: "previous message"},
+		},
+		NewMessage: eventbus.ConversationMessage{
+			Text: "new message",
 		},
 	})
 
@@ -1048,15 +1012,11 @@ func TestE2ECommandFlowWithMockAdapter(t *testing.T) {
 	}
 
 	// Simulate user saying "run go test ./..."
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicConversationPrompt,
-		Source: eventbus.SourceConversation,
-		Payload: eventbus.ConversationPromptEvent{
-			SessionID: "session-1",
-			PromptID:  "prompt-1",
-			NewMessage: eventbus.ConversationMessage{
-				Text: "run go test ./...",
-			},
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+		SessionID: "session-1",
+		PromptID:  "prompt-1",
+		NewMessage: eventbus.ConversationMessage{
+			Text: "run go test ./...",
 		},
 	})
 
@@ -1135,15 +1095,11 @@ func TestE2ESpeakFlowWithEchoAdapter(t *testing.T) {
 	}
 
 	// Simulate user input
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicConversationPrompt,
-		Source: eventbus.SourceConversation,
-		Payload: eventbus.ConversationPromptEvent{
-			SessionID: "session-1",
-			PromptID:  "prompt-1",
-			NewMessage: eventbus.ConversationMessage{
-				Text: "hello world",
-			},
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+		SessionID: "session-1",
+		PromptID:  "prompt-1",
+		NewMessage: eventbus.ConversationMessage{
+			Text: "hello world",
 		},
 	})
 
@@ -1216,15 +1172,11 @@ func TestE2EClarifyFlowWithMockAdapter(t *testing.T) {
 	}
 
 	// Simulate ambiguous user input (not a command)
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicConversationPrompt,
-		Source: eventbus.SourceConversation,
-		Payload: eventbus.ConversationPromptEvent{
-			SessionID: "session-1",
-			PromptID:  "prompt-1",
-			NewMessage: eventbus.ConversationMessage{
-				Text: "something unclear",
-			},
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+		SessionID: "session-1",
+		PromptID:  "prompt-1",
+		NewMessage: eventbus.ConversationMessage{
+			Text: "something unclear",
 		},
 	})
 
@@ -1324,15 +1276,11 @@ func TestE2EMultipleSessionsCommandRouting(t *testing.T) {
 	}
 
 	// User is on session-1 but asks to run command on session-2
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicConversationPrompt,
-		Source: eventbus.SourceConversation,
-		Payload: eventbus.ConversationPromptEvent{
-			SessionID: "session-1",
-			PromptID:  "prompt-1",
-			NewMessage: eventbus.ConversationMessage{
-				Text: "run ls on session two",
-			},
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+		SessionID: "session-1",
+		PromptID:  "prompt-1",
+		NewMessage: eventbus.ConversationMessage{
+			Text: "run ls on session two",
 		},
 	})
 
@@ -1399,28 +1347,20 @@ func TestServiceToolChangeEventsUpdateCache(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Publish initial tool detection event
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsTool,
-		Source: eventbus.SourceSessionManager,
-		Payload: eventbus.SessionToolEvent{
-			SessionID: "session-1",
-			ToolName:  "vim",
-		},
+	eventbus.Publish(ctx, bus, eventbus.Sessions.Tool, eventbus.SourceSessionManager, eventbus.SessionToolEvent{
+		SessionID: "session-1",
+		ToolName:  "vim",
 	})
 
 	// Wait for event to be processed
 	time.Sleep(50 * time.Millisecond)
 
 	// Publish a prompt - should include the cached tool
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicConversationPrompt,
-		Source: eventbus.SourceConversation,
-		Payload: eventbus.ConversationPromptEvent{
-			SessionID: "session-1",
-			PromptID:  "prompt-1",
-			NewMessage: eventbus.ConversationMessage{
-				Text: "hello",
-			},
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+		SessionID: "session-1",
+		PromptID:  "prompt-1",
+		NewMessage: eventbus.ConversationMessage{
+			Text: "hello",
 		},
 	})
 
@@ -1436,29 +1376,21 @@ func TestServiceToolChangeEventsUpdateCache(t *testing.T) {
 	}
 
 	// Now publish a tool change event
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsToolChanged,
-		Source: eventbus.SourceSessionManager,
-		Payload: eventbus.SessionToolChangedEvent{
-			SessionID:    "session-1",
-			PreviousTool: "vim",
-			NewTool:      "python",
-		},
+	eventbus.Publish(ctx, bus, eventbus.Sessions.ToolChanged, eventbus.SourceSessionManager, eventbus.SessionToolChangedEvent{
+		SessionID:    "session-1",
+		PreviousTool: "vim",
+		NewTool:      "python",
 	})
 
 	// Wait for event to be processed
 	time.Sleep(50 * time.Millisecond)
 
 	// Publish another prompt - should have updated tool
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicConversationPrompt,
-		Source: eventbus.SourceConversation,
-		Payload: eventbus.ConversationPromptEvent{
-			SessionID: "session-1",
-			PromptID:  "prompt-2",
-			NewMessage: eventbus.ConversationMessage{
-				Text: "hello again",
-			},
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+		SessionID: "session-1",
+		PromptID:  "prompt-2",
+		NewMessage: eventbus.ConversationMessage{
+			Text: "hello again",
 		},
 	})
 
@@ -1506,13 +1438,9 @@ func TestServiceToolCacheCleanupOnSessionLifecycle(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Set tool for session
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsTool,
-		Source: eventbus.SourceSessionManager,
-		Payload: eventbus.SessionToolEvent{
-			SessionID: "session-1",
-			ToolName:  "vim",
-		},
+	eventbus.Publish(ctx, bus, eventbus.Sessions.Tool, eventbus.SourceSessionManager, eventbus.SessionToolEvent{
+		SessionID: "session-1",
+		ToolName:  "vim",
 	})
 
 	time.Sleep(50 * time.Millisecond)
@@ -1523,13 +1451,9 @@ func TestServiceToolCacheCleanupOnSessionLifecycle(t *testing.T) {
 	}
 
 	// Session stops
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsLifecycle,
-		Source: eventbus.SourceSessionManager,
-		Payload: eventbus.SessionLifecycleEvent{
-			SessionID: "session-1",
-			State:     eventbus.SessionStateStopped,
-		},
+	eventbus.Publish(ctx, bus, eventbus.Sessions.Lifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{
+		SessionID: "session-1",
+		State:     eventbus.SessionStateStopped,
 	})
 
 	time.Sleep(50 * time.Millisecond)
@@ -1610,18 +1534,14 @@ func TestServiceEventTypeMetadataPropagation(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Test user_intent (default)
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicConversationPrompt,
-		Source: eventbus.SourceConversation,
-		Payload: eventbus.ConversationPromptEvent{
-			SessionID: "session-1",
-			PromptID:  "prompt-1",
-			NewMessage: eventbus.ConversationMessage{
-				Text: "hello",
-			},
-			Metadata: map[string]string{
-				"event_type": "user_intent",
-			},
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+		SessionID: "session-1",
+		PromptID:  "prompt-1",
+		NewMessage: eventbus.ConversationMessage{
+			Text: "hello",
+		},
+		Metadata: map[string]string{
+			"event_type": "user_intent",
 		},
 	})
 
@@ -1636,19 +1556,15 @@ func TestServiceEventTypeMetadataPropagation(t *testing.T) {
 	}
 
 	// Test session_output
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicConversationPrompt,
-		Source: eventbus.SourceConversation,
-		Payload: eventbus.ConversationPromptEvent{
-			SessionID: "session-1",
-			PromptID:  "prompt-2",
-			NewMessage: eventbus.ConversationMessage{
-				Text: "output text",
-			},
-			Metadata: map[string]string{
-				"event_type":     "session_output",
-				"session_output": "Error: something failed",
-			},
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+		SessionID: "session-1",
+		PromptID:  "prompt-2",
+		NewMessage: eventbus.ConversationMessage{
+			Text: "output text",
+		},
+		Metadata: map[string]string{
+			"event_type":     "session_output",
+			"session_output": "Error: something failed",
 		},
 	})
 
@@ -1663,19 +1579,15 @@ func TestServiceEventTypeMetadataPropagation(t *testing.T) {
 	}
 
 	// Test clarification
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicConversationPrompt,
-		Source: eventbus.SourceConversation,
-		Payload: eventbus.ConversationPromptEvent{
-			SessionID: "session-1",
-			PromptID:  "prompt-3",
-			NewMessage: eventbus.ConversationMessage{
-				Text: "yes, run it",
-			},
-			Metadata: map[string]string{
-				"event_type":             "clarification",
-				"clarification_question": "Do you want me to run the tests?",
-			},
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+		SessionID: "session-1",
+		PromptID:  "prompt-3",
+		NewMessage: eventbus.ConversationMessage{
+			Text: "yes, run it",
+		},
+		Metadata: map[string]string{
+			"event_type":             "clarification",
+			"clarification_question": "Do you want me to run the tests?",
 		},
 	})
 
@@ -1729,18 +1641,14 @@ func TestServicePromptEnginePopulatesSystemAndUserPrompts(t *testing.T) {
 
 	time.Sleep(50 * time.Millisecond)
 
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicConversationPrompt,
-		Source: eventbus.SourceConversation,
-		Payload: eventbus.ConversationPromptEvent{
-			SessionID: "session-1",
-			PromptID:  "prompt-1",
-			NewMessage: eventbus.ConversationMessage{
-				Text: "hello",
-			},
-			Metadata: map[string]string{
-				"event_type": "user_intent",
-			},
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+		SessionID: "session-1",
+		PromptID:  "prompt-1",
+		NewMessage: eventbus.ConversationMessage{
+			Text: "hello",
+		},
+		Metadata: map[string]string{
+			"event_type": "user_intent",
 		},
 	})
 
@@ -1801,21 +1709,17 @@ func TestServiceExtendedMetadataPropagation(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Publish prompt with extended metadata
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicConversationPrompt,
-		Source: eventbus.SourceConversation,
-		Payload: eventbus.ConversationPromptEvent{
-			SessionID: "session-1",
-			PromptID:  "prompt-1",
-			NewMessage: eventbus.ConversationMessage{
-				Text: "hello",
-			},
-			Metadata: map[string]string{
-				"event_type":   "user_intent",
-				"input_source": "voice",
-				"sessionless":  "true",
-				"confidence":   "0.95",
-			},
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+		SessionID: "session-1",
+		PromptID:  "prompt-1",
+		NewMessage: eventbus.ConversationMessage{
+			Text: "hello",
+		},
+		Metadata: map[string]string{
+			"event_type":   "user_intent",
+			"input_source": "voice",
+			"sessionless":  "true",
+			"confidence":   "0.95",
 		},
 	})
 

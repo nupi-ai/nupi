@@ -61,8 +61,8 @@ func TestPrometheusExporter(t *testing.T) {
 		}
 	})
 
-	bus.Publish(context.Background(), eventbus.Envelope{Topic: eventbus.TopicSessionsOutput})
-	bus.Publish(context.Background(), eventbus.Envelope{Topic: eventbus.TopicPipelineCleaned})
+	eventbus.Publish(context.Background(), bus, eventbus.Sessions.Output, eventbus.SourceUnknown, eventbus.SessionOutputEvent{})
+	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceUnknown, eventbus.PipelineMessageEvent{})
 
 	metrics := string(exporter.Export())
 
@@ -161,9 +161,7 @@ func TestPrometheusExporterConcurrency(t *testing.T) {
 		defer wg.Done()
 		for i := 0; i < 500; i++ {
 			audioBytes.Add(256)
-			bus.Publish(context.Background(), eventbus.Envelope{
-				Topic: eventbus.TopicSessionsOutput,
-			})
+			eventbus.Publish(context.Background(), bus, eventbus.Sessions.Output, eventbus.SourceUnknown, eventbus.SessionOutputEvent{})
 		}
 	}()
 

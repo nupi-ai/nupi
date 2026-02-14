@@ -80,15 +80,11 @@ func TestPipelineToConversationIntegration(t *testing.T) {
 	}
 	defer conversationSvc.Shutdown(context.Background())
 
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsOutput,
-		Source: eventbus.SourceSessionManager,
-		Payload: eventbus.SessionOutputEvent{
-			SessionID: "integration-session",
-			Sequence:  1,
-			Data:      []byte("pipeline -> conversation test"),
-			Origin:    eventbus.OriginUser,
-		},
+	eventbus.Publish(context.Background(), bus, eventbus.Sessions.Output, eventbus.SourceSessionManager, eventbus.SessionOutputEvent{
+		SessionID: "integration-session",
+		Sequence:  1,
+		Data:      []byte("pipeline -> conversation test"),
+		Origin:    eventbus.OriginUser,
 	})
 
 	deadline := time.Now().Add(2 * time.Second)

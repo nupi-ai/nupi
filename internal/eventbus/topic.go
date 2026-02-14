@@ -22,7 +22,7 @@ func Publish[T any](ctx context.Context, bus *Bus, td TopicDef[T], source Source
 	if bus == nil {
 		return
 	}
-	bus.Publish(ctx, Envelope{
+	bus.publish(ctx, Envelope{
 		Topic:   td.topic,
 		Source:  source,
 		Payload: payload,
@@ -36,6 +36,13 @@ type PublishOption func(*Envelope)
 func WithTimestamp(ts time.Time) PublishOption {
 	return func(env *Envelope) {
 		env.Timestamp = ts
+	}
+}
+
+// WithCorrelationID sets the envelope correlation ID for distributed tracing.
+func WithCorrelationID(id string) PublishOption {
+	return func(env *Envelope) {
+		env.CorrelationID = id
 	}
 }
 
@@ -53,7 +60,7 @@ func PublishWithOpts[T any](ctx context.Context, bus *Bus, td TopicDef[T], sourc
 	for _, opt := range opts {
 		opt(&env)
 	}
-	bus.Publish(ctx, env)
+	bus.publish(ctx, env)
 }
 
 // SubscribeTo creates a typed subscription using a topic descriptor.

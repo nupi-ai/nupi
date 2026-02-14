@@ -103,13 +103,10 @@ func TestAudioEgressController(t *testing.T) {
 		t.Fatalf("unexpected playback format: %+v", controller.PlaybackFormat())
 	}
 
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic: eventbus.TopicConversationSpeak,
-		Payload: eventbus.ConversationSpeakEvent{
-			SessionID: "sess",
-			PromptID:  "prompt",
-			Text:      "hello",
-		},
+	eventbus.Publish(context.Background(), bus, eventbus.Conversation.Speak, "", eventbus.ConversationSpeakEvent{
+		SessionID: "sess",
+		PromptID:  "prompt",
+		Text:      "hello",
 	})
 
 	select {

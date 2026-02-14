@@ -574,20 +574,32 @@ func TestAudioServiceStreamAudioIn(t *testing.T) {
 		t.Fatalf("unexpected response: %+v", stream.resp)
 	}
 
-	raw1 := recvEnvelope(t, rawSub).Payload.(eventbus.AudioIngressRawEvent)
+	raw1, ok := recvEnvelope(t, rawSub).Payload.(eventbus.AudioIngressRawEvent)
+	if !ok {
+		t.Fatal("expected AudioIngressRawEvent")
+	}
 	if raw1.Sequence != 1 || len(raw1.Data) != 640 {
 		t.Fatalf("unexpected raw event #1: %+v", raw1)
 	}
-	raw2 := recvEnvelope(t, rawSub).Payload.(eventbus.AudioIngressRawEvent)
+	raw2, ok := recvEnvelope(t, rawSub).Payload.(eventbus.AudioIngressRawEvent)
+	if !ok {
+		t.Fatal("expected AudioIngressRawEvent")
+	}
 	if raw2.Sequence != 2 || len(raw2.Data) != 320 {
 		t.Fatalf("unexpected raw event #2: %+v", raw2)
 	}
 
-	seg1 := recvEnvelope(t, segSub).Payload.(eventbus.AudioIngressSegmentEvent)
+	seg1, ok := recvEnvelope(t, segSub).Payload.(eventbus.AudioIngressSegmentEvent)
+	if !ok {
+		t.Fatal("expected AudioIngressSegmentEvent")
+	}
 	if !seg1.First || seg1.Last || len(seg1.Data) != 640 || seg1.Duration != 20*time.Millisecond {
 		t.Fatalf("unexpected segment #1: %+v", seg1)
 	}
-	seg2 := recvEnvelope(t, segSub).Payload.(eventbus.AudioIngressSegmentEvent)
+	seg2, ok := recvEnvelope(t, segSub).Payload.(eventbus.AudioIngressSegmentEvent)
+	if !ok {
+		t.Fatal("expected AudioIngressSegmentEvent")
+	}
 	if seg2.First || !seg2.Last || len(seg2.Data) != 320 {
 		t.Fatalf("unexpected segment #2: %+v", seg2)
 	}
@@ -628,18 +640,15 @@ func TestAudioServiceStreamAudioOut(t *testing.T) {
 	format := egressSvc.PlaybackFormat()
 	streamID := egressSvc.DefaultStreamID()
 
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic: eventbus.TopicAudioEgressPlayback,
-		Payload: eventbus.AudioEgressPlaybackEvent{
-			SessionID: "sess-audio",
-			StreamID:  streamID,
-			Sequence:  1,
-			Format:    format,
-			Duration:  150 * time.Millisecond,
-			Data:      []byte{1, 2, 3, 4},
-			Final:     false,
-			Metadata:  map[string]string{"phase": "speak"},
-		},
+	eventbus.Publish(context.Background(), bus, eventbus.Audio.EgressPlayback, "", eventbus.AudioEgressPlaybackEvent{
+		SessionID: "sess-audio",
+		StreamID:  streamID,
+		Sequence:  1,
+		Format:    format,
+		Duration:  150 * time.Millisecond,
+		Data:      []byte{1, 2, 3, 4},
+		Final:     false,
+		Metadata:  map[string]string{"phase": "speak"},
 	})
 
 	first := srv.waitForResponses(t, 1, time.Second)[0]
@@ -656,17 +665,14 @@ func TestAudioServiceStreamAudioOut(t *testing.T) {
 		t.Fatalf("unexpected duration ms: %d", first.GetChunk().GetDurationMs())
 	}
 
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic: eventbus.TopicAudioEgressPlayback,
-		Payload: eventbus.AudioEgressPlaybackEvent{
-			SessionID: "sess-audio",
-			StreamID:  streamID,
-			Sequence:  2,
-			Format:    format,
-			Data:      []byte{},
-			Final:     true,
-			Metadata:  map[string]string{"barge_in": "true"},
-		},
+	eventbus.Publish(context.Background(), bus, eventbus.Audio.EgressPlayback, "", eventbus.AudioEgressPlaybackEvent{
+		SessionID: "sess-audio",
+		StreamID:  streamID,
+		Sequence:  2,
+		Format:    format,
+		Data:      []byte{},
+		Final:     true,
+		Metadata:  map[string]string{"barge_in": "true"},
 	})
 
 	second := srv.waitForResponses(t, 2, time.Second)[1]

@@ -35,12 +35,19 @@ func TestStreamSegmentation(t *testing.T) {
 	}
 
 	rawEvt := receiveEvent(t, rawSub)
-	if rawEvt.Payload.(eventbus.AudioIngressRawEvent).Sequence != 1 {
+	rawPayload, ok := rawEvt.Payload.(eventbus.AudioIngressRawEvent)
+	if !ok {
+		t.Fatalf("expected AudioIngressRawEvent, got %T", rawEvt.Payload)
+	}
+	if rawPayload.Sequence != 1 {
 		t.Fatalf("unexpected raw sequence")
 	}
 
 	segEvt := receiveEvent(t, segSub)
-	segment := segEvt.Payload.(eventbus.AudioIngressSegmentEvent)
+	segment, ok := segEvt.Payload.(eventbus.AudioIngressSegmentEvent)
+	if !ok {
+		t.Fatalf("expected AudioIngressSegmentEvent, got %T", segEvt.Payload)
+	}
 	if !segment.First {
 		t.Fatalf("expected first segment")
 	}
@@ -72,7 +79,10 @@ func TestStreamSegmentation(t *testing.T) {
 	}
 
 	finalEvt := receiveEvent(t, segSub)
-	finalSegment := finalEvt.Payload.(eventbus.AudioIngressSegmentEvent)
+	finalSegment, ok := finalEvt.Payload.(eventbus.AudioIngressSegmentEvent)
+	if !ok {
+		t.Fatalf("expected AudioIngressSegmentEvent, got %T", finalEvt.Payload)
+	}
 	if finalSegment.Last != true {
 		t.Fatalf("expected last segment flag")
 	}
@@ -111,7 +121,10 @@ func TestStreamCloseOnBoundaryEmitsTerminalSegment(t *testing.T) {
 	}
 
 	firstEvt := receiveEvent(t, segSub)
-	firstSegment := firstEvt.Payload.(eventbus.AudioIngressSegmentEvent)
+	firstSegment, ok := firstEvt.Payload.(eventbus.AudioIngressSegmentEvent)
+	if !ok {
+		t.Fatalf("expected AudioIngressSegmentEvent, got %T", firstEvt.Payload)
+	}
 	if firstSegment.Last {
 		t.Fatalf("expected first segment not to be last")
 	}
@@ -121,7 +134,10 @@ func TestStreamCloseOnBoundaryEmitsTerminalSegment(t *testing.T) {
 	}
 
 	terminalEvt := receiveEvent(t, segSub)
-	terminal := terminalEvt.Payload.(eventbus.AudioIngressSegmentEvent)
+	terminal, ok := terminalEvt.Payload.(eventbus.AudioIngressSegmentEvent)
+	if !ok {
+		t.Fatalf("expected AudioIngressSegmentEvent, got %T", terminalEvt.Payload)
+	}
 	if !terminal.Last {
 		t.Fatalf("expected terminal envelope with Last=true")
 	}
@@ -179,7 +195,10 @@ func TestServiceShutdownClosesStreams(t *testing.T) {
 	}
 
 	firstEvt := receiveEvent(t, segSub)
-	first := firstEvt.Payload.(eventbus.AudioIngressSegmentEvent)
+	first, ok := firstEvt.Payload.(eventbus.AudioIngressSegmentEvent)
+	if !ok {
+		t.Fatalf("expected AudioIngressSegmentEvent, got %T", firstEvt.Payload)
+	}
 	if first.Last {
 		t.Fatalf("expected first segment to not be last before shutdown")
 	}
@@ -189,7 +208,10 @@ func TestServiceShutdownClosesStreams(t *testing.T) {
 	}
 
 	terminalEvt := receiveEvent(t, segSub)
-	terminal := terminalEvt.Payload.(eventbus.AudioIngressSegmentEvent)
+	terminal, ok := terminalEvt.Payload.(eventbus.AudioIngressSegmentEvent)
+	if !ok {
+		t.Fatalf("expected AudioIngressSegmentEvent, got %T", terminalEvt.Payload)
+	}
 	if !terminal.Last {
 		t.Fatalf("expected shutdown to emit terminal segment")
 	}

@@ -127,14 +127,10 @@ func TestContentPipelineTransformsOutput(t *testing.T) {
 	cleanedSub := bus.Subscribe(eventbus.TopicPipelineCleaned)
 	defer cleanedSub.Close()
 
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsTool,
-		Source: eventbus.SourcePluginService,
-		Payload: eventbus.SessionToolEvent{
-			SessionID: "s1",
-			ToolID:    "tool-x",
-			ToolName:  "Tool X",
-		},
+	eventbus.Publish(context.Background(), bus, eventbus.Sessions.Tool, eventbus.SourcePluginService, eventbus.SessionToolEvent{
+		SessionID: "s1",
+		ToolID:    "tool-x",
+		ToolName:  "Tool X",
 	})
 
 	// Wait for tool to be registered (poll instead of sleep for determinism)
@@ -143,14 +139,10 @@ func TestContentPipelineTransformsOutput(t *testing.T) {
 		return ok
 	})
 
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsOutput,
-		Source: eventbus.SourceSessionManager,
-		Payload: eventbus.SessionOutputEvent{
-			SessionID: "s1",
-			Sequence:  1,
-			Data:      []byte("hello\n"),
-		},
+	eventbus.Publish(context.Background(), bus, eventbus.Sessions.Output, eventbus.SourceSessionManager, eventbus.SessionOutputEvent{
+		SessionID: "s1",
+		Sequence:  1,
+		Data:      []byte("hello\n"),
 	})
 
 	select {
@@ -203,14 +195,10 @@ func TestContentPipelineEmitsErrors(t *testing.T) {
 	errSub := bus.Subscribe(eventbus.TopicPipelineError)
 	defer errSub.Close()
 
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsTool,
-		Source: eventbus.SourcePluginService,
-		Payload: eventbus.SessionToolEvent{
-			SessionID: "s2",
-			ToolID:    "tool-err",
-			ToolName:  "Tool Err",
-		},
+	eventbus.Publish(context.Background(), bus, eventbus.Sessions.Tool, eventbus.SourcePluginService, eventbus.SessionToolEvent{
+		SessionID: "s2",
+		ToolID:    "tool-err",
+		ToolName:  "Tool Err",
 	})
 
 	// Wait for tool to be registered (poll instead of sleep for determinism)
@@ -219,14 +207,10 @@ func TestContentPipelineEmitsErrors(t *testing.T) {
 		return ok
 	})
 
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsOutput,
-		Source: eventbus.SourceSessionManager,
-		Payload: eventbus.SessionOutputEvent{
-			SessionID: "s2",
-			Sequence:  1,
-			Data:      []byte("boom"),
-		},
+	eventbus.Publish(context.Background(), bus, eventbus.Sessions.Output, eventbus.SourceSessionManager, eventbus.SessionOutputEvent{
+		SessionID: "s2",
+		Sequence:  1,
+		Data:      []byte("boom"),
 	})
 
 	select {
@@ -264,19 +248,15 @@ func TestContentPipelineHandlesTranscripts(t *testing.T) {
 	cleanedSub := bus.Subscribe(eventbus.TopicPipelineCleaned)
 	defer cleanedSub.Close()
 
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:  eventbus.TopicSpeechTranscriptFinal,
-		Source: eventbus.SourceAudioSTT,
-		Payload: eventbus.SpeechTranscriptEvent{
-			SessionID:  "voice-session",
-			StreamID:   "mic",
-			Sequence:   7,
-			Text:       "turn lights on",
-			Confidence: 0.87,
-			Final:      true,
-			Metadata: map[string]string{
-				"locale": "en-US",
-			},
+	eventbus.Publish(context.Background(), bus, eventbus.Speech.TranscriptFinal, eventbus.SourceAudioSTT, eventbus.SpeechTranscriptEvent{
+		SessionID:  "voice-session",
+		StreamID:   "mic",
+		Sequence:   7,
+		Text:       "turn lights on",
+		Confidence: 0.87,
+		Final:      true,
+		Metadata: map[string]string{
+			"locale": "en-US",
 		},
 	})
 
@@ -340,14 +320,10 @@ func TestBufferOverflowAnnotation(t *testing.T) {
 		largeData[i] = 'x'
 	}
 
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsOutput,
-		Source: eventbus.SourceSessionManager,
-		Payload: eventbus.SessionOutputEvent{
-			SessionID: "overflow-session",
-			Sequence:  1,
-			Data:      largeData,
-		},
+	eventbus.Publish(context.Background(), bus, eventbus.Sessions.Output, eventbus.SourceSessionManager, eventbus.SessionOutputEvent{
+		SessionID: "overflow-session",
+		Sequence:  1,
+		Data:      largeData,
 	})
 
 	// Wait for idle timeout to trigger flush
@@ -389,14 +365,10 @@ func TestToolChangeFlushesBuffer(t *testing.T) {
 	defer cleanedSub.Close()
 
 	// Set initial tool
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsTool,
-		Source: eventbus.SourcePluginService,
-		Payload: eventbus.SessionToolEvent{
-			SessionID: "tool-change-session",
-			ToolID:    "tool-a",
-			ToolName:  "Tool A",
-		},
+	eventbus.Publish(context.Background(), bus, eventbus.Sessions.Tool, eventbus.SourcePluginService, eventbus.SessionToolEvent{
+		SessionID: "tool-change-session",
+		ToolID:    "tool-a",
+		ToolName:  "Tool A",
 	})
 
 	// Wait for tool to be registered (poll instead of sleep for determinism)
@@ -406,15 +378,11 @@ func TestToolChangeFlushesBuffer(t *testing.T) {
 	})
 
 	// Write some output with Sequence and Mode
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsOutput,
-		Source: eventbus.SourceSessionManager,
-		Payload: eventbus.SessionOutputEvent{
-			SessionID: "tool-change-session",
-			Sequence:  42,
-			Mode:      "test-mode",
-			Data:      []byte("output from tool A"),
-		},
+	eventbus.Publish(context.Background(), bus, eventbus.Sessions.Output, eventbus.SourceSessionManager, eventbus.SessionOutputEvent{
+		SessionID: "tool-change-session",
+		Sequence:  42,
+		Mode:      "test-mode",
+		Data:      []byte("output from tool A"),
 	})
 
 	// Wait for output to be buffered (poll instead of sleep for determinism)
@@ -427,14 +395,10 @@ func TestToolChangeFlushesBuffer(t *testing.T) {
 	})
 
 	// Change tool - should trigger flush of buffered content
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsTool,
-		Source: eventbus.SourcePluginService,
-		Payload: eventbus.SessionToolEvent{
-			SessionID: "tool-change-session",
-			ToolID:    "tool-b",
-			ToolName:  "Tool B",
-		},
+	eventbus.Publish(context.Background(), bus, eventbus.Sessions.Tool, eventbus.SourcePluginService, eventbus.SessionToolEvent{
+		SessionID: "tool-change-session",
+		ToolID:    "tool-b",
+		ToolName:  "Tool B",
 	})
 
 	// Should get the flushed content from tool A
@@ -492,14 +456,10 @@ func TestIdleTimeoutAnnotation(t *testing.T) {
 	defer cleanedSub.Close()
 
 	// Set tool
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsTool,
-		Source: eventbus.SourcePluginService,
-		Payload: eventbus.SessionToolEvent{
-			SessionID: "idle-session",
-			ToolID:    "test-tool",
-			ToolName:  "Test Tool",
-		},
+	eventbus.Publish(context.Background(), bus, eventbus.Sessions.Tool, eventbus.SourcePluginService, eventbus.SessionToolEvent{
+		SessionID: "idle-session",
+		ToolID:    "test-tool",
+		ToolName:  "Test Tool",
 	})
 
 	// Wait for tool to be registered (poll instead of sleep for determinism)
@@ -509,14 +469,10 @@ func TestIdleTimeoutAnnotation(t *testing.T) {
 	})
 
 	// Write output
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsOutput,
-		Source: eventbus.SourceSessionManager,
-		Payload: eventbus.SessionOutputEvent{
-			SessionID: "idle-session",
-			Sequence:  1,
-			Data:      []byte("some output"),
-		},
+	eventbus.Publish(context.Background(), bus, eventbus.Sessions.Output, eventbus.SourceSessionManager, eventbus.SessionOutputEvent{
+		SessionID: "idle-session",
+		Sequence:  1,
+		Data:      []byte("some output"),
 	})
 
 	// Wait for idle timeout (DefaultIdleTimeout is 500ms)
