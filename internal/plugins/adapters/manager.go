@@ -929,9 +929,11 @@ func resolveAdapterConfig(options map[string]manifest.AdapterOption, current map
 
 // computePlanFingerprint generates a hash used to detect configuration changes
 // that require adapter restart. The fingerprint includes:
-// - Adapter binding (ID, slot, config)
-// - Manifest runtime fields (slot/entrypoint/options/telemetry/assets)
-// - Endpoint settings (transport, command, args, env; address only for non-process transports)
+// - Adapter binding (ID, config)
+// - Manifest runtime fields (slot/entrypoint including shutdownTimeout/options/telemetry/assets)
+// - Endpoint settings (transport, command, args, env, TLS; address only for non-process transports)
+// Intentionally excluded: Binding.Slot (slot comes from manifest), Binding.Fingerprint,
+// Binding.Runtime (output fields), endpoint AdapterID/timestamps, AdapterOption.Required (validation-only).
 // Note: Using parsed manifest removes whitespace sensitivity; adding new runtime-relevant
 // fields should extend this function accordingly.
 func computePlanFingerprint(binding Binding, manifest *manifest.Manifest, manifestRaw string, endpoint configstore.AdapterEndpoint) string {
@@ -959,6 +961,7 @@ func computePlanFingerprint(binding Binding, manifest *manifest.Manifest, manife
 		write(strings.TrimSpace(spec.Entrypoint.ListenEnv))
 		write(strings.TrimSpace(spec.Entrypoint.WorkingDir))
 		write(strings.TrimSpace(spec.Entrypoint.ReadyTimeout))
+		write(strings.TrimSpace(spec.Entrypoint.ShutdownTimeout))
 		if len(spec.Entrypoint.Args) == 0 {
 			write("")
 		} else {
