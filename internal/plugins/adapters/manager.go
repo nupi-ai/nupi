@@ -412,6 +412,8 @@ func (m *Manager) startAdapter(ctx context.Context, plan bindingPlan) (*adapterI
 		return nil, fmt.Errorf("adapter ID missing in plan")
 	}
 
+	// NOTE: env contains secrets (API tokens from endpoint.Env, adapter config).
+	// Never log this slice or pass it to fmt.Sprint/String methods.
 	homeEnv := os.Environ()
 	env := append([]string(nil), homeEnv...)
 	if err := checkCtx(); err != nil {
