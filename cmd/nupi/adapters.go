@@ -1,0 +1,1366 @@
+package main
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"net/http"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"text/tabwriter"
+	"time"
+
+	apiv1 "github.com/nupi-ai/nupi/internal/api/grpc/v1"
+	apihttp "github.com/nupi-ai/nupi/internal/api/http"
+	"github.com/nupi-ai/nupi/internal/client"
+	"github.com/nupi-ai/nupi/internal/config"
+	"github.com/nupi-ai/nupi/internal/grpcclient"
+	manifestpkg "github.com/nupi-ai/nupi/internal/plugins/manifest"
+	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
+)
+
+func newAdaptersCommand() *cobra.Command {
+	adaptersCmd := &cobra.Command{
+		Use:           "adapters",
+		Short:         "Inspect and control adapter bindings",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+	}
+	adaptersCmd.PersistentFlags().Bool("grpc", false, "Use gRPC transport for adapter operations")
+
+	adaptersRegisterCmd := &cobra.Command{
+		Use:           "register",
+		Short:         "Register or update an adapter",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE:          adaptersRegister,
+	}
+	adaptersRegisterCmd.Example = `  # Register gRPC-based STT adapter
+  nupi adapters register \
+    --id nupi-whisper-local-stt \
+    --type stt \
+    --name "Nupi Whisper Local STT" \
+    --version 0.1.0 \
+    --endpoint-transport grpc \
+    --endpoint-address 127.0.0.1:50051
+
+  # Register process-based AI adapter
+  nupi adapters register \
+    --id custom-ai \
+    --type ai \
+    --endpoint-transport process \
+    --endpoint-command /path/to/binary \
+    --endpoint-arg "--config" \
+    --endpoint-arg "/etc/adapter.json"`
+	adaptersRegisterCmd.Flags().String("id", "", "Adapter identifier (slug)")
+	adaptersRegisterCmd.Flags().String("type", "", "Adapter type (stt/tts/ai/vad/...)")
+	adaptersRegisterCmd.Flags().String("name", "", "Human readable adapter name")
+	adaptersRegisterCmd.Flags().String("source", "external", "Adapter source/provider")
+	adaptersRegisterCmd.Flags().String("version", "", "Adapter version")
+	adaptersRegisterCmd.Flags().String("manifest", "", "Optional manifest JSON payload")
+	adaptersRegisterCmd.Flags().String("endpoint-transport", "grpc", "Adapter endpoint transport (process|grpc|http)")
+	adaptersRegisterCmd.Flags().String("endpoint-address", "", "Adapter endpoint address (for grpc/http transports)")
+	adaptersRegisterCmd.Flags().String("endpoint-command", "", "Command to launch adapter (process transport)")
+	adaptersRegisterCmd.Flags().StringArray("endpoint-arg", nil, "Argument for adapter command (repeatable)")
+	adaptersRegisterCmd.Flags().StringArray("endpoint-env", nil, "Environment variable KEY=VALUE for adapter command (repeatable)")
+
+	adaptersInstallLocalCmd := &cobra.Command{
+		Use:           "install-local",
+		Short:         "Register an adapter from local manifest and binary",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE:          adaptersInstallLocal,
+	}
+	adaptersInstallLocalCmd.Example = `  # Install a local Whisper STT adapter
+	nupi adapters install-local \
+	  --manifest-file ./adapter-nupi-whisper-local-stt/plugin.yaml \
+	  --binary $(pwd)/adapter-nupi-whisper-local-stt/dist/adapter-nupi-whisper-local-stt \
+	  --endpoint-address 127.0.0.1:50051 \
+	  --slot stt`
+	adaptersInstallLocalCmd.Flags().String("manifest-file", "", "Path to adapter manifest (YAML or JSON)")
+	adaptersInstallLocalCmd.Flags().String("id", "", "Override adapter identifier (defaults to manifest metadata.slug)")
+	adaptersInstallLocalCmd.Flags().String("binary", "", "Path to adapter executable (overrides manifest entrypoint.command)")
+	adaptersInstallLocalCmd.Flags().Bool("copy-binary", false, "Copy adapter binary into the instance plugin directory")
+	adaptersInstallLocalCmd.Flags().Bool("build", false, "Build the adapter from sources before registration")
+	adaptersInstallLocalCmd.Flags().String("adapter-dir", "", "Adapter source directory (required with --build)")
+	adaptersInstallLocalCmd.Flags().String("endpoint-address", "", "Address for gRPC/HTTP transport")
+	adaptersInstallLocalCmd.Flags().StringArray("endpoint-arg", nil, "Additional command argument (repeatable)")
+	adaptersInstallLocalCmd.Flags().StringArray("endpoint-env", nil, "Environment variable KEY=VALUE passed to the adapter (repeatable)")
+	adaptersInstallLocalCmd.Flags().String("slot", "", "Optional slot to bind after registration (e.g. stt)")
+	adaptersInstallLocalCmd.Flags().String("config", "", "Optional JSON configuration payload for slot binding")
+
+	adaptersLogsCmd := &cobra.Command{
+		Use:           "logs",
+		Short:         "Stream adapter logs and transcripts",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE:          adaptersLogs,
+	}
+	adaptersLogsCmd.Long = `Stream real-time adapter logs and speech transcripts.
+
+Filters:
+  --slot=SLOT       Filter logs by slot (e.g. stt)
+  --adapter=ID      Filter logs by adapter identifier
+
+Notes:
+  - When both --slot and --adapter are provided, transcript entries are omitted
+    because transcripts are not yet mapped to specific adapters.
+  - Use --json to consume newline-delimited JSON for tooling and pipelines.
+
+Examples:
+  nupi adapters logs
+  nupi adapters logs --slot=stt
+  nupi adapters logs --adapter=adapter.stt.mock
+  nupi adapters logs --json | jq .
+`
+	adaptersLogsCmd.Flags().String("slot", "", "Filter logs by slot (e.g. stt)")
+	adaptersLogsCmd.Flags().String("adapter", "", "Filter logs by adapter identifier")
+
+	adaptersListCmd := &cobra.Command{
+		Use:           "list",
+		Short:         "Show adapter slots, bindings and runtime status (see also: nupi plugins list)",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE:          adaptersList,
+	}
+
+	adaptersBindCmd := &cobra.Command{
+		Use:           "bind <slot> <adapter>",
+		Short:         "Bind an adapter to a slot (optionally with config) and start it",
+		Args:          cobra.ExactArgs(2),
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE:          adaptersBind,
+	}
+	adaptersBindCmd.Flags().String("config", "", "JSON configuration payload sent to the adapter binding")
+
+	adaptersStartCmd := &cobra.Command{
+		Use:           "start <slot>",
+		Short:         "Start the adapter process for the given slot",
+		Args:          cobra.ExactArgs(1),
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE:          adaptersStart,
+	}
+
+	adaptersStopCmd := &cobra.Command{
+		Use:           "stop <slot>",
+		Short:         "Stop the adapter process for the given slot (binding is kept)",
+		Args:          cobra.ExactArgs(1),
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE:          adaptersStop,
+	}
+
+	adaptersCmd.AddCommand(adaptersRegisterCmd, adaptersListCmd, adaptersBindCmd, adaptersStartCmd, adaptersStopCmd, adaptersLogsCmd)
+	adaptersCmd.AddCommand(adaptersInstallLocalCmd)
+	return adaptersCmd
+}
+
+// --- Adapter command handlers ---
+
+func adaptersList(cmd *cobra.Command, _ []string) error {
+	out := newOutputFormatter(cmd)
+
+	if !out.jsonMode {
+		fmt.Fprintln(os.Stderr, "Hint: use 'nupi plugins list' for a unified view of all plugins")
+	}
+
+	useGRPC, _ := cmd.Flags().GetBool("grpc")
+	if useGRPC {
+		return adaptersListGRPC(out)
+	}
+	return adaptersListHTTP(out)
+}
+
+func adaptersRegister(cmd *cobra.Command, _ []string) error {
+	out := newOutputFormatter(cmd)
+
+	adapterID, _ := cmd.Flags().GetString("id")
+	adapterID = strings.TrimSpace(adapterID)
+	if adapterID == "" {
+		return out.Error("--id is required", errors.New("missing adapter id"))
+	}
+
+	adapterType, _ := cmd.Flags().GetString("type")
+	adapterType = strings.TrimSpace(adapterType)
+	if adapterType != "" {
+		if _, ok := allowedAdapterSlots[adapterType]; !ok {
+			return out.Error(fmt.Sprintf("invalid type %q (expected: stt, tts, ai, vad, tunnel, tool-handler, pipeline-cleaner)", adapterType), errors.New("invalid adapter type"))
+		}
+	}
+
+	name, _ := cmd.Flags().GetString("name")
+	name = strings.TrimSpace(name)
+	source, _ := cmd.Flags().GetString("source")
+	source = strings.TrimSpace(source)
+	version, _ := cmd.Flags().GetString("version")
+	version = strings.TrimSpace(version)
+	manifestRaw, _ := cmd.Flags().GetString("manifest")
+
+	manifest, err := parseManifest(manifestRaw)
+	if err != nil {
+		return out.Error("Manifest must be valid JSON or YAML", err)
+	}
+
+	transportOpt, _ := cmd.Flags().GetString("endpoint-transport")
+	transportOpt = strings.TrimSpace(transportOpt)
+	addressOpt, _ := cmd.Flags().GetString("endpoint-address")
+	addressOpt = strings.TrimSpace(addressOpt)
+	commandOpt, _ := cmd.Flags().GetString("endpoint-command")
+	commandOpt = strings.TrimSpace(commandOpt)
+	argsOpt, _ := cmd.Flags().GetStringArray("endpoint-arg")
+	envOpt, _ := cmd.Flags().GetStringArray("endpoint-env")
+
+	endpointEnv, err := parseKeyValuePairs(envOpt)
+	if err != nil {
+		return out.Error("Invalid --endpoint-env value", err)
+	}
+
+	var endpoint *apihttp.AdapterEndpointConfig
+	if transportOpt != "" || addressOpt != "" || commandOpt != "" || len(argsOpt) > 0 || len(endpointEnv) > 0 {
+		if transportOpt == "" {
+			return out.Error("--endpoint-transport required when endpoint flags are specified", errors.New("missing transport"))
+		}
+		if _, ok := allowedEndpointTransports[transportOpt]; !ok {
+			return out.Error(fmt.Sprintf("invalid transport: %s (expected: grpc, http, process)", transportOpt), errors.New("invalid transport"))
+		}
+		switch transportOpt {
+		case "grpc":
+			if addressOpt == "" {
+				return out.Error("--endpoint-address required for grpc transport", errors.New("missing address"))
+			}
+		case "http":
+			if addressOpt == "" {
+				return out.Error("--endpoint-address required for http transport", errors.New("missing address"))
+			}
+			if commandOpt != "" || len(argsOpt) > 0 {
+				return out.Error("--endpoint-command/--endpoint-arg not allowed for http transport", errors.New("conflicting endpoint flags"))
+			}
+		case "process":
+			if commandOpt == "" {
+				return out.Error("--endpoint-command required for process transport", errors.New("missing command"))
+			}
+			if addressOpt != "" {
+				return out.Error("--endpoint-address not used for process transport", errors.New("unexpected address"))
+			}
+		}
+
+		endpoint = &apihttp.AdapterEndpointConfig{
+			Transport: transportOpt,
+			Address:   addressOpt,
+			Command:   commandOpt,
+			Args:      append([]string(nil), argsOpt...),
+			Env:       endpointEnv,
+		}
+	}
+
+	useGRPC, _ := cmd.Flags().GetBool("grpc")
+	if useGRPC {
+		return out.Error("Adapter registration is only available over HTTP. Use without --grpc flag", errors.New("register RPC not in proto"))
+	}
+
+	payload := apihttp.AdapterRegistrationRequest{
+		AdapterID: adapterID,
+		Source:    source,
+		Version:   version,
+		Type:      adapterType,
+		Name:      name,
+		Manifest:  manifest,
+		Endpoint:  endpoint,
+	}
+
+	adapter, err := adaptersRegisterHTTP(out, payload)
+	if err != nil {
+		return err
+	}
+
+	if out.jsonMode {
+		return out.Print(apihttp.AdapterRegistrationResult{Adapter: adapter})
+	}
+
+	fmt.Printf("Registered adapter %s", adapter.ID)
+	if adapter.Type != "" {
+		fmt.Printf(" (%s)", adapter.Type)
+	}
+	fmt.Println()
+	return nil
+}
+
+func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
+	out := newOutputFormatter(cmd)
+
+	manifestPath, _ := cmd.Flags().GetString("manifest-file")
+	manifestPath = strings.TrimSpace(manifestPath)
+	if manifestPath == "" {
+		return out.Error("--manifest-file is required", errors.New("missing manifest file"))
+	}
+	absManifestPath, err := filepath.Abs(config.ExpandPath(manifestPath))
+	if err != nil {
+		return out.Error("Failed to resolve manifest path", err)
+	}
+	manifestDir := filepath.Dir(absManifestPath)
+
+	manifest, manifestRaw, err := loadAdapterManifestFile(manifestPath)
+	if err != nil {
+		return out.Error("Failed to read manifest", err)
+	}
+
+	manifestJSON, err := parseManifest(manifestRaw)
+	if err != nil {
+		return out.Error("Failed to parse manifest", err)
+	}
+
+	adapterIDFlag, _ := cmd.Flags().GetString("id")
+	adapterID := strings.TrimSpace(adapterIDFlag)
+	if adapterID == "" {
+		adapterID = formatAdapterID(manifest.Metadata.Catalog, manifest.Metadata.Slug)
+	}
+	if adapterID == "" {
+		return out.Error("Adapter identifier required", errors.New("manifest metadata.slug missing; use --id"))
+	}
+
+	slotType := ""
+	if manifest.Adapter != nil {
+		slotType = strings.TrimSpace(manifest.Adapter.Slot)
+	}
+	if slotType == "" {
+		return out.Error("Adapter slot missing in manifest", errors.New("manifest spec.slot empty"))
+	}
+	if _, ok := allowedAdapterSlots[slotType]; !ok {
+		return out.Error(fmt.Sprintf("unsupported adapter slot %q", slotType), errors.New("invalid adapter slot"))
+	}
+	adapterName := strings.TrimSpace(manifest.Metadata.Name)
+	copyBinary, _ := cmd.Flags().GetBool("copy-binary")
+	buildFlag, _ := cmd.Flags().GetBool("build")
+	sourceDirFlag, _ := cmd.Flags().GetString("adapter-dir")
+	sourceDir := strings.TrimSpace(sourceDirFlag)
+	if sourceDir != "" {
+		sourceDir = config.ExpandPath(sourceDir)
+		absDir, err := filepath.Abs(sourceDir)
+		if err != nil {
+			return out.Error("Failed to resolve adapter directory", err)
+		}
+		sourceDir = absDir
+	}
+
+	binaryFlag, _ := cmd.Flags().GetString("binary")
+	binaryFlag = strings.TrimSpace(binaryFlag)
+	if binaryFlag != "" {
+		binaryFlag = config.ExpandPath(binaryFlag)
+		if !filepath.IsAbs(binaryFlag) {
+			baseDir := sourceDir
+			if baseDir == "" {
+				baseDir = manifestDir
+			}
+			if baseDir != "" {
+				binaryFlag = filepath.Join(baseDir, binaryFlag)
+			}
+		}
+		if absBinary, err := filepath.Abs(binaryFlag); err == nil {
+			binaryFlag = absBinary
+		}
+	}
+
+	if buildFlag && binaryFlag != "" {
+		return out.Error("Cannot combine --build with --binary", errors.New("conflicting binary options"))
+	}
+	if buildFlag && sourceDir == "" {
+		return out.Error("--adapter-dir is required when --build is set", errors.New("missing adapter directory"))
+	}
+
+	// Use manifest slug when available so locally-installed adapters land in the same
+	// directory structure as runtime-managed process transports. This keeps assets/config in
+	// sync regardless of install path.
+	slugSource := strings.TrimSpace(manifest.Metadata.Slug)
+	if slugSource == "" {
+		slugSource = adapterID
+	}
+	slug := sanitizeAdapterSlug(slugSource)
+
+	var command string
+	if buildFlag {
+		outputDir := filepath.Join(sourceDir, "dist")
+		if err := os.MkdirAll(outputDir, 0o755); err != nil {
+			return out.Error("Failed to create dist directory", err)
+		}
+		outputPath := filepath.Join(outputDir, slug)
+		buildCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		buildCmd := exec.CommandContext(buildCtx, "go", "build", "-o", outputPath, "./cmd/adapter")
+		buildCmd.Dir = sourceDir
+		buildCmd.Env = os.Environ()
+		if output, err := buildCmd.CombinedOutput(); err != nil {
+			buildErr := err
+			if trimmed := strings.TrimSpace(string(output)); trimmed != "" {
+				buildErr = fmt.Errorf("%w: %s", err, trimmed)
+			}
+			return out.Error("Failed to build adapter", buildErr)
+		}
+		command = outputPath
+	} else if binaryFlag != "" {
+		if _, err := os.Stat(binaryFlag); err != nil {
+			return out.Error(fmt.Sprintf("adapter binary not found: %s", binaryFlag), err)
+		}
+		command = binaryFlag
+	} else {
+		if manifest.Adapter == nil {
+			return out.Error("Manifest missing adapter spec", errors.New("adapter spec absent"))
+		}
+		command = strings.TrimSpace(manifest.Adapter.Entrypoint.Command)
+		if command != "" {
+			command = config.ExpandPath(command)
+			if !filepath.IsAbs(command) && strings.Contains(command, string(os.PathSeparator)) {
+				baseDir := sourceDir
+				if baseDir == "" {
+					baseDir = manifestDir
+				}
+				if baseDir != "" {
+					command = filepath.Join(baseDir, command)
+				}
+			}
+		}
+	}
+
+	if command == "" {
+		return out.Error("Manifest missing entrypoint command", errors.New("spec.entrypoint.command empty"))
+	}
+
+	args := []string{}
+	if manifest.Adapter != nil {
+		args = append(args, manifest.Adapter.Entrypoint.Args...)
+	}
+	extraArgs, _ := cmd.Flags().GetStringArray("endpoint-arg")
+	if len(extraArgs) > 0 {
+		args = append(args, extraArgs...)
+	}
+
+	endpointEnvValues, _ := cmd.Flags().GetStringArray("endpoint-env")
+	endpointEnv, err := parseKeyValuePairs(endpointEnvValues)
+	if err != nil {
+		return out.Error("Invalid --endpoint-env value", err)
+	}
+
+	transport := ""
+	if manifest.Adapter != nil {
+		transport = strings.TrimSpace(manifest.Adapter.Entrypoint.Transport)
+	}
+	if transport == "" {
+		transport = "process"
+	}
+	if _, ok := allowedEndpointTransports[transport]; !ok {
+		return out.Error(fmt.Sprintf("manifest transport %q unsupported", transport), errors.New("invalid manifest transport"))
+	}
+
+	addressFlag, _ := cmd.Flags().GetString("endpoint-address")
+	address := strings.TrimSpace(addressFlag)
+	switch transport {
+	case "grpc", "http":
+		if address == "" {
+			return out.Error(fmt.Sprintf("--endpoint-address required for %s transport", transport), errors.New("missing endpoint address"))
+		}
+	case "process":
+		if command == "" {
+			return out.Error("--binary or manifest entrypoint.command required for process transport", errors.New("missing command"))
+		}
+		if address != "" {
+			return out.Error("--endpoint-address not used for process transport", errors.New("unexpected address"))
+		}
+	}
+
+	if copyBinary {
+		if command == "" {
+			return out.Error("--binary or --build required when --copy-binary is set", errors.New("missing adapter binary"))
+		}
+		srcPath := command
+		if !filepath.IsAbs(srcPath) {
+			absSrc, err := filepath.Abs(srcPath)
+			if err != nil {
+				return out.Error("Failed to resolve adapter binary", err)
+			}
+			srcPath = absSrc
+		}
+		paths, err := config.EnsureInstanceDirs("")
+		if err != nil {
+			return out.Error("Failed to prepare instance directories", err)
+		}
+		adapterHome := filepath.Join(paths.Home, "plugins", slug)
+		binDir := filepath.Join(adapterHome, "bin")
+		if err := os.MkdirAll(binDir, 0o755); err != nil {
+			return out.Error("Failed to create adapter bin directory", err)
+		}
+		destName := filepath.Base(srcPath)
+		if destName == "" {
+			destName = slug
+		}
+		destPath := filepath.Join(binDir, destName)
+		if rel, err := filepath.Rel(adapterHome, destPath); err != nil || strings.HasPrefix(rel, "..") || strings.HasPrefix(filepath.ToSlash(rel), "../") {
+			return out.Error("Resolved destination escapes adapter directory", errors.New("invalid destination path"))
+		}
+		if err := copyFile(srcPath, destPath, 0o755); err != nil {
+			return out.Error("Failed to copy adapter binary", err)
+		}
+		command = destPath
+	}
+
+	regPayload := apihttp.AdapterRegistrationRequest{
+		AdapterID: adapterID,
+		Source:    "local",
+		Type:      slotType,
+		Name:      adapterName,
+		Manifest:  manifestJSON,
+	}
+
+	regPayload.Endpoint = &apihttp.AdapterEndpointConfig{
+		Transport: transport,
+		Address:   address,
+		Command:   command,
+		Args:      args,
+		Env:       endpointEnv,
+	}
+
+	adapter, err := adaptersRegisterHTTP(out, regPayload)
+	if err != nil {
+		return err
+	}
+
+	if out.jsonMode {
+		if err := out.Print(apihttp.AdapterRegistrationResult{Adapter: adapter}); err != nil {
+			return err
+		}
+	} else {
+		fmt.Printf("Installed local adapter %s (%s)\n", adapter.Name, adapter.ID)
+	}
+
+	slot, _ := cmd.Flags().GetString("slot")
+	slot = strings.TrimSpace(slot)
+	if slot == "" {
+		return nil
+	}
+
+	configRaw, _ := cmd.Flags().GetString("config")
+	configRaw = strings.TrimSpace(configRaw)
+	var bindConfig json.RawMessage
+	if configRaw != "" {
+		if !json.Valid([]byte(configRaw)) {
+			return out.Error("Config must be valid JSON", errors.New("invalid config payload"))
+		}
+		bindConfig = json.RawMessage(configRaw)
+	}
+
+	if err := adaptersBindHTTP(out, slot, adapterID, bindConfig); err != nil {
+		return err
+	}
+
+	if !out.jsonMode {
+		fmt.Printf("Bound adapter %s to %s\n", adapterID, slot)
+	}
+	return nil
+}
+
+func adaptersLogs(cmd *cobra.Command, _ []string) error {
+	out := newOutputFormatter(cmd)
+
+	useGRPC, _ := cmd.Flags().GetBool("grpc")
+	if useGRPC {
+		return out.Error("Adapter logs are only available over HTTP. Use without --grpc flag", errors.New("logs RPC not in proto"))
+	}
+
+	slot, _ := cmd.Flags().GetString("slot")
+	adapter, _ := cmd.Flags().GetString("adapter")
+	slot = strings.TrimSpace(slot)
+	adapter = strings.TrimSpace(adapter)
+
+	c, err := client.New()
+	if err != nil {
+		return out.Error("Failed to connect to daemon", err)
+	}
+	defer c.Close()
+
+	params := url.Values{}
+	if slot != "" {
+		params.Set("slot", slot)
+	}
+	if adapter != "" {
+		params.Set("adapter", adapter)
+	}
+
+	endpoint := c.BaseURL() + "/adapters/logs"
+	if len(params) > 0 {
+		endpoint += "?" + params.Encode()
+	}
+
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return out.Error("Failed to create request", err)
+	}
+
+	resp, err := doStreamingRequest(c, req)
+	if err != nil {
+		return out.Error("Failed to fetch adapter logs", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return out.Error("Failed to fetch adapter logs", fmt.Errorf("%s", readErrorMessage(resp)))
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	buf := make([]byte, 0, adapterLogsScannerInitialBuf)
+	scanner.Buffer(buf, adapterLogsScannerMaxBuf)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if out.jsonMode {
+			fmt.Println(line)
+			continue
+		}
+
+		var entry apihttp.AdapterLogStreamEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			fmt.Fprintf(os.Stderr, "decode log entry failed: %v\n", err)
+			fmt.Println(line)
+			continue
+		}
+		printAdapterLogEntry(entry)
+	}
+
+	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
+		if errors.Is(err, bufio.ErrTooLong) {
+			return out.Error("Adapter log entry exceeded 1MB limit", err)
+		}
+		return out.Error("Adapter log stream ended with error", err)
+	}
+
+	return nil
+}
+
+func printAdapterLogEntry(entry apihttp.AdapterLogStreamEntry) {
+	ts := entry.Timestamp
+	if ts.IsZero() {
+		ts = time.Now().UTC()
+	}
+	timestamp := ts.Format(time.RFC3339)
+
+	switch entry.Type {
+	case "log":
+		level := strings.ToUpper(strings.TrimSpace(entry.Level))
+		if level == "" {
+			level = "INFO"
+		}
+		slot := strings.TrimSpace(entry.Slot)
+		entryAdapterID := strings.TrimSpace(entry.AdapterID)
+		if slot != "" {
+			if entryAdapterID != "" {
+				fmt.Printf("%s [%s] %s %s: %s\n", timestamp, slot, entryAdapterID, level, entry.Message)
+			} else {
+				fmt.Printf("%s [%s] %s: %s\n", timestamp, slot, level, entry.Message)
+			}
+		} else {
+			if entryAdapterID != "" {
+				fmt.Printf("%s %s %s: %s\n", timestamp, entryAdapterID, level, entry.Message)
+			} else {
+				fmt.Printf("%s %s: %s\n", timestamp, level, entry.Message)
+			}
+		}
+	case "transcript":
+		stage := "partial"
+		if entry.Final {
+			stage = "final"
+		}
+		fmt.Printf("%s [transcript %s] session=%s stream=%s conf=%.2f %s\n",
+			timestamp, stage, entry.SessionID, entry.StreamID, entry.Confidence, entry.Text)
+	default:
+		fmt.Printf("%s [unknown type=%s] %s\n", timestamp, entry.Type, entry.Message)
+	}
+}
+
+func adaptersBind(cmd *cobra.Command, args []string) error {
+	out := newOutputFormatter(cmd)
+
+	slot := strings.TrimSpace(args[0])
+	adapter := strings.TrimSpace(args[1])
+	if slot == "" || adapter == "" {
+		return out.Error("Slot and adapter must be provided", errors.New("invalid arguments"))
+	}
+
+	cfg, err := cmd.Flags().GetString("config")
+	if err != nil {
+		return out.Error("Failed to read --config flag", err)
+	}
+
+	var raw json.RawMessage
+	if trimmed := strings.TrimSpace(cfg); trimmed != "" {
+		if !json.Valid([]byte(trimmed)) {
+			return out.Error("Config must be valid JSON", fmt.Errorf("invalid config payload"))
+		}
+		raw = json.RawMessage(trimmed)
+	}
+
+	useGRPC, _ := cmd.Flags().GetBool("grpc")
+	if useGRPC {
+		return adaptersBindGRPC(out, slot, adapter, string(raw))
+	}
+	return adaptersBindHTTP(out, slot, adapter, raw)
+}
+
+func adaptersStart(cmd *cobra.Command, args []string) error {
+	out := newOutputFormatter(cmd)
+
+	slot := strings.TrimSpace(args[0])
+	if slot == "" {
+		return out.Error("Slot must be provided", errors.New("invalid arguments"))
+	}
+
+	useGRPC, _ := cmd.Flags().GetBool("grpc")
+	if useGRPC {
+		return adaptersStartGRPC(out, slot)
+	}
+	return adaptersStartHTTP(out, slot)
+}
+
+func adaptersStop(cmd *cobra.Command, args []string) error {
+	out := newOutputFormatter(cmd)
+
+	slot := strings.TrimSpace(args[0])
+	if slot == "" {
+		return out.Error("Slot must be provided", errors.New("invalid arguments"))
+	}
+
+	useGRPC, _ := cmd.Flags().GetBool("grpc")
+	if useGRPC {
+		return adaptersStopGRPC(out, slot)
+	}
+	return adaptersStopHTTP(out, slot)
+}
+
+// --- HTTP transport handlers ---
+
+func adaptersListHTTP(out *OutputFormatter) error {
+	c, err := client.New()
+	if err != nil {
+		return out.Error("Failed to initialise client", err)
+	}
+	defer c.Close()
+
+	overview, err := fetchAdaptersOverview(c)
+	if err != nil {
+		return out.Error("Failed to fetch adapters overview", err)
+	}
+
+	if out.jsonMode {
+		return out.Print(overview)
+	}
+
+	if len(overview.Adapters) == 0 {
+		fmt.Println("No adapter slots found.")
+		return nil
+	}
+
+	printAdapterTable(overview.Adapters)
+	printAdapterRuntimeMessages(overview.Adapters)
+	return nil
+}
+
+func adaptersBindHTTP(out *OutputFormatter, slot, adapter string, raw json.RawMessage) error {
+	c, err := client.New()
+	if err != nil {
+		return out.Error("Failed to initialise client", err)
+	}
+	defer c.Close()
+
+	entry, err := postAdapterAction(c, "/adapters/bind", adapterActionRequestPayload{
+		Slot:      slot,
+		AdapterID: adapter,
+		Config:    raw,
+	})
+	if err != nil {
+		return out.Error("Failed to bind adapter", err)
+	}
+
+	if out.jsonMode {
+		return out.Print(apihttp.AdapterActionResult{Adapter: entry})
+	}
+
+	printAdapterSummary("Bound", entry)
+	return nil
+}
+
+func adaptersStartHTTP(out *OutputFormatter, slot string) error {
+	c, err := client.New()
+	if err != nil {
+		return out.Error("Failed to initialise client", err)
+	}
+	defer c.Close()
+
+	entry, err := postAdapterAction(c, "/adapters/start", adapterActionRequestPayload{Slot: slot})
+	if err != nil {
+		return out.Error("Failed to start adapter", err)
+	}
+
+	if out.jsonMode {
+		return out.Print(apihttp.AdapterActionResult{Adapter: entry})
+	}
+
+	printAdapterSummary("Started", entry)
+	return nil
+}
+
+func adaptersStopHTTP(out *OutputFormatter, slot string) error {
+	c, err := client.New()
+	if err != nil {
+		return out.Error("Failed to initialise client", err)
+	}
+	defer c.Close()
+
+	entry, err := postAdapterAction(c, "/adapters/stop", adapterActionRequestPayload{Slot: slot})
+	if err != nil {
+		return out.Error("Failed to stop adapter", err)
+	}
+
+	if out.jsonMode {
+		return out.Print(apihttp.AdapterActionResult{Adapter: entry})
+	}
+
+	printAdapterSummary("Stopped", entry)
+	return nil
+}
+
+func adaptersRegisterHTTP(out *OutputFormatter, payload apihttp.AdapterRegistrationRequest) (apihttp.AdapterDescriptor, error) {
+	c, err := client.New()
+	if err != nil {
+		return apihttp.AdapterDescriptor{}, out.Error("Failed to initialise client", err)
+	}
+	defer c.Close()
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return apihttp.AdapterDescriptor{}, out.Error("Failed to encode registration payload", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, c.BaseURL()+"/adapters/register", bytes.NewReader(body))
+	if err != nil {
+		return apihttp.AdapterDescriptor{}, out.Error("Failed to create request", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := doRequest(c, req)
+	if err != nil {
+		return apihttp.AdapterDescriptor{}, out.Error("Failed to register adapter", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return apihttp.AdapterDescriptor{}, out.Error("Adapter registration failed", errors.New(readErrorMessage(resp)))
+	}
+
+	var result apihttp.AdapterRegistrationResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return apihttp.AdapterDescriptor{}, out.Error("Invalid response from daemon", err)
+	}
+	return result.Adapter, nil
+}
+
+// --- gRPC transport handlers ---
+
+func adaptersListGRPC(out *OutputFormatter) error {
+	gc, err := grpcclient.New()
+	if err != nil {
+		return out.Error("Failed to connect to daemon via gRPC", err)
+	}
+	defer gc.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resp, err := gc.AdaptersOverview(ctx)
+	if err != nil {
+		return out.Error("Failed to fetch adapters overview via gRPC", err)
+	}
+
+	overview := adaptersOverviewFromProto(resp)
+	if out.jsonMode {
+		return out.Print(overview)
+	}
+
+	if len(overview.Adapters) == 0 {
+		fmt.Println("No adapter slots found.")
+		return nil
+	}
+
+	printAdapterTable(overview.Adapters)
+	printAdapterRuntimeMessages(overview.Adapters)
+	return nil
+}
+
+func adaptersBindGRPC(out *OutputFormatter, slot, adapter, cfg string) error {
+	gc, err := grpcclient.New()
+	if err != nil {
+		return out.Error("Failed to connect to daemon via gRPC", err)
+	}
+	defer gc.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req := &apiv1.BindAdapterRequest{
+		Slot:       slot,
+		AdapterId:  adapter,
+		ConfigJson: strings.TrimSpace(cfg),
+	}
+
+	resp, err := gc.BindAdapter(ctx, req)
+	if err != nil {
+		return out.Error("Failed to bind adapter via gRPC", err)
+	}
+
+	entry := adapterEntryFromProto(resp.GetAdapter())
+	if out.jsonMode {
+		return out.Print(apihttp.AdapterActionResult{Adapter: entry})
+	}
+
+	printAdapterSummary("Bound", entry)
+	return nil
+}
+
+func adaptersStartGRPC(out *OutputFormatter, slot string) error {
+	gc, err := grpcclient.New()
+	if err != nil {
+		return out.Error("Failed to connect to daemon via gRPC", err)
+	}
+	defer gc.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resp, err := gc.StartAdapter(ctx, slot)
+	if err != nil {
+		return out.Error("Failed to start adapter via gRPC", err)
+	}
+
+	entry := adapterEntryFromProto(resp.GetAdapter())
+	if out.jsonMode {
+		return out.Print(apihttp.AdapterActionResult{Adapter: entry})
+	}
+
+	printAdapterSummary("Started", entry)
+	return nil
+}
+
+func adaptersStopGRPC(out *OutputFormatter, slot string) error {
+	gc, err := grpcclient.New()
+	if err != nil {
+		return out.Error("Failed to connect to daemon via gRPC", err)
+	}
+	defer gc.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resp, err := gc.StopAdapter(ctx, slot)
+	if err != nil {
+		return out.Error("Failed to stop adapter via gRPC", err)
+	}
+
+	entry := adapterEntryFromProto(resp.GetAdapter())
+	if out.jsonMode {
+		return out.Print(apihttp.AdapterActionResult{Adapter: entry})
+	}
+
+	printAdapterSummary("Stopped", entry)
+	return nil
+}
+
+// --- Proto conversions ---
+
+func adaptersOverviewFromProto(resp *apiv1.AdaptersOverviewResponse) apihttp.AdaptersOverview {
+	if resp == nil {
+		return apihttp.AdaptersOverview{}
+	}
+	out := apihttp.AdaptersOverview{
+		Adapters: make([]apihttp.AdapterEntry, 0, len(resp.GetAdapters())),
+	}
+	for _, entry := range resp.GetAdapters() {
+		out.Adapters = append(out.Adapters, adapterEntryFromProto(entry))
+	}
+	return out
+}
+
+func adapterEntryFromProto(entry *apiv1.AdapterEntry) apihttp.AdapterEntry {
+	if entry == nil {
+		return apihttp.AdapterEntry{}
+	}
+	out := apihttp.AdapterEntry{
+		Slot:      entry.GetSlot(),
+		Status:    entry.GetStatus(),
+		Config:    entry.GetConfigJson(),
+		UpdatedAt: entry.GetUpdatedAt(),
+	}
+	if entry.AdapterId != nil {
+		id := strings.TrimSpace(entry.GetAdapterId())
+		if id != "" {
+			out.AdapterID = &id
+		}
+	}
+	if rt := entry.GetRuntime(); rt != nil {
+		runtime := apihttp.AdapterRuntime{
+			AdapterID: rt.GetAdapterId(),
+			Health:    rt.GetHealth(),
+			Message:   rt.GetMessage(),
+			Extra:     rt.GetExtra(),
+		}
+		if updated := rt.GetUpdatedAt(); updated != nil {
+			runtime.UpdatedAt = updated.AsTime().UTC().Format(time.RFC3339)
+		}
+		if ts := rt.GetStartedAt(); ts != nil {
+			started := ts.AsTime().UTC().Format(time.RFC3339)
+			runtime.StartedAt = &started
+		}
+		out.Runtime = &runtime
+	}
+	return out
+}
+
+// --- Display helpers ---
+
+func formatAdapterID(catalog, slug string) string {
+	catalog = strings.TrimSpace(catalog)
+	slug = strings.TrimSpace(slug)
+	if catalog == "" {
+		catalog = "others"
+	}
+	if slug == "" {
+		return ""
+	}
+	return catalog + "/" + slug
+}
+
+func adapterLabel(entry apihttp.AdapterEntry) string {
+	if entry.AdapterID == nil || strings.TrimSpace(*entry.AdapterID) == "" {
+		return "-"
+	}
+	return *entry.AdapterID
+}
+
+func adapterHealthLabel(entry apihttp.AdapterEntry) string {
+	if entry.Runtime == nil || strings.TrimSpace(entry.Runtime.Health) == "" {
+		return "-"
+	}
+	return entry.Runtime.Health
+}
+
+func sortedAdapters(entries []apihttp.AdapterEntry) []apihttp.AdapterEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+	sorted := append([]apihttp.AdapterEntry(nil), entries...)
+	sort.Slice(sorted, func(i, j int) bool {
+		return strings.Compare(sorted[i].Slot, sorted[j].Slot) < 0
+	})
+	return sorted
+}
+
+func printAdapterTable(entries []apihttp.AdapterEntry) {
+	sorted := sortedAdapters(entries)
+	if len(sorted) == 0 {
+		return
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "SLOT\tADAPTER\tSTATUS\tHEALTH\tUPDATED")
+	for _, entry := range sorted {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+			entry.Slot,
+			adapterLabel(entry),
+			entry.Status,
+			adapterHealthLabel(entry),
+			entry.UpdatedAt,
+		)
+	}
+	w.Flush()
+}
+
+func printAdapterRuntimeMessages(entries []apihttp.AdapterEntry) {
+	for _, entry := range sortedAdapters(entries) {
+		if entry.Runtime != nil && strings.TrimSpace(entry.Runtime.Message) != "" {
+			fmt.Printf("%s: %s\n", entry.Slot, entry.Runtime.Message)
+		}
+	}
+}
+
+func printAdapterSummary(action string, entry apihttp.AdapterEntry) {
+	fmt.Printf("%s slot %s -> %s (status: %s)\n", action, entry.Slot, adapterLabel(entry), entry.Status)
+	if entry.Runtime != nil {
+		fmt.Printf("  Health: %s\n", adapterHealthLabel(entry))
+		if entry.Runtime.Message != "" {
+			fmt.Printf("  Message: %s\n", entry.Runtime.Message)
+		}
+		if entry.Runtime.StartedAt != nil && *entry.Runtime.StartedAt != "" {
+			fmt.Printf("  Started: %s\n", *entry.Runtime.StartedAt)
+		}
+		fmt.Printf("  Updated: %s\n", entry.Runtime.UpdatedAt)
+	}
+}
+
+func printAvailableAdaptersForSlot(slot string, adapters []adapterInfo) []adapterInfo {
+	if len(adapters) == 0 {
+		fmt.Println("Available adapters:")
+		fmt.Println("  (no adapters installed)")
+		return nil
+	}
+
+	expectedType := adapterTypeForSlot(slot)
+	filtered := filterAdaptersForSlot(slot, adapters)
+
+	if len(filtered) > 0 {
+		if expectedType != "" {
+			fmt.Printf("Available adapters for %s (type: %s):\n", slot, expectedType)
+		} else {
+			fmt.Printf("Available adapters for %s:\n", slot)
+		}
+	} else {
+		if expectedType != "" {
+			fmt.Printf("No adapters of type %s installed. Showing all adapters:\n", expectedType)
+		} else {
+			fmt.Println("Available adapters:")
+		}
+		filtered = adapters
+	}
+
+	for idx, adapter := range filtered {
+		label := adapter.ID
+		if adapter.Name != "" {
+			label = fmt.Sprintf("%s (%s)", adapter.Name, adapter.ID)
+		}
+		fmt.Printf("  %d) %s [%s]\n", idx+1, label, adapter.Type)
+	}
+	return filtered
+}
+
+func resolveAdapterChoice(input string, ordered []adapterInfo, all []adapterInfo) (string, bool) {
+	if idx, err := strconv.Atoi(input); err == nil {
+		if idx >= 1 && idx <= len(ordered) {
+			return ordered[idx-1].ID, true
+		}
+		return "", false
+	}
+
+	for _, adapter := range all {
+		if strings.EqualFold(adapter.ID, input) || strings.EqualFold(adapter.Name, input) {
+			return adapter.ID, true
+		}
+	}
+
+	return "", false
+}
+
+// --- Manifest parsing ---
+
+func loadAdapterManifestFile(path string) (*manifestpkg.Manifest, string, error) {
+	content, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		return nil, "", err
+	}
+	manifest, err := manifestpkg.Parse(content)
+	if err != nil {
+		return nil, "", fmt.Errorf("parse manifest: %w", err)
+	}
+	if manifest.Type != manifestpkg.PluginTypeAdapter {
+		return nil, "", fmt.Errorf("manifest type must be %q", manifestpkg.PluginTypeAdapter)
+	}
+	if manifest.Adapter == nil {
+		return nil, "", fmt.Errorf("adapter manifest missing spec")
+	}
+	return manifest, string(content), nil
+}
+
+func parseManifest(manifestRaw string) (json.RawMessage, error) {
+	trimmed := strings.TrimSpace(manifestRaw)
+	if trimmed == "" {
+		return nil, nil
+	}
+
+	if json.Valid([]byte(trimmed)) {
+		return json.RawMessage(trimmed), nil
+	}
+
+	var yamlData interface{}
+	if err := yaml.Unmarshal([]byte(trimmed), &yamlData); err != nil {
+		return nil, fmt.Errorf("invalid YAML manifest: %w", err)
+	}
+
+	normalized := normalizeYAML(yamlData)
+	encoded, err := json.Marshal(normalized)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(encoded), nil
+}
+
+func normalizeYAML(value interface{}) interface{} {
+	return normalizeYAMLWithDepth(value, 0, 1024)
+}
+
+func normalizeYAMLWithDepth(value interface{}, depth, maxDepth int) interface{} {
+	if depth >= maxDepth {
+		return fmt.Sprint(value)
+	}
+
+	switch v := value.(type) {
+	case map[interface{}]interface{}:
+		m := make(map[string]interface{}, len(v))
+		for key, val := range v {
+			keyStr := ""
+			if ks, ok := key.(string); ok {
+				keyStr = ks
+			} else {
+				keyStr = fmt.Sprint(key)
+			}
+			m[keyStr] = normalizeYAMLWithDepth(val, depth+1, maxDepth)
+		}
+		return m
+	case map[string]interface{}:
+		m := make(map[string]interface{}, len(v))
+		for key, val := range v {
+			m[key] = normalizeYAMLWithDepth(val, depth+1, maxDepth)
+		}
+		return m
+	case []interface{}:
+		result := make([]interface{}, len(v))
+		for i, elem := range v {
+			result[i] = normalizeYAMLWithDepth(elem, depth+1, maxDepth)
+		}
+		return result
+	default:
+		return v
+	}
+}
+
+func parseKeyValuePairs(values []string) (map[string]string, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]string, len(values))
+	for _, entry := range values {
+		trimmed := strings.TrimSpace(entry)
+		if trimmed == "" {
+			continue
+		}
+		parts := strings.SplitN(trimmed, "=", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid key=value pair: %s", entry)
+		}
+		key := strings.TrimSpace(parts[0])
+		if key == "" {
+			return nil, fmt.Errorf("invalid key in %s", entry)
+		}
+		out[key] = parts[1]
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+// --- File utilities ---
+
+func sanitizeAdapterSlug(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var b strings.Builder
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '-' || r == '_':
+			b.WriteRune(r)
+		case r == ' ' || r == '.' || r == '/':
+			b.WriteRune('-')
+		}
+	}
+	res := strings.Trim(b.String(), "-_")
+	if res == "" {
+		return "adapter"
+	}
+	if len(res) > adapterSlugMaxLength {
+		return res[:adapterSlugMaxLength]
+	}
+	return res
+}
+
+func copyFile(src, dst string, perm fs.FileMode) error {
+	cleanSrc := filepath.Clean(src)
+	cleanDst := filepath.Clean(dst)
+
+	absSrc, err := filepath.Abs(cleanSrc)
+	if err != nil {
+		return err
+	}
+	absDst, err := filepath.Abs(cleanDst)
+	if err != nil {
+		return err
+	}
+
+	if absSrc == absDst {
+		return fmt.Errorf("source and destination are the same: %s", absSrc)
+	}
+
+	srcInfo, err := os.Lstat(absSrc)
+	if err != nil {
+		return err
+	}
+	if srcInfo.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("source is a symlink: %s", absSrc)
+	}
+	if !srcInfo.Mode().IsRegular() {
+		return fmt.Errorf("source must be a regular file: %s", absSrc)
+	}
+
+	if _, err := os.Stat(absDst); err == nil {
+		return fmt.Errorf("destination already exists: %s", absDst)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	if err := os.MkdirAll(filepath.Dir(absDst), 0o755); err != nil {
+		return err
+	}
+
+	srcFile, err := os.Open(absSrc)
+	if err != nil {
+		return err
+	}
+	defer srcFile.Close()
+
+	dstFile, err := os.OpenFile(absDst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if err != nil {
+		return err
+	}
+	closed := false
+	defer func() {
+		if !closed {
+			dstFile.Close()
+		}
+	}()
+
+	if _, err := io.Copy(dstFile, srcFile); err != nil {
+		return err
+	}
+
+	if err := dstFile.Chmod(perm); err != nil {
+		return err
+	}
+
+	closed = true
+	return dstFile.Close()
+}
