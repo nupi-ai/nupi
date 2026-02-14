@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { parseBinaryFrame, BINARY_FRAME_OUTPUT } from '../utils/protocol';
+import { parseServerMessage } from '../types/messages';
 import type { Session } from '../types/session';
 
 export type { Session };
@@ -9,6 +10,9 @@ export interface SessionSocketCallbacks {
   onResizeInstructions: (sessionId: string, instructions: any[]) => void;
   onSessionStopped: (sessionId: string) => void;
 }
+
+const BACKOFF_INITIAL = 500;
+const BACKOFF_MAX = 10_000;
 
 export function useSessionSocket(
   daemonPort: number | null,
@@ -35,20 +39,9 @@ export function useSessionSocket(
   useEffect(() => {
     if (!daemonPort) return;
 
-    // Don't create new connection if we already have one
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      return;
-    }
-
-    // Connect WebSocket for session management
-    const ws = new WebSocket(`ws://127.0.0.1:${daemonPort}/ws`);
-
-    ws.onopen = () => {
-      // Request sessions list on connect
-      ws.send(JSON.stringify({
-        type: 'list',
-      }));
-    };
+    let intentionalClose = false;
+    let backoff = BACKOFF_INITIAL;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
     const handleBinaryMessage = (buffer: ArrayBuffer) => {
       const frame = parseBinaryFrame(buffer);
@@ -71,20 +64,16 @@ export function useSessionSocket(
     };
 
     const handleTextMessage = (raw: string) => {
-      let msg: any;
-      try {
-        msg = JSON.parse(raw);
-      } catch (error) {
-        console.error('[WS] Failed to parse message', error, raw);
-        return;
-      }
+      const msg = parseServerMessage(raw);
+      if (!msg) return;
 
-      if (msg.type === 'attached' && msg.sessionId === attachedSessionId.current) {
-        return;
-      }
+      switch (msg.type) {
+        case 'attached':
+          // Ignore attach confirmations (no action needed on client)
+          break;
 
-      if (msg.type === 'sessions_list') {
-        if (msg.data && Array.isArray(msg.data)) {
+        case 'sessions_list': {
+          if (!Array.isArray(msg.data)) break;
           const sortedSessions = [...msg.data].sort((a: Session, b: Session) =>
             new Date(a.start_time).getTime() - new Date(b.start_time).getTime()
           );
@@ -92,17 +81,14 @@ export function useSessionSocket(
           if (sortedSessions.length > 0 && !activeSessionIdRef.current) {
             setActiveSessionIdRef.current(sortedSessions[0].id);
           }
+          break;
         }
-        return;
-      }
 
-      if (msg.type === 'session_created') {
-        if (msg.data) {
+        case 'session_created': {
+          if (!msg.data) break;
           setSessions(prev => {
             const exists = prev.some(s => s.id === msg.data.id);
-            if (exists) {
-              return prev;
-            }
+            if (exists) return prev;
 
             const newSessions = [...prev, msg.data];
             const sorted = newSessions.sort((a: Session, b: Session) =>
@@ -115,92 +101,124 @@ export function useSessionSocket(
 
             return sorted;
           });
+          break;
         }
-        return;
-      }
 
-      if (msg.type === 'session_killed') {
-        // Don't remove session - just wait for session_status_changed to 'stopped'
-        // Sessions should remain visible after being killed
-        console.log('[WS] Session killed:', msg.sessionId);
-        return;
-      }
+        case 'session_killed':
+          console.log('[WS] Session killed:', msg.sessionId);
+          break;
 
-      if (msg.type === 'session_status_changed') {
-        if (msg.sessionId && msg.data) {
-          // Update sessions state (for UI rendering only)
+        case 'session_status_changed': {
+          if (!msg.sessionId || !msg.data) break;
           setSessions(prev => prev.map(s =>
             s.id === msg.sessionId ? { ...s, status: msg.data } : s
           ));
 
-          // Update terminal settings directly (no re-render)
           if (msg.sessionId === attachedSessionId.current && msg.data === 'stopped') {
             callbacksRef.current.onSessionStopped(msg.sessionId);
           }
+          break;
         }
-        return;
-      }
 
-      if (msg.type === 'session_mode_changed') {
-        if (msg.sessionId && msg.data && typeof msg.data.mode === 'string') {
+        case 'session_mode_changed': {
+          if (!msg.sessionId || !msg.data || typeof msg.data.mode !== 'string') break;
           setSessions(prev => prev.map(s =>
             s.id === msg.sessionId ? { ...s, mode: msg.data.mode } : s
           ));
+          break;
         }
-        return;
-      }
 
-      if (msg.type === 'tool_detected') {
-        if (msg.sessionId && msg.data) {
+        case 'tool_detected': {
+          if (!msg.sessionId || !msg.data) break;
           setSessions(prev => prev.map(s =>
             s.id === msg.sessionId ? { ...s, ...msg.data } : s
           ));
+          break;
         }
-        return;
-      }
 
-      if (msg.type === 'resize_instruction') {
-        if (msg.sessionId && msg.sessionId === attachedSessionId.current) {
-          if (msg.data && Array.isArray(msg.data.instructions)) {
+        case 'resize_instruction': {
+          if (msg.sessionId === attachedSessionId.current && msg.data && Array.isArray(msg.data.instructions)) {
             callbacksRef.current.onResizeInstructions(msg.sessionId, msg.data.instructions);
           }
+          break;
         }
-        return;
+
+        case 'detached':
+          console.log('[WS] Detached from session:', msg.sessionId);
+          break;
+
+        case 'error':
+          console.error('[WS] Server error:', msg.data);
+          break;
       }
     };
 
-    ws.onmessage = (event) => {
-      if (typeof event.data === 'string') {
-        handleTextMessage(event.data);
-        return;
-      }
+    const connect = () => {
+      // Don't reconnect if cleanup has run
+      if (intentionalClose) return;
 
-      if (event.data instanceof Blob) {
-        event.data.arrayBuffer()
-          .then(handleBinaryMessage)
-          .catch(err => console.error('[WS] Failed to process binary message', err));
-        return;
-      }
+      const ws = new WebSocket(`ws://127.0.0.1:${daemonPort}/ws`);
 
-      if (event.data instanceof ArrayBuffer) {
-        handleBinaryMessage(event.data);
-        return;
-      }
+      ws.onopen = () => {
+        backoff = BACKOFF_INITIAL;
+        console.log('[WS] Connected');
 
-      console.warn('[WS] Received unsupported message payload', event.data);
+        ws.send(JSON.stringify({ type: 'list' }));
+
+        // Re-attach to the active session after reconnect
+        if (attachedSessionId.current) {
+          ws.send(JSON.stringify({
+            type: 'attach',
+            data: attachedSessionId.current,
+          }));
+        }
+      };
+
+      ws.onmessage = (event) => {
+        if (typeof event.data === 'string') {
+          handleTextMessage(event.data);
+        } else if (event.data instanceof Blob) {
+          event.data.arrayBuffer()
+            .then(handleBinaryMessage)
+            .catch(err => console.error('[WS] Failed to process binary message', err));
+        } else if (event.data instanceof ArrayBuffer) {
+          handleBinaryMessage(event.data);
+        }
+      };
+
+      ws.onerror = (error) => {
+        console.error('[WS] Error:', error);
+      };
+
+      ws.onclose = () => {
+        if (wsRef.current === ws) {
+          wsRef.current = null;
+        }
+
+        if (intentionalClose) {
+          console.log('[WS] Disconnected (intentional)');
+          return;
+        }
+
+        console.log(`[WS] Reconnecting in ${backoff}ms...`);
+        reconnectTimer = setTimeout(() => {
+          reconnectTimer = null;
+          connect();
+        }, backoff);
+        backoff = Math.min(backoff * 2, BACKOFF_MAX);
+      };
+
+      wsRef.current = ws;
     };
 
-    ws.onerror = (error) => {
-      console.error('WebSocket error:', error);
-    };
-
-    ws.onclose = () => {
-      console.log('WebSocket disconnected');
-    };
-
-    wsRef.current = ws;
+    connect();
 
     return () => {
+      intentionalClose = true;
+      if (reconnectTimer !== null) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
       if (wsRef.current) {
         wsRef.current.close();
         wsRef.current = null;
