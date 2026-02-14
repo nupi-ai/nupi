@@ -46,7 +46,7 @@ func TestPrometheusExporter(t *testing.T) {
 			SpeechBargeInTotal: 4,
 			VADDetections:      7,
 			VADRetryAttempts:   2,
-			VADRetryFailures:   1,
+			VADRetryAbandoned:  1,
 		}
 	})
 	exporter.WithIntentRouter(func() IntentRouterMetricsSnapshot {
@@ -96,8 +96,8 @@ func TestPrometheusExporter(t *testing.T) {
 	if !strings.Contains(metrics, `nupi_vad_retry_attempts_total 2`) {
 		t.Fatalf("expected VAD retry attempts counter in metrics output:\n%s", metrics)
 	}
-	if !strings.Contains(metrics, `nupi_vad_retry_failures_total 1`) {
-		t.Fatalf("expected VAD retry failures counter in metrics output:\n%s", metrics)
+	if !strings.Contains(metrics, `nupi_vad_retry_abandoned_total 1`) {
+		t.Fatalf("expected VAD retry abandoned counter in metrics output:\n%s", metrics)
 	}
 	if !strings.Contains(metrics, `nupi_eventbus_overflow_total 0`) {
 		t.Fatalf("expected overflow_total counter in metrics output:\n%s", metrics)
@@ -150,7 +150,7 @@ func TestPrometheusExporterConcurrency(t *testing.T) {
 			SpeechBargeInTotal: 4,
 			VADDetections:      5,
 			VADRetryAttempts:   1,
-			VADRetryFailures:   0,
+			VADRetryAbandoned:  0,
 		}
 	})
 

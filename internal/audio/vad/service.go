@@ -110,9 +110,7 @@ type Service struct {
 
 	manager *streammanager.Manager[eventbus.AudioIngressSegmentEvent]
 
-	detectionsTotal    atomic.Uint64
-	retryAttemptsTotal atomic.Uint64
-	retryFailuresTotal atomic.Uint64
+	detectionsTotal atomic.Uint64
 }
 
 // New constructs a VAD bridge service bound to the provided event bus.
@@ -144,14 +142,14 @@ func (s *Service) Start(ctx context.Context) error {
 		Tag:        "VAD",
 		MaxPending: maxPendingSegments,
 		Retry: streammanager.RetryConfig{
-			Initial: s.retryInitial,
-			Max:     s.retryMax,
+			Initial:     s.retryInitial,
+			Max:         s.retryMax,
+			MaxFailures: maxRetryFailures,
+			MaxDuration: maxRetryDuration,
 		},
 		Factory: streammanager.StreamFactoryFunc[eventbus.AudioIngressSegmentEvent](s.createStreamHandle),
 		Callbacks: streammanager.Callbacks[eventbus.AudioIngressSegmentEvent]{
 			ClassifyCreateError: s.classifyError,
-			OnRetryAttempt:      s.onRetryAttempt,
-			OnRetryFailed:       s.onRetryFailed,
 		},
 		Logger: s.logger,
 		Ctx:    s.ctx,
@@ -254,30 +252,6 @@ func (s *Service) handleSegment(segment eventbus.AudioIngressSegmentEvent) {
 
 func (s *Service) classifyError(err error) (adapterUnavailable, factoryUnavailable bool) {
 	return errors.Is(err, ErrAdapterUnavailable), errors.Is(err, ErrFactoryUnavailable)
-}
-
-func (s *Service) onRetryAttempt(_ string, _ SessionParams) {
-	s.retryAttemptsTotal.Add(1)
-}
-
-func (s *Service) onRetryFailed(key string, params SessionParams, err error) (abandon bool) {
-	s.retryFailuresTotal.Add(1)
-
-	pq, ok := s.manager.GetPendingQueue(key)
-	if !ok {
-		return false
-	}
-	elapsed := time.Since(pq.FirstFailureAt)
-	if pq.FailureCount >= maxRetryFailures || elapsed >= maxRetryDuration {
-		if s.logger != nil {
-			s.logger.Printf("[VAD] abandoning retry session=%s stream=%s after %d failures", params.SessionID, params.StreamID, pq.FailureCount)
-		}
-		return true
-	}
-	if s.logger != nil {
-		s.logger.Printf("[VAD] retry stream session=%s stream=%s failed: %v", params.SessionID, params.StreamID, err)
-	}
-	return false
 }
 
 // createStreamHandle is the StreamFactory callback for the manager.
@@ -500,16 +474,19 @@ func mergeMetadata(base map[string]string, override map[string]string) map[strin
 
 // Metrics aggregates counters for the VAD service.
 type Metrics struct {
-	DetectionsTotal    uint64
-	RetryAttemptsTotal uint64
-	RetryFailuresTotal uint64
+	DetectionsTotal     uint64
+	RetryAttemptsTotal  uint64
+	RetryAbandonedTotal uint64
 }
 
 // Metrics returns the current metrics snapshot for the VAD service.
 func (s *Service) Metrics() Metrics {
-	return Metrics{
-		DetectionsTotal:    s.detectionsTotal.Load(),
-		RetryAttemptsTotal: s.retryAttemptsTotal.Load(),
-		RetryFailuresTotal: s.retryFailuresTotal.Load(),
+	m := Metrics{
+		DetectionsTotal: s.detectionsTotal.Load(),
 	}
+	if s.manager != nil {
+		m.RetryAttemptsTotal = s.manager.RetryAttempts()
+		m.RetryAbandonedTotal = s.manager.RetryAbandoned()
+	}
+	return m
 }

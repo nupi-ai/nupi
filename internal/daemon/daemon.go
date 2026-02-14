@@ -285,7 +285,7 @@ func New(opts Options) (*Daemon, error) {
 			SpeechBargeInTotal: bargeStats.BargeInTotal,
 			VADDetections:      vadStats.DetectionsTotal,
 			VADRetryAttempts:   vadStats.RetryAttemptsTotal,
-			VADRetryFailures:   vadStats.RetryFailuresTotal,
+			VADRetryAbandoned:  vadStats.RetryAbandonedTotal,
 		}
 	})
 

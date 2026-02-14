@@ -6,7 +6,6 @@ import (
 	"log"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/nupi-ai/nupi/internal/audio/streammanager"
@@ -148,8 +147,6 @@ type Service struct {
 	wg           sync.WaitGroup
 
 	manager *streammanager.Manager[speakRequest]
-
-	activeStreams atomic.Int64
 }
 
 // New constructs an audio egress service.
@@ -212,8 +209,6 @@ func (s *Service) Start(ctx context.Context) error {
 		},
 		Factory: streammanager.StreamFactoryFunc[speakRequest](s.createStreamHandle),
 		Callbacks: streammanager.Callbacks[speakRequest]{
-			OnStreamRegistered:  s.onStreamRegistered,
-			OnStreamRemoved:     s.onStreamRemoved,
 			ClassifyCreateError: s.classifyError,
 			OnEnqueueError:      s.onEnqueueError,
 		},
@@ -460,14 +455,6 @@ func (s *Service) interruptStream(sessionID, streamID, reason string, ts time.Ti
 
 func (s *Service) classifyError(err error) (adapterUnavailable, factoryUnavailable bool) {
 	return errors.Is(err, ErrAdapterUnavailable), errors.Is(err, ErrFactoryUnavailable)
-}
-
-func (s *Service) onStreamRegistered(_ string, _ streammanager.StreamHandle[speakRequest]) {
-	s.activeStreams.Add(1)
-}
-
-func (s *Service) onStreamRemoved(_ string, _ streammanager.StreamHandle[speakRequest]) {
-	s.activeStreams.Add(-1)
 }
 
 func (s *Service) onEnqueueError(key string, item speakRequest, err error) (handled bool) {
@@ -900,7 +887,9 @@ type Metrics struct {
 
 // Metrics returns the current TTS metrics snapshot.
 func (s *Service) Metrics() Metrics {
-	return Metrics{
-		ActiveStreams: s.activeStreams.Load(),
+	var m Metrics
+	if s.manager != nil {
+		m.ActiveStreams = s.manager.ActiveStreamCount()
 	}
+	return m
 }

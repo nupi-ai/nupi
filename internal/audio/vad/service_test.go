@@ -81,8 +81,8 @@ func TestVADServiceEmitsDetections(t *testing.T) {
 	if metrics.RetryAttemptsTotal != 0 {
 		t.Fatalf("expected retry attempts to remain zero, got %d", metrics.RetryAttemptsTotal)
 	}
-	if metrics.RetryFailuresTotal != 0 {
-		t.Fatalf("expected retry failures to remain zero, got %d", metrics.RetryFailuresTotal)
+	if metrics.RetryAbandonedTotal != 0 {
+		t.Fatalf("expected retry failures to remain zero, got %d", metrics.RetryAbandonedTotal)
 	}
 }
 
@@ -155,12 +155,12 @@ func TestVADServiceBuffersUntilAdapterAvailable(t *testing.T) {
 	if metrics.RetryAttemptsTotal == 0 {
 		t.Fatalf("expected retry attempts to be recorded")
 	}
-	if metrics.RetryFailuresTotal != 0 {
+	if metrics.RetryAbandonedTotal != 0 {
 		t.Fatalf("expected retry failures to remain zero during adapter wait")
 	}
 }
 
-func TestVADServiceMetricsRetryFailures(t *testing.T) {
+func TestVADServiceMetricsRetryAbandoned(t *testing.T) {
 	ctx := context.Background()
 	bus := eventbus.New()
 
@@ -170,9 +170,6 @@ func TestVADServiceMetricsRetryFailures(t *testing.T) {
 		t.Fatalf("start service: %v", err)
 	}
 	defer svc.Shutdown(context.Background())
-
-	vadSub := bus.Subscribe(eventbus.TopicSpeechVADDetected)
-	defer vadSub.Close()
 
 	segment := eventbus.AudioIngressSegmentEvent{
 		SessionID: "sess-retry",
@@ -197,27 +194,20 @@ func TestVADServiceMetricsRetryFailures(t *testing.T) {
 		Payload: segment,
 	})
 
-	// First retry attempts should encounter adapter errors.
+	// Switch from adapter-unavailable to permanent errors so that
+	// MaxFailures (10) is eventually exhausted and the queue abandoned.
 	time.Sleep(2 * time.Millisecond)
 	factory.set(factoryStateError)
 
-	waitFor(t, 500*time.Millisecond, func() bool {
-		return svc.Metrics().RetryFailuresTotal > 0
+	waitFor(t, 2*time.Second, func() bool {
+		return svc.Metrics().RetryAbandonedTotal > 0
 	})
-
-	// Unblock by allowing the factory to succeed and emit detections.
-	factory.set(factoryStateSuccess)
-
-	event := receiveVADEvent(t, vadSub)
-	if event.SessionID != "sess-retry" {
-		t.Fatalf("unexpected session id: %s", event.SessionID)
-	}
 
 	metrics := svc.Metrics()
 	if metrics.RetryAttemptsTotal == 0 {
 		t.Fatalf("expected retry attempts to be recorded")
 	}
-	if metrics.RetryFailuresTotal == 0 {
+	if metrics.RetryAbandonedTotal == 0 {
 		t.Fatalf("expected retry failures to be recorded")
 	}
 }
