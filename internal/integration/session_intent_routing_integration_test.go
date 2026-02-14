@@ -428,18 +428,14 @@ func TestProactiveIdleNotification(t *testing.T) {
 	defer speakSub.Close()
 
 	// Publish notable pipeline message (simulates content pipeline detecting idle)
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicPipelineCleaned,
-		Source: eventbus.SourceContentPipeline,
-		Payload: eventbus.PipelineMessageEvent{
-			SessionID: "sess-build",
-			Origin:    eventbus.OriginTool,
-			Text:      "Build completed successfully. 42 tests passed.",
-			Annotations: map[string]string{
-				"notable":     "true",
-				"idle_state":  "prompt",
-				"event_title": "Build completed",
-			},
+	eventbus.Publish(ctx, bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{
+		SessionID: "sess-build",
+		Origin:    eventbus.OriginTool,
+		Text:      "Build completed successfully. 42 tests passed.",
+		Annotations: map[string]string{
+			"notable":     "true",
+			"idle_state":  "prompt",
+			"event_title": "Build completed",
 		},
 	})
 
@@ -505,18 +501,14 @@ func TestProactiveNotificationRateLimiting(t *testing.T) {
 
 	// Publish 3 notable events in quick succession
 	for i := 0; i < 3; i++ {
-		bus.Publish(ctx, eventbus.Envelope{
-			Topic:  eventbus.TopicPipelineCleaned,
-			Source: eventbus.SourceContentPipeline,
-			Payload: eventbus.PipelineMessageEvent{
-				SessionID: "sess-rate",
-				Origin:    eventbus.OriginTool,
-				Text:      fmt.Sprintf("Event %d happened", i+1),
-				Annotations: map[string]string{
-					"notable":     "true",
-					"idle_state":  "prompt",
-					"event_title": fmt.Sprintf("Event %d", i+1),
-				},
+		eventbus.Publish(ctx, bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{
+			SessionID: "sess-rate",
+			Origin:    eventbus.OriginTool,
+			Text:      fmt.Sprintf("Event %d happened", i+1),
+			Annotations: map[string]string{
+				"notable":     "true",
+				"idle_state":  "prompt",
+				"event_title": fmt.Sprintf("Event %d", i+1),
 			},
 		})
 	}
@@ -604,14 +596,10 @@ func TestProactiveNotificationIncludesContext(t *testing.T) {
 	// This triggers the full flow: conversation service stores the turn,
 	// publishes ConversationPromptEvent, intent router processes it.
 	// Use text that triggers speak (not command) so we can drain it.
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicPipelineCleaned,
-		Source: eventbus.SourceContentPipeline,
-		Payload: eventbus.PipelineMessageEvent{
-			SessionID: "sess-ctx",
-			Origin:    eventbus.OriginUser,
-			Text:      "check build status",
-		},
+	eventbus.Publish(ctx, bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{
+		SessionID: "sess-ctx",
+		Origin:    eventbus.OriginUser,
+		Text:      "check build status",
 	})
 	// Wait for reply (adapter echoes back as speak for unrecognized commands)
 	waitForReply(t, replySub, 2*time.Second)
@@ -629,18 +617,14 @@ func TestProactiveNotificationIncludesContext(t *testing.T) {
 
 	// Now: publish notable session output (triggers session_output flow)
 	// This is the first session_output for this session, so rate limiter allows it.
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicPipelineCleaned,
-		Source: eventbus.SourceContentPipeline,
-		Payload: eventbus.PipelineMessageEvent{
-			SessionID: "sess-ctx",
-			Origin:    eventbus.OriginTool,
-			Text:      "Error: compilation failed at main.go:42",
-			Annotations: map[string]string{
-				"notable":     "true",
-				"idle_state":  "prompt",
-				"event_title": "Compilation error",
-			},
+	eventbus.Publish(ctx, bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{
+		SessionID: "sess-ctx",
+		Origin:    eventbus.OriginTool,
+		Text:      "Error: compilation failed at main.go:42",
+		Annotations: map[string]string{
+			"notable":     "true",
+			"idle_state":  "prompt",
+			"event_title": "Compilation error",
 		},
 	})
 
@@ -724,14 +708,10 @@ func TestSessionHistorySummarization(t *testing.T) {
 	// conversation service → prompt → intent router → reply → back to history).
 	userMessages := []string{"make build", "make test", "make lint"}
 	for _, msg := range userMessages {
-		bus.Publish(ctx, eventbus.Envelope{
-			Topic:  eventbus.TopicPipelineCleaned,
-			Source: eventbus.SourceContentPipeline,
-			Payload: eventbus.PipelineMessageEvent{
-				SessionID: "sess-hist",
-				Origin:    eventbus.OriginUser,
-				Text:      msg,
-			},
+		eventbus.Publish(ctx, bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{
+			SessionID: "sess-hist",
+			Origin:    eventbus.OriginUser,
+			Text:      msg,
 		})
 		waitForSpeak(t, speakSub, 2*time.Second)
 	}
@@ -746,14 +726,10 @@ func TestSessionHistorySummarization(t *testing.T) {
 	}
 
 	// Now ask "what happened in session sess-hist" — also via pipeline flow
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicPipelineCleaned,
-		Source: eventbus.SourceContentPipeline,
-		Payload: eventbus.PipelineMessageEvent{
-			SessionID: "sess-hist",
-			Origin:    eventbus.OriginUser,
-			Text:      "what happened in session sess-hist",
-		},
+	eventbus.Publish(ctx, bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{
+		SessionID: "sess-hist",
+		Origin:    eventbus.OriginUser,
+		Text:      "what happened in session sess-hist",
 	})
 
 	speak := waitForSpeak(t, speakSub, 2*time.Second)
@@ -814,26 +790,18 @@ func TestHistorySummarizationUsesCorrectSessionContext(t *testing.T) {
 	defer speakSub.Close()
 
 	// Build history for sess-one via PipelineMessageEvent
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicPipelineCleaned,
-		Source: eventbus.SourceContentPipeline,
-		Payload: eventbus.PipelineMessageEvent{
-			SessionID: "sess-one",
-			Origin:    eventbus.OriginUser,
-			Text:      "make build",
-		},
+	eventbus.Publish(ctx, bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{
+		SessionID: "sess-one",
+		Origin:    eventbus.OriginUser,
+		Text:      "make build",
 	})
 	waitForSpeak(t, speakSub, 2*time.Second)
 
 	// Build history for sess-two via PipelineMessageEvent
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicPipelineCleaned,
-		Source: eventbus.SourceContentPipeline,
-		Payload: eventbus.PipelineMessageEvent{
-			SessionID: "sess-two",
-			Origin:    eventbus.OriginUser,
-			Text:      "npm install",
-		},
+	eventbus.Publish(ctx, bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{
+		SessionID: "sess-two",
+		Origin:    eventbus.OriginUser,
+		Text:      "npm install",
 	})
 	waitForSpeak(t, speakSub, 2*time.Second)
 
@@ -847,14 +815,10 @@ func TestHistorySummarizationUsesCorrectSessionContext(t *testing.T) {
 	}
 
 	// Ask about sess-one specifically — via pipeline flow
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicPipelineCleaned,
-		Source: eventbus.SourceContentPipeline,
-		Payload: eventbus.PipelineMessageEvent{
-			SessionID: "sess-one",
-			Origin:    eventbus.OriginUser,
-			Text:      "what happened in session sess-one",
-		},
+	eventbus.Publish(ctx, bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{
+		SessionID: "sess-one",
+		Origin:    eventbus.OriginUser,
+		Text:      "what happened in session sess-one",
 	})
 
 	speak := waitForSpeak(t, speakSub, 2*time.Second)
@@ -1061,33 +1025,25 @@ func TestSessionOutputForNonNotableEventsIgnored(t *testing.T) {
 	defer speakSub.Close()
 
 	// Step 1: Publish non-notable tool output — should be ignored by conversation service.
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicPipelineCleaned,
-		Source: eventbus.SourceContentPipeline,
-		Payload: eventbus.PipelineMessageEvent{
-			SessionID: "sess-quiet",
-			Origin:    eventbus.OriginTool,
-			Text:      "Regular output: building project...",
-			// No "notable": "true" annotation
-		},
+	eventbus.Publish(ctx, bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{
+		SessionID: "sess-quiet",
+		Origin:    eventbus.OriginTool,
+		Text:      "Regular output: building project...",
+		// No "notable": "true" annotation
 	})
 
 	// Step 2: Publish a known-good notable event and wait for its speak.
 	// This acts as a synchronization barrier — when we receive the speak for
 	// this event, we know the non-notable event has already been processed
 	// (events on the same topic are delivered in order).
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicPipelineCleaned,
-		Source: eventbus.SourceContentPipeline,
-		Payload: eventbus.PipelineMessageEvent{
-			SessionID: "sess-quiet",
-			Origin:    eventbus.OriginTool,
-			Text:      "Build completed, all tests passed.",
-			Annotations: map[string]string{
-				"notable":     "true",
-				"idle_state":  "prompt",
-				"event_title": "Build completed",
-			},
+	eventbus.Publish(ctx, bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{
+		SessionID: "sess-quiet",
+		Origin:    eventbus.OriginTool,
+		Text:      "Build completed, all tests passed.",
+		Annotations: map[string]string{
+			"notable":     "true",
+			"idle_state":  "prompt",
+			"event_title": "Build completed",
 		},
 	})
 

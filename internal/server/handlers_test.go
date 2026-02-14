@@ -1438,8 +1438,8 @@ func TestMetricsEndpointAggregatesData(t *testing.T) {
 	exporter.WithPipeline(pipelineMetricsStub{processed: 7, errors: 1})
 	apiServer.SetMetricsExporter(exporter)
 
-	bus.Publish(context.Background(), eventbus.Envelope{Topic: eventbus.TopicSessionsOutput})
-	bus.Publish(context.Background(), eventbus.Envelope{Topic: eventbus.TopicPipelineCleaned})
+	eventbus.Publish(context.Background(), bus, eventbus.Sessions.Output, "", eventbus.SessionOutputEvent{})
+	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, "", eventbus.PipelineMessageEvent{})
 
 	handler := apiServer.wrapWithSecurity(http.HandlerFunc(apiServer.handleMetrics))
 	rec := httptest.NewRecorder()
@@ -2028,32 +2028,26 @@ func TestHandleAudioEgressStreamsChunks(t *testing.T) {
 	format := egressSvc.PlaybackFormat()
 	streamID := egressSvc.DefaultStreamID()
 
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic: eventbus.TopicAudioEgressPlayback,
-		Payload: eventbus.AudioEgressPlaybackEvent{
-			SessionID: "sess",
-			StreamID:  streamID,
-			Sequence:  1,
-			Format:    format,
-			Duration:  150 * time.Millisecond,
-			Data:      []byte{0x01, 0x02, 0x03, 0x04},
-			Final:     false,
-			Metadata:  map[string]string{"phase": "speak"},
-		},
+	eventbus.Publish(context.Background(), bus, eventbus.Audio.EgressPlayback, "", eventbus.AudioEgressPlaybackEvent{
+		SessionID: "sess",
+		StreamID:  streamID,
+		Sequence:  1,
+		Format:    format,
+		Duration:  150 * time.Millisecond,
+		Data:      []byte{0x01, 0x02, 0x03, 0x04},
+		Final:     false,
+		Metadata:  map[string]string{"phase": "speak"},
 	})
 
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic: eventbus.TopicAudioEgressPlayback,
-		Payload: eventbus.AudioEgressPlaybackEvent{
-			SessionID: "sess",
-			StreamID:  streamID,
-			Sequence:  2,
-			Format:    format,
-			Duration:  0,
-			Data:      []byte{},
-			Final:     true,
-			Metadata:  map[string]string{"barge_in": "true"},
-		},
+	eventbus.Publish(context.Background(), bus, eventbus.Audio.EgressPlayback, "", eventbus.AudioEgressPlaybackEvent{
+		SessionID: "sess",
+		StreamID:  streamID,
+		Sequence:  2,
+		Format:    format,
+		Duration:  0,
+		Data:      []byte{},
+		Final:     true,
+		Metadata:  map[string]string{"barge_in": "true"},
 	})
 
 	select {
@@ -2317,13 +2311,19 @@ func TestHandleAudioIngressWebSocket(t *testing.T) {
 	}
 
 	rawEnv := recvEvent(t, rawSub)
-	rawEvt := rawEnv.Payload.(eventbus.AudioIngressRawEvent)
+	rawEvt, ok := rawEnv.Payload.(eventbus.AudioIngressRawEvent)
+	if !ok {
+		t.Fatalf("expected AudioIngressRawEvent, got %T", rawEnv.Payload)
+	}
 	if !bytes.Equal(rawEvt.Data, payload) {
 		t.Fatalf("unexpected raw data: %v", rawEvt.Data)
 	}
 
 	segEnv := recvEvent(t, segSub)
-	segEvt := segEnv.Payload.(eventbus.AudioIngressSegmentEvent)
+	segEvt, ok := segEnv.Payload.(eventbus.AudioIngressSegmentEvent)
+	if !ok {
+		t.Fatalf("expected AudioIngressSegmentEvent, got %T", segEnv.Payload)
+	}
 	if segEvt.SessionID != "sess" {
 		t.Fatalf("unexpected segment session: %s", segEvt.SessionID)
 	}
@@ -2361,29 +2361,23 @@ func TestHandleAudioEgressWebSocket(t *testing.T) {
 
 	format := egressSvc.PlaybackFormat()
 	streamID := egressSvc.DefaultStreamID()
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic: eventbus.TopicAudioEgressPlayback,
-		Payload: eventbus.AudioEgressPlaybackEvent{
-			SessionID: "sess",
-			StreamID:  streamID,
-			Sequence:  1,
-			Format:    format,
-			Duration:  100 * time.Millisecond,
-			Data:      []byte{9, 8, 7, 6},
-			Final:     false,
-		},
+	eventbus.Publish(context.Background(), bus, eventbus.Audio.EgressPlayback, "", eventbus.AudioEgressPlaybackEvent{
+		SessionID: "sess",
+		StreamID:  streamID,
+		Sequence:  1,
+		Format:    format,
+		Duration:  100 * time.Millisecond,
+		Data:      []byte{9, 8, 7, 6},
+		Final:     false,
 	})
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic: eventbus.TopicAudioEgressPlayback,
-		Payload: eventbus.AudioEgressPlaybackEvent{
-			SessionID: "sess",
-			StreamID:  streamID,
-			Sequence:  2,
-			Format:    format,
-			Duration:  0,
-			Data:      []byte{},
-			Final:     true,
-		},
+	eventbus.Publish(context.Background(), bus, eventbus.Audio.EgressPlayback, "", eventbus.AudioEgressPlaybackEvent{
+		SessionID: "sess",
+		StreamID:  streamID,
+		Sequence:  2,
+		Format:    format,
+		Duration:  0,
+		Data:      []byte{},
+		Final:     true,
 	})
 
 	_, msg, err := conn.ReadMessage()
@@ -2632,68 +2626,55 @@ func TestHandleAdaptersLogsFilters(t *testing.T) {
 	tests := []struct {
 		name       string
 		query      string
-		events     []eventbus.Envelope
+		publish    func(*eventbus.Bus)
 		expectRows int
 	}{
 		{
 			name:  "slot filter includes logs",
 			query: "slot=stt",
-			events: []eventbus.Envelope{
-				{
-					Topic: eventbus.TopicAdaptersLog,
-					Payload: eventbus.AdapterLogEvent{
-						AdapterID: "example",
-						Message:   "hello",
-						Fields:    map[string]string{"slot": "stt"},
-					},
-					Timestamp: time.Unix(1, 0),
-				},
+			publish: func(b *eventbus.Bus) {
+				eventbus.PublishWithOpts(context.Background(), b, eventbus.Adapters.Log, "", eventbus.AdapterLogEvent{
+					AdapterID: "example",
+					Message:   "hello",
+					Fields:    map[string]string{"slot": "stt"},
+				}, eventbus.WithTimestamp(time.Unix(1, 0)))
 			},
 			expectRows: 1,
 		},
 		{
 			name:  "non matching slot drops",
 			query: "slot=stt",
-			events: []eventbus.Envelope{
-				{
-					Topic: eventbus.TopicAdaptersLog,
-					Payload: eventbus.AdapterLogEvent{
-						AdapterID: "example",
-						Message:   "ignored",
-						Fields:    map[string]string{"slot": "tts"},
-					},
-				},
+			publish: func(b *eventbus.Bus) {
+				eventbus.Publish(context.Background(), b, eventbus.Adapters.Log, "", eventbus.AdapterLogEvent{
+					AdapterID: "example",
+					Message:   "ignored",
+					Fields:    map[string]string{"slot": "tts"},
+				})
 			},
 			expectRows: 0,
 		},
 		{
 			name:  "adapter filter includes logs",
 			query: "adapter=example",
-			events: []eventbus.Envelope{
-				{
-					Topic: eventbus.TopicAdaptersLog,
-					Payload: eventbus.AdapterLogEvent{
-						AdapterID: "example",
-						Message:   "hello",
-					},
-				},
+			publish: func(b *eventbus.Bus) {
+				eventbus.Publish(context.Background(), b, eventbus.Adapters.Log, "", eventbus.AdapterLogEvent{
+					AdapterID: "example",
+					Message:   "hello",
+				})
 			},
 			expectRows: 1,
 		},
 		{
 			name:  "both filters suppress transcripts",
 			query: "slot=stt&adapter=example",
-			events: []eventbus.Envelope{
-				{
-					Topic: eventbus.TopicSpeechTranscriptFinal,
-					Payload: eventbus.SpeechTranscriptEvent{
-						SessionID:  "abc",
-						StreamID:   "mic",
-						Text:       "ignored",
-						Confidence: 0.1,
-						Final:      true,
-					},
-				},
+			publish: func(b *eventbus.Bus) {
+				eventbus.Publish(context.Background(), b, eventbus.Speech.TranscriptFinal, "", eventbus.SpeechTranscriptEvent{
+					SessionID:  "abc",
+					StreamID:   "mic",
+					Text:       "ignored",
+					Confidence: 0.1,
+					Final:      true,
+				})
 			},
 			expectRows: 0,
 		},
@@ -2704,7 +2685,7 @@ func TestHandleAdaptersLogsFilters(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			hooks := &streamLogTestHooks{
 				ready:   make(chan struct{}, 1),
-				emitted: make(chan struct{}, len(tc.events)),
+				emitted: make(chan struct{}, 1),
 			}
 			ctx = context.WithValue(ctx, streamLogTestHooksKey{}, hooks)
 			req := httptest.NewRequest(http.MethodGet, "/adapters/logs?"+tc.query, nil).WithContext(ctx)
@@ -2722,9 +2703,7 @@ func TestHandleAdaptersLogsFilters(t *testing.T) {
 				t.Fatalf("handler did not become ready in time")
 			}
 
-			for _, ev := range tc.events {
-				bus.Publish(context.Background(), ev)
-			}
+			tc.publish(bus)
 			for i := 0; i < tc.expectRows; i++ {
 				select {
 				case <-hooks.emitted:

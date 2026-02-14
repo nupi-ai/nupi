@@ -24,11 +24,7 @@ func TestBusPublishDeliver(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:   eventbus.TopicSessionsOutput,
-		Source:  eventbus.SourceSessionManager,
-		Payload: payload,
-	})
+	eventbus.Publish(ctx, bus, eventbus.Sessions.Output, eventbus.SourceSessionManager, payload)
 
 	select {
 	case env := <-sub.C():
@@ -59,22 +55,14 @@ func TestBusDropOldest(t *testing.T) {
 
 	ctx := context.Background()
 
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsOutput,
-		Source: eventbus.SourceSessionManager,
-		Payload: eventbus.SessionOutputEvent{
-			SessionID: "sess-drop",
-			Sequence:  1,
-		},
+	eventbus.Publish(ctx, bus, eventbus.Sessions.Output, eventbus.SourceSessionManager, eventbus.SessionOutputEvent{
+		SessionID: "sess-drop",
+		Sequence:  1,
 	})
 
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsOutput,
-		Source: eventbus.SourceSessionManager,
-		Payload: eventbus.SessionOutputEvent{
-			SessionID: "sess-drop",
-			Sequence:  2,
-		},
+	eventbus.Publish(ctx, bus, eventbus.Sessions.Output, eventbus.SourceSessionManager, eventbus.SessionOutputEvent{
+		SessionID: "sess-drop",
+		Sequence:  2,
 	})
 
 	select {
@@ -106,10 +94,7 @@ func TestBusObserver(t *testing.T) {
 	})
 
 	bus := eventbus.New(eventbus.WithObserver(observer))
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:  eventbus.TopicPipelineCleaned,
-		Source: eventbus.SourceContentPipeline,
-	})
+	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{})
 
 	if got := count.Load(); got != 1 {
 		t.Fatalf("expected observer to be invoked once, got %d", got)
@@ -117,10 +102,7 @@ func TestBusObserver(t *testing.T) {
 
 	// Adding observer after construction should also work.
 	bus.AddObserver(observer)
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:  eventbus.TopicPipelineCleaned,
-		Source: eventbus.SourceContentPipeline,
-	})
+	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{})
 
 	if got := count.Load(); got != 3 {
 		t.Fatalf("expected observer to be invoked three times, got %d", got)
@@ -137,17 +119,9 @@ func TestBusOverflowDelivery(t *testing.T) {
 	ctx := context.Background()
 
 	// Both events go through overflow buffer → drain goroutine → channel.
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:   eventbus.TopicConversationPrompt,
-		Source:  eventbus.SourceConversation,
-		Payload: eventbus.ConversationPromptEvent{PromptID: "p1"},
-	})
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{PromptID: "p1"})
 
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:   eventbus.TopicConversationPrompt,
-		Source:  eventbus.SourceConversation,
-		Payload: eventbus.ConversationPromptEvent{PromptID: "p2"},
-	})
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{PromptID: "p2"})
 
 	// We should receive both events in FIFO order via the drain goroutine.
 	var received []string
@@ -155,7 +129,10 @@ func TestBusOverflowDelivery(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		select {
 		case env := <-sub.C():
-			msg := env.Payload.(eventbus.ConversationPromptEvent)
+			msg, ok := env.Payload.(eventbus.ConversationPromptEvent)
+			if !ok {
+				t.Fatalf("expected ConversationPromptEvent, got %T", env.Payload)
+			}
 			received = append(received, msg.PromptID)
 		case <-timeout:
 			t.Fatalf("timed out, only received %d events: %v", len(received), received)
@@ -184,22 +161,17 @@ func TestBusDropNewest(t *testing.T) {
 
 	ctx := context.Background()
 
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:   eventbus.TopicAdaptersLog,
-		Source:  eventbus.SourceAdaptersService,
-		Payload: eventbus.AdapterLogEvent{Message: "first"},
-	})
+	eventbus.Publish(ctx, bus, eventbus.Adapters.Log, eventbus.SourceAdaptersService, eventbus.AdapterLogEvent{Message: "first"})
 
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:   eventbus.TopicAdaptersLog,
-		Source:  eventbus.SourceAdaptersService,
-		Payload: eventbus.AdapterLogEvent{Message: "second"},
-	})
+	eventbus.Publish(ctx, bus, eventbus.Adapters.Log, eventbus.SourceAdaptersService, eventbus.AdapterLogEvent{Message: "second"})
 
 	// With drop-newest, the first event should be retained.
 	select {
 	case env := <-sub.C():
-		msg := env.Payload.(eventbus.AdapterLogEvent)
+		msg, ok := env.Payload.(eventbus.AdapterLogEvent)
+		if !ok {
+			t.Fatalf("expected AdapterLogEvent, got %T", env.Payload)
+		}
 		if msg.Message != "first" {
 			t.Fatalf("expected first event to survive, got %q", msg.Message)
 		}
@@ -233,11 +205,7 @@ func TestBusOverflowFallback(t *testing.T) {
 	// Publish enough events to guarantee the overflow is full. With overflow=2 and channel=1,
 	// we need at least 4 publishes. Publish extra to be sure at least one drops.
 	for i := 0; i < 10; i++ {
-		bus.Publish(ctx, eventbus.Envelope{
-			Topic:   eventbus.TopicConversationPrompt,
-			Source:  eventbus.SourceConversation,
-			Payload: eventbus.ConversationPromptEvent{PromptID: "p"},
-		})
+		eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{PromptID: "p"})
 	}
 
 	metrics := bus.Metrics()
@@ -254,14 +222,8 @@ func TestBusOverflowMetrics(t *testing.T) {
 	ctx := context.Background()
 
 	// Both events route through the overflow buffer (critical topic uses StrategyOverflow).
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsLifecycle,
-		Source: eventbus.SourceSessionManager,
-	})
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsLifecycle,
-		Source: eventbus.SourceSessionManager,
-	})
+	eventbus.Publish(ctx, bus, eventbus.Sessions.Lifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{})
+	eventbus.Publish(ctx, bus, eventbus.Sessions.Lifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{})
 
 	metrics := bus.Metrics()
 	if metrics.OverflowTotal < 2 {
@@ -278,14 +240,8 @@ func TestBusShutdownWithOverflow(t *testing.T) {
 
 	// Publish a few events.
 	ctx := context.Background()
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicConversationPrompt,
-		Source: eventbus.SourceConversation,
-	})
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsOutput,
-		Source: eventbus.SourceSessionManager,
-	})
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{})
+	eventbus.Publish(ctx, bus, eventbus.Sessions.Output, eventbus.SourceSessionManager, eventbus.SessionOutputEvent{})
 
 	// Shutdown should not deadlock or panic, and should clean up drain goroutines.
 	done := make(chan struct{})
@@ -321,20 +277,15 @@ func TestBusWithTopicPolicy(t *testing.T) {
 
 	ctx := context.Background()
 
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsOutput,
-		Source: eventbus.SourceSessionManager,
-		Payload: eventbus.SessionOutputEvent{Sequence: 1},
-	})
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsOutput,
-		Source: eventbus.SourceSessionManager,
-		Payload: eventbus.SessionOutputEvent{Sequence: 2},
-	})
+	eventbus.Publish(ctx, bus, eventbus.Sessions.Output, eventbus.SourceSessionManager, eventbus.SessionOutputEvent{Sequence: 1})
+	eventbus.Publish(ctx, bus, eventbus.Sessions.Output, eventbus.SourceSessionManager, eventbus.SessionOutputEvent{Sequence: 2})
 
 	select {
 	case env := <-sub.C():
-		msg := env.Payload.(eventbus.SessionOutputEvent)
+		msg, ok := env.Payload.(eventbus.SessionOutputEvent)
+		if !ok {
+			t.Fatalf("expected SessionOutputEvent, got %T", env.Payload)
+		}
 		if msg.Sequence != 1 {
 			t.Fatalf("expected first event to survive with drop-newest, got sequence %d", msg.Sequence)
 		}

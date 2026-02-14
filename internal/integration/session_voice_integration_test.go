@@ -366,40 +366,32 @@ func waitForSpeak(t *testing.T, sub *eventbus.Subscription, timeout time.Duratio
 
 // publishPrompt publishes a ConversationPromptEvent simulating a voice transcript.
 func publishPrompt(ctx context.Context, bus *eventbus.Bus, sessionID, promptID, transcript string) {
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicConversationPrompt,
-		Source: eventbus.SourceConversation,
-		Payload: eventbus.ConversationPromptEvent{
-			SessionID: sessionID,
-			PromptID:  promptID,
-			NewMessage: eventbus.ConversationMessage{
-				Text:   transcript,
-				Origin: eventbus.OriginUser,
-			},
-			Metadata: map[string]string{
-				"event_type":   "user_intent",
-				"input_source": "voice",
-			},
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+		SessionID: sessionID,
+		PromptID:  promptID,
+		NewMessage: eventbus.ConversationMessage{
+			Text:   transcript,
+			Origin: eventbus.OriginUser,
+		},
+		Metadata: map[string]string{
+			"event_type":   "user_intent",
+			"input_source": "voice",
 		},
 	})
 }
 
 // publishSessionlessPrompt publishes a prompt with no session context (e.g., "list sessions").
 func publishSessionlessPrompt(ctx context.Context, bus *eventbus.Bus, promptID, transcript string) {
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicConversationPrompt,
-		Source: eventbus.SourceConversation,
-		Payload: eventbus.ConversationPromptEvent{
-			PromptID: promptID,
-			NewMessage: eventbus.ConversationMessage{
-				Text:   transcript,
-				Origin: eventbus.OriginUser,
-			},
-			Metadata: map[string]string{
-				"event_type":   "user_intent",
-				"input_source": "voice",
-				"sessionless":  "true",
-			},
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+		PromptID: promptID,
+		NewMessage: eventbus.ConversationMessage{
+			Text:   transcript,
+			Origin: eventbus.OriginUser,
+		},
+		Metadata: map[string]string{
+			"event_type":   "user_intent",
+			"input_source": "voice",
+			"sessionless":  "true",
 		},
 	})
 }
@@ -669,21 +661,13 @@ func TestSessionPersistenceOnDisconnect(t *testing.T) {
 	setup.SessionProvider.UpdateStatus("sess-bbb", "detached")
 
 	// Publish lifecycle events for detach
-	setup.Bus.Publish(setup.Ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsLifecycle,
-		Source: eventbus.SourceSessionManager,
-		Payload: eventbus.SessionLifecycleEvent{
-			SessionID: "sess-aaa",
-			State:     eventbus.SessionStateDetached,
-		},
+	eventbus.Publish(setup.Ctx, setup.Bus, eventbus.Sessions.Lifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{
+		SessionID: "sess-aaa",
+		State:     eventbus.SessionStateDetached,
 	})
-	setup.Bus.Publish(setup.Ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsLifecycle,
-		Source: eventbus.SourceSessionManager,
-		Payload: eventbus.SessionLifecycleEvent{
-			SessionID: "sess-bbb",
-			State:     eventbus.SessionStateDetached,
-		},
+	eventbus.Publish(setup.Ctx, setup.Bus, eventbus.Sessions.Lifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{
+		SessionID: "sess-bbb",
+		State:     eventbus.SessionStateDetached,
 	})
 
 	// Subtask 4.2: Verify ListSessionInfos returns all sessions with detached status
@@ -718,21 +702,13 @@ func TestSessionPersistenceOnDisconnect(t *testing.T) {
 	setup.SessionProvider.UpdateStatus("sess-aaa", "running")
 	setup.SessionProvider.UpdateStatus("sess-bbb", "running")
 
-	setup.Bus.Publish(setup.Ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsLifecycle,
-		Source: eventbus.SourceSessionManager,
-		Payload: eventbus.SessionLifecycleEvent{
-			SessionID: "sess-aaa",
-			State:     eventbus.SessionStateRunning,
-		},
+	eventbus.Publish(setup.Ctx, setup.Bus, eventbus.Sessions.Lifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{
+		SessionID: "sess-aaa",
+		State:     eventbus.SessionStateRunning,
 	})
-	setup.Bus.Publish(setup.Ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsLifecycle,
-		Source: eventbus.SourceSessionManager,
-		Payload: eventbus.SessionLifecycleEvent{
-			SessionID: "sess-bbb",
-			State:     eventbus.SessionStateRunning,
-		},
+	eventbus.Publish(setup.Ctx, setup.Bus, eventbus.Sessions.Lifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{
+		SessionID: "sess-bbb",
+		State:     eventbus.SessionStateRunning,
 	})
 
 	// Provider updated synchronously; lifecycle events are fire-and-forget.
@@ -761,13 +737,9 @@ func TestVoiceSessionRestart(t *testing.T) {
 
 	// Kill the session (transition to stopped)
 	setup.SessionProvider.UpdateStatus("sess-aaa", "stopped")
-	setup.Bus.Publish(setup.Ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsLifecycle,
-		Source: eventbus.SourceSessionManager,
-		Payload: eventbus.SessionLifecycleEvent{
-			SessionID: "sess-aaa",
-			State:     eventbus.SessionStateStopped,
-		},
+	eventbus.Publish(setup.Ctx, setup.Bus, eventbus.Sessions.Lifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{
+		SessionID: "sess-aaa",
+		State:     eventbus.SessionStateStopped,
 	})
 
 	// Provider updated synchronously. Router's lifecycle handler only clears

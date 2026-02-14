@@ -149,16 +149,12 @@ func TestVoicePipelineEndToEndWithBarge(t *testing.T) {
 					continue
 				}
 				replyText := "Acknowledged: " + prompt.NewMessage.Text
-				bus.Publish(context.Background(), eventbus.Envelope{
-					Topic:  eventbus.TopicConversationReply,
-					Source: eventbus.SourceConversation,
-					Payload: eventbus.ConversationReplyEvent{
-						SessionID: prompt.SessionID,
-						PromptID:  prompt.PromptID,
-						Text:      replyText,
-						Metadata: map[string]string{
-							"adapter": "mock.ai",
-						},
+				eventbus.Publish(context.Background(), bus, eventbus.Conversation.Reply, eventbus.SourceConversation, eventbus.ConversationReplyEvent{
+					SessionID: prompt.SessionID,
+					PromptID:  prompt.PromptID,
+					Text:      replyText,
+					Metadata: map[string]string{
+						"adapter": "mock.ai",
 					},
 				})
 			}
@@ -204,18 +200,14 @@ func TestVoicePipelineEndToEndWithBarge(t *testing.T) {
 		streamID = slots.TTS
 	}
 
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:  eventbus.TopicAudioInterrupt,
-		Source: eventbus.SourceClient,
-		Payload: eventbus.AudioInterruptEvent{
-			SessionID: sessionID,
-			StreamID:  streamID,
-			Reason:    "manual",
-			Metadata: map[string]string{
-				"origin": "integration-test",
-			},
-			Timestamp: time.Now().UTC(),
+	eventbus.Publish(context.Background(), bus, eventbus.Audio.Interrupt, eventbus.SourceClient, eventbus.AudioInterruptEvent{
+		SessionID: sessionID,
+		StreamID:  streamID,
+		Reason:    "manual",
+		Metadata: map[string]string{
+			"origin": "integration-test",
 		},
+		Timestamp: time.Now().UTC(),
 	})
 
 	bargeEvent := waitForBargeEvent(t, bargeSub, time.Second)
@@ -508,13 +500,9 @@ func TestAudioIngressToSTTGRPCPipeline(t *testing.T) {
 	}()
 
 	sessionID := "grpc-session"
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsLifecycle,
-		Source: eventbus.SourceSessionManager,
-		Payload: eventbus.SessionLifecycleEvent{
-			SessionID: sessionID,
-			State:     eventbus.SessionStateRunning,
-		},
+	eventbus.Publish(context.Background(), bus, eventbus.Sessions.Lifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{
+		SessionID: sessionID,
+		State:     eventbus.SessionStateRunning,
 	})
 
 	format := eventbus.AudioFormat{
@@ -610,16 +598,12 @@ func publishVADUntilBarge(t *testing.T, bus *eventbus.Bus, bargeSub *eventbus.Su
 	defer ticker.Stop()
 
 	publish := func() {
-		bus.Publish(context.Background(), eventbus.Envelope{
-			Topic:  eventbus.TopicSpeechVADDetected,
-			Source: eventbus.SourceSpeechVAD,
-			Payload: eventbus.SpeechVADEvent{
-				SessionID:  sessionID,
-				StreamID:   streamID,
-				Active:     true,
-				Confidence: 0.8,
-				Timestamp:  time.Now().UTC(),
-			},
+		eventbus.Publish(context.Background(), bus, eventbus.Speech.VADDetected, eventbus.SourceSpeechVAD, eventbus.SpeechVADEvent{
+			SessionID:  sessionID,
+			StreamID:   streamID,
+			Active:     true,
+			Confidence: 0.8,
+			Timestamp:  time.Now().UTC(),
 		})
 	}
 
@@ -822,13 +806,9 @@ func TestFullVoicePipelineEndToEnd(t *testing.T) {
 
 	// Emit session lifecycle so conversation service tracks the session.
 	const sessionID = "e2e-session"
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsLifecycle,
-		Source: eventbus.SourceSessionManager,
-		Payload: eventbus.SessionLifecycleEvent{
-			SessionID: sessionID,
-			State:     eventbus.SessionStateRunning,
-		},
+	eventbus.Publish(ctx, bus, eventbus.Sessions.Lifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{
+		SessionID: sessionID,
+		State:     eventbus.SessionStateRunning,
 	})
 
 	// Open ingress stream and write audio.
@@ -968,13 +948,9 @@ func TestFullVoicePipelineNoopAction(t *testing.T) {
 
 	// Emit session lifecycle.
 	const sessionID = "noop-session"
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsLifecycle,
-		Source: eventbus.SourceSessionManager,
-		Payload: eventbus.SessionLifecycleEvent{
-			SessionID: sessionID,
-			State:     eventbus.SessionStateRunning,
-		},
+	eventbus.Publish(ctx, bus, eventbus.Sessions.Lifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{
+		SessionID: sessionID,
+		State:     eventbus.SessionStateRunning,
 	})
 
 	stream, err := ingressSvc.OpenStream(sessionID, "mic", eventbus.AudioFormat{
@@ -1213,13 +1189,9 @@ func TestVoicePipelineEventOrdering(t *testing.T) {
 	}()
 
 	const sessionID = "ordering-session"
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsLifecycle,
-		Source: eventbus.SourceSessionManager,
-		Payload: eventbus.SessionLifecycleEvent{
-			SessionID: sessionID,
-			State:     eventbus.SessionStateRunning,
-		},
+	eventbus.Publish(ctx, bus, eventbus.Sessions.Lifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{
+		SessionID: sessionID,
+		State:     eventbus.SessionStateRunning,
 	})
 
 	stream, err := ingressSvc.OpenStream(sessionID, "mic", eventbus.AudioFormat{
@@ -1575,13 +1547,9 @@ func TestGRPCSTTAndTTSNAPPipeline(t *testing.T) {
 
 	// --- Emit session lifecycle ---
 	const sessionID = "grpc-e2e-session"
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsLifecycle,
-		Source: eventbus.SourceSessionManager,
-		Payload: eventbus.SessionLifecycleEvent{
-			SessionID: sessionID,
-			State:     eventbus.SessionStateRunning,
-		},
+	eventbus.Publish(ctx, bus, eventbus.Sessions.Lifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{
+		SessionID: sessionID,
+		State:     eventbus.SessionStateRunning,
 	})
 
 	// --- Send audio through ingress ---
@@ -1754,13 +1722,9 @@ func TestVoicePipelineTTSAdapterError(t *testing.T) {
 	defer playbackSub.Close()
 
 	const sessionID = "tts-error-session"
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsLifecycle,
-		Source: eventbus.SourceSessionManager,
-		Payload: eventbus.SessionLifecycleEvent{
-			SessionID: sessionID,
-			State:     eventbus.SessionStateRunning,
-		},
+	eventbus.Publish(ctx, bus, eventbus.Sessions.Lifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{
+		SessionID: sessionID,
+		State:     eventbus.SessionStateRunning,
 	})
 
 	stream, err := ingressSvc.OpenStream(sessionID, "mic", eventbus.AudioFormat{
@@ -1872,13 +1836,9 @@ func TestVoicePipelineGoroutineLifecycle(t *testing.T) {
 
 	// Process a full audio loop.
 	const sessionID = "goroutine-session"
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsLifecycle,
-		Source: eventbus.SourceSessionManager,
-		Payload: eventbus.SessionLifecycleEvent{
-			SessionID: sessionID,
-			State:     eventbus.SessionStateRunning,
-		},
+	eventbus.Publish(ctx, bus, eventbus.Sessions.Lifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{
+		SessionID: sessionID,
+		State:     eventbus.SessionStateRunning,
 	})
 
 	playbackSub := bus.Subscribe(eventbus.TopicAudioEgressPlayback, eventbus.WithSubscriptionName("test_playback"))
@@ -1998,13 +1958,9 @@ func TestVoicePipelinePayloadIntegrity(t *testing.T) {
 	go forwardEvents(bridgeCtx, speakSub, speakCh)
 
 	const sessionID = "integrity-session"
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsLifecycle,
-		Source: eventbus.SourceSessionManager,
-		Payload: eventbus.SessionLifecycleEvent{
-			SessionID: sessionID,
-			State:     eventbus.SessionStateRunning,
-		},
+	eventbus.Publish(ctx, bus, eventbus.Sessions.Lifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{
+		SessionID: sessionID,
+		State:     eventbus.SessionStateRunning,
 	})
 
 	stream, err := ingressSvc.OpenStream(sessionID, "mic", eventbus.AudioFormat{
@@ -2257,13 +2213,9 @@ func TestVoicePipelineBargeInDuringTTSStreaming(t *testing.T) {
 
 	// Emit session lifecycle so services track the session.
 	const sessionID = "barge-streaming-session"
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsLifecycle,
-		Source: eventbus.SourceSessionManager,
-		Payload: eventbus.SessionLifecycleEvent{
-			SessionID: sessionID,
-			State:     eventbus.SessionStateRunning,
-		},
+	eventbus.Publish(ctx, bus, eventbus.Sessions.Lifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{
+		SessionID: sessionID,
+		State:     eventbus.SessionStateRunning,
 	})
 
 	format := eventbus.AudioFormat{
@@ -2405,13 +2357,9 @@ func TestVoicePipelineBargeInRecovery(t *testing.T) {
 	defer bargeSub.Close()
 
 	const sessionID = "barge-recovery-session"
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsLifecycle,
-		Source: eventbus.SourceSessionManager,
-		Payload: eventbus.SessionLifecycleEvent{
-			SessionID: sessionID,
-			State:     eventbus.SessionStateRunning,
-		},
+	eventbus.Publish(ctx, bus, eventbus.Sessions.Lifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{
+		SessionID: sessionID,
+		State:     eventbus.SessionStateRunning,
 	})
 
 	format := eventbus.AudioFormat{
@@ -2565,13 +2513,9 @@ func TestVoicePipelineBargeInCooldown(t *testing.T) {
 	defer bargeSub.Close()
 
 	const sessionID = "barge-cooldown-session"
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsLifecycle,
-		Source: eventbus.SourceSessionManager,
-		Payload: eventbus.SessionLifecycleEvent{
-			SessionID: sessionID,
-			State:     eventbus.SessionStateRunning,
-		},
+	eventbus.Publish(ctx, bus, eventbus.Sessions.Lifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{
+		SessionID: sessionID,
+		State:     eventbus.SessionStateRunning,
 	})
 
 	format := eventbus.AudioFormat{
@@ -2606,16 +2550,12 @@ func TestVoicePipelineBargeInCooldown(t *testing.T) {
 	// Timestamp is relative to the first barge event (50ms after) so it is
 	// guaranteed to fall within the 200ms cooldown window regardless of
 	// wall-clock delays on slow CI.
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicSpeechVADDetected,
-		Source: eventbus.SourceSpeechVAD,
-		Payload: eventbus.SpeechVADEvent{
-			SessionID:  sessionID,
-			StreamID:   "mic",
-			Active:     true,
-			Confidence: 0.9,
-			Timestamp:  bargeEvt.Timestamp.Add(50 * time.Millisecond),
-		},
+	eventbus.Publish(ctx, bus, eventbus.Speech.VADDetected, eventbus.SourceSpeechVAD, eventbus.SpeechVADEvent{
+		SessionID:  sessionID,
+		StreamID:   "mic",
+		Active:     true,
+		Confidence: 0.9,
+		Timestamp:  bargeEvt.Timestamp.Add(50 * time.Millisecond),
 	})
 
 	// Wait long enough for the barge coordinator to process the second VAD.
@@ -2720,13 +2660,9 @@ func TestVoicePipelineBargeInQuietPeriod(t *testing.T) {
 	defer playbackSub.Close()
 
 	const sessionID = "barge-quiet-session"
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsLifecycle,
-		Source: eventbus.SourceSessionManager,
-		Payload: eventbus.SessionLifecycleEvent{
-			SessionID: sessionID,
-			State:     eventbus.SessionStateRunning,
-		},
+	eventbus.Publish(ctx, bus, eventbus.Sessions.Lifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{
+		SessionID: sessionID,
+		State:     eventbus.SessionStateRunning,
 	})
 
 	format := eventbus.AudioFormat{
@@ -2766,16 +2702,12 @@ func TestVoicePipelineBargeInQuietPeriod(t *testing.T) {
 	// Publish VAD within the quiet period (300ms).
 	// Explicit Timestamp ensures the barge coordinator evaluates quiet period
 	// against publish time, not processing time.
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicSpeechVADDetected,
-		Source: eventbus.SourceSpeechVAD,
-		Payload: eventbus.SpeechVADEvent{
-			SessionID:  sessionID,
-			StreamID:   "mic",
-			Active:     true,
-			Confidence: 0.8,
-			Timestamp:  time.Now().UTC(),
-		},
+	eventbus.Publish(ctx, bus, eventbus.Speech.VADDetected, eventbus.SourceSpeechVAD, eventbus.SpeechVADEvent{
+		SessionID:  sessionID,
+		StreamID:   "mic",
+		Active:     true,
+		Confidence: 0.8,
+		Timestamp:  time.Now().UTC(),
 	})
 
 	// Wait for quiet period + buffer to catch any delayed barge events.
@@ -2878,13 +2810,9 @@ func TestVoiceFallbackServicesStartWithoutAdapters(t *testing.T) {
 	defer lifecycleSub.Close()
 
 	const sessionID = "fallback-session"
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsLifecycle,
-		Source: eventbus.SourceSessionManager,
-		Payload: eventbus.SessionLifecycleEvent{
-			SessionID: sessionID,
-			State:     eventbus.SessionStateRunning,
-		},
+	eventbus.Publish(ctx, bus, eventbus.Sessions.Lifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{
+		SessionID: sessionID,
+		State:     eventbus.SessionStateRunning,
 	})
 
 	timer := time.NewTimer(time.Second)
@@ -2961,28 +2889,20 @@ func TestVoiceFallbackEgressDropsWithoutTTS(t *testing.T) {
 	const sessionID = "fallback-egress-session"
 
 	// Emit session lifecycle so conversation service tracks the session.
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsLifecycle,
-		Source: eventbus.SourceSessionManager,
-		Payload: eventbus.SessionLifecycleEvent{
-			SessionID: sessionID,
-			State:     eventbus.SessionStateRunning,
-		},
+	eventbus.Publish(ctx, bus, eventbus.Sessions.Lifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{
+		SessionID: sessionID,
+		State:     eventbus.SessionStateRunning,
 	})
 
 	// Publish a conversation reply — this triggers the egress consumeReplies
 	// path which calls handleSpeakRequest → createStream → factory returns
 	// ErrFactoryUnavailable → request dropped.
 	const replyText = "This is the AI response text"
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicConversationReply,
-		Source: eventbus.SourceConversation,
-		Payload: eventbus.ConversationReplyEvent{
-			SessionID: sessionID,
-			PromptID:  "test-prompt-1",
-			Text:      replyText,
-			Metadata:  map[string]string{"adapter": "mock.ai"},
-		},
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Reply, eventbus.SourceConversation, eventbus.ConversationReplyEvent{
+		SessionID: sessionID,
+		PromptID:  "test-prompt-1",
+		Text:      replyText,
+		Metadata:  map[string]string{"adapter": "mock.ai"},
 	})
 
 	// Verify the reply text is available on the bus (proves text-mode works).
@@ -3155,25 +3075,17 @@ func TestVoiceFallbackBargeInertWithoutVAD(t *testing.T) {
 	defer playbackSub.Close()
 
 	const sessionID = "fallback-barge-session"
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsLifecycle,
-		Source: eventbus.SourceSessionManager,
-		Payload: eventbus.SessionLifecycleEvent{
-			SessionID: sessionID,
-			State:     eventbus.SessionStateRunning,
-		},
+	eventbus.Publish(ctx, bus, eventbus.Sessions.Lifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{
+		SessionID: sessionID,
+		State:     eventbus.SessionStateRunning,
 	})
 
 	// Trigger TTS playback via conversation reply (egress has TTS factory).
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicConversationReply,
-		Source: eventbus.SourceConversation,
-		Payload: eventbus.ConversationReplyEvent{
-			SessionID: sessionID,
-			PromptID:  "test-prompt",
-			Text:      "Hello from the AI",
-			Metadata:  map[string]string{"adapter": "mock.ai"},
-		},
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Reply, eventbus.SourceConversation, eventbus.ConversationReplyEvent{
+		SessionID: sessionID,
+		PromptID:  "test-prompt",
+		Text:      "Hello from the AI",
+		Metadata:  map[string]string{"adapter": "mock.ai"},
 	})
 
 	// Wait for first playback chunk.
@@ -3196,16 +3108,12 @@ func TestVoiceFallbackBargeInertWithoutVAD(t *testing.T) {
 	}
 
 	// Client-initiated interrupt still works without VAD.
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicAudioInterrupt,
-		Source: eventbus.SourceClient,
-		Payload: eventbus.AudioInterruptEvent{
-			SessionID: sessionID,
-			StreamID:  streamID,
-			Reason:    "manual",
-			Metadata:  map[string]string{"origin": "test"},
-			Timestamp: time.Now().UTC(),
-		},
+	eventbus.Publish(ctx, bus, eventbus.Audio.Interrupt, eventbus.SourceClient, eventbus.AudioInterruptEvent{
+		SessionID: sessionID,
+		StreamID:  streamID,
+		Reason:    "manual",
+		Metadata:  map[string]string{"origin": "test"},
+		Timestamp: time.Now().UTC(),
 	})
 
 	bargeEvt := waitForBargeEvent(t, bargeSub, 2*time.Second)
@@ -3271,27 +3179,19 @@ func TestVoiceFallbackEgressBuffersWithAdapterFactory(t *testing.T) {
 	defer playbackSub.Close()
 
 	const sessionID = "fallback-adapter-factory-session"
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsLifecycle,
-		Source: eventbus.SourceSessionManager,
-		Payload: eventbus.SessionLifecycleEvent{
-			SessionID: sessionID,
-			State:     eventbus.SessionStateRunning,
-		},
+	eventbus.Publish(ctx, bus, eventbus.Sessions.Lifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{
+		SessionID: sessionID,
+		State:     eventbus.SessionStateRunning,
 	})
 
 	// Publish conversation reply — egress receives it, calls factory.Create(),
 	// gets ErrAdapterUnavailable, buffers the request with retry backoff.
 	const replyText = "AI response via adapter factory path"
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicConversationReply,
-		Source: eventbus.SourceConversation,
-		Payload: eventbus.ConversationReplyEvent{
-			SessionID: sessionID,
-			PromptID:  "test-prompt-af",
-			Text:      replyText,
-			Metadata:  map[string]string{"adapter": "mock.ai"},
-		},
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Reply, eventbus.SourceConversation, eventbus.ConversationReplyEvent{
+		SessionID: sessionID,
+		PromptID:  "test-prompt-af",
+		Text:      replyText,
+		Metadata:  map[string]string{"adapter": "mock.ai"},
 	})
 
 	// Reply text must be on the bus regardless of TTS availability.
@@ -3582,13 +3482,9 @@ func TestVADDrivenVoiceLoop(t *testing.T) {
 	go forwardEvents(bridgeCtx, promptSub, promptCh)
 
 	const sessionID = "vad-loop-session"
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsLifecycle,
-		Source: eventbus.SourceSessionManager,
-		Payload: eventbus.SessionLifecycleEvent{
-			SessionID: sessionID,
-			State:     eventbus.SessionStateRunning,
-		},
+	eventbus.Publish(ctx, bus, eventbus.Sessions.Lifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{
+		SessionID: sessionID,
+		State:     eventbus.SessionStateRunning,
 	})
 
 	format := eventbus.AudioFormat{
@@ -3832,13 +3728,9 @@ func TestVADBargeInDuringPlayback(t *testing.T) {
 	defer bargeSub.Close()
 
 	const sessionID = "vad-barge-session"
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicSessionsLifecycle,
-		Source: eventbus.SourceSessionManager,
-		Payload: eventbus.SessionLifecycleEvent{
-			SessionID: sessionID,
-			State:     eventbus.SessionStateRunning,
-		},
+	eventbus.Publish(ctx, bus, eventbus.Sessions.Lifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{
+		SessionID: sessionID,
+		State:     eventbus.SessionStateRunning,
 	})
 
 	format := eventbus.AudioFormat{
@@ -3992,13 +3884,9 @@ func TestVADMultiSessionIsolation(t *testing.T) {
 	const sessionB = "multi-session-b"
 
 	for _, sid := range []string{sessionA, sessionB} {
-		bus.Publish(ctx, eventbus.Envelope{
-			Topic:  eventbus.TopicSessionsLifecycle,
-			Source: eventbus.SourceSessionManager,
-			Payload: eventbus.SessionLifecycleEvent{
-				SessionID: sid,
-				State:     eventbus.SessionStateRunning,
-			},
+		eventbus.Publish(ctx, bus, eventbus.Sessions.Lifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{
+			SessionID: sid,
+			State:     eventbus.SessionStateRunning,
 		})
 	}
 

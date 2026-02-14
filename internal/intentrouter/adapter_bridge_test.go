@@ -135,15 +135,11 @@ func TestAdapterBridgeSetsAdapterOnReady(t *testing.T) {
 	}
 
 	// Publish adapter ready event for AI slot
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicAdaptersStatus,
-		Source: eventbus.SourceAdaptersService,
-		Payload: eventbus.AdapterStatusEvent{
-			AdapterID: adapters.MockAIAdapterID,
-			Slot:      string(adapters.SlotAI),
-			Status:    eventbus.AdapterHealthReady,
-			Message:   "adapter ready",
-		},
+	eventbus.Publish(ctx, bus, eventbus.Adapters.Status, eventbus.SourceAdaptersService, eventbus.AdapterStatusEvent{
+		AdapterID: adapters.MockAIAdapterID,
+		Slot:      string(adapters.SlotAI),
+		Status:    eventbus.AdapterHealthReady,
+		Message:   "adapter ready",
 	})
 
 	// Wait for adapter to be configured
@@ -172,15 +168,11 @@ func TestAdapterBridgeClearsAdapterOnStopped(t *testing.T) {
 	}
 
 	// First, set the adapter as ready
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicAdaptersStatus,
-		Source: eventbus.SourceAdaptersService,
-		Payload: eventbus.AdapterStatusEvent{
-			AdapterID: adapters.MockAIAdapterID,
-			Slot:      string(adapters.SlotAI),
-			Status:    eventbus.AdapterHealthReady,
-			Message:   "adapter ready",
-		},
+	eventbus.Publish(ctx, bus, eventbus.Adapters.Status, eventbus.SourceAdaptersService, eventbus.AdapterStatusEvent{
+		AdapterID: adapters.MockAIAdapterID,
+		Slot:      string(adapters.SlotAI),
+		Status:    eventbus.AdapterHealthReady,
+		Message:   "adapter ready",
 	})
 
 	// Wait for adapter to be configured
@@ -189,15 +181,11 @@ func TestAdapterBridgeClearsAdapterOnStopped(t *testing.T) {
 	}, "adapter should be set after ready event")
 
 	// Now stop the adapter
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicAdaptersStatus,
-		Source: eventbus.SourceAdaptersService,
-		Payload: eventbus.AdapterStatusEvent{
-			AdapterID: adapters.MockAIAdapterID,
-			Slot:      string(adapters.SlotAI),
-			Status:    eventbus.AdapterHealthStopped,
-			Message:   "adapter stopped",
-		},
+	eventbus.Publish(ctx, bus, eventbus.Adapters.Status, eventbus.SourceAdaptersService, eventbus.AdapterStatusEvent{
+		AdapterID: adapters.MockAIAdapterID,
+		Slot:      string(adapters.SlotAI),
+		Status:    eventbus.AdapterHealthStopped,
+		Message:   "adapter stopped",
 	})
 
 	// Wait for adapter to be cleared
@@ -225,15 +213,11 @@ func TestAdapterBridgeClearsAdapterOnError(t *testing.T) {
 	}
 
 	// First, set the adapter as ready
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicAdaptersStatus,
-		Source: eventbus.SourceAdaptersService,
-		Payload: eventbus.AdapterStatusEvent{
-			AdapterID: adapters.MockAIAdapterID,
-			Slot:      string(adapters.SlotAI),
-			Status:    eventbus.AdapterHealthReady,
-			Message:   "adapter ready",
-		},
+	eventbus.Publish(ctx, bus, eventbus.Adapters.Status, eventbus.SourceAdaptersService, eventbus.AdapterStatusEvent{
+		AdapterID: adapters.MockAIAdapterID,
+		Slot:      string(adapters.SlotAI),
+		Status:    eventbus.AdapterHealthReady,
+		Message:   "adapter ready",
 	})
 
 	waitForCondition(t, time.Second, func() bool {
@@ -241,15 +225,11 @@ func TestAdapterBridgeClearsAdapterOnError(t *testing.T) {
 	}, "adapter should be set")
 
 	// Now send error event
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicAdaptersStatus,
-		Source: eventbus.SourceAdaptersService,
-		Payload: eventbus.AdapterStatusEvent{
-			AdapterID: adapters.MockAIAdapterID,
-			Slot:      string(adapters.SlotAI),
-			Status:    eventbus.AdapterHealthError,
-			Message:   "adapter crashed",
-		},
+	eventbus.Publish(ctx, bus, eventbus.Adapters.Status, eventbus.SourceAdaptersService, eventbus.AdapterStatusEvent{
+		AdapterID: adapters.MockAIAdapterID,
+		Slot:      string(adapters.SlotAI),
+		Status:    eventbus.AdapterHealthError,
+		Message:   "adapter crashed",
 	})
 
 	// Adapter should be cleared on error
@@ -277,15 +257,11 @@ func TestAdapterBridgeClearsAdapterOnDegraded(t *testing.T) {
 	}
 
 	// Set adapter as ready
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicAdaptersStatus,
-		Source: eventbus.SourceAdaptersService,
-		Payload: eventbus.AdapterStatusEvent{
-			AdapterID: adapters.MockAIAdapterID,
-			Slot:      string(adapters.SlotAI),
-			Status:    eventbus.AdapterHealthReady,
-			Message:   "adapter ready",
-		},
+	eventbus.Publish(ctx, bus, eventbus.Adapters.Status, eventbus.SourceAdaptersService, eventbus.AdapterStatusEvent{
+		AdapterID: adapters.MockAIAdapterID,
+		Slot:      string(adapters.SlotAI),
+		Status:    eventbus.AdapterHealthReady,
+		Message:   "adapter ready",
 	})
 
 	waitForCondition(t, time.Second, func() bool {
@@ -293,15 +269,11 @@ func TestAdapterBridgeClearsAdapterOnDegraded(t *testing.T) {
 	}, "adapter should be set")
 
 	// Send degraded event
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicAdaptersStatus,
-		Source: eventbus.SourceAdaptersService,
-		Payload: eventbus.AdapterStatusEvent{
-			AdapterID: adapters.MockAIAdapterID,
-			Slot:      string(adapters.SlotAI),
-			Status:    eventbus.AdapterHealthDegraded,
-			Message:   "adapter degraded",
-		},
+	eventbus.Publish(ctx, bus, eventbus.Adapters.Status, eventbus.SourceAdaptersService, eventbus.AdapterStatusEvent{
+		AdapterID: adapters.MockAIAdapterID,
+		Slot:      string(adapters.SlotAI),
+		Status:    eventbus.AdapterHealthDegraded,
+		Message:   "adapter degraded",
 	})
 
 	// Adapter should be cleared on degraded
@@ -329,15 +301,11 @@ func TestAdapterBridgeIgnoresNonAISlot(t *testing.T) {
 	}
 
 	// Publish adapter ready event for STT slot (should be ignored)
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicAdaptersStatus,
-		Source: eventbus.SourceAdaptersService,
-		Payload: eventbus.AdapterStatusEvent{
-			AdapterID: adapters.MockSTTAdapterID,
-			Slot:      string(adapters.SlotSTT),
-			Status:    eventbus.AdapterHealthReady,
-			Message:   "adapter ready",
-		},
+	eventbus.Publish(ctx, bus, eventbus.Adapters.Status, eventbus.SourceAdaptersService, eventbus.AdapterStatusEvent{
+		AdapterID: adapters.MockSTTAdapterID,
+		Slot:      string(adapters.SlotSTT),
+		Status:    eventbus.AdapterHealthReady,
+		Message:   "adapter ready",
 	})
 
 	// Give some time for event to be processed
@@ -555,15 +523,11 @@ func TestAdapterBridgeIntegrationWithManagerService(t *testing.T) {
 	}
 
 	// Simulate adapter error event
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicAdaptersStatus,
-		Source: eventbus.SourceAdaptersService,
-		Payload: eventbus.AdapterStatusEvent{
-			AdapterID: adapters.MockAIAdapterID,
-			Slot:      string(adapters.SlotAI),
-			Status:    eventbus.AdapterHealthError,
-			Message:   "simulated error",
-		},
+	eventbus.Publish(ctx, bus, eventbus.Adapters.Status, eventbus.SourceAdaptersService, eventbus.AdapterStatusEvent{
+		AdapterID: adapters.MockAIAdapterID,
+		Slot:      string(adapters.SlotAI),
+		Status:    eventbus.AdapterHealthError,
+		Message:   "simulated error",
 	})
 
 	// Wait for adapter to be cleared
@@ -572,15 +536,11 @@ func TestAdapterBridgeIntegrationWithManagerService(t *testing.T) {
 	}, "adapter should be cleared after error event")
 
 	// Simulate adapter recovery
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicAdaptersStatus,
-		Source: eventbus.SourceAdaptersService,
-		Payload: eventbus.AdapterStatusEvent{
-			AdapterID: adapters.MockAIAdapterID,
-			Slot:      string(adapters.SlotAI),
-			Status:    eventbus.AdapterHealthReady,
-			Message:   "adapter recovered",
-		},
+	eventbus.Publish(ctx, bus, eventbus.Adapters.Status, eventbus.SourceAdaptersService, eventbus.AdapterStatusEvent{
+		AdapterID: adapters.MockAIAdapterID,
+		Slot:      string(adapters.SlotAI),
+		Status:    eventbus.AdapterHealthReady,
+		Message:   "adapter recovered",
 	})
 
 	// Wait for adapter to be reconfigured
@@ -612,15 +572,11 @@ func TestAdapterBridgePreservesAdapterOnCreationFailure(t *testing.T) {
 	}
 
 	// First, set up a working mock adapter
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicAdaptersStatus,
-		Source: eventbus.SourceAdaptersService,
-		Payload: eventbus.AdapterStatusEvent{
-			AdapterID: adapters.MockAIAdapterID,
-			Slot:      string(adapters.SlotAI),
-			Status:    eventbus.AdapterHealthReady,
-			Message:   "adapter ready",
-		},
+	eventbus.Publish(ctx, bus, eventbus.Adapters.Status, eventbus.SourceAdaptersService, eventbus.AdapterStatusEvent{
+		AdapterID: adapters.MockAIAdapterID,
+		Slot:      string(adapters.SlotAI),
+		Status:    eventbus.AdapterHealthReady,
+		Message:   "adapter ready",
 	})
 
 	waitForCondition(t, time.Second, func() bool {
@@ -628,16 +584,12 @@ func TestAdapterBridgePreservesAdapterOnCreationFailure(t *testing.T) {
 	}, "mock adapter should be configured")
 
 	// Now try to switch to a NAP adapter without address (will fail)
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicAdaptersStatus,
-		Source: eventbus.SourceAdaptersService,
-		Payload: eventbus.AdapterStatusEvent{
-			AdapterID: "some.nap.adapter",
-			Slot:      string(adapters.SlotAI),
-			Status:    eventbus.AdapterHealthReady,
-			Message:   "adapter ready",
-			Extra:     nil, // No address - will fail
-		},
+	eventbus.Publish(ctx, bus, eventbus.Adapters.Status, eventbus.SourceAdaptersService, eventbus.AdapterStatusEvent{
+		AdapterID: "some.nap.adapter",
+		Slot:      string(adapters.SlotAI),
+		Status:    eventbus.AdapterHealthReady,
+		Message:   "adapter ready",
+		Extra:     nil, // No address - will fail
 	})
 
 	// Give time for event to be processed
@@ -674,17 +626,13 @@ func TestAdapterBridgeReconnectsOnAddressChange(t *testing.T) {
 	}
 
 	// Configure mock adapter (address doesn't matter for mocks)
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicAdaptersStatus,
-		Source: eventbus.SourceAdaptersService,
-		Payload: eventbus.AdapterStatusEvent{
-			AdapterID: adapters.MockAIAdapterID,
-			Slot:      string(adapters.SlotAI),
-			Status:    eventbus.AdapterHealthReady,
-			Message:   "adapter ready",
-			Extra: map[string]string{
-				adapters.RuntimeExtraAddress: "/tmp/socket1.sock",
-			},
+	eventbus.Publish(ctx, bus, eventbus.Adapters.Status, eventbus.SourceAdaptersService, eventbus.AdapterStatusEvent{
+		AdapterID: adapters.MockAIAdapterID,
+		Slot:      string(adapters.SlotAI),
+		Status:    eventbus.AdapterHealthReady,
+		Message:   "adapter ready",
+		Extra: map[string]string{
+			adapters.RuntimeExtraAddress: "/tmp/socket1.sock",
 		},
 	})
 
@@ -702,17 +650,13 @@ func TestAdapterBridgeReconnectsOnAddressChange(t *testing.T) {
 	}
 
 	// Same adapter, different address - should reconfigure
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicAdaptersStatus,
-		Source: eventbus.SourceAdaptersService,
-		Payload: eventbus.AdapterStatusEvent{
-			AdapterID: adapters.MockAIAdapterID,
-			Slot:      string(adapters.SlotAI),
-			Status:    eventbus.AdapterHealthReady,
-			Message:   "adapter restarted on new port",
-			Extra: map[string]string{
-				adapters.RuntimeExtraAddress: "/tmp/socket2.sock",
-			},
+	eventbus.Publish(ctx, bus, eventbus.Adapters.Status, eventbus.SourceAdaptersService, eventbus.AdapterStatusEvent{
+		AdapterID: adapters.MockAIAdapterID,
+		Slot:      string(adapters.SlotAI),
+		Status:    eventbus.AdapterHealthReady,
+		Message:   "adapter restarted on new port",
+		Extra: map[string]string{
+			adapters.RuntimeExtraAddress: "/tmp/socket2.sock",
 		},
 	})
 
@@ -846,16 +790,12 @@ func TestAdapterBridgeReconfiguresOnEveryReady(t *testing.T) {
 	}
 
 	// First READY event
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicAdaptersStatus,
-		Source: eventbus.SourceAdaptersService,
-		Payload: eventbus.AdapterStatusEvent{
-			AdapterID: adapters.MockAIAdapterID,
-			Slot:      string(adapters.SlotAI),
-			Status:    eventbus.AdapterHealthReady,
-			Extra: map[string]string{
-				adapters.RuntimeExtraAddress: "/tmp/socket.sock",
-			},
+	eventbus.Publish(ctx, bus, eventbus.Adapters.Status, eventbus.SourceAdaptersService, eventbus.AdapterStatusEvent{
+		AdapterID: adapters.MockAIAdapterID,
+		Slot:      string(adapters.SlotAI),
+		Status:    eventbus.AdapterHealthReady,
+		Extra: map[string]string{
+			adapters.RuntimeExtraAddress: "/tmp/socket.sock",
 		},
 	})
 
@@ -872,16 +812,12 @@ func TestAdapterBridgeReconfiguresOnEveryReady(t *testing.T) {
 	controller.setConfig(`{"model": "v2"}`)
 
 	// Second READY event immediately (no debounce - always reconfigures)
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicAdaptersStatus,
-		Source: eventbus.SourceAdaptersService,
-		Payload: eventbus.AdapterStatusEvent{
-			AdapterID: adapters.MockAIAdapterID,
-			Slot:      string(adapters.SlotAI),
-			Status:    eventbus.AdapterHealthReady,
-			Extra: map[string]string{
-				adapters.RuntimeExtraAddress: "/tmp/socket.sock",
-			},
+	eventbus.Publish(ctx, bus, eventbus.Adapters.Status, eventbus.SourceAdaptersService, eventbus.AdapterStatusEvent{
+		AdapterID: adapters.MockAIAdapterID,
+		Slot:      string(adapters.SlotAI),
+		Status:    eventbus.AdapterHealthReady,
+		Extra: map[string]string{
+			adapters.RuntimeExtraAddress: "/tmp/socket.sock",
 		},
 	})
 
@@ -993,15 +929,11 @@ func TestAdapterBridgePublishesErrorOnNoAddress(t *testing.T) {
 	}
 
 	// Publish READY for NAP adapter without address (will fail to create)
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicAdaptersStatus,
-		Source: eventbus.SourceAdaptersService,
-		Payload: eventbus.AdapterStatusEvent{
-			AdapterID: "some.nap.adapter",
-			Slot:      string(adapters.SlotAI),
-			Status:    eventbus.AdapterHealthReady,
-			Extra:     nil, // No address
-		},
+	eventbus.Publish(ctx, bus, eventbus.Adapters.Status, eventbus.SourceAdaptersService, eventbus.AdapterStatusEvent{
+		AdapterID: "some.nap.adapter",
+		Slot:      string(adapters.SlotAI),
+		Status:    eventbus.AdapterHealthReady,
+		Extra:     nil, // No address
 	})
 
 	// Wait for error event
@@ -1066,14 +998,10 @@ func TestAdapterBridgePublishesErrorOnControllerError(t *testing.T) {
 	defer sub.Close()
 
 	// Publish READY - config lookup will fail because controller returns error
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicAdaptersStatus,
-		Source: eventbus.SourceAdaptersService,
-		Payload: eventbus.AdapterStatusEvent{
-			AdapterID: "some.adapter",
-			Slot:      string(adapters.SlotAI),
-			Status:    eventbus.AdapterHealthReady,
-		},
+	eventbus.Publish(ctx, bus, eventbus.Adapters.Status, eventbus.SourceAdaptersService, eventbus.AdapterStatusEvent{
+		AdapterID: "some.adapter",
+		Slot:      string(adapters.SlotAI),
+		Status:    eventbus.AdapterHealthReady,
 	})
 
 	// Collect diagnostic events for our adapter
@@ -1134,16 +1062,12 @@ func TestAdapterBridgeCircuitBreakerBackoff(t *testing.T) {
 
 	// Send multiple READY events to trigger circuit breaker
 	for i := 0; i < maxConsecutiveErrors+1; i++ {
-		bus.Publish(ctx, eventbus.Envelope{
-			Topic:  eventbus.TopicAdaptersStatus,
-			Source: eventbus.SourceAdaptersService,
-			Payload: eventbus.AdapterStatusEvent{
-				AdapterID: "some.adapter",
-				Slot:      string(adapters.SlotAI),
-				Status:    eventbus.AdapterHealthReady,
-				Extra: map[string]string{
-					adapters.RuntimeExtraAddress: "/tmp/test.sock",
-				},
+		eventbus.Publish(ctx, bus, eventbus.Adapters.Status, eventbus.SourceAdaptersService, eventbus.AdapterStatusEvent{
+			AdapterID: "some.adapter",
+			Slot:      string(adapters.SlotAI),
+			Status:    eventbus.AdapterHealthReady,
+			Extra: map[string]string{
+				adapters.RuntimeExtraAddress: "/tmp/test.sock",
 			},
 		})
 		time.Sleep(20 * time.Millisecond)
@@ -1192,14 +1116,10 @@ func TestAdapterBridgeCircuitBreakerReset(t *testing.T) {
 	bridge.mu.Unlock()
 
 	// Now send a successful READY (mock adapter works without controller)
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicAdaptersStatus,
-		Source: eventbus.SourceAdaptersService,
-		Payload: eventbus.AdapterStatusEvent{
-			AdapterID: adapters.MockAIAdapterID,
-			Slot:      string(adapters.SlotAI),
-			Status:    eventbus.AdapterHealthReady,
-		},
+	eventbus.Publish(ctx, bus, eventbus.Adapters.Status, eventbus.SourceAdaptersService, eventbus.AdapterStatusEvent{
+		AdapterID: adapters.MockAIAdapterID,
+		Slot:      string(adapters.SlotAI),
+		Status:    eventbus.AdapterHealthReady,
 	})
 
 	waitForCondition(t, time.Second, func() bool {
@@ -1289,14 +1209,10 @@ func TestAdapterBridgeCircuitBreakerResetOnStopped(t *testing.T) {
 	}
 
 	// First, configure an adapter
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicAdaptersStatus,
-		Source: eventbus.SourceAdaptersService,
-		Payload: eventbus.AdapterStatusEvent{
-			AdapterID: adapters.MockAIAdapterID,
-			Slot:      string(adapters.SlotAI),
-			Status:    eventbus.AdapterHealthReady,
-		},
+	eventbus.Publish(ctx, bus, eventbus.Adapters.Status, eventbus.SourceAdaptersService, eventbus.AdapterStatusEvent{
+		AdapterID: adapters.MockAIAdapterID,
+		Slot:      string(adapters.SlotAI),
+		Status:    eventbus.AdapterHealthReady,
 	})
 
 	waitForCondition(t, time.Second, func() bool {
@@ -1310,14 +1226,10 @@ func TestAdapterBridgeCircuitBreakerResetOnStopped(t *testing.T) {
 	bridge.mu.Unlock()
 
 	// Send STOPPED event
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicAdaptersStatus,
-		Source: eventbus.SourceAdaptersService,
-		Payload: eventbus.AdapterStatusEvent{
-			AdapterID: adapters.MockAIAdapterID,
-			Slot:      string(adapters.SlotAI),
-			Status:    eventbus.AdapterHealthStopped,
-		},
+	eventbus.Publish(ctx, bus, eventbus.Adapters.Status, eventbus.SourceAdaptersService, eventbus.AdapterStatusEvent{
+		AdapterID: adapters.MockAIAdapterID,
+		Slot:      string(adapters.SlotAI),
+		Status:    eventbus.AdapterHealthStopped,
 	})
 
 	// Wait for STOPPED to be processed
@@ -1358,14 +1270,10 @@ func TestAdapterBridgeCircuitBreakerResetOnError(t *testing.T) {
 	}
 
 	// First, configure an adapter
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicAdaptersStatus,
-		Source: eventbus.SourceAdaptersService,
-		Payload: eventbus.AdapterStatusEvent{
-			AdapterID: adapters.MockAIAdapterID,
-			Slot:      string(adapters.SlotAI),
-			Status:    eventbus.AdapterHealthReady,
-		},
+	eventbus.Publish(ctx, bus, eventbus.Adapters.Status, eventbus.SourceAdaptersService, eventbus.AdapterStatusEvent{
+		AdapterID: adapters.MockAIAdapterID,
+		Slot:      string(adapters.SlotAI),
+		Status:    eventbus.AdapterHealthReady,
 	})
 
 	waitForCondition(t, time.Second, func() bool {
@@ -1379,15 +1287,11 @@ func TestAdapterBridgeCircuitBreakerResetOnError(t *testing.T) {
 	bridge.mu.Unlock()
 
 	// Send ERROR event (from adapters.Service, e.g., adapter crashed)
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicAdaptersStatus,
-		Source: eventbus.SourceAdaptersService,
-		Payload: eventbus.AdapterStatusEvent{
-			AdapterID: adapters.MockAIAdapterID,
-			Slot:      string(adapters.SlotAI),
-			Status:    eventbus.AdapterHealthError,
-			Message:   "adapter crashed",
-		},
+	eventbus.Publish(ctx, bus, eventbus.Adapters.Status, eventbus.SourceAdaptersService, eventbus.AdapterStatusEvent{
+		AdapterID: adapters.MockAIAdapterID,
+		Slot:      string(adapters.SlotAI),
+		Status:    eventbus.AdapterHealthError,
+		Message:   "adapter crashed",
 	})
 
 	// Wait for ERROR to be processed
@@ -1447,16 +1351,12 @@ func TestAdapterBridgeCircuitBreakerResetOnAdapterChange(t *testing.T) {
 
 	// Build up errors for "failing.adapter"
 	for i := 0; i < maxConsecutiveErrors+1; i++ {
-		bus.Publish(ctx, eventbus.Envelope{
-			Topic:  eventbus.TopicAdaptersStatus,
-			Source: eventbus.SourceAdaptersService,
-			Payload: eventbus.AdapterStatusEvent{
-				AdapterID: "failing.adapter",
-				Slot:      string(adapters.SlotAI),
-				Status:    eventbus.AdapterHealthReady,
-				Extra: map[string]string{
-					adapters.RuntimeExtraAddress: "/tmp/fail.sock",
-				},
+		eventbus.Publish(ctx, bus, eventbus.Adapters.Status, eventbus.SourceAdaptersService, eventbus.AdapterStatusEvent{
+			AdapterID: "failing.adapter",
+			Slot:      string(adapters.SlotAI),
+			Status:    eventbus.AdapterHealthReady,
+			Extra: map[string]string{
+				adapters.RuntimeExtraAddress: "/tmp/fail.sock",
 			},
 		})
 		time.Sleep(20 * time.Millisecond)
@@ -1476,14 +1376,10 @@ func TestAdapterBridgeCircuitBreakerResetOnAdapterChange(t *testing.T) {
 
 	// Now switch to a different adapter (mock adapter)
 	// This should reset circuit breaker and process immediately
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicAdaptersStatus,
-		Source: eventbus.SourceAdaptersService,
-		Payload: eventbus.AdapterStatusEvent{
-			AdapterID: adapters.MockAIAdapterID,
-			Slot:      string(adapters.SlotAI),
-			Status:    eventbus.AdapterHealthReady,
-		},
+	eventbus.Publish(ctx, bus, eventbus.Adapters.Status, eventbus.SourceAdaptersService, eventbus.AdapterStatusEvent{
+		AdapterID: adapters.MockAIAdapterID,
+		Slot:      string(adapters.SlotAI),
+		Status:    eventbus.AdapterHealthReady,
 	})
 
 	// Should configure immediately (no backoff for different adapter)
@@ -1522,16 +1418,12 @@ func TestAdapterBridgeCircuitBreakerResetOnAddressChange(t *testing.T) {
 	}
 
 	// Configure adapter at address1
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicAdaptersStatus,
-		Source: eventbus.SourceAdaptersService,
-		Payload: eventbus.AdapterStatusEvent{
-			AdapterID: adapters.MockAIAdapterID,
-			Slot:      string(adapters.SlotAI),
-			Status:    eventbus.AdapterHealthReady,
-			Extra: map[string]string{
-				adapters.RuntimeExtraAddress: "/tmp/addr1.sock",
-			},
+	eventbus.Publish(ctx, bus, eventbus.Adapters.Status, eventbus.SourceAdaptersService, eventbus.AdapterStatusEvent{
+		AdapterID: adapters.MockAIAdapterID,
+		Slot:      string(adapters.SlotAI),
+		Status:    eventbus.AdapterHealthReady,
+		Extra: map[string]string{
+			adapters.RuntimeExtraAddress: "/tmp/addr1.sock",
 		},
 	})
 
@@ -1546,16 +1438,12 @@ func TestAdapterBridgeCircuitBreakerResetOnAddressChange(t *testing.T) {
 	bridge.mu.Unlock()
 
 	// Same adapter but different address (e.g., restarted on new port after config fix)
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicAdaptersStatus,
-		Source: eventbus.SourceAdaptersService,
-		Payload: eventbus.AdapterStatusEvent{
-			AdapterID: adapters.MockAIAdapterID,
-			Slot:      string(adapters.SlotAI),
-			Status:    eventbus.AdapterHealthReady,
-			Extra: map[string]string{
-				adapters.RuntimeExtraAddress: "/tmp/addr2.sock", // Different address!
-			},
+	eventbus.Publish(ctx, bus, eventbus.Adapters.Status, eventbus.SourceAdaptersService, eventbus.AdapterStatusEvent{
+		AdapterID: adapters.MockAIAdapterID,
+		Slot:      string(adapters.SlotAI),
+		Status:    eventbus.AdapterHealthReady,
+		Extra: map[string]string{
+			adapters.RuntimeExtraAddress: "/tmp/addr2.sock", // Different address!
 		},
 	})
 
@@ -1660,14 +1548,10 @@ func TestAdapterBridgeConfigValidationAgainstManifest(t *testing.T) {
 	defer sub.Close()
 
 	// Publish READY - config validation should fail
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicAdaptersStatus,
-		Source: eventbus.SourceAdaptersService,
-		Payload: eventbus.AdapterStatusEvent{
-			AdapterID: adapterID,
-			Slot:      string(adapters.SlotAI),
-			Status:    eventbus.AdapterHealthReady,
-		},
+	eventbus.Publish(ctx, bus, eventbus.Adapters.Status, eventbus.SourceAdaptersService, eventbus.AdapterStatusEvent{
+		AdapterID: adapterID,
+		Slot:      string(adapters.SlotAI),
+		Status:    eventbus.AdapterHealthReady,
 	})
 
 	// Wait for diagnostic event
@@ -1740,16 +1624,12 @@ func TestAdapterBridgeCircuitBreakerResetOnConfigChange(t *testing.T) {
 	}
 
 	// First, configure the adapter
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicAdaptersStatus,
-		Source: eventbus.SourceAdaptersService,
-		Payload: eventbus.AdapterStatusEvent{
-			AdapterID: adapterID,
-			Slot:      string(adapters.SlotAI),
-			Status:    eventbus.AdapterHealthReady,
-			Extra: map[string]string{
-				adapters.RuntimeExtraAddress: "/tmp/test.sock",
-			},
+	eventbus.Publish(ctx, bus, eventbus.Adapters.Status, eventbus.SourceAdaptersService, eventbus.AdapterStatusEvent{
+		AdapterID: adapterID,
+		Slot:      string(adapters.SlotAI),
+		Status:    eventbus.AdapterHealthReady,
+		Extra: map[string]string{
+			adapters.RuntimeExtraAddress: "/tmp/test.sock",
 		},
 	})
 
@@ -1771,16 +1651,12 @@ func TestAdapterBridgeCircuitBreakerResetOnConfigChange(t *testing.T) {
 	controller.setUpdatedAt(newUpdatedAt)
 
 	// Publish READY with same adapter and address
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicAdaptersStatus,
-		Source: eventbus.SourceAdaptersService,
-		Payload: eventbus.AdapterStatusEvent{
-			AdapterID: adapterID,
-			Slot:      string(adapters.SlotAI),
-			Status:    eventbus.AdapterHealthReady,
-			Extra: map[string]string{
-				adapters.RuntimeExtraAddress: "/tmp/test.sock", // Same address
-			},
+	eventbus.Publish(ctx, bus, eventbus.Adapters.Status, eventbus.SourceAdaptersService, eventbus.AdapterStatusEvent{
+		AdapterID: adapterID,
+		Slot:      string(adapters.SlotAI),
+		Status:    eventbus.AdapterHealthReady,
+		Extra: map[string]string{
+			adapters.RuntimeExtraAddress: "/tmp/test.sock", // Same address
 		},
 	})
 
@@ -1832,16 +1708,12 @@ func TestAdapterBridgeConfigHashFallback(t *testing.T) {
 	}
 
 	// First, configure the adapter
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicAdaptersStatus,
-		Source: eventbus.SourceAdaptersService,
-		Payload: eventbus.AdapterStatusEvent{
-			AdapterID: adapterID,
-			Slot:      string(adapters.SlotAI),
-			Status:    eventbus.AdapterHealthReady,
-			Extra: map[string]string{
-				adapters.RuntimeExtraAddress: "/tmp/test.sock",
-			},
+	eventbus.Publish(ctx, bus, eventbus.Adapters.Status, eventbus.SourceAdaptersService, eventbus.AdapterStatusEvent{
+		AdapterID: adapterID,
+		Slot:      string(adapters.SlotAI),
+		Status:    eventbus.AdapterHealthReady,
+		Extra: map[string]string{
+			adapters.RuntimeExtraAddress: "/tmp/test.sock",
 		},
 	})
 
@@ -1863,16 +1735,12 @@ func TestAdapterBridgeConfigHashFallback(t *testing.T) {
 	controller.setConfig(`{"key":"value2"}`) // Different value = different hash
 
 	// Publish READY - should detect config change via hash
-	bus.Publish(ctx, eventbus.Envelope{
-		Topic:  eventbus.TopicAdaptersStatus,
-		Source: eventbus.SourceAdaptersService,
-		Payload: eventbus.AdapterStatusEvent{
-			AdapterID: adapterID,
-			Slot:      string(adapters.SlotAI),
-			Status:    eventbus.AdapterHealthReady,
-			Extra: map[string]string{
-				adapters.RuntimeExtraAddress: "/tmp/test.sock", // Same address
-			},
+	eventbus.Publish(ctx, bus, eventbus.Adapters.Status, eventbus.SourceAdaptersService, eventbus.AdapterStatusEvent{
+		AdapterID: adapterID,
+		Slot:      string(adapters.SlotAI),
+		Status:    eventbus.AdapterHealthReady,
+		Extra: map[string]string{
+			adapters.RuntimeExtraAddress: "/tmp/test.sock", // Same address
 		},
 	})
 

@@ -130,8 +130,8 @@ func WithTopicPolicy(topic Topic, policy DeliveryPolicy) BusOption {
 	}
 }
 
-// Publish sends the envelope to all subscribers of the topic.
-func (b *Bus) Publish(ctx context.Context, env Envelope) {
+// publish sends the envelope to all subscribers of the topic.
+func (b *Bus) publish(ctx context.Context, env Envelope) {
 	if env.Topic == "" {
 		return
 	}
@@ -157,7 +157,15 @@ func (b *Bus) Publish(ctx context.Context, env Envelope) {
 }
 
 // Subscribe registers a subscriber for the given topic.
+// If b is nil the returned Subscription has a closed channel and Close is a no-op.
 func (b *Bus) Subscribe(topic Topic, opts ...SubscriptionOption) *Subscription {
+	if b == nil {
+		ch := make(chan Envelope)
+		close(ch)
+		sub := &Subscription{ch: ch}
+		sub.closed.Store(true)
+		return sub
+	}
 	cfg := subscriptionConfig{
 		bufferSize: b.topicBuffers[topic],
 		name:       "",
@@ -203,7 +211,11 @@ func (b *Bus) Subscribe(topic Topic, opts ...SubscriptionOption) *Subscription {
 }
 
 // Shutdown closes all subscriptions and empties routing tables.
+// If b is nil the call is a no-op.
 func (b *Bus) Shutdown() {
+	if b == nil {
+		return
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -271,6 +283,11 @@ func (s *Subscription) Close() {
 	}
 
 	s.stopOverflow()
+
+	if s.bus == nil {
+		close(s.ch)
+		return
+	}
 
 	s.bus.mu.Lock()
 	defer s.bus.mu.Unlock()
@@ -380,7 +397,11 @@ type Metrics struct {
 }
 
 // Metrics returns the current metrics snapshot.
+// If b is nil the call returns a zero-value Metrics.
 func (b *Bus) Metrics() Metrics {
+	if b == nil {
+		return Metrics{}
+	}
 	metrics := Metrics{
 		PublishTotal:  b.publishTotal.Load(),
 		DroppedTotal:  b.droppedTotal.Load(),
@@ -441,8 +462,9 @@ func (b *Bus) recordDrop() {
 }
 
 // AddObserver registers additional observers at runtime.
+// If b is nil the call is a no-op.
 func (b *Bus) AddObserver(observer Observer) {
-	if observer == nil {
+	if b == nil || observer == nil {
 		return
 	}
 	b.observerMu.Lock()
@@ -486,8 +508,9 @@ func percentile(data []time.Duration, quantile float64) time.Duration {
 }
 
 // StartMetricsReporter periodically logs bus metrics until the context is cancelled.
+// If b is nil the call is a no-op.
 func (b *Bus) StartMetricsReporter(ctx context.Context, interval time.Duration, logger *log.Logger) {
-	if interval <= 0 {
+	if b == nil || interval <= 0 {
 		return
 	}
 	if logger == nil {

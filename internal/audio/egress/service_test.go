@@ -47,13 +47,10 @@ func TestServicePublishesPlayback(t *testing.T) {
 	playbackSub := bus.Subscribe(eventbus.TopicAudioEgressPlayback)
 	defer playbackSub.Close()
 
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic: eventbus.TopicConversationSpeak,
-		Payload: eventbus.ConversationSpeakEvent{
-			SessionID: "sess-tts",
-			PromptID:  "prompt-1",
-			Text:      "Hello audio",
-		},
+	eventbus.Publish(context.Background(), bus, eventbus.Conversation.Speak, "", eventbus.ConversationSpeakEvent{
+		SessionID: "sess-tts",
+		PromptID:  "prompt-1",
+		Text:      "Hello audio",
 	})
 
 	evt := receivePlayback(t, playbackSub)
@@ -96,12 +93,9 @@ func TestServiceBuffersUntilAdapterAvailable(t *testing.T) {
 	playbackSub := bus.Subscribe(eventbus.TopicAudioEgressPlayback)
 	defer playbackSub.Close()
 
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic: eventbus.TopicConversationSpeak,
-		Payload: eventbus.ConversationSpeakEvent{
-			SessionID: "sess-buffered",
-			Text:      "buffered",
-		},
+	eventbus.Publish(context.Background(), bus, eventbus.Conversation.Speak, "", eventbus.ConversationSpeakEvent{
+		SessionID: "sess-buffered",
+		Text:      "buffered",
 	})
 
 	select {
@@ -142,12 +136,9 @@ func TestServiceInterruptStopsPlayback(t *testing.T) {
 	defer playbackSub.Close()
 
 	sessionID := "sess-interrupt"
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic: eventbus.TopicConversationSpeak,
-		Payload: eventbus.ConversationSpeakEvent{
-			SessionID: sessionID,
-			Text:      "interrupted message",
-		},
+	eventbus.Publish(context.Background(), bus, eventbus.Conversation.Speak, "", eventbus.ConversationSpeakEvent{
+		SessionID: sessionID,
+		Text:      "interrupted message",
 	})
 
 	first := receivePlayback(t, playbackSub)
@@ -298,12 +289,9 @@ func TestServiceRebuffersOnSpeakUnavailable(t *testing.T) {
 	playbackSub := bus.Subscribe(eventbus.TopicAudioEgressPlayback)
 	defer playbackSub.Close()
 
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic: eventbus.TopicConversationSpeak,
-		Payload: eventbus.ConversationSpeakEvent{
-			SessionID: "sess-rebuffer",
-			Text:      "hello rebuffered",
-		},
+	eventbus.Publish(context.Background(), bus, eventbus.Conversation.Speak, "", eventbus.ConversationSpeakEvent{
+		SessionID: "sess-rebuffer",
+		Text:      "hello rebuffered",
 	})
 
 	evt := receivePlayback(t, playbackSub)
@@ -351,12 +339,9 @@ func TestServiceRetryDropsPendingOnPermanentError(t *testing.T) {
 	}
 	defer svc.Shutdown(context.Background())
 
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic: eventbus.TopicConversationSpeak,
-		Payload: eventbus.ConversationSpeakEvent{
-			SessionID: "sess-perm",
-			Text:      "permanent fail",
-		},
+	eventbus.Publish(context.Background(), bus, eventbus.Conversation.Speak, "", eventbus.ConversationSpeakEvent{
+		SessionID: "sess-perm",
+		Text:      "permanent fail",
 	})
 
 	// Poll until the retry fires and hits the permanent error.
@@ -527,12 +512,9 @@ func TestLifecycleStopRemovesStream(t *testing.T) {
 	}
 
 	// Publish lifecycle stopped event.
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic: eventbus.TopicSessionsLifecycle,
-		Payload: eventbus.SessionLifecycleEvent{
-			SessionID: sessionID,
-			State:     eventbus.SessionStateStopped,
-		},
+	eventbus.Publish(context.Background(), bus, eventbus.Sessions.Lifecycle, "", eventbus.SessionLifecycleEvent{
+		SessionID: sessionID,
+		State:     eventbus.SessionStateStopped,
 	})
 
 	// Wait for the lifecycle handler to process.

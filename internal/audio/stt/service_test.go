@@ -92,10 +92,7 @@ func TestServicePublishesTranscripts(t *testing.T) {
 		EndedAt:   time.Unix(1, int64(400*time.Millisecond)).UTC(),
 	}
 
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicAudioIngressSegment,
-		Payload: segment1,
-	})
+	eventbus.Publish(context.Background(), bus, eventbus.Audio.IngressSegment, "", segment1)
 
 	first := receiveTranscript(t, partialSub, 1*time.Second)
 	if first.Sequence != 1 {
@@ -112,10 +109,7 @@ func TestServicePublishesTranscripts(t *testing.T) {
 		t.Fatalf("expected non-final transcript on partial topic")
 	}
 
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicAudioIngressSegment,
-		Payload: segment2,
-	})
+	eventbus.Publish(context.Background(), bus, eventbus.Audio.IngressSegment, "", segment2)
 
 	finalTranscript := receiveTranscript(t, finalSub, 1*time.Second)
 	if finalTranscript.Sequence != 2 || !finalTranscript.Final {
@@ -151,13 +145,10 @@ func TestServiceFactoryError(t *testing.T) {
 	sub := bus.Subscribe(eventbus.TopicSpeechTranscriptPartial)
 	defer sub.Close()
 
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic: eventbus.TopicAudioIngressSegment,
-		Payload: eventbus.AudioIngressSegmentEvent{
-			SessionID: "sess-err",
-			StreamID:  "mic",
-			Sequence:  1,
-		},
+	eventbus.Publish(context.Background(), bus, eventbus.Audio.IngressSegment, "", eventbus.AudioIngressSegmentEvent{
+		SessionID: "sess-err",
+		StreamID:  "mic",
+		Sequence:  1,
 	})
 
 	select {
@@ -268,10 +259,7 @@ func TestServiceBuffersUntilAdapterAvailable(t *testing.T) {
 		EndedAt:   time.Unix(1, int64(200*time.Millisecond)).UTC(),
 	}
 
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicAudioIngressSegment,
-		Payload: segment,
-	})
+	eventbus.Publish(context.Background(), bus, eventbus.Audio.IngressSegment, "", segment)
 
 	select {
 	case evt := <-sub.C():
@@ -308,23 +296,20 @@ func TestServiceDoesNotBufferWhenFactoryUnavailable(t *testing.T) {
 	defer sub.Close()
 
 	for i := 0; i < 10; i++ {
-		bus.Publish(context.Background(), eventbus.Envelope{
-			Topic: eventbus.TopicAudioIngressSegment,
-			Payload: eventbus.AudioIngressSegmentEvent{
-				SessionID: "sess-none",
-				StreamID:  "mic",
-				Sequence:  uint64(i),
-				Format: eventbus.AudioFormat{
-					Encoding:   eventbus.AudioEncodingPCM16,
-					SampleRate: 16000,
-					Channels:   1,
-					BitDepth:   16,
-				},
-				Data:     make([]byte, 640),
-				Duration: 20 * time.Millisecond,
-				First:    i == 0,
-				Last:     i == 9,
+		eventbus.Publish(context.Background(), bus, eventbus.Audio.IngressSegment, "", eventbus.AudioIngressSegmentEvent{
+			SessionID: "sess-none",
+			StreamID:  "mic",
+			Sequence:  uint64(i),
+			Format: eventbus.AudioFormat{
+				Encoding:   eventbus.AudioEncodingPCM16,
+				SampleRate: 16000,
+				Channels:   1,
+				BitDepth:   16,
 			},
+			Data:     make([]byte, 640),
+			Duration: 20 * time.Millisecond,
+			First:    i == 0,
+			Last:     i == 9,
 		})
 	}
 
@@ -390,25 +375,22 @@ func TestPendingBufferDropsOldestWhenFull(t *testing.T) {
 
 	for i := 0; i < totalSegments; i++ {
 		seq := uint64(i)
-		bus.Publish(context.Background(), eventbus.Envelope{
-			Topic: eventbus.TopicAudioIngressSegment,
-			Payload: eventbus.AudioIngressSegmentEvent{
-				SessionID: "sess-drop",
-				StreamID:  "mic",
-				Sequence:  seq,
-				Format: eventbus.AudioFormat{
-					Encoding:   eventbus.AudioEncodingPCM16,
-					SampleRate: 16000,
-					Channels:   1,
-					BitDepth:   16,
-				},
-				Data:      make([]byte, 640),
-				Duration:  20 * time.Millisecond,
-				First:     seq == 0,
-				Last:      seq == targetSequence,
-				StartedAt: time.Unix(1, 0).UTC(),
-				EndedAt:   time.Unix(1, int64(200*time.Millisecond)).UTC(),
+		eventbus.Publish(context.Background(), bus, eventbus.Audio.IngressSegment, "", eventbus.AudioIngressSegmentEvent{
+			SessionID: "sess-drop",
+			StreamID:  "mic",
+			Sequence:  seq,
+			Format: eventbus.AudioFormat{
+				Encoding:   eventbus.AudioEncodingPCM16,
+				SampleRate: 16000,
+				Channels:   1,
+				BitDepth:   16,
 			},
+			Data:      make([]byte, 640),
+			Duration:  20 * time.Millisecond,
+			First:     seq == 0,
+			Last:      seq == targetSequence,
+			StartedAt: time.Unix(1, 0).UTC(),
+			EndedAt:   time.Unix(1, int64(200*time.Millisecond)).UTC(),
 		})
 	}
 
@@ -450,21 +432,18 @@ func TestServiceRetryDropsPendingOnPermanentError(t *testing.T) {
 	}
 	defer svc.Shutdown(context.Background())
 
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic: eventbus.TopicAudioIngressSegment,
-		Payload: eventbus.AudioIngressSegmentEvent{
-			SessionID: "sess-perm",
-			StreamID:  "mic",
-			Sequence:  1,
-			Format: eventbus.AudioFormat{
-				Encoding:   eventbus.AudioEncodingPCM16,
-				SampleRate: 16000,
-				Channels:   1,
-				BitDepth:   16,
-			},
-			Data:     make([]byte, 640),
-			Duration: 20 * time.Millisecond,
+	eventbus.Publish(context.Background(), bus, eventbus.Audio.IngressSegment, "", eventbus.AudioIngressSegmentEvent{
+		SessionID: "sess-perm",
+		StreamID:  "mic",
+		Sequence:  1,
+		Format: eventbus.AudioFormat{
+			Encoding:   eventbus.AudioEncodingPCM16,
+			SampleRate: 16000,
+			Channels:   1,
+			BitDepth:   16,
 		},
+		Data:     make([]byte, 640),
+		Duration: 20 * time.Millisecond,
 	})
 
 	// Poll until the retry fires and hits the permanent error.
@@ -608,35 +587,23 @@ func TestSTTRecoversMidStreamAdapterFailure(t *testing.T) {
 	seg1 := baseSegment
 	seg1.Sequence = 1
 	seg1.First = true
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicAudioIngressSegment,
-		Payload: seg1,
-	})
+	eventbus.Publish(context.Background(), bus, eventbus.Audio.IngressSegment, "", seg1)
 	time.Sleep(20 * time.Millisecond)
 
 	seg2 := baseSegment
 	seg2.Sequence = 2
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicAudioIngressSegment,
-		Payload: seg2,
-	})
+	eventbus.Publish(context.Background(), bus, eventbus.Audio.IngressSegment, "", seg2)
 	time.Sleep(20 * time.Millisecond)
 
 	seg3drop := baseSegment
 	seg3drop.Sequence = 99
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicAudioIngressSegment,
-		Payload: seg3drop,
-	})
+	eventbus.Publish(context.Background(), bus, eventbus.Audio.IngressSegment, "", seg3drop)
 	time.Sleep(20 * time.Millisecond)
 
 	seg3 := baseSegment
 	seg3.Sequence = 3
 	seg3.Last = true
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicAudioIngressSegment,
-		Payload: seg3,
-	})
+	eventbus.Publish(context.Background(), bus, eventbus.Audio.IngressSegment, "", seg3)
 
 	transcript := receiveTranscript(t, finalSub, time.Second)
 	if transcript.Text != "recovered" {
@@ -708,10 +675,7 @@ func TestSTTPublishesPartialResultsBeforeRecovery(t *testing.T) {
 		First:    true,
 	}
 
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicAudioIngressSegment,
-		Payload: seg,
-	})
+	eventbus.Publish(context.Background(), bus, eventbus.Audio.IngressSegment, "", seg)
 
 	tr := receiveTranscript(t, partialSub, time.Second)
 	if tr.Text != "partial before fail" {

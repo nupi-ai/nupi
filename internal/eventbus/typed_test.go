@@ -19,7 +19,7 @@ func TestTypedSubscribeDeliverPayload(t *testing.T) {
 		Active:     true,
 		Confidence: 0.9,
 	}
-	bus.Publish(context.Background(), Envelope{
+	bus.publish(context.Background(), Envelope{
 		Topic:   TopicSpeechVADDetected,
 		Payload: want,
 	})
@@ -43,7 +43,7 @@ func TestTypedSubscribePreservesMetadata(t *testing.T) {
 	defer sub.Close()
 
 	ts := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-	bus.Publish(context.Background(), Envelope{
+	bus.publish(context.Background(), Envelope{
 		Topic:         TopicSpeechVADDetected,
 		Timestamp:     ts,
 		Source:        SourceSpeechVAD,
@@ -78,13 +78,13 @@ func TestTypedSubscribeSkipsMismatchedPayloads(t *testing.T) {
 	defer sub.Close()
 
 	// Publish a mismatched payload type on the same topic.
-	bus.Publish(context.Background(), Envelope{
+	bus.publish(context.Background(), Envelope{
 		Topic:   TopicSpeechVADDetected,
 		Payload: "not a SpeechVADEvent",
 	})
 
 	// Then publish a correct one.
-	bus.Publish(context.Background(), Envelope{
+	bus.publish(context.Background(), Envelope{
 		Topic:   TopicSpeechVADDetected,
 		Payload: SpeechVADEvent{SessionID: "s1", Active: true},
 	})
@@ -125,7 +125,7 @@ func TestTypedSubscribeCloseWhileBridgeBlocked(t *testing.T) {
 
 	// Publish an event but do NOT read from sub.C().
 	// The bridge goroutine will be blocked trying to send on the unbuffered channel.
-	bus.Publish(context.Background(), Envelope{
+	bus.publish(context.Background(), Envelope{
 		Topic:   TopicSpeechVADDetected,
 		Payload: SpeechVADEvent{SessionID: "s1", Active: true},
 	})

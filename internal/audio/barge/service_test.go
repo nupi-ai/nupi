@@ -27,35 +27,29 @@ func TestCoordinatorPublishesBargeInOnVAD(t *testing.T) {
 	ttsStream := slots.TTS
 	vadStream := "mic"
 
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic: eventbus.TopicAudioEgressPlayback,
-		Payload: eventbus.AudioEgressPlaybackEvent{
-			SessionID: sessionID,
-			StreamID:  ttsStream,
-			Sequence:  1,
-			Format: eventbus.AudioFormat{
-				Encoding:   eventbus.AudioEncodingPCM16,
-				SampleRate: 16000,
-				Channels:   1,
-				BitDepth:   16,
-			},
-			Data:  []byte{0, 1},
-			Final: false,
+	eventbus.Publish(context.Background(), bus, eventbus.Audio.EgressPlayback, "", eventbus.AudioEgressPlaybackEvent{
+		SessionID: sessionID,
+		StreamID:  ttsStream,
+		Sequence:  1,
+		Format: eventbus.AudioFormat{
+			Encoding:   eventbus.AudioEncodingPCM16,
+			SampleRate: 16000,
+			Channels:   1,
+			BitDepth:   16,
 		},
+		Data:  []byte{0, 1},
+		Final: false,
 	})
 	time.Sleep(10 * time.Millisecond)
 
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic: eventbus.TopicSpeechVADDetected,
-		Payload: eventbus.SpeechVADEvent{
-			SessionID:  sessionID,
-			StreamID:   vadStream,
-			Active:     true,
-			Confidence: 0.8,
-			Timestamp:  time.Now().UTC(),
-			Metadata: map[string]string{
-				"vad": "mock",
-			},
+	eventbus.Publish(context.Background(), bus, eventbus.Speech.VADDetected, "", eventbus.SpeechVADEvent{
+		SessionID:  sessionID,
+		StreamID:   vadStream,
+		Active:     true,
+		Confidence: 0.8,
+		Timestamp:  time.Now().UTC(),
+		Metadata: map[string]string{
+			"vad": "mock",
 		},
 	})
 
@@ -99,21 +93,18 @@ func TestCoordinatorCooldownPreventsRapidDuplicates(t *testing.T) {
 	bargeSub := bus.Subscribe(eventbus.TopicSpeechBargeIn)
 	defer bargeSub.Close()
 
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic: eventbus.TopicAudioEgressPlayback,
-		Payload: eventbus.AudioEgressPlaybackEvent{
-			SessionID: "sess-dup",
-			StreamID:  slots.TTS,
-			Sequence:  1,
-			Format: eventbus.AudioFormat{
-				Encoding:   eventbus.AudioEncodingPCM16,
-				SampleRate: 16000,
-				Channels:   1,
-				BitDepth:   16,
-			},
-			Data:  []byte{0, 1},
-			Final: false,
+	eventbus.Publish(context.Background(), bus, eventbus.Audio.EgressPlayback, "", eventbus.AudioEgressPlaybackEvent{
+		SessionID: "sess-dup",
+		StreamID:  slots.TTS,
+		Sequence:  1,
+		Format: eventbus.AudioFormat{
+			Encoding:   eventbus.AudioEncodingPCM16,
+			SampleRate: 16000,
+			Channels:   1,
+			BitDepth:   16,
 		},
+		Data:  []byte{0, 1},
+		Final: false,
 	})
 	time.Sleep(10 * time.Millisecond)
 
@@ -125,10 +116,7 @@ func TestCoordinatorCooldownPreventsRapidDuplicates(t *testing.T) {
 		Timestamp:  time.Now().UTC(),
 	}
 
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicSpeechVADDetected,
-		Payload: event,
-	})
+	eventbus.Publish(context.Background(), bus, eventbus.Speech.VADDetected, "", event)
 
 	select {
 	case env := <-bargeSub.C():
@@ -144,10 +132,7 @@ func TestCoordinatorCooldownPreventsRapidDuplicates(t *testing.T) {
 	}
 
 	// Second event inside cooldown window should be ignored.
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicSpeechVADDetected,
-		Payload: event,
-	})
+	eventbus.Publish(context.Background(), bus, eventbus.Speech.VADDetected, "", event)
 
 	select {
 	case env := <-bargeSub.C():
@@ -172,33 +157,27 @@ func TestCoordinatorPublishesBargeInOnClientInterrupt(t *testing.T) {
 
 	sessionID := "sess-client"
 	ttsStream := slots.TTS
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic: eventbus.TopicAudioEgressPlayback,
-		Payload: eventbus.AudioEgressPlaybackEvent{
-			SessionID: sessionID,
-			StreamID:  ttsStream,
-			Sequence:  1,
-			Format: eventbus.AudioFormat{
-				Encoding:   eventbus.AudioEncodingPCM16,
-				SampleRate: 16000,
-				Channels:   1,
-				BitDepth:   16,
-			},
-			Data:  []byte{0, 1},
-			Final: false,
+	eventbus.Publish(context.Background(), bus, eventbus.Audio.EgressPlayback, "", eventbus.AudioEgressPlaybackEvent{
+		SessionID: sessionID,
+		StreamID:  ttsStream,
+		Sequence:  1,
+		Format: eventbus.AudioFormat{
+			Encoding:   eventbus.AudioEncodingPCM16,
+			SampleRate: 16000,
+			Channels:   1,
+			BitDepth:   16,
 		},
+		Data:  []byte{0, 1},
+		Final: false,
 	})
 
 	meta := map[string]string{"device": "mobile", "note": "urgent"}
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic: eventbus.TopicAudioInterrupt,
-		Payload: eventbus.AudioInterruptEvent{
-			SessionID: sessionID,
-			StreamID:  ttsStream,
-			Reason:    "manual",
-			Timestamp: time.Now().UTC(),
-			Metadata:  meta,
-		},
+	eventbus.Publish(context.Background(), bus, eventbus.Audio.Interrupt, "", eventbus.AudioInterruptEvent{
+		SessionID: sessionID,
+		StreamID:  ttsStream,
+		Reason:    "manual",
+		Timestamp: time.Now().UTC(),
+		Metadata:  meta,
 	})
 
 	select {
@@ -246,21 +225,18 @@ func TestCoordinatorQuietPeriodBlocksVAD(t *testing.T) {
 
 	now := time.Now().UTC()
 
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic: eventbus.TopicAudioEgressPlayback,
-		Payload: eventbus.AudioEgressPlaybackEvent{
-			SessionID: "sess-quiet",
-			StreamID:  slots.TTS,
-			Sequence:  1,
-			Format: eventbus.AudioFormat{
-				Encoding:   eventbus.AudioEncodingPCM16,
-				SampleRate: 16000,
-				Channels:   1,
-				BitDepth:   16,
-			},
-			Data:  []byte{1, 2},
-			Final: false,
+	eventbus.Publish(context.Background(), bus, eventbus.Audio.EgressPlayback, "", eventbus.AudioEgressPlaybackEvent{
+		SessionID: "sess-quiet",
+		StreamID:  slots.TTS,
+		Sequence:  1,
+		Format: eventbus.AudioFormat{
+			Encoding:   eventbus.AudioEncodingPCM16,
+			SampleRate: 16000,
+			Channels:   1,
+			BitDepth:   16,
 		},
+		Data:  []byte{1, 2},
+		Final: false,
 	})
 	time.Sleep(10 * time.Millisecond)
 
@@ -271,10 +247,7 @@ func TestCoordinatorQuietPeriodBlocksVAD(t *testing.T) {
 		Confidence: 0.9,
 		Timestamp:  now.Add(20 * time.Millisecond),
 	}
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicSpeechVADDetected,
-		Payload: firstVAD,
-	})
+	eventbus.Publish(context.Background(), bus, eventbus.Speech.VADDetected, "", firstVAD)
 
 	select {
 	case env := <-bargeSub.C():
@@ -289,23 +262,19 @@ func TestCoordinatorQuietPeriodBlocksVAD(t *testing.T) {
 		t.Fatal("expected barge event while playback active")
 	}
 
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic: eventbus.TopicAudioEgressPlayback,
-		Payload: eventbus.AudioEgressPlaybackEvent{
-			SessionID: "sess-quiet",
-			StreamID:  slots.TTS,
-			Sequence:  2,
-			Format: eventbus.AudioFormat{
-				Encoding:   eventbus.AudioEncodingPCM16,
-				SampleRate: 16000,
-				Channels:   1,
-				BitDepth:   16,
-			},
-			Data:  []byte{0, 0},
-			Final: true,
+	eventbus.PublishWithOpts(context.Background(), bus, eventbus.Audio.EgressPlayback, "", eventbus.AudioEgressPlaybackEvent{
+		SessionID: "sess-quiet",
+		StreamID:  slots.TTS,
+		Sequence:  2,
+		Format: eventbus.AudioFormat{
+			Encoding:   eventbus.AudioEncodingPCM16,
+			SampleRate: 16000,
+			Channels:   1,
+			BitDepth:   16,
 		},
-		Timestamp: now.Add(40 * time.Millisecond),
-	})
+		Data:  []byte{0, 0},
+		Final: true,
+	}, eventbus.WithTimestamp(now.Add(40*time.Millisecond)))
 	time.Sleep(10 * time.Millisecond)
 
 	secondVAD := eventbus.SpeechVADEvent{
@@ -315,10 +284,7 @@ func TestCoordinatorQuietPeriodBlocksVAD(t *testing.T) {
 		Confidence: 0.9,
 		Timestamp:  now.Add(60 * time.Millisecond),
 	}
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicSpeechVADDetected,
-		Payload: secondVAD,
-	})
+	eventbus.Publish(context.Background(), bus, eventbus.Speech.VADDetected, "", secondVAD)
 
 	select {
 	case env := <-bargeSub.C():

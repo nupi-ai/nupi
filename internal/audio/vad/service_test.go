@@ -61,10 +61,7 @@ func TestVADServiceEmitsDetections(t *testing.T) {
 		EndedAt:   time.Now().UTC().Add(20 * time.Millisecond),
 	}
 
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicAudioIngressSegment,
-		Payload: segment,
-	})
+	eventbus.Publish(context.Background(), bus, eventbus.Audio.IngressSegment, "", segment)
 
 	event := receiveVADEvent(t, vadSub)
 	if event.SessionID != "sess-vad" {
@@ -109,25 +106,22 @@ func TestVADServiceBuffersUntilAdapterAvailable(t *testing.T) {
 	vadSub := bus.Subscribe(eventbus.TopicSpeechVADDetected)
 	defer vadSub.Close()
 
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic: eventbus.TopicAudioIngressSegment,
-		Payload: eventbus.AudioIngressSegmentEvent{
-			SessionID: "sess-wait",
-			StreamID:  "mic",
-			Sequence:  1,
-			Format: eventbus.AudioFormat{
-				Encoding:   eventbus.AudioEncodingPCM16,
-				SampleRate: 16000,
-				Channels:   1,
-				BitDepth:   16,
-			},
-			Data:      loudPCM(),
-			Duration:  20 * time.Millisecond,
-			First:     true,
-			Last:      false,
-			StartedAt: time.Now().UTC(),
-			EndedAt:   time.Now().UTC().Add(20 * time.Millisecond),
+	eventbus.Publish(context.Background(), bus, eventbus.Audio.IngressSegment, "", eventbus.AudioIngressSegmentEvent{
+		SessionID: "sess-wait",
+		StreamID:  "mic",
+		Sequence:  1,
+		Format: eventbus.AudioFormat{
+			Encoding:   eventbus.AudioEncodingPCM16,
+			SampleRate: 16000,
+			Channels:   1,
+			BitDepth:   16,
 		},
+		Data:      loudPCM(),
+		Duration:  20 * time.Millisecond,
+		First:     true,
+		Last:      false,
+		StartedAt: time.Now().UTC(),
+		EndedAt:   time.Now().UTC().Add(20 * time.Millisecond),
 	})
 
 	select {
@@ -189,10 +183,7 @@ func TestVADServiceMetricsRetryAbandoned(t *testing.T) {
 		EndedAt:   time.Now().UTC().Add(20 * time.Millisecond),
 	}
 
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicAudioIngressSegment,
-		Payload: segment,
-	})
+	eventbus.Publish(context.Background(), bus, eventbus.Audio.IngressSegment, "", segment)
 
 	// Switch from adapter-unavailable to permanent errors so that
 	// MaxFailures (10) is eventually exhausted and the queue abandoned.
@@ -345,10 +336,7 @@ func TestVADRecoversMidStreamAdapterFailure(t *testing.T) {
 	seg1 := baseSegment
 	seg1.Sequence = 1
 	seg1.First = true
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicAudioIngressSegment,
-		Payload: seg1,
-	})
+	eventbus.Publish(context.Background(), bus, eventbus.Audio.IngressSegment, "", seg1)
 
 	event := receiveVADEvent(t, vadSub)
 	if event.SessionID != "sess-vad-recover" {
@@ -358,28 +346,19 @@ func TestVADRecoversMidStreamAdapterFailure(t *testing.T) {
 	// Segment 2: analyzer returns ErrAdapterUnavailable, triggers recovery.
 	seg2 := baseSegment
 	seg2.Sequence = 2
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicAudioIngressSegment,
-		Payload: seg2,
-	})
+	eventbus.Publish(context.Background(), bus, eventbus.Audio.IngressSegment, "", seg2)
 	time.Sleep(20 * time.Millisecond)
 
 	// Segment 3: factory returns ErrAdapterUnavailable, segment dropped.
 	seg3 := baseSegment
 	seg3.Sequence = 99
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicAudioIngressSegment,
-		Payload: seg3,
-	})
+	eventbus.Publish(context.Background(), bus, eventbus.Audio.IngressSegment, "", seg3)
 	time.Sleep(20 * time.Millisecond)
 
 	// Segment 4: factory succeeds, new analyzer produces output.
 	seg4 := baseSegment
 	seg4.Sequence = 4
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicAudioIngressSegment,
-		Payload: seg4,
-	})
+	eventbus.Publish(context.Background(), bus, eventbus.Audio.IngressSegment, "", seg4)
 
 	recovered := receiveVADEvent(t, vadSub)
 	if recovered.SessionID != "sess-vad-recover" {
@@ -452,10 +431,7 @@ func TestVADPublishesPartialResultsBeforeRecovery(t *testing.T) {
 		EndedAt:   time.Now().UTC().Add(20 * time.Millisecond),
 	}
 
-	bus.Publish(context.Background(), eventbus.Envelope{
-		Topic:   eventbus.TopicAudioIngressSegment,
-		Payload: seg,
-	})
+	eventbus.Publish(context.Background(), bus, eventbus.Audio.IngressSegment, "", seg)
 
 	event := receiveVADEvent(t, vadSub)
 	if !event.Active {

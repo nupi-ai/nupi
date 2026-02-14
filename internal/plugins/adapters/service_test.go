@@ -272,7 +272,10 @@ func TestServiceErrorCacheClearedOnRecovery(t *testing.T) {
 	}
 	select {
 	case evt := <-sub.C():
-		status := evt.Payload.(eventbus.AdapterStatusEvent)
+		status, ok := evt.Payload.(eventbus.AdapterStatusEvent)
+		if !ok {
+			t.Fatalf("expected AdapterStatusEvent, got %T", evt.Payload)
+		}
 		if status.Status != eventbus.AdapterHealthReady {
 			t.Fatalf("expected ready status, got %s", status.Status)
 		}
@@ -290,7 +293,10 @@ func TestServiceErrorCacheClearedOnRecovery(t *testing.T) {
 
 	select {
 	case evt := <-sub.C():
-		status := evt.Payload.(eventbus.AdapterStatusEvent)
+		status, ok := evt.Payload.(eventbus.AdapterStatusEvent)
+		if !ok {
+			t.Fatalf("expected AdapterStatusEvent, got %T", evt.Payload)
+		}
 		if status.Status != eventbus.AdapterHealthError {
 			t.Fatalf("expected repeated error status, got %s", status.Status)
 		}
