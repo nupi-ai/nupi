@@ -245,9 +245,20 @@ export function useSession(daemonPort: number | null) {
           break;
         }
 
-        case 'session_killed':
+        case 'session_killed': {
           console.log('[WS] Session killed:', msg.sessionId);
+          if (!msg.sessionId) break;
+          setSessions(prev => {
+            const remaining = prev.filter(s => s.id !== msg.sessionId);
+            if (activeSessionIdRef.current === msg.sessionId) {
+              const nextId = remaining.length > 0 ? remaining[0].id : null;
+              activeSessionIdRef.current = nextId;
+              setActiveSessionIdRef.current(nextId);
+            }
+            return remaining;
+          });
           break;
+        }
 
         case 'session_status_changed': {
           if (!msg.sessionId || !msg.data) break;
@@ -271,8 +282,12 @@ export function useSession(daemonPort: number | null) {
 
         case 'tool_detected': {
           if (!msg.sessionId || !msg.data) break;
+          const updates: Partial<Session> = {};
+          if ('tool' in msg.data) updates.tool = msg.data.tool;
+          if ('tool_icon' in msg.data) updates.tool_icon = msg.data.tool_icon;
+          if ('tool_icon_data' in msg.data) updates.tool_icon_data = msg.data.tool_icon_data;
           setSessions(prev => prev.map(s =>
-            s.id === msg.sessionId ? { ...s, ...msg.data } : s
+            s.id === msg.sessionId ? { ...s, ...updates } : s
           ));
           break;
         }
@@ -400,12 +415,13 @@ export function useSession(daemonPort: number | null) {
   useEffect(() => {
     if (!activeSessionId || !terminalRef.current) return;
 
-    // Get current session status at the time of terminal creation
-    const currentSession = activeSessionRef.current;
-    const isActive = currentSession && isSessionActive(currentSession);
-
     // Function to attach to new session
     const attachToNewSession = () => {
+      // Read session status at attachment time (not at effect start) to avoid
+      // stale values when called after the 50ms detach delay
+      const currentSession = activeSessionRef.current;
+      const isActive = currentSession && isSessionActive(currentSession);
+
       // Create new terminal with appropriate settings
       const term = new Terminal({
         cursorBlink: isActive,
