@@ -50,7 +50,7 @@ func TestConversationPublishesPromptOnUserInput(t *testing.T) {
 	}
 	defer svc.Shutdown(context.Background())
 
-	promptSub := bus.Subscribe(eventbus.TopicConversationPrompt)
+	promptSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Prompt)
 	defer promptSub.Close()
 
 	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{SessionID: "chat", Origin: eventbus.OriginTool, Text: "previous"})
@@ -59,10 +59,7 @@ func TestConversationPublishesPromptOnUserInput(t *testing.T) {
 
 	select {
 	case env := <-promptSub.C():
-		prompt, ok := env.Payload.(eventbus.ConversationPromptEvent)
-		if !ok {
-			t.Fatalf("unexpected payload: %T", env.Payload)
-		}
+		prompt := env.Payload
 		if prompt.SessionID != "chat" {
 			t.Fatalf("unexpected session id: %s", prompt.SessionID)
 		}
@@ -375,7 +372,7 @@ func TestConversationSessionlessPrompt(t *testing.T) {
 	}
 	defer svc.Shutdown(context.Background())
 
-	promptSub := bus.Subscribe(eventbus.TopicConversationPrompt)
+	promptSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Prompt)
 	defer promptSub.Close()
 
 	// Add context first
@@ -388,10 +385,7 @@ func TestConversationSessionlessPrompt(t *testing.T) {
 
 	select {
 	case env := <-promptSub.C():
-		prompt, ok := env.Payload.(eventbus.ConversationPromptEvent)
-		if !ok {
-			t.Fatalf("unexpected payload: %T", env.Payload)
-		}
+		prompt := env.Payload
 		if prompt.SessionID != "" {
 			t.Fatalf("expected empty session id for sessionless prompt, got %q", prompt.SessionID)
 		}
@@ -518,7 +512,7 @@ func TestConversationSessionlessIgnoredWithoutGlobalStore(t *testing.T) {
 	}
 	defer svc.Shutdown(context.Background())
 
-	promptSub := bus.Subscribe(eventbus.TopicConversationPrompt)
+	promptSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Prompt)
 	defer promptSub.Close()
 
 	// Send sessionless message - should be ignored without globalStore
@@ -544,7 +538,7 @@ func TestConversation_SessionOutputRateLimiting(t *testing.T) {
 	}
 	defer svc.Shutdown(context.Background())
 
-	promptSub := bus.Subscribe(eventbus.TopicConversationPrompt)
+	promptSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Prompt)
 	defer promptSub.Close()
 
 	// First notable event should trigger prompt
@@ -557,10 +551,7 @@ func TestConversation_SessionOutputRateLimiting(t *testing.T) {
 
 	select {
 	case env := <-promptSub.C():
-		prompt, ok := env.Payload.(eventbus.ConversationPromptEvent)
-		if !ok {
-			t.Fatalf("expected ConversationPromptEvent, got %T", env.Payload)
-		}
+		prompt := env.Payload
 		if prompt.Metadata["event_type"] != "session_output" {
 			t.Fatalf("expected event_type=session_output, got %q", prompt.Metadata["event_type"])
 		}
@@ -596,10 +587,7 @@ func TestConversation_SessionOutputRateLimiting(t *testing.T) {
 
 	select {
 	case env := <-promptSub.C():
-		prompt, ok := env.Payload.(eventbus.ConversationPromptEvent)
-		if !ok {
-			t.Fatalf("expected ConversationPromptEvent, got %T", env.Payload)
-		}
+		prompt := env.Payload
 		if prompt.NewMessage.Text != "third notable output" {
 			t.Fatalf("expected third output text, got %q", prompt.NewMessage.Text)
 		}
@@ -620,7 +608,7 @@ func TestConversation_NotableTriggersAI(t *testing.T) {
 	}
 	defer svc.Shutdown(context.Background())
 
-	promptSub := bus.Subscribe(eventbus.TopicConversationPrompt)
+	promptSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Prompt)
 	defer promptSub.Close()
 
 	// Message without notable=true should NOT trigger prompt (unless from user)
@@ -647,10 +635,7 @@ func TestConversation_NotableTriggersAI(t *testing.T) {
 
 	select {
 	case env := <-promptSub.C():
-		prompt, ok := env.Payload.(eventbus.ConversationPromptEvent)
-		if !ok {
-			t.Fatalf("expected ConversationPromptEvent, got %T", env.Payload)
-		}
+		prompt := env.Payload
 		if prompt.Metadata["event_type"] != "session_output" {
 			t.Fatalf("expected event_type=session_output, got %q", prompt.Metadata["event_type"])
 		}
@@ -677,7 +662,7 @@ func TestConversation_SessionOutputMetadataPropagation(t *testing.T) {
 	}
 	defer svc.Shutdown(context.Background())
 
-	promptSub := bus.Subscribe(eventbus.TopicConversationPrompt)
+	promptSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Prompt)
 	defer promptSub.Close()
 
 	// Send notable message with full annotations
@@ -697,10 +682,7 @@ func TestConversation_SessionOutputMetadataPropagation(t *testing.T) {
 
 	select {
 	case env := <-promptSub.C():
-		prompt, ok := env.Payload.(eventbus.ConversationPromptEvent)
-		if !ok {
-			t.Fatalf("expected ConversationPromptEvent, got %T", env.Payload)
-		}
+		prompt := env.Payload
 
 		// Verify event_type
 		if prompt.Metadata["event_type"] != "session_output" {
@@ -784,7 +766,7 @@ func TestSummaryTrigger(t *testing.T) {
 	}
 	defer svc.Shutdown(context.Background())
 
-	promptSub := bus.Subscribe(eventbus.TopicConversationPrompt)
+	promptSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Prompt)
 	defer promptSub.Close()
 
 	now := time.Now().UTC()
@@ -804,10 +786,7 @@ func TestSummaryTrigger(t *testing.T) {
 	for {
 		select {
 		case env := <-promptSub.C():
-			prompt, ok := env.Payload.(eventbus.ConversationPromptEvent)
-			if !ok {
-				continue
-			}
+			prompt := env.Payload
 			if prompt.Metadata["event_type"] == "history_summary" {
 				summaryPrompt = &prompt
 			}

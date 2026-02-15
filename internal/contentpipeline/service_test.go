@@ -124,7 +124,7 @@ func TestContentPipelineTransformsOutput(t *testing.T) {
 	}
 	defer cp.Shutdown(context.Background())
 
-	cleanedSub := bus.Subscribe(eventbus.TopicPipelineCleaned)
+	cleanedSub := eventbus.SubscribeTo(bus, eventbus.Pipeline.Cleaned)
 	defer cleanedSub.Close()
 
 	eventbus.Publish(context.Background(), bus, eventbus.Sessions.Tool, eventbus.SourcePluginService, eventbus.SessionToolEvent{
@@ -147,10 +147,7 @@ func TestContentPipelineTransformsOutput(t *testing.T) {
 
 	select {
 	case env := <-cleanedSub.C():
-		msg, ok := env.Payload.(eventbus.PipelineMessageEvent)
-		if !ok {
-			t.Fatalf("unexpected payload type %T", env.Payload)
-		}
+		msg := env.Payload
 		if msg.Text != "HELLO\n" {
 			t.Fatalf("expected transformed text, got %q", msg.Text)
 		}
@@ -192,7 +189,7 @@ func TestContentPipelineEmitsErrors(t *testing.T) {
 	}
 	defer cp.Shutdown(context.Background())
 
-	errSub := bus.Subscribe(eventbus.TopicPipelineError)
+	errSub := eventbus.SubscribeTo(bus, eventbus.Pipeline.Error)
 	defer errSub.Close()
 
 	eventbus.Publish(context.Background(), bus, eventbus.Sessions.Tool, eventbus.SourcePluginService, eventbus.SessionToolEvent{
@@ -215,10 +212,7 @@ func TestContentPipelineEmitsErrors(t *testing.T) {
 
 	select {
 	case env := <-errSub.C():
-		msg, ok := env.Payload.(eventbus.PipelineErrorEvent)
-		if !ok {
-			t.Fatalf("unexpected payload type %T", env.Payload)
-		}
+		msg := env.Payload
 		if msg.SessionID != "s2" {
 			t.Fatalf("expected session s2, got %s", msg.SessionID)
 		}
@@ -245,7 +239,7 @@ func TestContentPipelineHandlesTranscripts(t *testing.T) {
 	}
 	defer cp.Shutdown(context.Background())
 
-	cleanedSub := bus.Subscribe(eventbus.TopicPipelineCleaned)
+	cleanedSub := eventbus.SubscribeTo(bus, eventbus.Pipeline.Cleaned)
 	defer cleanedSub.Close()
 
 	eventbus.Publish(context.Background(), bus, eventbus.Speech.TranscriptFinal, eventbus.SourceAudioSTT, eventbus.SpeechTranscriptEvent{
@@ -262,10 +256,7 @@ func TestContentPipelineHandlesTranscripts(t *testing.T) {
 
 	select {
 	case env := <-cleanedSub.C():
-		msg, ok := env.Payload.(eventbus.PipelineMessageEvent)
-		if !ok {
-			t.Fatalf("unexpected payload type %T", env.Payload)
-		}
+		msg := env.Payload
 		if msg.SessionID != "voice-session" {
 			t.Fatalf("unexpected session id %q", msg.SessionID)
 		}
@@ -311,7 +302,7 @@ func TestBufferOverflowAnnotation(t *testing.T) {
 	smallBuf := NewOutputBufferWithOptions(WithMaxSize(100))
 	cp.buffers.Store("overflow-session", smallBuf)
 
-	cleanedSub := bus.Subscribe(eventbus.TopicPipelineCleaned)
+	cleanedSub := eventbus.SubscribeTo(bus, eventbus.Pipeline.Cleaned)
 	defer cleanedSub.Close()
 
 	// Write more data than the buffer can hold
@@ -329,10 +320,7 @@ func TestBufferOverflowAnnotation(t *testing.T) {
 	// Wait for idle timeout to trigger flush
 	select {
 	case env := <-cleanedSub.C():
-		msg, ok := env.Payload.(eventbus.PipelineMessageEvent)
-		if !ok {
-			t.Fatalf("unexpected payload type %T", env.Payload)
-		}
+		msg := env.Payload
 		if msg.Annotations["buffer_truncated"] != "true" {
 			t.Errorf("expected buffer_truncated=true, got %v", msg.Annotations["buffer_truncated"])
 		}
@@ -361,7 +349,7 @@ func TestToolChangeFlushesBuffer(t *testing.T) {
 	}
 	defer cp.Shutdown(context.Background())
 
-	cleanedSub := bus.Subscribe(eventbus.TopicPipelineCleaned)
+	cleanedSub := eventbus.SubscribeTo(bus, eventbus.Pipeline.Cleaned)
 	defer cleanedSub.Close()
 
 	// Set initial tool
@@ -404,10 +392,7 @@ func TestToolChangeFlushesBuffer(t *testing.T) {
 	// Should get the flushed content from tool A
 	select {
 	case env := <-cleanedSub.C():
-		msg, ok := env.Payload.(eventbus.PipelineMessageEvent)
-		if !ok {
-			t.Fatalf("unexpected payload type %T", env.Payload)
-		}
+		msg := env.Payload
 		// Verify Origin is set correctly - tool output must have OriginTool
 		if msg.Origin != eventbus.OriginTool {
 			t.Errorf("expected Origin=OriginTool, got %q", msg.Origin)
@@ -452,7 +437,7 @@ func TestIdleTimeoutAnnotation(t *testing.T) {
 	}
 	defer cp.Shutdown(context.Background())
 
-	cleanedSub := bus.Subscribe(eventbus.TopicPipelineCleaned)
+	cleanedSub := eventbus.SubscribeTo(bus, eventbus.Pipeline.Cleaned)
 	defer cleanedSub.Close()
 
 	// Set tool
@@ -478,10 +463,7 @@ func TestIdleTimeoutAnnotation(t *testing.T) {
 	// Wait for idle timeout (DefaultIdleTimeout is 500ms)
 	select {
 	case env := <-cleanedSub.C():
-		msg, ok := env.Payload.(eventbus.PipelineMessageEvent)
-		if !ok {
-			t.Fatalf("unexpected payload type %T", env.Payload)
-		}
+		msg := env.Payload
 		if msg.Annotations["idle_state"] != "timeout" {
 			t.Errorf("expected idle_state=timeout, got %v", msg.Annotations["idle_state"])
 		}

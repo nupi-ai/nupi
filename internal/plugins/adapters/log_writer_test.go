@@ -10,7 +10,7 @@ import (
 
 func TestAdapterLogWriter_BasicPublish(t *testing.T) {
 	bus := eventbus.New()
-	sub := bus.Subscribe(eventbus.TopicAdaptersLog)
+	sub := eventbus.SubscribeTo(bus, eventbus.Adapters.Log)
 	defer sub.Close()
 
 	writer := newAdapterLogWriter(bus, "test-adapter", SlotSTT, eventbus.LogLevelInfo)
@@ -24,10 +24,7 @@ func TestAdapterLogWriter_BasicPublish(t *testing.T) {
 	// Should receive the message.
 	select {
 	case env := <-sub.C():
-		evt, ok := env.Payload.(eventbus.AdapterLogEvent)
-		if !ok {
-			t.Fatalf("expected AdapterLogEvent, got %T", env.Payload)
-		}
+		evt := env.Payload
 		if evt.Message != "test message" {
 			t.Errorf("expected 'test message', got %q", evt.Message)
 		}
@@ -44,7 +41,7 @@ func TestAdapterLogWriter_BasicPublish(t *testing.T) {
 
 func TestAdapterLogWriter_RateLimiting(t *testing.T) {
 	bus := eventbus.New()
-	sub := bus.Subscribe(eventbus.TopicAdaptersLog, eventbus.WithSubscriptionBuffer(200))
+	sub := eventbus.SubscribeTo(bus, eventbus.Adapters.Log, eventbus.WithSubscriptionBuffer(200))
 	defer sub.Close()
 
 	writer := newAdapterLogWriter(bus, "chatty-adapter", SlotSTT, eventbus.LogLevelInfo)
@@ -88,7 +85,7 @@ func TestAdapterLogWriter_RateLimiting(t *testing.T) {
 
 func TestAdapterLogWriter_TokenRefill(t *testing.T) {
 	bus := eventbus.New()
-	sub := bus.Subscribe(eventbus.TopicAdaptersLog, eventbus.WithSubscriptionBuffer(200))
+	sub := eventbus.SubscribeTo(bus, eventbus.Adapters.Log, eventbus.WithSubscriptionBuffer(200))
 	defer sub.Close()
 
 	writer := newAdapterLogWriter(bus, "test-adapter", SlotSTT, eventbus.LogLevelInfo)
@@ -107,19 +104,18 @@ func TestAdapterLogWriter_TokenRefill(t *testing.T) {
 		t.Fatalf("Write failed: %v", err)
 	}
 
-	time.Sleep(50 * time.Millisecond)
-
 	// Drain messages received so far.
 	droppedCount := 0
+	drainTimer := time.NewTimer(200 * time.Millisecond)
+drainLoop:
 	for {
 		select {
 		case <-sub.C():
 			droppedCount++
-		default:
-			goto afterDrain
+		case <-drainTimer.C:
+			break drainLoop
 		}
 	}
-afterDrain:
 
 	// Wait for tokens to refill (50 msg/s = 20ms per message).
 	// Wait 100ms to get ~5 tokens back.
@@ -133,19 +129,18 @@ afterDrain:
 		}
 	}
 
-	time.Sleep(50 * time.Millisecond)
-
 	// Count new messages after refill.
 	refilledCount := 0
+	refillTimer := time.NewTimer(200 * time.Millisecond)
+refillLoop:
 	for {
 		select {
 		case <-sub.C():
 			refilledCount++
-		default:
-			goto afterRefill
+		case <-refillTimer.C:
+			break refillLoop
 		}
 	}
-afterRefill:
 
 	// We should have received approximately 5 messages after refill.
 	if refilledCount < 3 || refilledCount > 7 {
@@ -157,7 +152,7 @@ afterRefill:
 
 func TestAdapterLogWriter_DroppedMessageReport(t *testing.T) {
 	bus := eventbus.New()
-	sub := bus.Subscribe(eventbus.TopicAdaptersLog, eventbus.WithSubscriptionBuffer(300))
+	sub := eventbus.SubscribeTo(bus, eventbus.Adapters.Log, eventbus.WithSubscriptionBuffer(300))
 	defer sub.Close()
 
 	writer := newAdapterLogWriter(bus, "test-adapter", SlotSTT, eventbus.LogLevelInfo)
@@ -187,10 +182,7 @@ func TestAdapterLogWriter_DroppedMessageReport(t *testing.T) {
 	for !foundWarning {
 		select {
 		case env := <-sub.C():
-			evt, ok := env.Payload.(eventbus.AdapterLogEvent)
-			if !ok {
-				continue
-			}
+			evt := env.Payload
 			if evt.Level == eventbus.LogLevelWarn && strings.Contains(evt.Message, "Rate limit exceeded") {
 				foundWarning = true
 				if !strings.Contains(evt.Message, "messages dropped") {
@@ -212,7 +204,7 @@ func TestAdapterLogWriter_DroppedMessageReport(t *testing.T) {
 
 func TestAdapterLogWriter_Truncation(t *testing.T) {
 	bus := eventbus.New()
-	sub := bus.Subscribe(eventbus.TopicAdaptersLog)
+	sub := eventbus.SubscribeTo(bus, eventbus.Adapters.Log)
 	defer sub.Close()
 
 	writer := newAdapterLogWriter(bus, "test-adapter", SlotSTT, eventbus.LogLevelInfo)
@@ -226,10 +218,7 @@ func TestAdapterLogWriter_Truncation(t *testing.T) {
 
 	select {
 	case env := <-sub.C():
-		evt, ok := env.Payload.(eventbus.AdapterLogEvent)
-		if !ok {
-			t.Fatalf("expected AdapterLogEvent, got %T", env.Payload)
-		}
+		evt := env.Payload
 		if !strings.HasSuffix(evt.Message, "…[truncated]") {
 			t.Errorf("expected truncated suffix, got: %q", evt.Message[len(evt.Message)-20:])
 		}
@@ -247,7 +236,7 @@ func TestAdapterLogWriter_Truncation(t *testing.T) {
 
 func TestAdapterLogWriter_BufferFlush(t *testing.T) {
 	bus := eventbus.New()
-	sub := bus.Subscribe(eventbus.TopicAdaptersLog)
+	sub := eventbus.SubscribeTo(bus, eventbus.Adapters.Log)
 	defer sub.Close()
 
 	writer := newAdapterLogWriter(bus, "test-adapter", SlotSTT, eventbus.LogLevelInfo)
@@ -272,10 +261,7 @@ func TestAdapterLogWriter_BufferFlush(t *testing.T) {
 	// Now should receive the partial line.
 	select {
 	case env := <-sub.C():
-		evt, ok := env.Payload.(eventbus.AdapterLogEvent)
-		if !ok {
-			t.Fatalf("expected AdapterLogEvent, got %T", env.Payload)
-		}
+		evt := env.Payload
 		if evt.Message != "partial" {
 			t.Errorf("expected 'partial', got %q", evt.Message)
 		}

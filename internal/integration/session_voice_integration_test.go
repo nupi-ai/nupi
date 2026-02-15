@@ -317,7 +317,7 @@ func (e *recordingCommandExecutor) GetCommands() []executedCommand {
 }
 
 // waitForReply waits for a ConversationReplyEvent on the subscription.
-func waitForReply(t *testing.T, sub *eventbus.Subscription, timeout time.Duration) eventbus.ConversationReplyEvent {
+func waitForReply(t *testing.T, sub *eventbus.TypedSubscription[eventbus.ConversationReplyEvent], timeout time.Duration) eventbus.ConversationReplyEvent {
 	t.Helper()
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
@@ -328,11 +328,7 @@ func waitForReply(t *testing.T, sub *eventbus.Subscription, timeout time.Duratio
 			if !ok {
 				t.Fatal("reply subscription closed")
 			}
-			reply, ok := env.Payload.(eventbus.ConversationReplyEvent)
-			if !ok {
-				continue
-			}
-			return reply
+			return env.Payload
 		case <-timer.C:
 			t.Fatalf("timeout waiting for reply (%s)", timeout)
 			panic("unreachable")
@@ -341,7 +337,7 @@ func waitForReply(t *testing.T, sub *eventbus.Subscription, timeout time.Duratio
 }
 
 // waitForSpeak waits for a ConversationSpeakEvent on the subscription.
-func waitForSpeak(t *testing.T, sub *eventbus.Subscription, timeout time.Duration) eventbus.ConversationSpeakEvent {
+func waitForSpeak(t *testing.T, sub *eventbus.TypedSubscription[eventbus.ConversationSpeakEvent], timeout time.Duration) eventbus.ConversationSpeakEvent {
 	t.Helper()
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
@@ -352,11 +348,7 @@ func waitForSpeak(t *testing.T, sub *eventbus.Subscription, timeout time.Duratio
 			if !ok {
 				t.Fatal("speak subscription closed")
 			}
-			speak, ok := env.Payload.(eventbus.ConversationSpeakEvent)
-			if !ok {
-				continue
-			}
-			return speak
+			return env.Payload
 		case <-timer.C:
 			t.Fatalf("timeout waiting for speak event (%s)", timeout)
 			panic("unreachable")
@@ -403,8 +395,8 @@ type intentRouterTestSetup struct {
 	Adapter         *sessionAwareMockAdapter
 	SessionProvider *mutableSessionProvider
 	CommandExecutor *recordingCommandExecutor
-	ReplySub        *eventbus.Subscription
-	SpeakSub        *eventbus.Subscription
+	ReplySub        *eventbus.TypedSubscription[eventbus.ConversationReplyEvent]
+	SpeakSub        *eventbus.TypedSubscription[eventbus.ConversationSpeakEvent]
 	Ctx             context.Context
 	Cancel          context.CancelFunc
 }
@@ -423,8 +415,8 @@ func setupIntentRouterTest(t *testing.T, sessions ...intentrouter.SessionInfo) *
 		intentrouter.WithCommandExecutor(executor),
 	)
 
-	replySub := bus.Subscribe(eventbus.TopicConversationReply, eventbus.WithSubscriptionName("test_reply"))
-	speakSub := bus.Subscribe(eventbus.TopicConversationSpeak, eventbus.WithSubscriptionName("test_speak"))
+	replySub := eventbus.SubscribeTo(bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("test_reply"))
+	speakSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Speak, eventbus.WithSubscriptionName("test_speak"))
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -944,7 +936,7 @@ func TestVoiceSessionCreationWithConversationService(t *testing.T) {
 	}
 	defer router.Shutdown(context.Background())
 
-	speakSub := bus.Subscribe(eventbus.TopicConversationSpeak, eventbus.WithSubscriptionName("test_speak"))
+	speakSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Speak, eventbus.WithSubscriptionName("test_speak"))
 	defer speakSub.Close()
 
 	// Simulate voice transcript flowing through the pipeline.
@@ -1038,8 +1030,8 @@ func TestIntentRouterAdapterError(t *testing.T) {
 		intentrouter.WithCommandExecutor(executor),
 	)
 
-	replySub := bus.Subscribe(eventbus.TopicConversationReply, eventbus.WithSubscriptionName("test_reply"))
-	speakSub := bus.Subscribe(eventbus.TopicConversationSpeak, eventbus.WithSubscriptionName("test_speak"))
+	replySub := eventbus.SubscribeTo(bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("test_reply"))
+	speakSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Speak, eventbus.WithSubscriptionName("test_speak"))
 
 	ctx, cancel := context.WithCancel(context.Background())
 

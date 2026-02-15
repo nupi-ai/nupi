@@ -102,9 +102,9 @@ spec:
 
 	bus := eventbus.New()
 	svc := NewService(manager, store, bus, WithEnsureInterval(0))
-	statusSub := bus.Subscribe(eventbus.TopicAdaptersStatus, eventbus.WithSubscriptionBuffer(16))
+	statusSub := eventbus.SubscribeTo(bus, eventbus.Adapters.Status, eventbus.WithSubscriptionBuffer(16))
 	defer statusSub.Close()
-	logSub := bus.Subscribe(eventbus.TopicAdaptersLog, eventbus.WithSubscriptionBuffer(16))
+	logSub := eventbus.SubscribeTo(bus, eventbus.Adapters.Log, eventbus.WithSubscriptionBuffer(16))
 	defer logSub.Close()
 
 	if err := svc.reconcile(ctx); err != nil {
@@ -126,19 +126,13 @@ spec:
 	waitForStatusEvent(t, statusSub, adapterID, eventbus.AdapterHealthStopped)
 }
 
-func waitForStatusEvent(t *testing.T, sub *eventbus.Subscription, adapterID string, status eventbus.AdapterHealth) eventbus.AdapterStatusEvent {
+func waitForStatusEvent(t *testing.T, sub *eventbus.TypedSubscription[eventbus.AdapterStatusEvent], adapterID string, status eventbus.AdapterHealth) eventbus.AdapterStatusEvent {
 	t.Helper()
 	timeout := time.After(10 * time.Second)
 	for {
 		select {
 		case env := <-sub.C():
-			if env.Payload == nil {
-				continue
-			}
-			evt, ok := env.Payload.(eventbus.AdapterStatusEvent)
-			if !ok {
-				continue
-			}
+			evt := env.Payload
 			if strings.TrimSpace(evt.AdapterID) == adapterID && evt.Status == status {
 				return evt
 			}
@@ -148,16 +142,13 @@ func waitForStatusEvent(t *testing.T, sub *eventbus.Subscription, adapterID stri
 	}
 }
 
-func waitForLogEvent(t *testing.T, sub *eventbus.Subscription, adapterID string) (eventbus.AdapterLogEvent, bool) {
+func waitForLogEvent(t *testing.T, sub *eventbus.TypedSubscription[eventbus.AdapterLogEvent], adapterID string) (eventbus.AdapterLogEvent, bool) {
 	t.Helper()
 	timeout := time.After(2 * time.Second)
 	for {
 		select {
 		case env := <-sub.C():
-			evt, ok := env.Payload.(eventbus.AdapterLogEvent)
-			if !ok {
-				continue
-			}
+			evt := env.Payload
 			if strings.TrimSpace(evt.AdapterID) == adapterID {
 				return evt, true
 			}

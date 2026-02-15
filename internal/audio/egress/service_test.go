@@ -44,7 +44,7 @@ func TestServicePublishesPlayback(t *testing.T) {
 		svc.Shutdown(context.Background())
 	})
 
-	playbackSub := bus.Subscribe(eventbus.TopicAudioEgressPlayback)
+	playbackSub := eventbus.SubscribeTo(bus, eventbus.Audio.EgressPlayback)
 	defer playbackSub.Close()
 
 	eventbus.Publish(context.Background(), bus, eventbus.Conversation.Speak, "", eventbus.ConversationSpeakEvent{
@@ -90,7 +90,7 @@ func TestServiceBuffersUntilAdapterAvailable(t *testing.T) {
 		svc.Shutdown(context.Background())
 	})
 
-	playbackSub := bus.Subscribe(eventbus.TopicAudioEgressPlayback)
+	playbackSub := eventbus.SubscribeTo(bus, eventbus.Audio.EgressPlayback)
 	defer playbackSub.Close()
 
 	eventbus.Publish(context.Background(), bus, eventbus.Conversation.Speak, "", eventbus.ConversationSpeakEvent{
@@ -132,7 +132,7 @@ func TestServiceInterruptStopsPlayback(t *testing.T) {
 		svc.Shutdown(context.Background())
 	})
 
-	playbackSub := bus.Subscribe(eventbus.TopicAudioEgressPlayback)
+	playbackSub := eventbus.SubscribeTo(bus, eventbus.Audio.EgressPlayback)
 	defer playbackSub.Close()
 
 	sessionID := "sess-interrupt"
@@ -174,23 +174,18 @@ func TestServiceInterruptStopsPlayback(t *testing.T) {
 	}
 }
 
-func receivePlayback(t *testing.T, sub *eventbus.Subscription) eventbus.AudioEgressPlaybackEvent {
+func receivePlayback(t *testing.T, sub *eventbus.TypedSubscription[eventbus.AudioEgressPlaybackEvent]) eventbus.AudioEgressPlaybackEvent {
 	t.Helper()
 	timer := time.NewTimer(time.Second)
 	defer timer.Stop()
 
-	for {
-		select {
-		case env := <-sub.C():
-			payload, ok := env.Payload.(eventbus.AudioEgressPlaybackEvent)
-			if !ok {
-				continue
-			}
-			return payload
-		case <-timer.C:
-			t.Fatalf("timeout waiting for playback event")
-		}
+	select {
+	case env := <-sub.C():
+		return env.Payload
+	case <-timer.C:
+		t.Fatalf("timeout waiting for playback event")
 	}
+	return eventbus.AudioEgressPlaybackEvent{}
 }
 
 func TestServiceMetricsActiveStreams(t *testing.T) {
@@ -286,7 +281,7 @@ func TestServiceRebuffersOnSpeakUnavailable(t *testing.T) {
 	}
 	defer svc.Shutdown(context.Background())
 
-	playbackSub := bus.Subscribe(eventbus.TopicAudioEgressPlayback)
+	playbackSub := eventbus.SubscribeTo(bus, eventbus.Audio.EgressPlayback)
 	defer playbackSub.Close()
 
 	eventbus.Publish(context.Background(), bus, eventbus.Conversation.Speak, "", eventbus.ConversationSpeakEvent{

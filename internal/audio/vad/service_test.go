@@ -40,7 +40,7 @@ func TestVADServiceEmitsDetections(t *testing.T) {
 	}
 	defer svc.Shutdown(context.Background())
 
-	vadSub := bus.Subscribe(eventbus.TopicSpeechVADDetected)
+	vadSub := eventbus.SubscribeTo(bus, eventbus.Speech.VADDetected)
 	defer vadSub.Close()
 
 	segment := eventbus.AudioIngressSegmentEvent{
@@ -103,7 +103,7 @@ func TestVADServiceBuffersUntilAdapterAvailable(t *testing.T) {
 	}
 	defer svc.Shutdown(context.Background())
 
-	vadSub := bus.Subscribe(eventbus.TopicSpeechVADDetected)
+	vadSub := eventbus.SubscribeTo(bus, eventbus.Speech.VADDetected)
 	defer vadSub.Close()
 
 	eventbus.Publish(context.Background(), bus, eventbus.Audio.IngressSegment, "", eventbus.AudioIngressSegmentEvent{
@@ -211,22 +211,17 @@ func loudPCM() []byte {
 	return data
 }
 
-func receiveVADEvent(t *testing.T, sub *eventbus.Subscription) eventbus.SpeechVADEvent {
+func receiveVADEvent(t *testing.T, sub *eventbus.TypedSubscription[eventbus.SpeechVADEvent]) eventbus.SpeechVADEvent {
 	t.Helper()
 	timer := time.NewTimer(time.Second)
 	defer timer.Stop()
-	for {
-		select {
-		case env := <-sub.C():
-			event, ok := env.Payload.(eventbus.SpeechVADEvent)
-			if !ok {
-				continue
-			}
-			return event
-		case <-timer.C:
-			t.Fatalf("timeout waiting for VAD event")
-		}
+	select {
+	case env := <-sub.C():
+		return env.Payload
+	case <-timer.C:
+		t.Fatalf("timeout waiting for VAD event")
 	}
+	return eventbus.SpeechVADEvent{}
 }
 
 const (
@@ -314,7 +309,7 @@ func TestVADRecoversMidStreamAdapterFailure(t *testing.T) {
 	}
 	defer svc.Shutdown(context.Background())
 
-	vadSub := bus.Subscribe(eventbus.TopicSpeechVADDetected)
+	vadSub := eventbus.SubscribeTo(bus, eventbus.Speech.VADDetected)
 	defer vadSub.Close()
 
 	baseSegment := eventbus.AudioIngressSegmentEvent{
@@ -411,7 +406,7 @@ func TestVADPublishesPartialResultsBeforeRecovery(t *testing.T) {
 	}
 	defer svc.Shutdown(context.Background())
 
-	vadSub := bus.Subscribe(eventbus.TopicSpeechVADDetected)
+	vadSub := eventbus.SubscribeTo(bus, eventbus.Speech.VADDetected)
 	defer vadSub.Close()
 
 	seg := eventbus.AudioIngressSegmentEvent{

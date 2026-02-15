@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nupi-ai/nupi/internal/audio/streammanager"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 )
 
@@ -56,9 +55,9 @@ func TestServicePublishesTranscripts(t *testing.T) {
 	}
 	defer svc.Shutdown(context.Background())
 
-	partialSub := bus.Subscribe(eventbus.TopicSpeechTranscriptPartial)
+	partialSub := eventbus.SubscribeTo(bus, eventbus.Speech.TranscriptPartial)
 	defer partialSub.Close()
-	finalSub := bus.Subscribe(eventbus.TopicSpeechTranscriptFinal)
+	finalSub := eventbus.SubscribeTo(bus, eventbus.Speech.TranscriptFinal)
 	defer finalSub.Close()
 
 	segment1 := eventbus.AudioIngressSegmentEvent{
@@ -142,7 +141,7 @@ func TestServiceFactoryError(t *testing.T) {
 	}
 	defer svc.Shutdown(context.Background())
 
-	sub := bus.Subscribe(eventbus.TopicSpeechTranscriptPartial)
+	sub := eventbus.SubscribeTo(bus, eventbus.Speech.TranscriptPartial)
 	defer sub.Close()
 
 	eventbus.Publish(context.Background(), bus, eventbus.Audio.IngressSegment, "", eventbus.AudioIngressSegmentEvent{
@@ -238,7 +237,7 @@ func TestServiceBuffersUntilAdapterAvailable(t *testing.T) {
 	}
 	defer svc.Shutdown(context.Background())
 
-	sub := bus.Subscribe(eventbus.TopicSpeechTranscriptFinal)
+	sub := eventbus.SubscribeTo(bus, eventbus.Speech.TranscriptFinal)
 	defer sub.Close()
 
 	segment := eventbus.AudioIngressSegmentEvent{
@@ -292,7 +291,7 @@ func TestServiceDoesNotBufferWhenFactoryUnavailable(t *testing.T) {
 	}
 	defer svc.Shutdown(context.Background())
 
-	sub := bus.Subscribe(eventbus.TopicSpeechTranscriptFinal)
+	sub := eventbus.SubscribeTo(bus, eventbus.Speech.TranscriptFinal)
 	defer sub.Close()
 
 	for i := 0; i < 10; i++ {
@@ -370,7 +369,7 @@ func TestPendingBufferDropsOldestWhenFull(t *testing.T) {
 	}
 	defer svc.Shutdown(context.Background())
 
-	sub := bus.Subscribe(eventbus.TopicSpeechTranscriptFinal)
+	sub := eventbus.SubscribeTo(bus, eventbus.Speech.TranscriptFinal)
 	defer sub.Close()
 
 	for i := 0; i < totalSegments; i++ {
@@ -466,25 +465,21 @@ func TestServiceRetryDropsPendingOnPermanentError(t *testing.T) {
 	}
 }
 
-func receiveTranscript(t *testing.T, sub *eventbus.Subscription, timeout time.Duration) eventbus.SpeechTranscriptEvent {
+func receiveTranscript(t *testing.T, sub *eventbus.TypedSubscription[eventbus.SpeechTranscriptEvent], timeout time.Duration) eventbus.SpeechTranscriptEvent {
 	t.Helper()
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 
 	select {
 	case env := <-sub.C():
-		payload, ok := env.Payload.(eventbus.SpeechTranscriptEvent)
-		if !ok {
-			t.Fatalf("unexpected payload type %T", env.Payload)
-		}
-		return payload
+		return env.Payload
 	case <-timer.C:
 		t.Fatalf("timeout waiting for transcript")
 	}
 	return eventbus.SpeechTranscriptEvent{}
 }
 
-func expectNoEvent(t *testing.T, sub *eventbus.Subscription, timeout time.Duration) {
+func expectNoEvent(t *testing.T, sub *eventbus.TypedSubscription[eventbus.SpeechTranscriptEvent], timeout time.Duration) {
 	t.Helper()
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
@@ -568,7 +563,7 @@ func TestSTTRecoversMidStreamAdapterFailure(t *testing.T) {
 	}
 	defer svc.Shutdown(context.Background())
 
-	finalSub := bus.Subscribe(eventbus.TopicSpeechTranscriptFinal)
+	finalSub := eventbus.SubscribeTo(bus, eventbus.Speech.TranscriptFinal)
 	defer finalSub.Close()
 
 	baseSegment := eventbus.AudioIngressSegmentEvent{
@@ -657,7 +652,7 @@ func TestSTTPublishesPartialResultsBeforeRecovery(t *testing.T) {
 	}
 	defer svc.Shutdown(context.Background())
 
-	partialSub := bus.Subscribe(eventbus.TopicSpeechTranscriptPartial)
+	partialSub := eventbus.SubscribeTo(bus, eventbus.Speech.TranscriptPartial)
 	defer partialSub.Close()
 
 	seg := eventbus.AudioIngressSegmentEvent{
@@ -682,6 +677,3 @@ func TestSTTPublishesPartialResultsBeforeRecovery(t *testing.T) {
 		t.Fatalf("expected partial transcript to be published before recovery, got %q", tr.Text)
 	}
 }
-
-// Ensure the import is used.
-var _ = streammanager.StreamKey
