@@ -41,7 +41,7 @@ func buildTestServer(t *testing.T, sessionManager SessionManager) *Server {
 	if err != nil {
 		t.Fatalf("failed to build resize manager: %v", err)
 	}
-	return NewServer(sessionManager, resizeManager)
+	return NewServer(sessionManager, resizeManager, func(string) bool { return true })
 }
 
 // TestWebSocketBroadcast tests that events are broadcast to all connected clients

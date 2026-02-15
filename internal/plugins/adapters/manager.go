@@ -79,12 +79,13 @@ type ProcessHandle interface {
 
 // ManagerOptions configures the adapters manager.
 type ManagerOptions struct {
-	Store     BindingSource
-	Launcher  ProcessLauncher
-	Slots     []Slot
-	Adapters  AdapterDetailSource
-	PluginDir string
-	Bus       *eventbus.Bus
+	Store              BindingSource
+	Launcher           ProcessLauncher
+	Slots              []Slot
+	Adapters           AdapterDetailSource
+	PluginDir          string
+	Bus                *eventbus.Bus
+	AllowedCommandDirs []string
 }
 
 // Manager orchestrates adapter plugins for the daemon.
@@ -94,6 +95,8 @@ type Manager struct {
 	launcher      ProcessLauncher
 	pluginDir     string
 	bus           *eventbus.Bus
+
+	allowedCommandDirs []string
 
 	slots []Slot
 
@@ -135,18 +138,29 @@ var (
 	// ErrBindingSourceNotConfigured indicates the manager was created without a store.
 	ErrBindingSourceNotConfigured = errors.New("adapters: binding source not configured")
 	errAdapterDetailsUnavailable  = errors.New("adapters: adapter details unavailable")
+
+	// ErrCommandPathNotTrusted indicates the adapter command path is outside all trusted directories.
+	ErrCommandPathNotTrusted = errors.New("adapters: command path not under any trusted directory")
 )
 
 // NewManager constructs a new adapters manager with the supplied dependencies.
 func NewManager(opts ManagerOptions) *Manager {
+	cleaned := make([]string, 0, len(opts.AllowedCommandDirs))
+	for _, dir := range opts.AllowedCommandDirs {
+		if d := filepath.Clean(strings.TrimSpace(dir)); d != "" && d != "." {
+			cleaned = append(cleaned, d)
+		}
+	}
+
 	manager := &Manager{
-		store:         opts.Store,
-		adapterSource: opts.Adapters,
-		launcher:      opts.Launcher,
-		pluginDir:     strings.TrimSpace(opts.PluginDir),
-		bus:           opts.Bus,
-		slots:         opts.Slots,
-		instances:     make(map[Slot]*adapterInstance),
+		store:              opts.Store,
+		adapterSource:      opts.Adapters,
+		launcher:           opts.Launcher,
+		pluginDir:          strings.TrimSpace(opts.PluginDir),
+		bus:                opts.Bus,
+		allowedCommandDirs: cleaned,
+		slots:              opts.Slots,
+		instances:          make(map[Slot]*adapterInstance),
 	}
 	if len(manager.slots) == 0 {
 		manager.slots = defaultSlots
@@ -1305,6 +1319,63 @@ func SetReadinessChecker(fn func(ctx context.Context, addr string) error) func()
 	}
 }
 
+// trustedRoots returns the directories from which adapter binaries may be executed.
+func (m *Manager) trustedRoots() []string {
+	var roots []string
+
+	// Plugin directory (~/.nupi/plugins/)
+	if pr := m.pluginRoot(); pr != "" {
+		roots = append(roots, pr)
+	}
+
+	// Directory containing the nupid binary
+	if exe, err := os.Executable(); err == nil {
+		roots = append(roots, filepath.Dir(exe))
+	}
+
+	// ~/.nupi/bin/
+	roots = append(roots, filepath.Join(config.GetNupiHome(), "bin"))
+
+	// Additional directories from configuration
+	roots = append(roots, m.allowedCommandDirs...)
+
+	return roots
+}
+
+// validateCommandPath checks that command is located under one of the trusted directories.
+// Symlinks are resolved before the check.
+func (m *Manager) validateCommandPath(command string) error {
+	cleaned := filepath.Clean(command)
+
+	resolved, resolveErr := filepath.EvalSymlinks(cleaned)
+	if resolveErr != nil {
+		// File doesn't exist yet — use the cleaned path for both checks.
+		resolved = cleaned
+	}
+
+	for _, root := range m.trustedRoots() {
+		cleanedRoot := filepath.Clean(root)
+		resolvedRoot, err := filepath.EvalSymlinks(cleanedRoot)
+		if err != nil {
+			resolvedRoot = cleanedRoot
+		}
+
+		// Primary check: compare fully-resolved paths (catches symlink escapes).
+		if rel, err := filepath.Rel(resolvedRoot, resolved); err == nil && !strings.HasPrefix(rel, "..") {
+			return nil
+		}
+		// Fallback: when the command file doesn't exist on disk, EvalSymlinks
+		// can't resolve it — compare the un-resolved cleaned paths instead.
+		if resolveErr != nil {
+			if rel, err := filepath.Rel(cleanedRoot, cleaned); err == nil && !strings.HasPrefix(rel, "..") {
+				return nil
+			}
+		}
+	}
+
+	return fmt.Errorf("%w: %s", ErrCommandPathNotTrusted, command)
+}
+
 // resolveAdapterCommand determines the binary and args to launch an adapter based on its runtime type.
 // For binary adapters, it runs the command directly.
 // For JS adapters, it runs the command via the bundled Bun runtime.
@@ -1333,10 +1404,18 @@ func (m *Manager) resolveAdapterCommand(plan bindingPlan, adapterHome string) (s
 		if err != nil {
 			return "", nil, fmt.Errorf("adapters: JS runtime not available for %s: %w", plan.binding.AdapterID, err)
 		}
+		// Validate the JS script path (bun itself comes from a trusted source via jsrunner)
+		if err := m.validateCommandPath(command); err != nil {
+			return "", nil, fmt.Errorf("adapters: %s: %w", plan.binding.AdapterID, err)
+		}
 		return bunPath, append([]string{"run", command}, plan.endpoint.Args...), nil
 	}
 
-	// Binary adapter - run directly
+	// Binary adapter - validate that the binary is under a trusted directory
+	if err := m.validateCommandPath(command); err != nil {
+		return "", nil, fmt.Errorf("adapters: %s: %w", plan.binding.AdapterID, err)
+	}
+
 	return command, plan.endpoint.Args, nil
 }
 

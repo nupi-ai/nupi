@@ -126,8 +126,9 @@ type Server struct {
 	resizeManager  *termresize.Manager
 }
 
-// NewServer creates a new WebSocket server
-func NewServer(sessionManager SessionManager, resizeManager *termresize.Manager) *Server {
+// NewServer creates a new WebSocket server.
+// The originAllowed function is used to validate the Origin header on upgrade requests.
+func NewServer(sessionManager SessionManager, resizeManager *termresize.Manager, originAllowed func(string) bool) *Server {
 	return &Server{
 		sessionManager: sessionManager,
 		clients:        make(map[*Client]bool),
@@ -137,28 +138,13 @@ func NewServer(sessionManager SessionManager, resizeManager *termresize.Manager)
 		resizeManager:  resizeManager,
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
-				// Only allow localhost origins for security
 				origin := r.Header.Get("Origin")
-
-				// Allow requests with no Origin header (same-origin requests)
 				if origin == "" {
 					return true
 				}
-
-				// Check if origin is localhost or 127.0.0.1 on any port
-				// This allows the web UI to connect from localhost
-				if origin == "http://localhost" || origin == "http://127.0.0.1" ||
-					(len(origin) > 17 && (origin[:17] == "http://localhost:" || origin[:16] == "http://127.0.0.1:")) {
-					return true
+				if originAllowed != nil {
+					return originAllowed(origin)
 				}
-
-				// Allow Tauri app origins
-				if origin == "tauri://localhost" || origin == "https://tauri.localhost" ||
-					(len(origin) > 20 && origin[:20] == "https://tauri.local") {
-					return true
-				}
-
-				// Reject all other origins
 				return false
 			},
 		},
