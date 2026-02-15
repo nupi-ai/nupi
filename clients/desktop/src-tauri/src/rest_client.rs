@@ -41,6 +41,11 @@ const SLOT_STT: &str = "stt";
 const SLOT_TTS: &str = "tts";
 const CANCELLED_MESSAGE: &str = "Voice stream cancelled by user";
 
+const MAX_METADATA_ENTRIES: usize = 32;
+const MAX_METADATA_KEY_CHARS: usize = 64;
+const MAX_METADATA_VALUE_CHARS: usize = 512;
+const MAX_METADATA_TOTAL_BYTES: usize = 4096;
+
 #[derive(Debug)]
 pub enum RestClientError {
     MissingHomeDir,
@@ -392,10 +397,48 @@ fn normalize_metadata_map(
         }
         normalized.insert(trimmed_key.to_string(), value.trim().to_string());
     }
+    if normalized.len() < MAX_METADATA_ENTRIES {
+        normalized
+            .entry("client".to_string())
+            .or_insert_with(|| client_label.to_string());
+    }
     normalized
-        .entry("client".to_string())
-        .or_insert_with(|| client_label.to_string());
-    normalized
+}
+
+fn validate_metadata_map(metadata: &HashMap<String, String>) -> Result<(), RestClientError> {
+    if metadata.len() > MAX_METADATA_ENTRIES {
+        return Err(RestClientError::Config(format!(
+            "metadata has {} entries, max {}",
+            metadata.len(),
+            MAX_METADATA_ENTRIES
+        )));
+    }
+
+    let mut total_bytes: usize = 0;
+    for (key, value) in metadata {
+        if key.chars().count() > MAX_METADATA_KEY_CHARS {
+            return Err(RestClientError::Config(format!(
+                "metadata key {:?} exceeds {} characters",
+                key, MAX_METADATA_KEY_CHARS
+            )));
+        }
+        if value.chars().count() > MAX_METADATA_VALUE_CHARS {
+            return Err(RestClientError::Config(format!(
+                "metadata value for key {:?} exceeds {} characters",
+                key, MAX_METADATA_VALUE_CHARS
+            )));
+        }
+        total_bytes += key.len() + value.len();
+    }
+
+    if total_bytes > MAX_METADATA_TOTAL_BYTES {
+        return Err(RestClientError::Config(format!(
+            "metadata total size exceeds {} bytes",
+            MAX_METADATA_TOTAL_BYTES
+        )));
+    }
+
+    Ok(())
 }
 
 fn default_capture_format_summary() -> AudioFormatSummary {
@@ -969,6 +1012,7 @@ impl RestClient {
         }
 
         let metadata_norm = normalize_metadata_map(metadata, "desktop");
+        validate_metadata_map(&metadata_norm)?;
         let subscribe_playback = !disable_playback || playback_output.is_some();
 
         let capabilities = self.audio_capabilities(Some(trimmed_session)).await?;
@@ -1202,6 +1246,7 @@ impl RestClient {
         });
 
         let metadata_norm = normalize_metadata_map(metadata, "desktop");
+        validate_metadata_map(&metadata_norm)?;
 
         let capabilities = self.audio_capabilities(Some(trimmed_session)).await?;
         if !capabilities.playback_enabled {
@@ -1625,5 +1670,118 @@ fn determine_host(binding: &str, tls_enabled: bool) -> String {
     match binding.trim().to_lowercase().as_str() {
         "" | "loopback" | "0.0.0.0" | "::" | "lan" | "public" => loopback_host(tls_enabled),
         other => other.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_metadata_map_accepts_valid() {
+        let mut m = HashMap::new();
+        m.insert("key1".to_string(), "value1".to_string());
+        m.insert("client".to_string(), "desktop".to_string());
+        assert!(validate_metadata_map(&m).is_ok());
+    }
+
+    #[test]
+    fn validate_metadata_map_accepts_empty() {
+        let m = HashMap::new();
+        assert!(validate_metadata_map(&m).is_ok());
+    }
+
+    #[test]
+    fn validate_metadata_map_rejects_too_many_entries() {
+        let mut m = HashMap::new();
+        for i in 0..=MAX_METADATA_ENTRIES {
+            m.insert(format!("k{i}"), "v".to_string());
+        }
+        let err = validate_metadata_map(&m).unwrap_err();
+        assert!(err.to_string().contains("entries"));
+    }
+
+    #[test]
+    fn validate_metadata_map_rejects_long_key() {
+        let mut m = HashMap::new();
+        let long_key: String = "a".repeat(MAX_METADATA_KEY_CHARS + 1);
+        m.insert(long_key, "v".to_string());
+        let err = validate_metadata_map(&m).unwrap_err();
+        assert!(err.to_string().contains("key"));
+    }
+
+    #[test]
+    fn validate_metadata_map_rejects_long_value() {
+        let mut m = HashMap::new();
+        let long_val: String = "b".repeat(MAX_METADATA_VALUE_CHARS + 1);
+        m.insert("k".to_string(), long_val);
+        let err = validate_metadata_map(&m).unwrap_err();
+        assert!(err.to_string().contains("value"));
+    }
+
+    #[test]
+    fn validate_metadata_map_rejects_total_bytes_exceeded() {
+        let mut m = HashMap::new();
+        // Each entry: 2-byte key + 200-byte value = 202 bytes
+        // 21 entries = 4242 bytes > 4096
+        for i in 0..21 {
+            m.insert(format!("{i:02}"), "x".repeat(200));
+        }
+        let err = validate_metadata_map(&m).unwrap_err();
+        assert!(err.to_string().contains("total size"));
+    }
+
+    #[test]
+    fn validate_metadata_map_key_limit_counts_chars_not_bytes() {
+        let mut m = HashMap::new();
+        // 64 multi-byte characters (each char is 4 bytes in UTF-8) — should pass
+        let emoji_key: String = "\u{1F600}".repeat(MAX_METADATA_KEY_CHARS);
+        m.insert(emoji_key, "v".to_string());
+        assert!(validate_metadata_map(&m).is_ok());
+
+        // 65 multi-byte characters — should fail
+        let mut m2 = HashMap::new();
+        let long_emoji_key: String = "\u{1F600}".repeat(MAX_METADATA_KEY_CHARS + 1);
+        m2.insert(long_emoji_key, "v".to_string());
+        assert!(validate_metadata_map(&m2).is_err());
+    }
+
+    #[test]
+    fn normalize_metadata_map_trims_and_injects_client() {
+        let mut m = HashMap::new();
+        m.insert("  foo  ".to_string(), "  bar  ".to_string());
+        m.insert("".to_string(), "ignored".to_string());
+        let result = normalize_metadata_map(m, "test");
+        assert_eq!(result.get("foo"), Some(&"bar".to_string()));
+        assert_eq!(result.get("client"), Some(&"test".to_string()));
+        assert!(!result.contains_key(""));
+        assert!(!result.contains_key("  foo  "));
+    }
+
+    #[test]
+    fn normalize_metadata_map_skips_client_at_max_entries() {
+        let mut m = HashMap::new();
+        for i in 0..MAX_METADATA_ENTRIES {
+            m.insert(format!("k{i}"), "v".to_string());
+        }
+        // No "client" key — normalize should skip injection to stay at 32
+        let result = normalize_metadata_map(m, "desktop");
+        assert_eq!(result.len(), MAX_METADATA_ENTRIES);
+        assert!(!result.contains_key("client"));
+        // Validation should pass
+        assert!(validate_metadata_map(&result).is_ok());
+    }
+
+    #[test]
+    fn normalize_metadata_map_preserves_existing_client() {
+        let mut m = HashMap::new();
+        for i in 0..MAX_METADATA_ENTRIES - 1 {
+            m.insert(format!("k{i}"), "v".to_string());
+        }
+        m.insert("client".to_string(), "custom".to_string());
+        let result = normalize_metadata_map(m, "desktop");
+        assert_eq!(result.len(), MAX_METADATA_ENTRIES);
+        assert_eq!(result.get("client"), Some(&"custom".to_string()));
+        assert!(validate_metadata_map(&result).is_ok());
     }
 }
