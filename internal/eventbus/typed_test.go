@@ -163,6 +163,42 @@ func TestSubscribeNilBusReturnsClosedChannel(t *testing.T) {
 	sub.Close()
 }
 
+func TestTypedSubscribeWithContext(t *testing.T) {
+	bus := New()
+	defer bus.Shutdown()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	sub := Subscribe[SpeechVADEvent](bus, TopicSpeechVADDetected, WithContext(ctx))
+
+	// Publish and receive an event to confirm subscription works.
+	bus.publish(context.Background(), Envelope{
+		Topic:   TopicSpeechVADDetected,
+		Payload: SpeechVADEvent{SessionID: "s1", Active: true},
+	})
+
+	select {
+	case got := <-sub.C():
+		if got.Payload.SessionID != "s1" {
+			t.Fatalf("unexpected session id: %s", got.Payload.SessionID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for typed event")
+	}
+
+	// Cancel context — typed channel should close via cascade.
+	cancel()
+
+	select {
+	case _, ok := <-sub.C():
+		if ok {
+			t.Fatal("expected typed channel to be closed after context cancel")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for typed channel close")
+	}
+}
+
 func TestTypedSubscribeBusShutdown(t *testing.T) {
 	bus := New()
 

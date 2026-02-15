@@ -162,7 +162,9 @@ func (b *Bus) Subscribe(topic Topic, opts ...SubscriptionOption) *Subscription {
 	if b == nil {
 		ch := make(chan Envelope)
 		close(ch)
-		sub := &Subscription{ch: ch}
+		done := make(chan struct{})
+		close(done)
+		sub := &Subscription{ch: ch, done: done}
 		sub.closed.Store(true)
 		return sub
 	}
@@ -185,6 +187,7 @@ func (b *Bus) Subscribe(topic Topic, opts ...SubscriptionOption) *Subscription {
 		id:     id,
 		name:   cfg.name,
 		ch:     make(chan Envelope, cfg.bufferSize),
+		done:   make(chan struct{}),
 		bus:    b,
 		policy: policy,
 	}
@@ -195,18 +198,28 @@ func (b *Bus) Subscribe(topic Topic, opts ...SubscriptionOption) *Subscription {
 			ovfCap = defaultMaxOverflow
 		}
 		sub.ovf = newOverflowBuffer(ovfCap)
-		ctx, cancel := context.WithCancel(context.Background())
+		ovfCtx, cancel := context.WithCancel(context.Background())
 		sub.ovfCancel = cancel
-		go sub.ovf.drainLoop(ctx, sub.ch)
+		go sub.ovf.drainLoop(ovfCtx, sub.ch)
 	}
 
 	b.mu.Lock()
-	defer b.mu.Unlock()
-
 	if _, exists := b.subscribers[topic]; !exists {
 		b.subscribers[topic] = make(map[uint64]*Subscription)
 	}
 	b.subscribers[topic][id] = sub
+	b.mu.Unlock()
+
+	if cfg.ctx != nil {
+		go func() {
+			select {
+			case <-cfg.ctx.Done():
+				sub.Close()
+			case <-sub.done:
+			}
+		}()
+	}
+
 	return sub
 }
 
@@ -234,6 +247,7 @@ type SubscriptionOption func(*subscriptionConfig)
 type subscriptionConfig struct {
 	bufferSize int
 	name       string
+	ctx        context.Context
 }
 
 // WithSubscriptionBuffer overrides the channel buffer for a subscription.
@@ -252,12 +266,24 @@ func WithSubscriptionName(name string) SubscriptionOption {
 	}
 }
 
+// WithContext ties the subscription lifecycle to a context.
+// When the context is cancelled the subscription is automatically closed.
+// A nil context is ignored.
+func WithContext(ctx context.Context) SubscriptionOption {
+	return func(cfg *subscriptionConfig) {
+		if ctx != nil {
+			cfg.ctx = ctx
+		}
+	}
+}
+
 // Subscription represents a consumer listening to a topic.
 type Subscription struct {
 	topic Topic
 	id    uint64
 	name  string
 	ch    chan Envelope
+	done  chan struct{} // closed when the subscription is closed
 
 	bus      *Bus
 	closed   atomic.Bool
@@ -283,6 +309,7 @@ func (s *Subscription) Close() {
 	}
 
 	s.stopOverflow()
+	close(s.done)
 
 	if s.bus == nil {
 		close(s.ch)
@@ -301,11 +328,11 @@ func (s *Subscription) Close() {
 }
 
 func (s *Subscription) closeLocked() {
-	if s.closed.Load() {
+	if !s.closed.CompareAndSwap(false, true) {
 		return
 	}
-	s.closed.Store(true)
 	s.stopOverflow()
+	close(s.done)
 	close(s.ch)
 }
 
