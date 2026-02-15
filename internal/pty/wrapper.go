@@ -73,7 +73,8 @@ type Wrapper struct {
 	eventsMutex  sync.RWMutex
 	eventsClosed bool
 
-	commandMu sync.RWMutex
+	commandMu    sync.RWMutex
+	ptyCloseOnce sync.Once
 
 	isRunning atomic.Bool
 	exitCode  atomic.Int32
@@ -185,6 +186,7 @@ func (w *Wrapper) Start(opts StartOptions) error {
 	w.isRunning.Store(true)
 	w.exitCode.Store(-1)
 	w.waitOnce = sync.Once{}
+	w.ptyCloseOnce = sync.Once{}
 	w.startTime = time.Now()
 	if w.command.Process != nil {
 		w.pid = w.command.Process.Pid
@@ -211,6 +213,7 @@ func (w *Wrapper) captureWithBuffer() {
 	for {
 		n, err := w.ptyFile.Read(buffer)
 		if err != nil {
+			w.closePTY()
 			w.isRunning.Store(false)
 			_ = w.reapProcess()
 
@@ -351,6 +354,16 @@ func (w *Wrapper) notifyResize(rows, cols int) {
 	}
 }
 
+// closePTY closes the PTY file descriptor exactly once.
+// This unblocks any goroutine blocked in ptyFile.Read() and releases the fd.
+func (w *Wrapper) closePTY() {
+	w.ptyCloseOnce.Do(func() {
+		if w.ptyFile != nil {
+			w.ptyFile.Close()
+		}
+	})
+}
+
 // isExpectedTerminationError reports whether err is a normal process exit
 // caused by graceful termination (SIGTERM on Unix, TerminateProcess on Windows).
 // This is called only after GracefulTerminate succeeded, so any ExitError is expected.
@@ -364,6 +377,10 @@ func (w *Wrapper) Stop(timeout time.Duration) error {
 	if !w.isRunning.Load() {
 		return nil
 	}
+
+	// Close the PTY fd after process cleanup to unblock any Read()
+	// blocked in captureWithBuffer and release the file descriptor.
+	defer w.closePTY()
 
 	w.commandMu.RLock()
 	cmd := w.command
