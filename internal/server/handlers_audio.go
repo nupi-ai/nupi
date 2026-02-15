@@ -33,25 +33,6 @@ const (
 	websocketHeartbeatTimeout  = 60 * time.Second
 )
 
-var audioWSUpgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool {
-		origin := r.Header.Get("Origin")
-		if origin == "" {
-			return true
-		}
-		if origin == "http://localhost" || origin == "http://127.0.0.1" ||
-			strings.HasPrefix(origin, "http://localhost:") ||
-			strings.HasPrefix(origin, "http://127.0.0.1:") ||
-			origin == "tauri://localhost" ||
-			origin == "https://tauri.localhost" ||
-			origin == "https://tauri.local" ||
-			strings.HasPrefix(origin, "https://tauri.local:") {
-			return true
-		}
-		return false
-	},
-}
-
 type audioInterruptRequest struct {
 	SessionID string            `json:"session_id"`
 	StreamID  string            `json:"stream_id"`
@@ -486,7 +467,7 @@ func (s *APIServer) handleAudioIngressWS(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	conn, err := audioWSUpgrader.Upgrade(w, r, nil)
+	conn, err := s.audioUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
 	}
@@ -615,7 +596,7 @@ func (s *APIServer) handleAudioEgressWS(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	conn, err := audioWSUpgrader.Upgrade(w, r, nil)
+	conn, err := s.audioUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
 	}

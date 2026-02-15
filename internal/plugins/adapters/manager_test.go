@@ -2979,3 +2979,176 @@ spec:
 		t.Fatalf("expected still 1 launch (no restart), got %d", len(launcher.Records()))
 	}
 }
+
+func TestValidateCommandPath(t *testing.T) {
+	// Create a temporary directory structure for testing
+	trustedDir := t.TempDir()
+	untrustedDir := t.TempDir()
+
+	// Create a binary inside the trusted directory
+	trustedBin := filepath.Join(trustedDir, "adapter-bin")
+	if err := os.WriteFile(trustedBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a binary inside the untrusted directory
+	untrustedBin := filepath.Join(untrustedDir, "evil-bin")
+	if err := os.WriteFile(untrustedBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a subdirectory inside trusted dir
+	subDir := filepath.Join(trustedDir, "sub")
+	if err := os.MkdirAll(subDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	subBin := filepath.Join(subDir, "nested-bin")
+	if err := os.WriteFile(subBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	manager := NewManager(ManagerOptions{
+		PluginDir:          trustedDir,
+		AllowedCommandDirs: []string{trustedDir},
+	})
+
+	t.Run("binary under pluginRoot", func(t *testing.T) {
+		if err := manager.validateCommandPath(trustedBin); err != nil {
+			t.Errorf("expected trusted path to be valid, got: %v", err)
+		}
+	})
+
+	t.Run("binary in subdirectory of pluginRoot", func(t *testing.T) {
+		if err := manager.validateCommandPath(subBin); err != nil {
+			t.Errorf("expected nested trusted path to be valid, got: %v", err)
+		}
+	})
+
+	t.Run("binary under allowedCommandDirs", func(t *testing.T) {
+		extraDir := t.TempDir()
+		extraBin := filepath.Join(extraDir, "extra-bin")
+		if err := os.WriteFile(extraBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		m := NewManager(ManagerOptions{
+			PluginDir:          trustedDir,
+			AllowedCommandDirs: []string{extraDir},
+		})
+		if err := m.validateCommandPath(extraBin); err != nil {
+			t.Errorf("expected extra dir binary to be valid, got: %v", err)
+		}
+	})
+
+	t.Run("binary outside trusted dirs", func(t *testing.T) {
+		err := manager.validateCommandPath(untrustedBin)
+		if err == nil {
+			t.Fatal("expected error for untrusted path")
+		}
+		if !errors.Is(err, ErrCommandPathNotTrusted) {
+			t.Errorf("expected ErrCommandPathNotTrusted, got: %v", err)
+		}
+	})
+
+	t.Run("path traversal", func(t *testing.T) {
+		traversalPath := filepath.Join(trustedDir, "..", "..", "etc", "passwd")
+		err := manager.validateCommandPath(traversalPath)
+		if err == nil {
+			t.Fatal("expected error for path traversal")
+		}
+		if !errors.Is(err, ErrCommandPathNotTrusted) {
+			t.Errorf("expected ErrCommandPathNotTrusted, got: %v", err)
+		}
+	})
+
+	t.Run("symlink pointing outside trusted dir", func(t *testing.T) {
+		symlinkPath := filepath.Join(trustedDir, "evil-link")
+		if err := os.Symlink(untrustedBin, symlinkPath); err != nil {
+			t.Skipf("symlink not supported: %v", err)
+		}
+		err := manager.validateCommandPath(symlinkPath)
+		if err == nil {
+			t.Fatal("expected error for symlink pointing outside trusted dir")
+		}
+		if !errors.Is(err, ErrCommandPathNotTrusted) {
+			t.Errorf("expected ErrCommandPathNotTrusted, got: %v", err)
+		}
+	})
+
+	t.Run("symlink pointing inside trusted dir", func(t *testing.T) {
+		symlinkPath := filepath.Join(trustedDir, "good-link")
+		if err := os.Symlink(trustedBin, symlinkPath); err != nil {
+			t.Skipf("symlink not supported: %v", err)
+		}
+		if err := manager.validateCommandPath(symlinkPath); err != nil {
+			t.Errorf("expected valid symlink within trusted dir, got: %v", err)
+		}
+	})
+}
+
+func TestResolveAdapterCommandPathValidation(t *testing.T) {
+	trustedDir := t.TempDir()
+	untrustedDir := t.TempDir()
+
+	// Create binaries
+	trustedBin := filepath.Join(trustedDir, "my-adapter")
+	if err := os.WriteFile(trustedBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	untrustedBin := filepath.Join(untrustedDir, "evil-adapter")
+	if err := os.WriteFile(untrustedBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	manager := NewManager(ManagerOptions{
+		PluginDir:          trustedDir,
+		AllowedCommandDirs: []string{trustedDir},
+	})
+
+	t.Run("trusted binary adapter accepted", func(t *testing.T) {
+		plan := bindingPlan{
+			binding: Binding{AdapterID: "test-adapter"},
+			endpoint: configstore.AdapterEndpoint{
+				Command: trustedBin,
+			},
+		}
+		binary, _, err := manager.resolveAdapterCommand(plan, trustedDir)
+		if err != nil {
+			t.Fatalf("expected trusted binary to be accepted, got: %v", err)
+		}
+		if binary != trustedBin {
+			t.Errorf("expected binary %s, got %s", trustedBin, binary)
+		}
+	})
+
+	t.Run("untrusted binary adapter rejected", func(t *testing.T) {
+		plan := bindingPlan{
+			binding: Binding{AdapterID: "evil-adapter"},
+			endpoint: configstore.AdapterEndpoint{
+				Command: untrustedBin,
+			},
+		}
+		_, _, err := manager.resolveAdapterCommand(plan, untrustedDir)
+		if err == nil {
+			t.Fatal("expected error for untrusted binary")
+		}
+		if !errors.Is(err, ErrCommandPathNotTrusted) {
+			t.Errorf("expected ErrCommandPathNotTrusted, got: %v", err)
+		}
+	})
+
+	t.Run("relative command without adapterHome stays relative and is rejected", func(t *testing.T) {
+		plan := bindingPlan{
+			binding: Binding{AdapterID: "relative-adapter"},
+			endpoint: configstore.AdapterEndpoint{
+				Command: "./some-binary",
+			},
+		}
+		_, _, err := manager.resolveAdapterCommand(plan, "")
+		if err == nil {
+			t.Fatal("expected error for relative command without adapterHome")
+		}
+		if !errors.Is(err, ErrCommandPathNotTrusted) {
+			t.Errorf("expected ErrCommandPathNotTrusted, got: %v", err)
+		}
+	})
+}

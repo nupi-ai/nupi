@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gorilla/websocket"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/termresize"
@@ -120,14 +121,12 @@ func (tc *transportConfig) originAllowed(origin string) bool {
 		return false
 	}
 
-	if origin == "tauri://localhost" ||
-		origin == "https://tauri.localhost" ||
-		origin == "https://tauri.local" ||
-		strings.HasPrefix(origin, "https://tauri.local:") ||
-		origin == "http://localhost" ||
-		origin == "http://127.0.0.1" ||
-		strings.HasPrefix(origin, "http://localhost:") ||
-		strings.HasPrefix(origin, "http://127.0.0.1:") {
+	u, err := url.Parse(origin)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return false
+	}
+
+	if isBuiltinOrigin(u) {
 		return true
 	}
 
@@ -212,6 +211,7 @@ type APIServer struct {
 	eventBus       *eventbus.Bus
 	resizeManager  *termresize.Manager
 	httpServer     *http.Server
+	audioUpgrader  websocket.Upgrader
 
 	// Grouped state (embedded — fields promoted)
 	transportConfig
@@ -244,16 +244,26 @@ func NewAPIServer(sessionManager SessionManager, configStore ConfigStore, runtim
 		return nil, fmt.Errorf("failed to initialise resize manager: %w", err)
 	}
 
-	wsServer := NewServer(sessionManager, resizeManager)
-
 	apiServer := &APIServer{
 		sessionManager: sessionManager,
 		configStore:    configStore,
 		runtime:        runtime,
-		wsServer:       wsServer,
 		resizeManager:  resizeManager,
 	}
 	apiServer.port = port
+
+	wsServer := NewServer(sessionManager, resizeManager, apiServer.originAllowed)
+	apiServer.wsServer = wsServer
+
+	apiServer.audioUpgrader = websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool {
+			origin := r.Header.Get("Origin")
+			if origin == "" {
+				return true
+			}
+			return apiServer.originAllowed(origin)
+		},
+	}
 
 	apiServer.registerSessionListener()
 
