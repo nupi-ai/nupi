@@ -1,7 +1,5 @@
-import { useState, useRef } from 'react';
-import { useSessionSocket } from '../hooks/useSessionSocket';
-import type { Session } from '../types/session';
-import { useTerminalInstance } from '../hooks/useTerminalInstance';
+import { useState } from 'react';
+import { useSession } from '../hooks/useSession';
 import { SessionTabs } from './SessionTabs';
 import { KillConfirmDialog } from './KillConfirmDialog';
 import '@xterm/xterm/css/xterm.css';
@@ -12,41 +10,8 @@ interface SessionsProps {
 }
 
 export function Sessions({ daemonPort, onPlayRecording }: SessionsProps) {
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const session = useSession(daemonPort);
   const [killConfirmDialog, setKillConfirmDialog] = useState<{sessionId: string, sessionName: string} | null>(null);
-
-  // Ref indirection for sendMessage — resolves circular dependency between hooks.
-  // Terminal hook needs sendMessage (from socket), socket hook needs attachedSessionId (from terminal).
-  // The ref is populated after useSessionSocket returns, before effects fire.
-  const sendMessageRef = useRef<(msg: object) => void>(() => {});
-
-  // Shared ref for active session — updated after socket returns sessions each render.
-  // Terminal hook reads this via ref (not as a dep) so only activeSessionId changes trigger re-init.
-  const activeSessionRef = useRef<Session | undefined>(undefined);
-
-  // Terminal hook — creates xterm instance, scrollbar, resize logic
-  const terminal = useTerminalInstance(
-    activeSessionId,
-    activeSessionRef,
-    (msg) => sendMessageRef.current(msg),
-  );
-
-  // Socket hook — WebSocket connection, session state, message dispatch
-  const socket = useSessionSocket(
-    daemonPort,
-    activeSessionId,
-    setActiveSessionId,
-    terminal.attachedSessionId,
-    {
-      onBinaryOutput: (_sessionId, payload) => terminal.controls.writeChunk(payload),
-      onResizeInstructions: (_sessionId, instructions) => terminal.controls.applyResizeInstructions(instructions),
-      onSessionStopped: () => terminal.controls.markSessionStopped(),
-    },
-  );
-
-  // Wire up refs — these assignments happen during render, before effects fire
-  sendMessageRef.current = socket.sendMessage;
-  activeSessionRef.current = socket.sessions.find(s => s.id === activeSessionId);
 
   // Kill session handlers
   const handleKillSessionClick = (sessionId: string, sessionName: string) => {
@@ -59,7 +24,7 @@ export function Sessions({ daemonPort, onPlayRecording }: SessionsProps) {
 
     const { sessionId } = killConfirmDialog;
     console.log('[KILL] Confirmed, killing session:', sessionId);
-    socket.sendMessage({ type: 'kill', data: sessionId });
+    session.sendMessage({ type: 'kill', data: sessionId });
     setKillConfirmDialog(null);
   };
 
@@ -75,9 +40,9 @@ export function Sessions({ daemonPort, onPlayRecording }: SessionsProps) {
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, overflow: 'hidden' }}>
       {/* Tabs at top */}
       <SessionTabs
-        sessions={socket.sessions}
-        activeSessionId={activeSessionId}
-        onSelectSession={setActiveSessionId}
+        sessions={session.sessions}
+        activeSessionId={session.activeSessionId}
+        onSelectSession={session.setActiveSessionId}
         onKillSession={handleKillSessionClick}
         onPlayRecording={onPlayRecording}
       />
@@ -95,7 +60,7 @@ export function Sessions({ daemonPort, onPlayRecording }: SessionsProps) {
         }}
       >
         <div
-          ref={terminal.refs.terminalRef}
+          ref={session.refs.terminalRef}
           style={{
             flex: 1,
             minHeight: 0,
@@ -105,7 +70,7 @@ export function Sessions({ daemonPort, onPlayRecording }: SessionsProps) {
           }}
         />
         <div
-          ref={terminal.refs.customScrollbarRef}
+          ref={session.refs.customScrollbarRef}
           style={{
             position: 'absolute',
             top: '8px',
@@ -123,7 +88,7 @@ export function Sessions({ daemonPort, onPlayRecording }: SessionsProps) {
           }}
         >
           <div
-            ref={terminal.refs.customScrollbarContentRef}
+            ref={session.refs.customScrollbarContentRef}
             style={{
               width: '100%',
               background: 'transparent',
