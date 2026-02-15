@@ -16,7 +16,6 @@ import (
 
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
-	"github.com/nupi-ai/nupi/internal/session"
 	"github.com/nupi-ai/nupi/internal/termresize"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -202,8 +201,8 @@ type observabilityState struct {
 // APIServer exposes the HTTP, WebSocket and gRPC API surface for the Nupi daemon.
 type APIServer struct {
 	// Service dependencies (immutable after init)
-	sessionManager *session.Manager
-	configStore    *configstore.Store
+	sessionManager SessionManager
+	configStore    ConfigStore
 	runtime        RuntimeInfoProvider
 	wsServer       *Server
 	conversation   ConversationStore
@@ -239,7 +238,7 @@ type TransportSnapshot struct {
 }
 
 // NewAPIServer creates a new API server
-func NewAPIServer(sessionManager *session.Manager, configStore *configstore.Store, runtime RuntimeInfoProvider, port int) (*APIServer, error) {
+func NewAPIServer(sessionManager SessionManager, configStore ConfigStore, runtime RuntimeInfoProvider, port int) (*APIServer, error) {
 	resizeManager, err := termresize.NewManagerWithDefaults()
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialise resize manager: %w", err)

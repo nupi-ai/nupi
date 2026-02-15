@@ -515,8 +515,7 @@ func TestHandleTransportConfigUpdateGRPCBindingRequiresTLS(t *testing.T) {
 }
 
 func TestHandleConfigMigrate(t *testing.T) {
-	apiServer, _ := newTestAPIServer(t)
-	store := apiServer.configStore
+	apiServer, _, store := newTestAPIServerWithStore(t)
 
 	if _, err := store.DB().ExecContext(context.Background(), `
 		DELETE FROM adapter_bindings WHERE instance_name = ? AND profile_name = ? AND slot = 'tts'
@@ -1219,8 +1218,8 @@ func TestHTTPAuthNotRequiredOnLoopback(t *testing.T) {
 }
 
 func TestHandleQuickstartGet(t *testing.T) {
-	apiServer, _ := newTestAPIServer(t)
-	apiServer.SetAdaptersController(newTestAdaptersService(t, apiServer.configStore))
+	apiServer, _, store := newTestAPIServerWithStore(t)
+	apiServer.SetAdaptersController(newTestAdaptersService(t, store))
 
 	req := withAdmin(apiServer, httptest.NewRequest(http.MethodGet, "/config/quickstart", nil))
 	rec := httptest.NewRecorder()
@@ -1249,8 +1248,7 @@ func TestHandleQuickstartGet(t *testing.T) {
 }
 
 func TestHandleQuickstartIncludesAdapters(t *testing.T) {
-	apiServer, _ := newTestAPIServer(t)
-	store := apiServer.configStore
+	apiServer, _, store := newTestAPIServerWithStore(t)
 
 	adaptersSvc := newTestAdaptersService(t, store)
 	apiServer.SetAdaptersController(adaptersSvc)
@@ -1325,8 +1323,8 @@ func TestHandleQuickstartWithoutAdaptersService(t *testing.T) {
 }
 
 func TestHandleQuickstartCompleteValidation(t *testing.T) {
-	apiServer, _ := newTestAPIServer(t)
-	apiServer.SetAdaptersController(newTestAdaptersService(t, apiServer.configStore))
+	apiServer, _, store := newTestAPIServerWithStore(t)
+	apiServer.SetAdaptersController(newTestAdaptersService(t, store))
 
 	req := withAdmin(apiServer, httptest.NewRequest(http.MethodPost, "/config/quickstart", bytes.NewBufferString(`{"complete":true}`)))
 	req.Header.Set("Content-Type", "application/json")
@@ -1340,8 +1338,7 @@ func TestHandleQuickstartCompleteValidation(t *testing.T) {
 }
 
 func TestHandleQuickstartCompleteFailsWhenReferenceMissing(t *testing.T) {
-	apiServer, _ := newTestAPIServer(t)
-	store := apiServer.configStore
+	apiServer, _, store := newTestAPIServerWithStore(t)
 	apiServer.SetAdaptersController(newTestAdaptersService(t, store))
 
 	ctx := context.Background()
@@ -1824,6 +1821,12 @@ func (runtimeStub) StartTime() time.Time {
 
 func newTestAPIServer(t *testing.T) (*APIServer, *session.Manager) {
 	t.Helper()
+	apiServer, sessionManager, _ := newTestAPIServerWithStore(t)
+	return apiServer, sessionManager
+}
+
+func newTestAPIServerWithStore(t *testing.T) (*APIServer, *session.Manager, *configstore.Store) {
+	t.Helper()
 
 	tmpHome := t.TempDir()
 	oldHome := os.Getenv("HOME")
@@ -1859,7 +1862,7 @@ func newTestAPIServer(t *testing.T) (*APIServer, *session.Manager) {
 		t.Fatalf("failed to create API server: %v", err)
 	}
 
-	return apiServer, sessionManager
+	return apiServer, sessionManager, store
 }
 
 type flushRecorder struct {
@@ -1889,7 +1892,7 @@ func openTestStore(t *testing.T) *configstore.Store {
 	return store
 }
 
-func enableVoiceAdapters(t *testing.T, store *configstore.Store) {
+func enableVoiceAdapters(t *testing.T, store ConfigStore) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -1951,7 +1954,7 @@ func TestHandleAudioIngressStreamsData(t *testing.T) {
 	apiServer.SetEventBus(bus)
 	ingressSvc := ingress.New(bus)
 	apiServer.SetAudioIngress(newTestAudioIngressProvider(ingressSvc))
-	apiServer.sessionManager = nil
+	apiServer.sessionManager = &stubSessionManager{}
 
 	rawSub := eventbus.SubscribeTo(bus, eventbus.Audio.IngressRaw)
 	defer rawSub.Close()
@@ -2007,7 +2010,7 @@ func TestHandleAudioEgressStreamsChunks(t *testing.T) {
 	apiServer.SetEventBus(bus)
 	egressSvc := egress.New(bus)
 	apiServer.SetAudioEgress(newTestAudioEgressController(egressSvc))
-	apiServer.sessionManager = nil
+	apiServer.sessionManager = &stubSessionManager{}
 
 	req := httptest.NewRequest(http.MethodGet, "/audio/egress?session_id=sess", nil)
 	req = withReadOnly(apiServer, req)
@@ -2124,7 +2127,7 @@ func TestHandleAudioIngressRejectsInvalidFormat(t *testing.T) {
 	apiServer.SetEventBus(bus)
 	ingressSvc := ingress.New(bus)
 	apiServer.SetAudioIngress(newTestAudioIngressProvider(ingressSvc))
-	apiServer.sessionManager = nil
+	apiServer.sessionManager = &stubSessionManager{}
 
 	req := httptest.NewRequest(http.MethodPost, "/audio/ingress?session_id=sess&sample_rate=abc", bytes.NewReader([]byte{0x00}))
 	req = withAdmin(apiServer, req)
@@ -2143,7 +2146,7 @@ func TestHandleAudioEgressSignalsError(t *testing.T) {
 	apiServer.SetEventBus(bus)
 	egressSvc := egress.New(bus)
 	apiServer.SetAudioEgress(newTestAudioEgressController(egressSvc))
-	apiServer.sessionManager = nil
+	apiServer.sessionManager = &stubSessionManager{}
 
 	req := httptest.NewRequest(http.MethodGet, "/audio/egress?session_id=sess", nil)
 	req = withReadOnly(apiServer, req)
@@ -2189,7 +2192,7 @@ func TestHandleAudioEgressRequiresTTS(t *testing.T) {
 	apiServer.SetEventBus(bus)
 	egressSvc := egress.New(bus)
 	apiServer.SetAudioEgress(newTestAudioEgressController(egressSvc))
-	apiServer.sessionManager = nil
+	apiServer.sessionManager = &stubSessionManager{}
 
 	req := httptest.NewRequest(http.MethodGet, "/audio/egress?session_id=sess", nil)
 	req = withReadOnly(apiServer, req)
@@ -2219,7 +2222,7 @@ func TestHandleAudioIngressRequiresSTT(t *testing.T) {
 	apiServer.SetEventBus(bus)
 	ingressSvc := ingress.New(bus)
 	apiServer.SetAudioIngress(newTestAudioIngressProvider(ingressSvc))
-	apiServer.sessionManager = nil
+	apiServer.sessionManager = &stubSessionManager{}
 
 	req := httptest.NewRequest(http.MethodPost, "/audio/ingress?session_id=sess&sample_rate=16000&channels=1&bit_depth=16", bytes.NewReader([]byte{0x01}))
 	req = withAdmin(apiServer, req)
@@ -2250,7 +2253,7 @@ func TestHandleAudioIngressRejectsLargeMetadata(t *testing.T) {
 	apiServer.SetEventBus(bus)
 	ingressSvc := ingress.New(bus)
 	apiServer.SetAudioIngress(newTestAudioIngressProvider(ingressSvc))
-	apiServer.sessionManager = nil
+	apiServer.sessionManager = &stubSessionManager{}
 
 	bigValue := strings.Repeat("a", maxMetadataTotalPayload+1)
 	metadata := fmt.Sprintf("{\"extra\":\"%s\"}", bigValue)
@@ -2271,7 +2274,7 @@ func TestHandleAudioIngressWebSocket(t *testing.T) {
 	apiServer.SetEventBus(bus)
 	ingressSvc := ingress.New(bus)
 	apiServer.SetAudioIngress(newTestAudioIngressProvider(ingressSvc))
-	apiServer.sessionManager = nil
+	apiServer.sessionManager = &stubSessionManager{}
 
 	token := newStoredToken("ws-admin-token", "ws-admin", string(roleAdmin))
 	apiServer.setAuthTokens([]storedToken{token}, true)
@@ -2326,7 +2329,7 @@ func TestHandleAudioEgressWebSocket(t *testing.T) {
 	apiServer.SetEventBus(bus)
 	egressSvc := egress.New(bus)
 	apiServer.SetAudioEgress(newTestAudioEgressController(egressSvc))
-	apiServer.sessionManager = nil
+	apiServer.sessionManager = &stubSessionManager{}
 
 	token := newStoredToken("ws-read-token", "ws-read", string(roleReadOnly))
 	apiServer.setAuthTokens([]storedToken{token}, true)
@@ -2867,7 +2870,7 @@ func TestSessionManagementWorksWithoutVoice(t *testing.T) {
 	}
 
 	// List sessions via REST — should include the session
-	listReq := httptest.NewRequest(http.MethodGet, "/sessions", nil)
+	listReq := withAdmin(apiServer, httptest.NewRequest(http.MethodGet, "/sessions", nil))
 	listRec := httptest.NewRecorder()
 	apiServer.handleSessionsRoot(listRec, listReq)
 
@@ -2970,6 +2973,54 @@ func TestRecordingsEmptyWhenNoSessions(t *testing.T) {
 	}
 	if len(items) != 0 {
 		t.Fatalf("expected empty array, got %d items", len(items))
+	}
+}
+
+func TestSessionHandlersReturnServiceUnavailableWhenNilManager(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	apiServer.sessionManager = nil
+
+	tests := []struct {
+		name    string
+		method  string
+		path    string
+		handler http.HandlerFunc
+	}{
+		{"list", http.MethodGet, "/sessions", apiServer.handleSessionsList},
+		{"create", http.MethodPost, "/sessions", apiServer.handleSessionCreate},
+		{"get", http.MethodGet, "/sessions/fake-id", func(w http.ResponseWriter, r *http.Request) {
+			apiServer.handleSessionGet(w, r, "fake-id")
+		}},
+		{"delete", http.MethodDelete, "/sessions/fake-id", func(w http.ResponseWriter, r *http.Request) {
+			apiServer.handleSessionDelete(w, r, "fake-id")
+		}},
+		{"attach", http.MethodPost, "/sessions/fake-id/attach", apiServer.handleSessionAttach},
+		{"input", http.MethodPost, "/sessions/fake-id/input", func(w http.ResponseWriter, r *http.Request) {
+			// handleSessionInput reads JSON body before nil check
+			r.Body = io.NopCloser(strings.NewReader(`{"input":"x"}`))
+			apiServer.handleSessionInput(w, r)
+		}},
+		{"detach", http.MethodPost, "/sessions/fake-id/detach", apiServer.handleSessionDetach},
+		{"conversation", http.MethodGet, "/sessions/fake-id/conversation", func(w http.ResponseWriter, r *http.Request) {
+			// handleSessionConversation checks conversation nil before sessionManager nil,
+			// so we must set conversation to reach the sessionManager guard.
+			apiServer.conversation = &mockConversationStore{}
+			defer func() { apiServer.conversation = nil }()
+			apiServer.handleSessionConversation(w, r)
+		}},
+		{"mode", http.MethodGet, "/sessions/fake-id/mode", apiServer.handleSessionMode},
+		{"recordings_list", http.MethodGet, "/recordings", apiServer.handleRecordingsList},
+		{"recording_file", http.MethodGet, "/recordings/fake-id", apiServer.handleRecordingFile},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := withAdmin(apiServer, httptest.NewRequest(tt.method, tt.path, nil))
+			rec := httptest.NewRecorder()
+			tt.handler(rec, req)
+			if rec.Code != http.StatusServiceUnavailable {
+				t.Fatalf("expected 503, got %d: %s", rec.Code, rec.Body.String())
+			}
+		})
 	}
 }
 

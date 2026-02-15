@@ -150,11 +150,13 @@ func (s *APIServer) handleAudioIngress(w http.ResponseWriter, r *http.Request) {
 		streamID = defaultCaptureStreamID
 	}
 
-	if s.sessionManager != nil {
-		if _, err := s.sessionManager.GetSession(sessionID); err != nil {
-			writeError(w, http.StatusNotFound, fmt.Sprintf("session %s not found", sessionID))
-			return
-		}
+	if s.sessionManager == nil {
+		writeError(w, http.StatusServiceUnavailable, "session manager unavailable")
+		return
+	}
+	if _, err := s.sessionManager.GetSession(sessionID); err != nil {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("session %s not found", sessionID))
+		return
 	}
 
 	readiness, err := s.voiceReadiness(r.Context())
@@ -273,11 +275,13 @@ func (s *APIServer) handleAudioEgress(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if s.sessionManager != nil {
-		if _, err := s.sessionManager.GetSession(sessionID); err != nil {
-			writeError(w, http.StatusNotFound, fmt.Sprintf("session %s not found", sessionID))
-			return
-		}
+	if s.sessionManager == nil {
+		writeError(w, http.StatusServiceUnavailable, "session manager unavailable")
+		return
+	}
+	if _, err := s.sessionManager.GetSession(sessionID); err != nil {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("session %s not found", sessionID))
+		return
 	}
 
 	readiness, err := s.voiceReadiness(r.Context())
@@ -449,11 +453,13 @@ func (s *APIServer) handleAudioIngressWS(w http.ResponseWriter, r *http.Request)
 		streamID = defaultCaptureStreamID
 	}
 
-	if s.sessionManager != nil {
-		if _, err := s.sessionManager.GetSession(sessionID); err != nil {
-			writeError(w, http.StatusNotFound, fmt.Sprintf("session %s not found", sessionID))
-			return
-		}
+	if s.sessionManager == nil {
+		writeError(w, http.StatusServiceUnavailable, "session manager unavailable")
+		return
+	}
+	if _, err := s.sessionManager.GetSession(sessionID); err != nil {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("session %s not found", sessionID))
+		return
 	}
 
 	readiness, err := s.voiceReadiness(r.Context())
@@ -588,11 +594,13 @@ func (s *APIServer) handleAudioEgressWS(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	if s.sessionManager != nil {
-		if _, err := s.sessionManager.GetSession(sessionID); err != nil {
-			writeError(w, http.StatusNotFound, fmt.Sprintf("session %s not found", sessionID))
-			return
-		}
+	if s.sessionManager == nil {
+		writeError(w, http.StatusServiceUnavailable, "session manager unavailable")
+		return
+	}
+	if _, err := s.sessionManager.GetSession(sessionID); err != nil {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("session %s not found", sessionID))
+		return
 	}
 
 	readiness, err := s.voiceReadiness(r.Context())
@@ -874,7 +882,11 @@ func (s *APIServer) handleAudioCapabilities(w http.ResponseWriter, r *http.Reque
 
 	query := r.URL.Query()
 	sessionID := strings.TrimSpace(query.Get("session_id"))
-	if sessionID != "" && s.sessionManager != nil {
+	if sessionID != "" {
+		if s.sessionManager == nil {
+			writeError(w, http.StatusServiceUnavailable, "session manager unavailable")
+			return
+		}
 		if _, err := s.sessionManager.GetSession(sessionID); err != nil {
 			writeError(w, http.StatusNotFound, fmt.Sprintf("session %s not found", sessionID))
 			return
@@ -983,11 +995,13 @@ func (s *APIServer) handleAudioInterrupt(w http.ResponseWriter, r *http.Request)
 	reason := strings.TrimSpace(payload.Reason)
 	metadata := cloneStringMap(payload.Metadata)
 
-	if s.sessionManager != nil {
-		if _, err := s.sessionManager.GetSession(sessionID); err != nil {
-			writeError(w, http.StatusNotFound, fmt.Sprintf("session %s not found", sessionID))
-			return
-		}
+	if s.sessionManager == nil {
+		writeError(w, http.StatusServiceUnavailable, "session manager unavailable")
+		return
+	}
+	if _, err := s.sessionManager.GetSession(sessionID); err != nil {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("session %s not found", sessionID))
+		return
 	}
 
 	readiness, err := s.voiceReadiness(r.Context())

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"reflect"
 	"runtime"
@@ -17,6 +18,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	adapters "github.com/nupi-ai/nupi/internal/plugins/adapters"
 	"github.com/nupi-ai/nupi/internal/pty"
+	"github.com/nupi-ai/nupi/internal/recording"
 	"github.com/nupi-ai/nupi/internal/session"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -62,6 +64,33 @@ func createSessionOrSkip(t *testing.T, sm *session.Manager, opts pty.StartOption
 	}
 	return sess
 }
+
+// stubSessionManager satisfies SessionManager for tests that need session
+// validation to pass without creating real PTY sessions.
+type stubSessionManager struct {
+	sessions map[string]*session.Session
+}
+
+func (s *stubSessionManager) ListSessions() []*session.Session                       { return nil }
+func (s *stubSessionManager) CreateSession(pty.StartOptions, bool) (*session.Session, error) {
+	return nil, fmt.Errorf("not implemented")
+}
+func (s *stubSessionManager) GetSession(id string) (*session.Session, error) {
+	if s.sessions != nil {
+		if sess, ok := s.sessions[id]; ok {
+			return sess, nil
+		}
+	}
+	// Return a zero-value session for any ID to pass validation.
+	return &session.Session{}, nil
+}
+func (s *stubSessionManager) KillSession(string) error                            { return nil }
+func (s *stubSessionManager) WriteToSession(string, []byte) error                 { return nil }
+func (s *stubSessionManager) ResizeSession(string, int, int) error                { return nil }
+func (s *stubSessionManager) GetRecordingStore() *recording.Store                 { return nil }
+func (s *stubSessionManager) AddEventListener(session.SessionEventListener)       {}
+func (s *stubSessionManager) AttachToSession(string, pty.OutputSink, bool) error  { return nil }
+func (s *stubSessionManager) DetachFromSession(string, pty.OutputSink) error      { return nil }
 
 func TestSessionsServiceGetConversation(t *testing.T) {
 	skipIfNoPTY(t)
@@ -402,8 +431,7 @@ func TestAdaptersServiceBindStartStop(t *testing.T) {
 }
 
 func TestQuickstartServiceIncludesAdapters(t *testing.T) {
-	apiServer, _ := newTestAPIServer(t)
-	store := apiServer.configStore
+	apiServer, _, store := newTestAPIServerWithStore(t)
 	adaptersSvc := newTestAdaptersService(t, store)
 	apiServer.SetAdaptersController(adaptersSvc)
 
@@ -608,7 +636,9 @@ func TestAudioServiceStreamAudioOut(t *testing.T) {
 
 	egressSvc := egress.New(bus)
 	apiServer.SetAudioEgress(newTestAudioEgressController(egressSvc))
-	apiServer.sessionManager = nil
+	// Use stub session manager so audio tests pass session validation
+	// without requiring real PTY sessions.
+	apiServer.sessionManager = &stubSessionManager{}
 
 	service := newAudioService(apiServer)
 
@@ -694,7 +724,9 @@ func TestAudioServiceGetAudioCapabilities(t *testing.T) {
 	apiServer.SetAudioIngress(newTestAudioIngressProvider(ingressSvc))
 	egressSvc := egress.New(bus)
 	apiServer.SetAudioEgress(newTestAudioEgressController(egressSvc))
-	apiServer.sessionManager = nil
+	// Use stub session manager so capabilities test passes session validation
+	// without requiring real PTY sessions.
+	apiServer.sessionManager = &stubSessionManager{}
 
 	service := newAudioService(apiServer)
 	ctx := context.WithValue(context.Background(), authContextKey{}, storedToken{Role: string(roleAdmin)})
@@ -867,6 +899,44 @@ func TestConfigServiceTransportAuthRequired(t *testing.T) {
 		}
 		if status.Code(err) != codes.Unauthenticated {
 			t.Fatalf("expected Unauthenticated, got %v", status.Code(err))
+		}
+	})
+}
+
+func TestSessionsServiceNilManagerReturnsUnavailable(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	apiServer.sessionManager = nil
+
+	service := newSessionsService(apiServer)
+	ctx := context.WithValue(context.Background(), authContextKey{}, storedToken{Role: string(roleAdmin)})
+
+	t.Run("ListSessions", func(t *testing.T) {
+		_, err := service.ListSessions(ctx, &apiv1.ListSessionsRequest{})
+		if err == nil || status.Code(err) != codes.Unavailable {
+			t.Fatalf("expected Unavailable, got %v", err)
+		}
+	})
+
+	t.Run("CreateSession", func(t *testing.T) {
+		_, err := service.CreateSession(ctx, &apiv1.CreateSessionRequest{Command: "echo"})
+		if err == nil || status.Code(err) != codes.Unavailable {
+			t.Fatalf("expected Unavailable, got %v", err)
+		}
+	})
+
+	t.Run("KillSession", func(t *testing.T) {
+		_, err := service.KillSession(ctx, &apiv1.KillSessionRequest{SessionId: "fake"})
+		if err == nil || status.Code(err) != codes.Unavailable {
+			t.Fatalf("expected Unavailable, got %v", err)
+		}
+	})
+
+	t.Run("GetConversation", func(t *testing.T) {
+		// GetConversation requires conversation store first, so set it to something
+		apiServer.conversation = &mockConversationStore{}
+		_, err := service.GetConversation(ctx, &apiv1.GetConversationRequest{SessionId: "fake"})
+		if err == nil || status.Code(err) != codes.Unavailable {
+			t.Fatalf("expected Unavailable, got %v", err)
 		}
 	})
 }

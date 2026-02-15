@@ -45,9 +45,14 @@ type daemonStatusSnapshot struct {
 }
 
 func (s *APIServer) daemonStatusSnapshot(ctx context.Context) (daemonStatusSnapshot, error) {
+	var sessionsCount int
+	if s.sessionManager != nil {
+		sessionsCount = len(s.sessionManager.ListSessions())
+	}
+
 	snapshot := daemonStatusSnapshot{
 		Version:       "0.2.0",
-		SessionsCount: len(s.sessionManager.ListSessions()),
+		SessionsCount: sessionsCount,
 		AuthRequired:  s.isAuthRequired(),
 	}
 
@@ -414,6 +419,11 @@ func (s *APIServer) handleRecordingsList(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	if s.sessionManager == nil {
+		writeError(w, http.StatusServiceUnavailable, "session manager unavailable")
+		return
+	}
+
 	// Get recording store from session manager
 	store := s.sessionManager.GetRecordingStore()
 	if store == nil {
@@ -448,6 +458,11 @@ func (s *APIServer) handleRecordingFile(w http.ResponseWriter, r *http.Request) 
 	sessionID := strings.TrimPrefix(r.URL.Path, "/recordings/")
 	if sessionID == "" {
 		writeError(w, http.StatusBadRequest, "session ID required")
+		return
+	}
+
+	if s.sessionManager == nil {
+		writeError(w, http.StatusServiceUnavailable, "session manager unavailable")
 		return
 	}
 
