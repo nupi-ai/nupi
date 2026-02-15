@@ -16,7 +16,6 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/nupi-ai/nupi/internal/api"
 	"github.com/nupi-ai/nupi/internal/pty"
-	"github.com/nupi-ai/nupi/internal/session"
 	"github.com/nupi-ai/nupi/internal/termresize"
 )
 
@@ -117,7 +116,7 @@ func (u *utf8Accumulator) Take(data []byte) []byte {
 
 // Server manages WebSocket connections and session streaming
 type Server struct {
-	sessionManager *session.Manager
+	sessionManager SessionManager
 	clients        map[*Client]bool
 	broadcast      chan outboundMessage
 	register       chan *Client
@@ -128,7 +127,7 @@ type Server struct {
 }
 
 // NewServer creates a new WebSocket server
-func NewServer(sessionManager *session.Manager, resizeManager *termresize.Manager) *Server {
+func NewServer(sessionManager SessionManager, resizeManager *termresize.Manager) *Server {
 	return &Server{
 		sessionManager: sessionManager,
 		clients:        make(map[*Client]bool),
@@ -234,6 +233,9 @@ func (s *Server) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 // sendSessionsList sends the current sessions list to a client
 func (s *Server) sendSessionsList(client *Client) {
+	if s.sessionManager == nil {
+		return
+	}
 	sessions := s.sessionManager.ListSessions()
 	sessionDTOs := api.ToDTOList(sessions)
 
@@ -451,6 +453,11 @@ func (c *Client) attachToSession(sessionID string) {
 		c.server.resizeManager.UnregisterClient(sessionID, c.id)
 	}
 
+	if c.server.sessionManager == nil {
+		c.sendError("session manager unavailable")
+		return
+	}
+
 	// Create WebSocket sink for this session
 	sink := &WebSocketSink{
 		client:    c,
@@ -524,7 +531,11 @@ func (c *Client) detachFromSession(sessionID string) {
 		return
 	}
 
-	c.server.sessionManager.DetachFromSession(sessionID, sink)
+	if c.server.sessionManager != nil {
+		if err := c.server.sessionManager.DetachFromSession(sessionID, sink); err != nil {
+			log.Printf("[WebSocket] detach from session %s: %v", sessionID, err)
+		}
+	}
 	delete(c.sessionSinks, sessionID)
 	log.Printf("[WebSocket] Client detached from session %s", sessionID)
 
@@ -553,7 +564,11 @@ func (c *Client) detachAll() {
 	defer c.mu.Unlock()
 
 	for sessionID, sink := range c.sessionSinks {
-		c.server.sessionManager.DetachFromSession(sessionID, sink)
+		if c.server.sessionManager != nil {
+			if err := c.server.sessionManager.DetachFromSession(sessionID, sink); err != nil {
+				log.Printf("[WebSocket] detach from session %s: %v", sessionID, err)
+			}
+		}
 		if c.server.resizeManager != nil {
 			c.server.resizeManager.UnregisterClient(sessionID, c.id)
 		}
@@ -563,6 +578,10 @@ func (c *Client) detachAll() {
 
 // sendInputToSession sends input to a session
 func (c *Client) sendInputToSession(sessionID string, input []byte) {
+	if c.server.sessionManager == nil {
+		c.sendError("session manager unavailable")
+		return
+	}
 	err := c.server.sessionManager.WriteToSession(sessionID, input)
 	if err != nil {
 		c.sendError(fmt.Sprintf("Failed to send input: %v", err))
@@ -571,6 +590,11 @@ func (c *Client) sendInputToSession(sessionID string, input []byte) {
 
 // createSession creates a new session via WebSocket
 func (c *Client) createSession(command string, argsInterface interface{}) {
+	if c.server.sessionManager == nil {
+		c.sendError("session manager unavailable")
+		return
+	}
+
 	var args []string
 	if argsArray, ok := argsInterface.([]interface{}); ok {
 		for _, arg := range argsArray {
@@ -602,6 +626,10 @@ func (c *Client) createSession(command string, argsInterface interface{}) {
 
 // killSession kills a session
 func (c *Client) killSession(sessionID string) {
+	if c.server.sessionManager == nil {
+		c.sendError("session manager unavailable")
+		return
+	}
 	err := c.server.sessionManager.KillSession(sessionID)
 	if err != nil {
 		c.sendError(fmt.Sprintf("Failed to kill session: %v", err))
@@ -632,7 +660,7 @@ func (s *Server) applyResizeDecision(decision termresize.ResizeDecision) {
 		return
 	}
 
-	if decision.PTYSize != nil {
+	if decision.PTYSize != nil && s.sessionManager != nil {
 		if err := s.sessionManager.ResizeSession(decision.SessionID, decision.PTYSize.Rows, decision.PTYSize.Cols); err != nil {
 			log.Printf("[WebSocket] failed to apply PTY resize for session %s: %v", decision.SessionID, err)
 		}

@@ -30,6 +30,13 @@ func (s *APIServer) handleSessionsRoot(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *APIServer) handleSessionsList(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.requireRole(w, r, roleAdmin, roleReadOnly); !ok {
+		return
+	}
+	if s.sessionManager == nil {
+		writeError(w, http.StatusServiceUnavailable, "session manager unavailable")
+		return
+	}
 	sessions := s.sessionManager.ListSessions()
 	dto := api.ToDTOList(sessions)
 
@@ -41,6 +48,10 @@ func (s *APIServer) handleSessionsList(w http.ResponseWriter, r *http.Request) {
 
 func (s *APIServer) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requireRole(w, r, roleAdmin); !ok {
+		return
+	}
+	if s.sessionManager == nil {
+		writeError(w, http.StatusServiceUnavailable, "session manager unavailable")
 		return
 	}
 	var payload protocol.CreateSessionData
@@ -149,6 +160,10 @@ func (s *APIServer) handleSessionSubroutes(w http.ResponseWriter, r *http.Reques
 }
 
 func (s *APIServer) handleSessionGet(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if s.sessionManager == nil {
+		writeError(w, http.StatusServiceUnavailable, "session manager unavailable")
+		return
+	}
 	session, err := s.sessionManager.GetSession(sessionID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, fmt.Sprintf("session %s not found", sessionID))
@@ -163,6 +178,10 @@ func (s *APIServer) handleSessionGet(w http.ResponseWriter, r *http.Request, ses
 
 func (s *APIServer) handleSessionDelete(w http.ResponseWriter, r *http.Request, sessionID string) {
 	if _, ok := s.requireRole(w, r, roleAdmin); !ok {
+		return
+	}
+	if s.sessionManager == nil {
+		writeError(w, http.StatusServiceUnavailable, "session manager unavailable")
 		return
 	}
 	if err := s.sessionManager.KillSession(sessionID); err != nil {
@@ -198,6 +217,11 @@ func (s *APIServer) handleSessionAttach(w http.ResponseWriter, r *http.Request) 
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil && err != io.EOF {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid payload: %v", err))
+		return
+	}
+
+	if s.sessionManager == nil {
+		writeError(w, http.StatusServiceUnavailable, "session manager unavailable")
 		return
 	}
 
@@ -253,6 +277,11 @@ func (s *APIServer) handleSessionInput(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.sessionManager == nil {
+		writeError(w, http.StatusServiceUnavailable, "session manager unavailable")
+		return
+	}
+
 	if _, err := s.sessionManager.GetSession(sessionID); err != nil {
 		writeError(w, http.StatusNotFound, fmt.Sprintf("session %s not found", sessionID))
 		return
@@ -297,6 +326,11 @@ func (s *APIServer) handleSessionDetach(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if s.sessionManager == nil {
+		writeError(w, http.StatusServiceUnavailable, "session manager unavailable")
+		return
+	}
+
 	sess, err := s.sessionManager.GetSession(sessionID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, fmt.Sprintf("session %s not found", sessionID))
@@ -336,6 +370,11 @@ func (s *APIServer) handleSessionConversation(w http.ResponseWriter, r *http.Req
 
 	if s.conversation == nil {
 		writeError(w, http.StatusServiceUnavailable, "conversation service unavailable")
+		return
+	}
+
+	if s.sessionManager == nil {
+		writeError(w, http.StatusServiceUnavailable, "session manager unavailable")
 		return
 	}
 
@@ -443,6 +482,9 @@ func (s *APIServer) onSessionEvent(event string, sess *session.Session) {
 
 func (s *APIServer) registerSessionListener() {
 	s.lifecycle.listenerOnce.Do(func() {
+		if s.sessionManager == nil {
+			return
+		}
 		s.sessionManager.AddEventListener(func(event string, sess *session.Session) {
 			s.onSessionEvent(event, sess)
 		})
@@ -485,6 +527,11 @@ func (s *APIServer) handleSessionMode(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	if s.sessionManager == nil {
+		writeError(w, http.StatusServiceUnavailable, "session manager unavailable")
 		return
 	}
 

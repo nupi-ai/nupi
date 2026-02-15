@@ -107,11 +107,11 @@ func newAudioService(api *APIServer) *audioService {
 }
 
 func (a *audioService) StreamAudioIn(stream apiv1.AudioService_StreamAudioInServer) error {
-	if a.api.audioIngress == nil {
-		return status.Error(codes.Unavailable, "audio ingress service unavailable")
-	}
 	if _, err := a.api.requireRoleGRPC(stream.Context(), roleAdmin); err != nil {
 		return err
+	}
+	if a.api.audioIngress == nil {
+		return status.Error(codes.Unavailable, "audio ingress service unavailable")
 	}
 
 	var (
@@ -159,6 +159,9 @@ func (a *audioService) StreamAudioIn(stream apiv1.AudioService_StreamAudioInServ
 			streamID = strings.TrimSpace(req.GetStreamId())
 			if sessionID == "" || streamID == "" {
 				return status.Error(codes.InvalidArgument, "session_id and stream_id are required")
+			}
+			if a.api.sessionManager == nil {
+				return status.Error(codes.Unavailable, "session manager unavailable")
 			}
 			if _, err := a.api.sessionManager.GetSession(sessionID); err != nil {
 				return status.Errorf(codes.NotFound, "session %s not found", sessionID)
@@ -256,10 +259,11 @@ func (a *audioService) StreamAudioOut(req *apiv1.StreamAudioOutRequest, srv apiv
 		}
 	}
 
-	if a.api.sessionManager != nil {
-		if _, err := a.api.sessionManager.GetSession(sessionID); err != nil {
-			return status.Errorf(codes.NotFound, "session %s not found", sessionID)
-		}
+	if a.api.sessionManager == nil {
+		return status.Error(codes.Unavailable, "session manager unavailable")
+	}
+	if _, err := a.api.sessionManager.GetSession(sessionID); err != nil {
+		return status.Errorf(codes.NotFound, "session %s not found", sessionID)
 	}
 
 	readiness, err := a.api.voiceReadiness(srv.Context())
@@ -342,10 +346,11 @@ func (a *audioService) InterruptTTS(ctx context.Context, req *apiv1.InterruptTTS
 
 	reason := strings.TrimSpace(req.GetReason())
 
-	if a.api.sessionManager != nil {
-		if _, err := a.api.sessionManager.GetSession(sessionID); err != nil {
-			return nil, status.Errorf(codes.NotFound, "session %s not found", sessionID)
-		}
+	if a.api.sessionManager == nil {
+		return nil, status.Error(codes.Unavailable, "session manager unavailable")
+	}
+	if _, err := a.api.sessionManager.GetSession(sessionID); err != nil {
+		return nil, status.Errorf(codes.NotFound, "session %s not found", sessionID)
 	}
 
 	readiness, err := a.api.voiceReadiness(ctx)
@@ -375,7 +380,10 @@ func (a *audioService) GetAudioCapabilities(ctx context.Context, req *apiv1.GetA
 	}
 
 	sessionID := strings.TrimSpace(req.GetSessionId())
-	if sessionID != "" && a.api.sessionManager != nil {
+	if sessionID != "" {
+		if a.api.sessionManager == nil {
+			return nil, status.Error(codes.Unavailable, "session manager unavailable")
+		}
 		if _, err := a.api.sessionManager.GetSession(sessionID); err != nil {
 			return nil, status.Errorf(codes.NotFound, "session %s not found", sessionID)
 		}
@@ -429,6 +437,10 @@ func (s *sessionsService) ListSessions(ctx context.Context, _ *apiv1.ListSession
 		return nil, err
 	}
 
+	if s.api.sessionManager == nil {
+		return nil, status.Error(codes.Unavailable, "session manager unavailable")
+	}
+
 	sessions := s.api.sessionManager.ListSessions()
 	dto := api.ToDTOList(sessions)
 
@@ -450,6 +462,10 @@ func (s *sessionsService) ListSessions(ctx context.Context, _ *apiv1.ListSession
 func (s *sessionsService) CreateSession(ctx context.Context, req *apiv1.CreateSessionRequest) (*apiv1.CreateSessionResponse, error) {
 	if _, err := s.api.requireRoleGRPC(ctx, roleAdmin); err != nil {
 		return nil, err
+	}
+
+	if s.api.sessionManager == nil {
+		return nil, status.Error(codes.Unavailable, "session manager unavailable")
 	}
 
 	payload := protocol.CreateSessionData{
@@ -490,6 +506,10 @@ func (s *sessionsService) KillSession(ctx context.Context, req *apiv1.KillSessio
 		return nil, err
 	}
 
+	if s.api.sessionManager == nil {
+		return nil, status.Error(codes.Unavailable, "session manager unavailable")
+	}
+
 	sessionID := strings.TrimSpace(req.GetSessionId())
 	if sessionID == "" {
 		return nil, status.Error(codes.InvalidArgument, "session_id is required")
@@ -517,6 +537,10 @@ func (s *sessionsService) GetConversation(ctx context.Context, req *apiv1.GetCon
 
 	if s.api.conversation == nil {
 		return nil, status.Error(codes.Unavailable, "conversation service unavailable")
+	}
+
+	if s.api.sessionManager == nil {
+		return nil, status.Error(codes.Unavailable, "session manager unavailable")
 	}
 
 	if _, err := s.api.sessionManager.GetSession(sessionID); err != nil {

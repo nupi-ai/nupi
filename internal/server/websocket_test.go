@@ -36,7 +36,7 @@ func skipIfNoNetwork(t *testing.T) {
 	}
 }
 
-func buildTestServer(t *testing.T, sessionManager *session.Manager) *Server {
+func buildTestServer(t *testing.T, sessionManager SessionManager) *Server {
 	resizeManager, err := termresize.NewManagerWithDefaults()
 	if err != nil {
 		t.Fatalf("failed to build resize manager: %v", err)

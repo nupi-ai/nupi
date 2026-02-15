@@ -3,9 +3,14 @@ package server
 import (
 	"context"
 	"errors"
+	"time"
 
+	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/plugins/adapters"
+	"github.com/nupi-ai/nupi/internal/pty"
+	"github.com/nupi-ai/nupi/internal/recording"
+	"github.com/nupi-ai/nupi/internal/session"
 )
 
 // ErrAudioStreamExists signals that an audio ingress stream already exists for the given identifiers.
@@ -45,4 +50,45 @@ type PluginDiscoveryWarning struct {
 // PluginWarningsProvider exposes plugin discovery warnings for observability.
 type PluginWarningsProvider interface {
 	GetDiscoveryWarnings() []PluginDiscoveryWarning
+}
+
+// Compile-time interface satisfaction assertions.
+var (
+	_ SessionManager = (*session.Manager)(nil)
+	_ ConfigStore    = (*configstore.Store)(nil)
+)
+
+// SessionManager abstracts session lifecycle operations used by API handlers and WebSocket server.
+type SessionManager interface {
+	ListSessions() []*session.Session
+	CreateSession(opts pty.StartOptions, inspect bool) (*session.Session, error)
+	GetSession(id string) (*session.Session, error)
+	KillSession(id string) error
+	WriteToSession(id string, data []byte) error
+	ResizeSession(id string, rows, cols int) error
+	GetRecordingStore() *recording.Store
+	AddEventListener(listener session.SessionEventListener)
+	AttachToSession(id string, sink pty.OutputSink, includeHistory bool) error
+	DetachFromSession(id string, sink pty.OutputSink) error
+}
+
+// ConfigStore abstracts configuration storage operations used by API handlers and gRPC services.
+type ConfigStore interface {
+	GetTransportConfig(ctx context.Context) (configstore.TransportConfig, error)
+	SaveTransportConfig(ctx context.Context, cfg configstore.TransportConfig) error
+	ListAdapters(ctx context.Context) ([]configstore.Adapter, error)
+	ListAdapterBindings(ctx context.Context) ([]configstore.AdapterBinding, error)
+	UpsertAdapter(ctx context.Context, adapter configstore.Adapter) error
+	UpsertAdapterEndpoint(ctx context.Context, endpoint configstore.AdapterEndpoint) error
+	SetActiveAdapter(ctx context.Context, slot string, adapterID string, config map[string]any) error
+	ClearAdapterBinding(ctx context.Context, slot string) error
+	AdapterExists(ctx context.Context, adapterID string) (bool, error)
+	EnsureRequiredAdapterSlots(ctx context.Context) (configstore.MigrationResult, error)
+	EnsureAudioSettings(ctx context.Context) (bool, error)
+	VoiceReadiness(ctx context.Context) (configstore.VoiceReadiness, error)
+	LoadSecuritySettings(ctx context.Context, keys ...string) (map[string]string, error)
+	SaveSecuritySettings(ctx context.Context, values map[string]string) error
+	QuickstartStatus(ctx context.Context) (bool, *time.Time, error)
+	PendingQuickstartSlots(ctx context.Context) ([]string, error)
+	MarkQuickstartCompleted(ctx context.Context, complete bool) error
 }
