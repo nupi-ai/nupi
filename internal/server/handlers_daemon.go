@@ -92,13 +92,13 @@ func (s *APIServer) handleDaemonStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	case http.MethodGet:
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
 	snapshot, err := s.daemonStatusSnapshot(r.Context())
 	if err != nil {
-		http.Error(w, fmt.Sprintf("failed to compute daemon status: %v", err), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to compute daemon status: %v", err))
 		return
 	}
 
@@ -129,7 +129,7 @@ func (s *APIServer) handlePluginWarnings(w http.ResponseWriter, r *http.Request)
 		return
 	case http.MethodGet:
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
@@ -162,7 +162,7 @@ func (s *APIServer) handleDaemonShutdown(w http.ResponseWriter, r *http.Request)
 		return
 	case http.MethodPost:
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
@@ -175,7 +175,7 @@ func (s *APIServer) handleDaemonShutdown(w http.ResponseWriter, r *http.Request)
 	s.lifecycle.shutdownMu.RUnlock()
 
 	if shutdown == nil {
-		http.Error(w, "daemon shutdown not available", http.StatusNotImplemented)
+		writeError(w, http.StatusNotImplemented, "daemon shutdown not available")
 		return
 	}
 
@@ -206,7 +206,7 @@ func (s *APIServer) handleQuickstart(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		s.handleQuickstartPost(w, r)
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 
@@ -215,28 +215,28 @@ func (s *APIServer) handleQuickstartGet(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if s.configStore == nil {
-		http.Error(w, "configuration store not available", http.StatusServiceUnavailable)
+		writeError(w, http.StatusServiceUnavailable, "configuration store not available")
 		return
 	}
 
 	completed, completedAt, err := s.configStore.QuickstartStatus(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	pending, err := s.configStore.PendingQuickstartSlots(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	adapterStatuses, err := s.quickstartAdapterStatuses(r.Context())
 	if err != nil {
 		if errors.Is(err, errAdaptersServiceUnavailable) {
-			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			writeError(w, http.StatusServiceUnavailable, err.Error())
 		} else {
-			http.Error(w, fmt.Sprintf("adapters overview failed: %v", err), http.StatusInternalServerError)
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("adapters overview failed: %v", err))
 		}
 		return
 	}
@@ -248,7 +248,7 @@ func (s *APIServer) handleQuickstartGet(w http.ResponseWriter, r *http.Request) 
 
 	missingRefs, err := s.missingReferenceAdapters(r.Context())
 	if err != nil {
-		http.Error(w, fmt.Sprintf("reference adapter check failed: %v", err), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("reference adapter check failed: %v", err))
 		return
 	}
 
@@ -272,13 +272,13 @@ func (s *APIServer) handleQuickstartPost(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if s.configStore == nil {
-		http.Error(w, "configuration store not available", http.StatusServiceUnavailable)
+		writeError(w, http.StatusServiceUnavailable, "configuration store not available")
 		return
 	}
 
 	var payload quickstartRequest
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		http.Error(w, fmt.Sprintf("invalid JSON payload: %v", err), http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON payload: %v", err))
 		return
 	}
 
@@ -287,7 +287,7 @@ func (s *APIServer) handleQuickstartPost(w http.ResponseWriter, r *http.Request)
 	for _, binding := range payload.Bindings {
 		slot := strings.TrimSpace(binding.Slot)
 		if slot == "" {
-			http.Error(w, "binding slot is required", http.StatusBadRequest)
+			writeError(w, http.StatusBadRequest, "binding slot is required")
 			return
 		}
 
@@ -300,53 +300,53 @@ func (s *APIServer) handleQuickstartPost(w http.ResponseWriter, r *http.Request)
 		}
 
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 	}
 
 	pending, err := s.configStore.PendingQuickstartSlots(ctx)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	missingRefs, err := s.missingReferenceAdapters(ctx)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("reference adapter check failed: %v", err), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("reference adapter check failed: %v", err))
 		return
 	}
 
 	if payload.Complete != nil {
 		if *payload.Complete {
 			if len(pending) > 0 {
-				http.Error(w, "quickstart cannot be completed while required slots remain unassigned", http.StatusBadRequest)
+				writeError(w, http.StatusBadRequest, "quickstart cannot be completed while required slots remain unassigned")
 				return
 			}
 			if len(missingRefs) > 0 {
-				http.Error(w, fmt.Sprintf("reference adapters missing: %s", strings.Join(missingRefs, ", ")), http.StatusBadRequest)
+				writeError(w, http.StatusBadRequest, fmt.Sprintf("reference adapters missing: %s", strings.Join(missingRefs, ", ")))
 				return
 			}
 		}
 
 		if err := s.configStore.MarkQuickstartCompleted(ctx, *payload.Complete); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 	}
 
 	completed, completedAt, err := s.configStore.QuickstartStatus(ctx)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	adapterStatuses, err := s.quickstartAdapterStatuses(ctx)
 	if err != nil {
 		if errors.Is(err, errAdaptersServiceUnavailable) {
-			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			writeError(w, http.StatusServiceUnavailable, err.Error())
 		} else {
-			http.Error(w, fmt.Sprintf("adapters overview failed: %v", err), http.StatusInternalServerError)
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("adapters overview failed: %v", err))
 		}
 		return
 	}
@@ -410,20 +410,20 @@ func (s *APIServer) handleRecordingsList(w http.ResponseWriter, r *http.Request)
 
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET,OPTIONS")
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
 	// Get recording store from session manager
 	store := s.sessionManager.GetRecordingStore()
 	if store == nil {
-		http.Error(w, "recording store not available", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "recording store not available")
 		return
 	}
 
 	metadata, err := store.LoadAll()
 	if err != nil {
-		http.Error(w, fmt.Sprintf("failed to load recordings: %v", err), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to load recordings: %v", err))
 		return
 	}
 
@@ -440,28 +440,28 @@ func (s *APIServer) handleRecordingFile(w http.ResponseWriter, r *http.Request) 
 
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET,OPTIONS")
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
 	// Extract session ID from path: /recordings/{sessionID}
 	sessionID := strings.TrimPrefix(r.URL.Path, "/recordings/")
 	if sessionID == "" {
-		http.Error(w, "session ID required", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "session ID required")
 		return
 	}
 
 	// Get recording store
 	store := s.sessionManager.GetRecordingStore()
 	if store == nil {
-		http.Error(w, "recording store not available", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "recording store not available")
 		return
 	}
 
 	// Get metadata for session
 	metadata, err := store.GetBySessionID(sessionID)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("recording not found: %v", err), http.StatusNotFound)
+		writeError(w, http.StatusNotFound, fmt.Sprintf("recording not found: %v", err))
 		return
 	}
 

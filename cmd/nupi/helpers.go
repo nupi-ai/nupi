@@ -89,6 +89,12 @@ func readErrorMessage(resp *http.Response) string {
 	if err != nil || len(data) == 0 {
 		return strings.TrimSpace(resp.Status)
 	}
+	var errResp struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(data, &errResp) == nil && errResp.Error != "" {
+		return errResp.Error
+	}
 	return strings.TrimSpace(string(data))
 }
 

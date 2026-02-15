@@ -1387,8 +1387,12 @@ func TestHandleQuickstartCompleteFailsWhenReferenceMissing(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected status %d when reference adapters missing, got %d", http.StatusBadRequest, rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "reference adapters missing") {
-		t.Fatalf("expected reference missing message, got %s", rec.Body.String())
+	var errResp ErrorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &errResp); err != nil {
+		t.Fatalf("expected JSON error response, got: %s", rec.Body.String())
+	}
+	if !strings.Contains(errResp.Error, "reference adapters missing") {
+		t.Fatalf("expected reference missing message, got %s", errResp.Error)
 	}
 }
 

@@ -82,7 +82,6 @@ func (f *OutputFormatter) Print(data interface{}) error {
 func (f *OutputFormatter) Success(message string, data map[string]interface{}) error {
 	if f.jsonMode {
 		output := map[string]interface{}{
-			"success": true,
 			"message": message,
 		}
 		for k, v := range data {
@@ -98,8 +97,7 @@ func (f *OutputFormatter) Success(message string, data map[string]interface{}) e
 func (f *OutputFormatter) Error(message string, err error) error {
 	if f.jsonMode {
 		output := map[string]interface{}{
-			"success": false,
-			"error":   message,
+			"error": message,
 		}
 		if err != nil {
 			output["details"] = err.Error()

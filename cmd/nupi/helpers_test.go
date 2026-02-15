@@ -1,6 +1,14 @@
 package main
 
-import "testing"
+import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"net/http"
+	"os"
+	"strings"
+	"testing"
+)
 
 func TestAdapterTypeForSlot(t *testing.T) {
 	t.Helper()
@@ -71,4 +79,196 @@ func TestResolveAdapterChoice(t *testing.T) {
 	if id, ok := resolveAdapterChoice("Mock AI", ordered, all); !ok || id != "adapter.ai" {
 		t.Fatalf("expected selection by name Mock AI, got %q (ok=%v)", id, ok)
 	}
+}
+
+func TestReadErrorMessage(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		status     string
+		body       string
+		want       string
+	}{
+		{
+			name:       "json error field",
+			statusCode: 400,
+			status:     "400 Bad Request",
+			body:       `{"error":"invalid adapter ID"}`,
+			want:       "invalid adapter ID",
+		},
+		{
+			name:       "json error with trailing newline",
+			statusCode: 500,
+			status:     "500 Internal Server Error",
+			body:       "{\"error\":\"something broke\"}\n",
+			want:       "something broke",
+		},
+		{
+			name:       "non-json body falls back to body text",
+			statusCode: 500,
+			status:     "500 Internal Server Error",
+			body:       "plain text error",
+			want:       "plain text error",
+		},
+		{
+			name:       "empty body falls back to status",
+			statusCode: 404,
+			status:     "404 Not Found",
+			body:       "",
+			want:       "404 Not Found",
+		},
+		{
+			name:       "json without error field falls back to raw",
+			statusCode: 400,
+			status:     "400 Bad Request",
+			body:       `{"message":"no error field"}`,
+			want:       `{"message":"no error field"}`,
+		},
+		{
+			name:       "json with empty error field falls back to raw",
+			statusCode: 400,
+			status:     "400 Bad Request",
+			body:       `{"error":""}`,
+			want:       `{"error":""}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := &http.Response{
+				StatusCode: tt.statusCode,
+				Status:     tt.status,
+				Body:       io.NopCloser(strings.NewReader(tt.body)),
+			}
+			got := readErrorMessage(resp)
+			if got != tt.want {
+				t.Errorf("readErrorMessage() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestOutputFormatterError(t *testing.T) {
+	t.Run("json mode with error", func(t *testing.T) {
+		// Capture stderr
+		oldStderr := os.Stderr
+		r, w, _ := os.Pipe()
+		os.Stderr = w
+
+		f := &OutputFormatter{jsonMode: true}
+		retErr := f.Error("connection failed", io.EOF)
+
+		w.Close()
+		os.Stderr = oldStderr
+
+		var buf bytes.Buffer
+		io.Copy(&buf, r)
+
+		// Verify returned error
+		if retErr == nil {
+			t.Fatal("expected non-nil error")
+		}
+		if !strings.Contains(retErr.Error(), "connection failed") {
+			t.Errorf("returned error should contain message, got %q", retErr.Error())
+		}
+
+		// Verify JSON output on stderr
+		output := strings.TrimSpace(buf.String())
+		var parsed map[string]interface{}
+		if err := json.Unmarshal([]byte(output), &parsed); err != nil {
+			t.Fatalf("expected valid JSON on stderr, got %q: %v", output, err)
+		}
+
+		// Must have "error" field
+		if _, ok := parsed["error"]; !ok {
+			t.Errorf("JSON output missing 'error' field: %s", output)
+		}
+		// Must NOT have "success" field
+		if _, ok := parsed["success"]; ok {
+			t.Errorf("JSON output should not have 'success' field: %s", output)
+		}
+		// Must have "details" field
+		if _, ok := parsed["details"]; !ok {
+			t.Errorf("JSON output missing 'details' field: %s", output)
+		}
+	})
+
+	t.Run("json mode without underlying error", func(t *testing.T) {
+		oldStderr := os.Stderr
+		r, w, _ := os.Pipe()
+		os.Stderr = w
+
+		f := &OutputFormatter{jsonMode: true}
+		retErr := f.Error("not found", nil)
+
+		w.Close()
+		os.Stderr = oldStderr
+
+		var buf bytes.Buffer
+		io.Copy(&buf, r)
+
+		if retErr == nil {
+			t.Fatal("expected non-nil error")
+		}
+
+		output := strings.TrimSpace(buf.String())
+		var parsed map[string]interface{}
+		if err := json.Unmarshal([]byte(output), &parsed); err != nil {
+			t.Fatalf("expected valid JSON on stderr, got %q: %v", output, err)
+		}
+
+		if _, ok := parsed["error"]; !ok {
+			t.Errorf("JSON output missing 'error' field: %s", output)
+		}
+		// No "details" when err is nil
+		if _, ok := parsed["details"]; ok {
+			t.Errorf("JSON output should not have 'details' when err is nil: %s", output)
+		}
+		if _, ok := parsed["success"]; ok {
+			t.Errorf("JSON output should not have 'success' field: %s", output)
+		}
+	})
+}
+
+func TestOutputFormatterSuccess(t *testing.T) {
+	t.Run("json mode", func(t *testing.T) {
+		// Capture stdout
+		oldStdout := os.Stdout
+		r, w, _ := os.Pipe()
+		os.Stdout = w
+
+		f := &OutputFormatter{jsonMode: true}
+		err := f.Success("adapter bound", map[string]interface{}{
+			"slot": "stt",
+		})
+
+		w.Close()
+		os.Stdout = oldStdout
+
+		var buf bytes.Buffer
+		io.Copy(&buf, r)
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		output := strings.TrimSpace(buf.String())
+		var parsed map[string]interface{}
+		if jsonErr := json.Unmarshal([]byte(output), &parsed); jsonErr != nil {
+			t.Fatalf("expected valid JSON on stdout, got %q: %v", output, jsonErr)
+		}
+
+		// Must have "message" field
+		if msg, ok := parsed["message"]; !ok || msg != "adapter bound" {
+			t.Errorf("expected message='adapter bound', got %v", parsed["message"])
+		}
+		// Must have extra data
+		if slot, ok := parsed["slot"]; !ok || slot != "stt" {
+			t.Errorf("expected slot='stt', got %v", parsed["slot"])
+		}
+		// Must NOT have "success" field
+		if _, ok := parsed["success"]; ok {
+			t.Errorf("JSON output should not have 'success' field: %s", output)
+		}
+	})
 }

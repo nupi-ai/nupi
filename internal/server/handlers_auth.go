@@ -161,7 +161,7 @@ func (s *APIServer) handleAuthTokens(w http.ResponseWriter, r *http.Request) {
 	case http.MethodDelete:
 		s.handleAuthTokensDelete(w, r)
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 
@@ -172,7 +172,7 @@ func (s *APIServer) handleAuthTokensGet(w http.ResponseWriter, r *http.Request) 
 
 	tokens, err := s.loadAuthTokens(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -209,7 +209,7 @@ func (s *APIServer) handleAuthTokensPost(w http.ResponseWriter, r *http.Request)
 	ctx := r.Context()
 	tokens, err := s.loadAuthTokens(ctx)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -219,26 +219,26 @@ func (s *APIServer) handleAuthTokensPost(w http.ResponseWriter, r *http.Request)
 	}
 	if r.Body != nil {
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil && err != io.EOF {
-			http.Error(w, fmt.Sprintf("invalid JSON payload: %v", err), http.StatusBadRequest)
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON payload: %v", err))
 			return
 		}
 	}
 
 	token, err := generateAPIToken()
 	if err != nil {
-		http.Error(w, fmt.Sprintf("failed to generate token: %v", err), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to generate token: %v", err))
 		return
 	}
 
 	entry := newStoredToken(token, payload.Name, payload.Role)
 	if entry.Token == "" {
-		http.Error(w, "failed to create token entry", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "failed to create token entry")
 		return
 	}
 
 	tokens = append(tokens, entry)
 	if err := s.storeAuthTokens(ctx, tokens); err != nil {
-		http.Error(w, fmt.Sprintf("failed to persist token: %v", err), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to persist token: %v", err))
 		return
 	}
 
@@ -271,20 +271,20 @@ func (s *APIServer) handleAuthTokensDelete(w http.ResponseWriter, r *http.Reques
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		http.Error(w, fmt.Sprintf("invalid JSON payload: %v", err), http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON payload: %v", err))
 		return
 	}
 
 	target := strings.TrimSpace(payload.Token)
 	id := strings.TrimSpace(payload.ID)
 	if target == "" && id == "" {
-		http.Error(w, "token or id is required", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "token or id is required")
 		return
 	}
 
 	tokens, err := s.loadAuthTokens(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -299,12 +299,12 @@ func (s *APIServer) handleAuthTokensDelete(w http.ResponseWriter, r *http.Reques
 	}
 
 	if !removed {
-		http.Error(w, "token not found", http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "token not found")
 		return
 	}
 
 	if err := s.storeAuthTokens(r.Context(), newTokens); err != nil {
-		http.Error(w, fmt.Sprintf("failed to persist tokens: %v", err), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to persist tokens: %v", err))
 		return
 	}
 
@@ -322,7 +322,7 @@ func (s *APIServer) handleAuthPairings(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		s.handleAuthPairingsPost(w, r)
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 
@@ -333,7 +333,7 @@ func (s *APIServer) handleAuthPairingsGet(w http.ResponseWriter, r *http.Request
 
 	pairings, err := s.loadPairings(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -362,7 +362,7 @@ func (s *APIServer) handleAuthPairingsPost(w http.ResponseWriter, r *http.Reques
 
 	pairings, err := s.loadPairings(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -372,7 +372,7 @@ func (s *APIServer) handleAuthPairingsPost(w http.ResponseWriter, r *http.Reques
 		ExpiresIn int    `json:"expires_in_seconds"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		http.Error(w, fmt.Sprintf("invalid JSON payload: %v", err), http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON payload: %v", err))
 		return
 	}
 
@@ -383,7 +383,7 @@ func (s *APIServer) handleAuthPairingsPost(w http.ResponseWriter, r *http.Reques
 
 	code, err := generatePairingCode()
 	if err != nil {
-		http.Error(w, fmt.Sprintf("failed to generate pairing code: %v", err), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to generate pairing code: %v", err))
 		return
 	}
 
@@ -399,7 +399,7 @@ func (s *APIServer) handleAuthPairingsPost(w http.ResponseWriter, r *http.Reques
 	pairings = append(pairings, entry)
 	pairings = sanitizePairings(pairings, now)
 	if err := s.storePairings(r.Context(), pairings); err != nil {
-		http.Error(w, fmt.Sprintf("failed to persist pairing: %v", err), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to persist pairing: %v", err))
 		return
 	}
 
@@ -427,7 +427,7 @@ func (s *APIServer) handleAuthPair(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		s.handleAuthPairClaim(w, r)
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 
@@ -437,20 +437,20 @@ func (s *APIServer) handleAuthPairClaim(w http.ResponseWriter, r *http.Request) 
 		Name string `json:"name"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		http.Error(w, fmt.Sprintf("invalid JSON payload: %v", err), http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON payload: %v", err))
 		return
 	}
 
 	code := strings.ToUpper(strings.TrimSpace(payload.Code))
 	if code == "" {
-		http.Error(w, "code is required", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "code is required")
 		return
 	}
 
 	ctx := r.Context()
 	pairings, err := s.loadPairings(ctx)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -466,31 +466,31 @@ func (s *APIServer) handleAuthPairClaim(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if index == -1 {
-		http.Error(w, "pairing code not found", http.StatusNotFound)
+		writeError(w, http.StatusNotFound, "pairing code not found")
 		return
 	}
 
 	pairings = append(pairings[:index], pairings[index+1:]...)
 	pairings = sanitizePairings(pairings, now)
 	if err := s.storePairings(ctx, pairings); err != nil {
-		http.Error(w, fmt.Sprintf("failed to persist pairings: %v", err), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to persist pairings: %v", err))
 		return
 	}
 
 	if now.After(entry.ExpiresAt) {
-		http.Error(w, "pairing code expired", http.StatusGone)
+		writeError(w, http.StatusGone, "pairing code expired")
 		return
 	}
 
 	tokens, err := s.loadAuthTokens(ctx)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	newTokenValue, err := generateAPIToken()
 	if err != nil {
-		http.Error(w, fmt.Sprintf("failed to generate token: %v", err), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to generate token: %v", err))
 		return
 	}
 
@@ -501,13 +501,13 @@ func (s *APIServer) handleAuthPairClaim(w http.ResponseWriter, r *http.Request) 
 
 	newEntry := newStoredToken(newTokenValue, name, entry.Role)
 	if newEntry.Token == "" {
-		http.Error(w, "failed to create token entry", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "failed to create token entry")
 		return
 	}
 
 	tokens = append(tokens, newEntry)
 	if err := s.storeAuthTokens(ctx, tokens); err != nil {
-		http.Error(w, fmt.Sprintf("failed to persist token: %v", err), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to persist token: %v", err))
 		return
 	}
 

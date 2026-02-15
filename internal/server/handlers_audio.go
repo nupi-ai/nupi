@@ -127,7 +127,7 @@ func (s *APIServer) handleAudioIngress(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST,OPTIONS")
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
@@ -135,14 +135,14 @@ func (s *APIServer) handleAudioIngress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.audioIngress == nil {
-		http.Error(w, "audio ingress unavailable", http.StatusServiceUnavailable)
+		writeError(w, http.StatusServiceUnavailable, "audio ingress unavailable")
 		return
 	}
 
 	query := r.URL.Query()
 	sessionID := strings.TrimSpace(query.Get("session_id"))
 	if sessionID == "" {
-		http.Error(w, "session_id is required", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "session_id is required")
 		return
 	}
 	streamID := strings.TrimSpace(query.Get("stream_id"))
@@ -152,14 +152,14 @@ func (s *APIServer) handleAudioIngress(w http.ResponseWriter, r *http.Request) {
 
 	if s.sessionManager != nil {
 		if _, err := s.sessionManager.GetSession(sessionID); err != nil {
-			http.Error(w, fmt.Sprintf("session %s not found", sessionID), http.StatusNotFound)
+			writeError(w, http.StatusNotFound, fmt.Sprintf("session %s not found", sessionID))
 			return
 		}
 	}
 
 	readiness, err := s.voiceReadiness(r.Context())
 	if err != nil {
-		http.Error(w, fmt.Sprintf("voice readiness check failed: %v", err), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("voice readiness check failed: %v", err))
 		return
 	}
 	if !readiness.CaptureEnabled {
@@ -171,13 +171,13 @@ func (s *APIServer) handleAudioIngress(w http.ResponseWriter, r *http.Request) {
 
 	format, err := parseAudioFormatQuery(query)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	metadata, err := metadataFromQuery(query)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("invalid metadata: %v", err), http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid metadata: %v", err))
 		return
 	}
 
@@ -188,9 +188,9 @@ func (s *APIServer) handleAudioIngress(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrAudioStreamExists):
-			http.Error(w, fmt.Sprintf("audio stream %s/%s already exists", sessionID, streamID), http.StatusConflict)
+			writeError(w, http.StatusConflict, fmt.Sprintf("audio stream %s/%s already exists", sessionID, streamID))
 		default:
-			http.Error(w, fmt.Sprintf("open stream: %v", err), http.StatusInternalServerError)
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("open stream: %v", err))
 		}
 		return
 	}
@@ -204,7 +204,7 @@ func (s *APIServer) handleAudioIngress(w http.ResponseWriter, r *http.Request) {
 	for {
 		if err := uploadCtx.Err(); err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {
-				http.Error(w, "upload timeout", http.StatusRequestTimeout)
+				writeError(w, http.StatusRequestTimeout, "upload timeout")
 			} else {
 				w.WriteHeader(http.StatusNoContent)
 			}
@@ -213,7 +213,7 @@ func (s *APIServer) handleAudioIngress(w http.ResponseWriter, r *http.Request) {
 		n, readErr := r.Body.Read(buffer)
 		if n > 0 {
 			if err := stream.Write(buffer[:n]); err != nil {
-				http.Error(w, fmt.Sprintf("write stream: %v", err), http.StatusInternalServerError)
+				writeError(w, http.StatusInternalServerError, fmt.Sprintf("write stream: %v", err))
 				return
 			}
 		}
@@ -225,13 +225,13 @@ func (s *APIServer) handleAudioIngress(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(http.StatusNoContent)
 				return
 			}
-			http.Error(w, fmt.Sprintf("read body: %v", readErr), http.StatusInternalServerError)
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("read body: %v", readErr))
 			return
 		}
 	}
 
 	if err := stream.Close(); err != nil {
-		http.Error(w, fmt.Sprintf("close stream: %v", err), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("close stream: %v", err))
 		return
 	}
 	stream = nil
@@ -246,7 +246,7 @@ func (s *APIServer) handleAudioEgress(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET,OPTIONS")
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
@@ -254,14 +254,14 @@ func (s *APIServer) handleAudioEgress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.eventBus == nil {
-		http.Error(w, "event bus unavailable", http.StatusServiceUnavailable)
+		writeError(w, http.StatusServiceUnavailable, "event bus unavailable")
 		return
 	}
 
 	query := r.URL.Query()
 	sessionID := strings.TrimSpace(query.Get("session_id"))
 	if sessionID == "" {
-		http.Error(w, "session_id is required", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "session_id is required")
 		return
 	}
 	streamID := strings.TrimSpace(query.Get("stream_id"))
@@ -275,14 +275,14 @@ func (s *APIServer) handleAudioEgress(w http.ResponseWriter, r *http.Request) {
 
 	if s.sessionManager != nil {
 		if _, err := s.sessionManager.GetSession(sessionID); err != nil {
-			http.Error(w, fmt.Sprintf("session %s not found", sessionID), http.StatusNotFound)
+			writeError(w, http.StatusNotFound, fmt.Sprintf("session %s not found", sessionID))
 			return
 		}
 	}
 
 	readiness, err := s.voiceReadiness(r.Context())
 	if err != nil {
-		http.Error(w, fmt.Sprintf("voice readiness check failed: %v", err), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("voice readiness check failed: %v", err))
 		return
 	}
 	if !readiness.PlaybackEnabled {
@@ -294,7 +294,7 @@ func (s *APIServer) handleAudioEgress(w http.ResponseWriter, r *http.Request) {
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "streaming not supported")
 		return
 	}
 
@@ -426,7 +426,7 @@ func (s *APIServer) handleAudioIngressWS(w http.ResponseWriter, r *http.Request)
 	}
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET,OPTIONS")
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
@@ -434,14 +434,14 @@ func (s *APIServer) handleAudioIngressWS(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if s.audioIngress == nil {
-		http.Error(w, "audio ingress unavailable", http.StatusServiceUnavailable)
+		writeError(w, http.StatusServiceUnavailable, "audio ingress unavailable")
 		return
 	}
 
 	query := r.URL.Query()
 	sessionID := strings.TrimSpace(query.Get("session_id"))
 	if sessionID == "" {
-		http.Error(w, "session_id is required", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "session_id is required")
 		return
 	}
 	streamID := strings.TrimSpace(query.Get("stream_id"))
@@ -451,14 +451,14 @@ func (s *APIServer) handleAudioIngressWS(w http.ResponseWriter, r *http.Request)
 
 	if s.sessionManager != nil {
 		if _, err := s.sessionManager.GetSession(sessionID); err != nil {
-			http.Error(w, fmt.Sprintf("session %s not found", sessionID), http.StatusNotFound)
+			writeError(w, http.StatusNotFound, fmt.Sprintf("session %s not found", sessionID))
 			return
 		}
 	}
 
 	readiness, err := s.voiceReadiness(r.Context())
 	if err != nil {
-		http.Error(w, fmt.Sprintf("voice readiness check failed: %v", err), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("voice readiness check failed: %v", err))
 		return
 	}
 	if !readiness.CaptureEnabled {
@@ -470,13 +470,13 @@ func (s *APIServer) handleAudioIngressWS(w http.ResponseWriter, r *http.Request)
 
 	format, err := parseAudioFormatQuery(query)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	metadata, err := metadataFromQuery(query)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("invalid metadata: %v", err), http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid metadata: %v", err))
 		return
 	}
 
@@ -561,7 +561,7 @@ func (s *APIServer) handleAudioEgressWS(w http.ResponseWriter, r *http.Request) 
 	}
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET,OPTIONS")
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
@@ -569,14 +569,14 @@ func (s *APIServer) handleAudioEgressWS(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if s.eventBus == nil {
-		http.Error(w, "event bus unavailable", http.StatusServiceUnavailable)
+		writeError(w, http.StatusServiceUnavailable, "event bus unavailable")
 		return
 	}
 
 	query := r.URL.Query()
 	sessionID := strings.TrimSpace(query.Get("session_id"))
 	if sessionID == "" {
-		http.Error(w, "session_id is required", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "session_id is required")
 		return
 	}
 	streamID := strings.TrimSpace(query.Get("stream_id"))
@@ -590,14 +590,14 @@ func (s *APIServer) handleAudioEgressWS(w http.ResponseWriter, r *http.Request) 
 
 	if s.sessionManager != nil {
 		if _, err := s.sessionManager.GetSession(sessionID); err != nil {
-			http.Error(w, fmt.Sprintf("session %s not found", sessionID), http.StatusNotFound)
+			writeError(w, http.StatusNotFound, fmt.Sprintf("session %s not found", sessionID))
 			return
 		}
 	}
 
 	readiness, err := s.voiceReadiness(r.Context())
 	if err != nil {
-		http.Error(w, fmt.Sprintf("voice readiness check failed: %v", err), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("voice readiness check failed: %v", err))
 		return
 	}
 	if !readiness.PlaybackEnabled {
@@ -864,7 +864,7 @@ func (s *APIServer) handleAudioCapabilities(w http.ResponseWriter, r *http.Reque
 	}
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET,OPTIONS")
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
@@ -876,14 +876,14 @@ func (s *APIServer) handleAudioCapabilities(w http.ResponseWriter, r *http.Reque
 	sessionID := strings.TrimSpace(query.Get("session_id"))
 	if sessionID != "" && s.sessionManager != nil {
 		if _, err := s.sessionManager.GetSession(sessionID); err != nil {
-			http.Error(w, fmt.Sprintf("session %s not found", sessionID), http.StatusNotFound)
+			writeError(w, http.StatusNotFound, fmt.Sprintf("session %s not found", sessionID))
 			return
 		}
 	}
 
 	readiness, err := s.voiceReadiness(r.Context())
 	if err != nil {
-		http.Error(w, fmt.Sprintf("voice readiness check failed: %v", err), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("voice readiness check failed: %v", err))
 		return
 	}
 
@@ -933,7 +933,7 @@ func (s *APIServer) handleAudioCapabilities(w http.ResponseWriter, r *http.Reque
 
 	payload, err := json.Marshal(resp)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("encode capabilities: %v", err), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("encode capabilities: %v", err))
 		return
 	}
 
@@ -951,7 +951,7 @@ func (s *APIServer) handleAudioInterrupt(w http.ResponseWriter, r *http.Request)
 	}
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST,OPTIONS")
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
@@ -961,13 +961,13 @@ func (s *APIServer) handleAudioInterrupt(w http.ResponseWriter, r *http.Request)
 
 	var payload audioInterruptRequest
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
 	sessionID := strings.TrimSpace(payload.SessionID)
 	if sessionID == "" {
-		http.Error(w, "session_id is required", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "session_id is required")
 		return
 	}
 
@@ -985,14 +985,14 @@ func (s *APIServer) handleAudioInterrupt(w http.ResponseWriter, r *http.Request)
 
 	if s.sessionManager != nil {
 		if _, err := s.sessionManager.GetSession(sessionID); err != nil {
-			http.Error(w, fmt.Sprintf("session %s not found", sessionID), http.StatusNotFound)
+			writeError(w, http.StatusNotFound, fmt.Sprintf("session %s not found", sessionID))
 			return
 		}
 	}
 
 	readiness, err := s.voiceReadiness(r.Context())
 	if err != nil {
-		http.Error(w, fmt.Sprintf("voice readiness check failed: %v", err), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("voice readiness check failed: %v", err))
 		return
 	}
 	if !readiness.PlaybackEnabled {
