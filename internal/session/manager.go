@@ -44,12 +44,10 @@ type Session struct {
 	Inspect          bool                        // Whether inspection mode is enabled
 	RecordingEnabled bool                        // Whether asciicast recording is enabled
 
-	inspectFile       *os.File               // File for raw output logging
-	asciicastRecorder *pty.AsciicastRecorder // Asciicast recorder for session replay
-	clientSinks       int                    // Number of attached client sinks (excludes system sinks)
-	mu                sync.RWMutex
-	notifiers         []EventNotifier
-	outputSeq         uint64
+	clientSinks int // Number of attached client sinks (excludes system sinks)
+	mu          sync.RWMutex
+	notifiers   []EventNotifier
+	outputSeq   uint64
 }
 
 // SetStatus updates the session status in a threadsafe way
@@ -319,10 +317,6 @@ func (m *Manager) monitorSession(session *Session) {
 			if session.Handler != nil {
 				session.Handler.StopDetection()
 			}
-			// Close inspection file if open
-			if session.inspectFile != nil {
-				session.inspectFile.Close()
-			}
 			// Notify all attached notifiers about the event
 			session.NotifyAll(event.Type, event.ExitCode)
 			exitCode := event.ExitCode
@@ -553,13 +547,6 @@ func (h *handlerSink) Write(data []byte) error {
 	return nil
 }
 
-func (h *handlerSink) NotifyEvent(eventType string, exitCode int) {
-	// Handler stops on process exit
-	if eventType == "process_exited" {
-		h.handler.StopDetection()
-	}
-}
-
 type eventBusSink struct {
 	bus     *eventbus.Bus
 	session *Session
@@ -665,8 +652,6 @@ func (m *Manager) setupInspection(session *Session) error {
 		return fmt.Errorf("failed to create inspect file: %w", err)
 	}
 
-	session.inspectFile = file
-
 	// Write header
 	header := fmt.Sprintf("=== NUPI INSPECT SESSION ===\n")
 	header += fmt.Sprintf("Timestamp: %s\n", session.StartTime.Format(time.RFC3339))
@@ -683,25 +668,28 @@ func (m *Manager) setupInspection(session *Session) error {
 		return fmt.Errorf("failed to write header: %w", err)
 	}
 
-	// Add inspection sink to PTY
-	session.PTY.AddSink(&inspectionSink{
-		file: file,
-	})
+	// Add inspection sink to PTY and register as notifier for lifecycle cleanup
+	sink := &inspectionSink{file: file}
+	session.PTY.AddSink(sink)
+	session.AddNotifier(sink)
 
 	log.Printf("[Manager] Inspection enabled for session %s: %s", session.ID, inspectPath)
 	return nil
 }
 
-// inspectionSink implements pty.OutputSink for raw output logging
+// inspectionSink implements pty.OutputSink and EventNotifier for raw output logging.
 type inspectionSink struct {
-	file *os.File
-	mu   sync.Mutex
+	file   *os.File
+	mu     sync.Mutex
+	closed bool
 }
 
 func (s *inspectionSink) Write(data []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
+	if s.closed {
+		return nil
+	}
 	_, err := s.file.Write(data)
 	return err
 }
@@ -710,7 +698,10 @@ func (s *inspectionSink) NotifyEvent(eventType string, exitCode int) {
 	if eventType == "process_exited" {
 		s.mu.Lock()
 		defer s.mu.Unlock()
-
+		if s.closed {
+			return
+		}
+		s.closed = true
 		footer := fmt.Sprintf("\n=== PROCESS EXITED (code: %d) ===\n", exitCode)
 		s.file.WriteString(footer)
 		s.file.Close()
@@ -746,8 +737,6 @@ func (m *Manager) setupRecording(session *Session) error {
 	if err != nil {
 		return fmt.Errorf("failed to create recorder: %w", err)
 	}
-
-	session.asciicastRecorder = recorder
 
 	// Add recorder as sink to PTY
 	session.PTY.AddSink(recorder)
