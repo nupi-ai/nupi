@@ -263,6 +263,77 @@ func TestBusShutdownWithOverflow(t *testing.T) {
 	}
 }
 
+func TestBusSubscribeWithContext(t *testing.T) {
+	bus := eventbus.New()
+	defer bus.Shutdown()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	sub := bus.Subscribe(eventbus.TopicSessionsOutput, eventbus.WithContext(ctx))
+
+	// Publish an event so we know subscription works.
+	eventbus.Publish(context.Background(), bus, eventbus.Sessions.Output, eventbus.SourceSessionManager, eventbus.SessionOutputEvent{Sequence: 1})
+
+	select {
+	case env := <-sub.C():
+		msg := env.Payload.(eventbus.SessionOutputEvent)
+		if msg.Sequence != 1 {
+			t.Fatalf("expected sequence 1, got %d", msg.Sequence)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for event")
+	}
+
+	// Cancel context — subscription should auto-close.
+	cancel()
+
+	// Channel must become closed.
+	select {
+	case _, ok := <-sub.C():
+		if ok {
+			t.Fatal("expected channel to be closed after context cancel")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for channel close after context cancel")
+	}
+}
+
+func TestBusSubscribeWithContextManualClose(t *testing.T) {
+	bus := eventbus.New()
+	defer bus.Shutdown()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sub := bus.Subscribe(eventbus.TopicSessionsOutput, eventbus.WithContext(ctx))
+
+	// Manual close before context cancel — must not panic or deadlock.
+	sub.Close()
+
+	select {
+	case _, ok := <-sub.C():
+		if ok {
+			t.Fatal("expected channel to be closed")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for channel close")
+	}
+}
+
+func TestBusSubscribeWithContextShutdownRace(t *testing.T) {
+	// Verify no panic when context cancel and Shutdown race.
+	for i := 0; i < 100; i++ {
+		bus := eventbus.New()
+		ctx, cancel := context.WithCancel(context.Background())
+		bus.Subscribe(eventbus.TopicSessionsOutput, eventbus.WithContext(ctx))
+
+		// Fire both concurrently.
+		go cancel()
+		go bus.Shutdown()
+	}
+	// If we reach here without panic, the CAS guards are correct.
+}
+
 func TestBusWithTopicPolicy(t *testing.T) {
 	// Override a normally drop-oldest topic to use drop-newest.
 	bus := eventbus.New(
