@@ -57,7 +57,7 @@ func (s *APIServer) handleConfigAdapters(w http.ResponseWriter, r *http.Request)
 	case http.MethodGet:
 		s.handleConfigAdaptersGet(w, r)
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 
@@ -66,13 +66,13 @@ func (s *APIServer) handleConfigAdaptersGet(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if s.configStore == nil {
-		http.Error(w, "configuration store not available", http.StatusServiceUnavailable)
+		writeError(w, http.StatusServiceUnavailable, "configuration store not available")
 		return
 	}
 
 	adapters, err := s.configStore.ListAdapters(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -88,7 +88,7 @@ func (s *APIServer) handleConfigAdapterBindings(w http.ResponseWriter, r *http.R
 	case http.MethodGet:
 		s.handleConfigAdapterBindingsGet(w, r)
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 
@@ -97,13 +97,13 @@ func (s *APIServer) handleConfigAdapterBindingsGet(w http.ResponseWriter, r *htt
 		return
 	}
 	if s.configStore == nil {
-		http.Error(w, "configuration store not available", http.StatusServiceUnavailable)
+		writeError(w, http.StatusServiceUnavailable, "configuration store not available")
 		return
 	}
 
 	bindings, err := s.configStore.ListAdapterBindings(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -141,7 +141,7 @@ func (s *APIServer) handleConfigMigrate(w http.ResponseWriter, r *http.Request) 
 		return
 	case http.MethodPost:
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
@@ -149,19 +149,19 @@ func (s *APIServer) handleConfigMigrate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if s.configStore == nil {
-		http.Error(w, "configuration store not available", http.StatusServiceUnavailable)
+		writeError(w, http.StatusServiceUnavailable, "configuration store not available")
 		return
 	}
 
 	result, err := s.configStore.EnsureRequiredAdapterSlots(r.Context())
 	if err != nil {
-		http.Error(w, fmt.Sprintf("migration failed: %v", err), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("migration failed: %v", err))
 		return
 	}
 
 	audioUpdated, err := s.configStore.EnsureAudioSettings(r.Context())
 	if err != nil {
-		http.Error(w, fmt.Sprintf("audio settings migration failed: %v", err), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("audio settings migration failed: %v", err))
 		return
 	}
 
@@ -172,7 +172,7 @@ func (s *APIServer) handleConfigMigrate(w http.ResponseWriter, r *http.Request) 
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		http.Error(w, fmt.Sprintf("encode response: %v", err), http.StatusInternalServerError)
+		log.Printf("[APIServer] failed to encode migration response: %v", err)
 	}
 }
 
@@ -183,7 +183,7 @@ func (s *APIServer) handleAdapters(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		s.handleAdaptersGet(w, r)
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 
@@ -192,13 +192,13 @@ func (s *APIServer) handleAdaptersLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.eventBus == nil {
-		http.Error(w, "event bus unavailable", http.StatusServiceUnavailable)
+		writeError(w, http.StatusServiceUnavailable, "event bus unavailable")
 		return
 	}
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "streaming not supported")
 		return
 	}
 
@@ -305,55 +305,55 @@ func (s *APIServer) handleAdaptersRegister(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	if _, ok := s.requireRole(w, r, roleAdmin); !ok {
 		return
 	}
 	if s.configStore == nil {
-		http.Error(w, "configuration store unavailable", http.StatusServiceUnavailable)
+		writeError(w, http.StatusServiceUnavailable, "configuration store unavailable")
 		return
 	}
 
 	var payload apihttp.AdapterRegistrationRequest
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		http.Error(w, fmt.Sprintf("invalid JSON payload: %v", err), http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON payload: %v", err))
 		return
 	}
 
 	adapterID := strings.TrimSpace(payload.AdapterID)
 	if adapterID == "" {
-		http.Error(w, "adapter_id is required", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "adapter_id is required")
 		return
 	}
 	if len(adapterID) > maxAdapterIDLength {
-		http.Error(w, fmt.Sprintf("adapter_id too long (max %d chars)", maxAdapterIDLength), http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("adapter_id too long (max %d chars)", maxAdapterIDLength))
 		return
 	}
 
 	adapterType := strings.TrimSpace(payload.Type)
 	if adapterType != "" {
 		if _, ok := allowedAdapterTypes[adapterType]; !ok {
-			http.Error(w, fmt.Sprintf("invalid adapter type: %s (expected: stt, tts, ai, vad, tunnel, tool-handler, pipeline-cleaner)", adapterType), http.StatusBadRequest)
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid adapter type: %s (expected: stt, tts, ai, vad, tunnel, tool-handler, pipeline-cleaner)", adapterType))
 			return
 		}
 	}
 
 	adapterName := strings.TrimSpace(payload.Name)
 	if len(adapterName) > maxAdapterNameLength {
-		http.Error(w, fmt.Sprintf("name too long (max %d chars)", maxAdapterNameLength), http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("name too long (max %d chars)", maxAdapterNameLength))
 		return
 	}
 
 	adapterVersion := strings.TrimSpace(payload.Version)
 	if len(adapterVersion) > maxAdapterVersionLength {
-		http.Error(w, fmt.Sprintf("version too long (max %d chars)", maxAdapterVersionLength), http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("version too long (max %d chars)", maxAdapterVersionLength))
 		return
 	}
 
 	if len(payload.Manifest) > maxAdapterManifestBytes {
-		http.Error(w, fmt.Sprintf("manifest too large (max %d bytes)", maxAdapterManifestBytes), http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("manifest too large (max %d bytes)", maxAdapterManifestBytes))
 		return
 	}
 
@@ -369,7 +369,7 @@ func (s *APIServer) handleAdaptersRegister(w http.ResponseWriter, r *http.Reques
 	}
 
 	if err := s.configStore.UpsertAdapter(r.Context(), adapter); err != nil {
-		http.Error(w, fmt.Sprintf("register adapter failed: %v", err), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("register adapter failed: %v", err))
 		return
 	}
 
@@ -380,36 +380,36 @@ func (s *APIServer) handleAdaptersRegister(w http.ResponseWriter, r *http.Reques
 
 		if transport == "" {
 			if address != "" || command != "" || len(payload.Endpoint.Args) > 0 || len(payload.Endpoint.Env) > 0 {
-				http.Error(w, "endpoint transport required when endpoint fields are provided", http.StatusBadRequest)
+				writeError(w, http.StatusBadRequest, "endpoint transport required when endpoint fields are provided")
 				return
 			}
 		} else {
 			if _, ok := allowedAdapterTransports[transport]; !ok {
-				http.Error(w, fmt.Sprintf("invalid transport: %s (expected: grpc, http, process)", transport), http.StatusBadRequest)
+				writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid transport: %s (expected: grpc, http, process)", transport))
 				return
 			}
 			switch transport {
 			case "grpc":
 				if address == "" {
-					http.Error(w, "endpoint address required for grpc transport", http.StatusBadRequest)
+					writeError(w, http.StatusBadRequest, "endpoint address required for grpc transport")
 					return
 				}
 			case "http":
 				if address == "" {
-					http.Error(w, "endpoint address required for http transport", http.StatusBadRequest)
+					writeError(w, http.StatusBadRequest, "endpoint address required for http transport")
 					return
 				}
 				if command != "" || len(payload.Endpoint.Args) > 0 {
-					http.Error(w, "endpoint command/args not allowed for http transport", http.StatusBadRequest)
+					writeError(w, http.StatusBadRequest, "endpoint command/args not allowed for http transport")
 					return
 				}
 			case "process":
 				if command == "" {
-					http.Error(w, "endpoint command required for process transport", http.StatusBadRequest)
+					writeError(w, http.StatusBadRequest, "endpoint command required for process transport")
 					return
 				}
 				if address != "" {
-					http.Error(w, "endpoint address not used for process transport", http.StatusBadRequest)
+					writeError(w, http.StatusBadRequest, "endpoint address not used for process transport")
 					return
 				}
 			}
@@ -427,7 +427,7 @@ func (s *APIServer) handleAdaptersRegister(w http.ResponseWriter, r *http.Reques
 				endpoint.Env = cloneStringMap(payload.Endpoint.Env)
 			}
 			if err := s.configStore.UpsertAdapterEndpoint(r.Context(), endpoint); err != nil {
-				http.Error(w, fmt.Sprintf("register adapter endpoint failed: %v", err), http.StatusInternalServerError)
+				writeError(w, http.StatusInternalServerError, fmt.Sprintf("register adapter endpoint failed: %v", err))
 				return
 			}
 		}
@@ -494,13 +494,13 @@ func (s *APIServer) handleAdaptersGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.adapters == nil {
-		http.Error(w, "adapter service unavailable", http.StatusServiceUnavailable)
+		writeError(w, http.StatusServiceUnavailable, "adapter service unavailable")
 		return
 	}
 
 	overview, err := s.adapters.Overview(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -519,38 +519,38 @@ func (s *APIServer) handleAdaptersBind(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	if _, ok := s.requireRole(w, r, roleAdmin); !ok {
 		return
 	}
 	if s.configStore == nil {
-		http.Error(w, "configuration store not available", http.StatusServiceUnavailable)
+		writeError(w, http.StatusServiceUnavailable, "configuration store not available")
 		return
 	}
 	if s.adapters == nil {
-		http.Error(w, "adapter service unavailable", http.StatusServiceUnavailable)
+		writeError(w, http.StatusServiceUnavailable, "adapter service unavailable")
 		return
 	}
 
 	var payload adapterActionRequest
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		http.Error(w, fmt.Sprintf("invalid JSON payload: %v", err), http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON payload: %v", err))
 		return
 	}
 
 	slot := strings.TrimSpace(payload.Slot)
 	adapterID := strings.TrimSpace(payload.AdapterID)
 	if slot == "" || adapterID == "" {
-		http.Error(w, "slot and adapter_id are required", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "slot and adapter_id are required")
 		return
 	}
 
 	var cfg map[string]any
 	if len(payload.Config) > 0 {
 		if err := json.Unmarshal(payload.Config, &cfg); err != nil {
-			http.Error(w, fmt.Sprintf("invalid config payload: %v", err), http.StatusBadRequest)
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid config payload: %v", err))
 			return
 		}
 	}
@@ -562,13 +562,13 @@ func (s *APIServer) handleAdaptersBind(w http.ResponseWriter, r *http.Request) {
 		} else if strings.Contains(strings.ToLower(err.Error()), "invalid") {
 			code = http.StatusBadRequest
 		}
-		http.Error(w, fmt.Sprintf("set adapter binding failed: %v", err), code)
+		writeError(w, code, fmt.Sprintf("set adapter binding failed: %v", err))
 		return
 	}
 
 	status, err := s.adapters.StartSlot(r.Context(), adapters.Slot(slot))
 	if err != nil {
-		http.Error(w, fmt.Sprintf("start adapter failed: %v", err), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("start adapter failed: %v", err))
 		return
 	}
 
@@ -583,30 +583,30 @@ func (s *APIServer) handleAdaptersStart(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	if _, ok := s.requireRole(w, r, roleAdmin); !ok {
 		return
 	}
 	if s.adapters == nil {
-		http.Error(w, "adapter service unavailable", http.StatusServiceUnavailable)
+		writeError(w, http.StatusServiceUnavailable, "adapter service unavailable")
 		return
 	}
 
 	var payload adapterActionRequest
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		http.Error(w, fmt.Sprintf("invalid JSON payload: %v", err), http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON payload: %v", err))
 		return
 	}
 	if strings.TrimSpace(payload.Slot) == "" {
-		http.Error(w, "slot is required", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "slot is required")
 		return
 	}
 
 	status, err := s.adapters.StartSlot(r.Context(), adapters.Slot(payload.Slot))
 	if err != nil {
-		http.Error(w, fmt.Sprintf("start adapter failed: %v", err), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("start adapter failed: %v", err))
 		return
 	}
 
@@ -621,30 +621,30 @@ func (s *APIServer) handleAdaptersStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	if _, ok := s.requireRole(w, r, roleAdmin); !ok {
 		return
 	}
 	if s.adapters == nil {
-		http.Error(w, "adapter service unavailable", http.StatusServiceUnavailable)
+		writeError(w, http.StatusServiceUnavailable, "adapter service unavailable")
 		return
 	}
 
 	var payload adapterActionRequest
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		http.Error(w, fmt.Sprintf("invalid JSON payload: %v", err), http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON payload: %v", err))
 		return
 	}
 	if strings.TrimSpace(payload.Slot) == "" {
-		http.Error(w, "slot is required", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "slot is required")
 		return
 	}
 
 	status, err := s.adapters.StopSlot(r.Context(), adapters.Slot(payload.Slot))
 	if err != nil {
-		http.Error(w, fmt.Sprintf("stop adapter failed: %v", err), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("stop adapter failed: %v", err))
 		return
 	}
 

@@ -25,7 +25,7 @@ func (s *APIServer) handleSessionsRoot(w http.ResponseWriter, r *http.Request) {
 	case http.MethodOptions:
 		w.WriteHeader(http.StatusNoContent)
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 
@@ -35,7 +35,7 @@ func (s *APIServer) handleSessionsList(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(dto); err != nil {
-		http.Error(w, fmt.Sprintf("failed to encode sessions: %v", err), http.StatusInternalServerError)
+		log.Printf("[APIServer] failed to encode sessions response: %v", err)
 	}
 }
 
@@ -45,24 +45,24 @@ func (s *APIServer) handleSessionCreate(w http.ResponseWriter, r *http.Request) 
 	}
 	var payload protocol.CreateSessionData
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		http.Error(w, fmt.Sprintf("invalid JSON payload: %v", err), http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON payload: %v", err))
 		return
 	}
 	if strings.TrimSpace(payload.Command) == "" {
-		http.Error(w, "command is required", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "command is required")
 		return
 	}
 
 	sess, err := s.createSessionFromPayload(payload)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("failed to create session: %v", err), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to create session: %v", err))
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	if err := json.NewEncoder(w).Encode(api.ToDTO(sess)); err != nil {
-		http.Error(w, fmt.Sprintf("failed to encode session: %v", err), http.StatusInternalServerError)
+		log.Printf("[APIServer] failed to encode session response: %v", err)
 	}
 }
 
@@ -127,12 +127,12 @@ func (s *APIServer) handleSessionSubroutes(w http.ResponseWriter, r *http.Reques
 	parts := strings.Split(trimmed, "/")
 	sessionID := strings.TrimSpace(parts[0])
 	if sessionID == "" {
-		http.NotFound(w, r)
+		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
 
 	if len(parts) > 1 {
-		http.NotFound(w, r)
+		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
 
@@ -144,20 +144,20 @@ func (s *APIServer) handleSessionSubroutes(w http.ResponseWriter, r *http.Reques
 	case http.MethodOptions:
 		w.WriteHeader(http.StatusNoContent)
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 
 func (s *APIServer) handleSessionGet(w http.ResponseWriter, r *http.Request, sessionID string) {
 	session, err := s.sessionManager.GetSession(sessionID)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("session %s not found", sessionID), http.StatusNotFound)
+		writeError(w, http.StatusNotFound, fmt.Sprintf("session %s not found", sessionID))
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(api.ToDTO(session)); err != nil {
-		http.Error(w, fmt.Sprintf("failed to encode session: %v", err), http.StatusInternalServerError)
+		log.Printf("[APIServer] failed to encode session response: %v", err)
 	}
 }
 
@@ -166,7 +166,7 @@ func (s *APIServer) handleSessionDelete(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	if err := s.sessionManager.KillSession(sessionID); err != nil {
-		http.Error(w, fmt.Sprintf("session %s not found", sessionID), http.StatusNotFound)
+		writeError(w, http.StatusNotFound, fmt.Sprintf("session %s not found", sessionID))
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -178,7 +178,7 @@ func (s *APIServer) handleSessionAttach(w http.ResponseWriter, r *http.Request) 
 	}
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/sessions/"), "/")
 	if len(parts) != 2 || strings.TrimSpace(parts[1]) != "attach" {
-		http.NotFound(w, r)
+		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
 	sessionID := strings.TrimSpace(parts[0])
@@ -189,7 +189,7 @@ func (s *APIServer) handleSessionAttach(w http.ResponseWriter, r *http.Request) 
 		return
 	case http.MethodPost:
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
@@ -197,13 +197,13 @@ func (s *APIServer) handleSessionAttach(w http.ResponseWriter, r *http.Request) 
 		IncludeHistory bool `json:"include_history"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil && err != io.EOF {
-		http.Error(w, fmt.Sprintf("invalid payload: %v", err), http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid payload: %v", err))
 		return
 	}
 
 	sess, err := s.sessionManager.GetSession(sessionID)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("session %s not found", sessionID), http.StatusNotFound)
+		writeError(w, http.StatusNotFound, fmt.Sprintf("session %s not found", sessionID))
 		return
 	}
 
@@ -217,7 +217,7 @@ func (s *APIServer) handleSessionAttach(w http.ResponseWriter, r *http.Request) 
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		http.Error(w, fmt.Sprintf("failed to encode session: %v", err), http.StatusInternalServerError)
+		log.Printf("[APIServer] failed to encode attach response: %v", err)
 	}
 }
 
@@ -232,7 +232,7 @@ func (s *APIServer) handleSessionInput(w http.ResponseWriter, r *http.Request) {
 	}
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/sessions/"), "/")
 	if len(parts) != 2 || strings.TrimSpace(parts[1]) != "input" {
-		http.NotFound(w, r)
+		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
 	sessionID := strings.TrimSpace(parts[0])
@@ -243,24 +243,24 @@ func (s *APIServer) handleSessionInput(w http.ResponseWriter, r *http.Request) {
 		return
 	case http.MethodPost:
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
 	var payload sessionInputRequest
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		http.Error(w, fmt.Sprintf("invalid payload: %v", err), http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid payload: %v", err))
 		return
 	}
 
 	if _, err := s.sessionManager.GetSession(sessionID); err != nil {
-		http.Error(w, fmt.Sprintf("session %s not found", sessionID), http.StatusNotFound)
+		writeError(w, http.StatusNotFound, fmt.Sprintf("session %s not found", sessionID))
 		return
 	}
 
 	if payload.Input != "" {
 		if err := s.sessionManager.WriteToSession(sessionID, []byte(payload.Input)); err != nil {
-			http.Error(w, fmt.Sprintf("failed to send input: %v", err), http.StatusInternalServerError)
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to send input: %v", err))
 			return
 		}
 	}
@@ -268,7 +268,7 @@ func (s *APIServer) handleSessionInput(w http.ResponseWriter, r *http.Request) {
 	if payload.EOF {
 		// Send Ctrl-D (EOT) to signal EOF
 		if err := s.sessionManager.WriteToSession(sessionID, []byte{4}); err != nil {
-			http.Error(w, fmt.Sprintf("failed to send EOF: %v", err), http.StatusInternalServerError)
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to send EOF: %v", err))
 			return
 		}
 	}
@@ -282,7 +282,7 @@ func (s *APIServer) handleSessionDetach(w http.ResponseWriter, r *http.Request) 
 	}
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/sessions/"), "/")
 	if len(parts) != 2 || strings.TrimSpace(parts[1]) != "detach" {
-		http.NotFound(w, r)
+		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
 	sessionID := strings.TrimSpace(parts[0])
@@ -293,13 +293,13 @@ func (s *APIServer) handleSessionDetach(w http.ResponseWriter, r *http.Request) 
 		return
 	case http.MethodPost:
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
 	sess, err := s.sessionManager.GetSession(sessionID)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("session %s not found", sessionID), http.StatusNotFound)
+		writeError(w, http.StatusNotFound, fmt.Sprintf("session %s not found", sessionID))
 		return
 	}
 
@@ -310,13 +310,13 @@ func (s *APIServer) handleSessionDetach(w http.ResponseWriter, r *http.Request) 
 func (s *APIServer) handleSessionConversation(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/sessions/"), "/")
 	if len(parts) != 2 || strings.TrimSpace(parts[1]) != "conversation" {
-		http.NotFound(w, r)
+		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
 
 	sessionID := strings.TrimSpace(parts[0])
 	if sessionID == "" {
-		http.NotFound(w, r)
+		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
 
@@ -326,7 +326,7 @@ func (s *APIServer) handleSessionConversation(w http.ResponseWriter, r *http.Req
 		return
 	case http.MethodGet:
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
@@ -335,12 +335,12 @@ func (s *APIServer) handleSessionConversation(w http.ResponseWriter, r *http.Req
 	}
 
 	if s.conversation == nil {
-		http.Error(w, "conversation service unavailable", http.StatusServiceUnavailable)
+		writeError(w, http.StatusServiceUnavailable, "conversation service unavailable")
 		return
 	}
 
 	if _, err := s.sessionManager.GetSession(sessionID); err != nil {
-		http.Error(w, fmt.Sprintf("session %s not found", sessionID), http.StatusNotFound)
+		writeError(w, http.StatusNotFound, fmt.Sprintf("session %s not found", sessionID))
 		return
 	}
 
@@ -348,13 +348,13 @@ func (s *APIServer) handleSessionConversation(w http.ResponseWriter, r *http.Req
 
 	offset, _, err := parseQueryIntParam(query, "offset")
 	if err != nil {
-		http.Error(w, fmt.Sprintf("invalid offset: %v", err), http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid offset: %v", err))
 		return
 	}
 
 	limit, providedLimit, err := parseQueryIntParam(query, "limit")
 	if err != nil {
-		http.Error(w, fmt.Sprintf("invalid limit: %v", err), http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid limit: %v", err))
 		return
 	}
 	if providedLimit && limit > conversationMaxPageLimit {
@@ -366,7 +366,7 @@ func (s *APIServer) handleSessionConversation(w http.ResponseWriter, r *http.Req
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(state); err != nil {
-		http.Error(w, fmt.Sprintf("failed to encode conversation: %v", err), http.StatusInternalServerError)
+		log.Printf("[APIServer] failed to encode conversation response: %v", err)
 	}
 }
 
@@ -378,7 +378,7 @@ func (s *APIServer) handleGlobalConversation(w http.ResponseWriter, r *http.Requ
 	case http.MethodGet:
 	default:
 		w.Header().Set("Allow", "GET,OPTIONS")
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 
@@ -387,7 +387,7 @@ func (s *APIServer) handleGlobalConversation(w http.ResponseWriter, r *http.Requ
 	}
 
 	if s.conversation == nil {
-		http.Error(w, "conversation service unavailable", http.StatusServiceUnavailable)
+		writeError(w, http.StatusServiceUnavailable, "conversation service unavailable")
 		return
 	}
 
@@ -395,13 +395,13 @@ func (s *APIServer) handleGlobalConversation(w http.ResponseWriter, r *http.Requ
 
 	offset, _, err := parseQueryIntParam(query, "offset")
 	if err != nil {
-		http.Error(w, fmt.Sprintf("invalid offset: %v", err), http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid offset: %v", err))
 		return
 	}
 
 	limit, providedLimit, err := parseQueryIntParam(query, "limit")
 	if err != nil {
-		http.Error(w, fmt.Sprintf("invalid limit: %v", err), http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid limit: %v", err))
 		return
 	}
 	if providedLimit && limit > conversationMaxPageLimit {
@@ -413,7 +413,7 @@ func (s *APIServer) handleGlobalConversation(w http.ResponseWriter, r *http.Requ
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(state); err != nil {
-		http.Error(w, fmt.Sprintf("failed to encode conversation: %v", err), http.StatusInternalServerError)
+		log.Printf("[APIServer] failed to encode global conversation response: %v", err)
 	}
 }
 
@@ -470,14 +470,14 @@ func (s *APIServer) handleSessionMode(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if s.resizeManager == nil {
-		http.Error(w, "resize manager not available", http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, "resize manager not available")
 		return
 	}
 
 	trimmed := strings.TrimPrefix(r.URL.Path, "/sessions/")
 	parts := strings.Split(trimmed, "/")
 	if len(parts) != 2 || parts[1] != "mode" || parts[0] == "" {
-		http.NotFound(w, r)
+		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
 
@@ -489,7 +489,7 @@ func (s *APIServer) handleSessionMode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err := s.sessionManager.GetSession(sessionID); err != nil {
-		http.Error(w, fmt.Sprintf("session %s not found", sessionID), http.StatusNotFound)
+		writeError(w, http.StatusNotFound, fmt.Sprintf("session %s not found", sessionID))
 		return
 	}
 
@@ -502,20 +502,20 @@ func (s *APIServer) handleSessionMode(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			http.Error(w, fmt.Sprintf("invalid payload: %v", err), http.StatusBadRequest)
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid payload: %v", err))
 			return
 		}
 		if payload.Mode == "" {
-			http.Error(w, "mode field is required", http.StatusBadRequest)
+			writeError(w, http.StatusBadRequest, "mode field is required")
 			return
 		}
 
 		if err := s.resizeManager.SetSessionMode(sessionID, payload.Mode); err != nil {
 			status := http.StatusBadRequest
 			if errors.Is(err, termresize.ErrUnknownMode) {
-				http.Error(w, fmt.Sprintf("unknown mode: %s", payload.Mode), status)
+				writeError(w, status, fmt.Sprintf("unknown mode: %s", payload.Mode))
 			} else {
-				http.Error(w, fmt.Sprintf("failed to set mode: %v", err), http.StatusInternalServerError)
+				writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to set mode: %v", err))
 			}
 			return
 		}
@@ -524,7 +524,7 @@ func (s *APIServer) handleSessionMode(w http.ResponseWriter, r *http.Request) {
 		s.respondWithMode(w, sessionID)
 	default:
 		w.Header().Set("Allow", "GET,POST,PUT,OPTIONS")
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 

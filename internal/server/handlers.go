@@ -452,13 +452,13 @@ func (s *APIServer) requireRole(w http.ResponseWriter, r *http.Request, allowed 
 	}
 	token, ok := tokenFromContext(r.Context())
 	if !ok {
-		http.Error(w, "forbidden", http.StatusForbidden)
+		writeError(w, http.StatusForbidden, "forbidden")
 		return storedToken{}, false
 	}
 	if len(allowed) == 0 || hasRole(token.Role, allowed...) {
 		return token, true
 	}
-	http.Error(w, "forbidden", http.StatusForbidden)
+	writeError(w, http.StatusForbidden, "forbidden")
 	return storedToken{}, false
 }
 
@@ -562,7 +562,7 @@ func extractAuthToken(r *http.Request) string {
 
 func writeUnauthorized(w http.ResponseWriter) {
 	w.Header().Set("WWW-Authenticate", `Bearer realm="nupi"`)
-	http.Error(w, "unauthorized", http.StatusUnauthorized)
+	writeError(w, http.StatusUnauthorized, "unauthorized")
 }
 
 // Start starts the HTTP/WebSocket server.
@@ -827,13 +827,13 @@ func (s *APIServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	case http.MethodOptions:
 		w.WriteHeader(http.StatusNoContent)
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 
 func (s *APIServer) serveMetrics(w http.ResponseWriter, r *http.Request) {
 	if s.observability.metricsExporter == nil {
-		http.Error(w, "metrics exporter not configured", http.StatusServiceUnavailable)
+		writeError(w, http.StatusServiceUnavailable, "metrics exporter not configured")
 		return
 	}
 

@@ -238,7 +238,7 @@ func (s *APIServer) handleTransportConfig(w http.ResponseWriter, r *http.Request
 	case http.MethodPut, http.MethodPost:
 		s.handleTransportUpdate(w, r)
 	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
 }
 
@@ -247,13 +247,13 @@ func (s *APIServer) handleTransportGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.configStore == nil {
-		http.Error(w, "configuration store not available", http.StatusServiceUnavailable)
+		writeError(w, http.StatusServiceUnavailable, "configuration store not available")
 		return
 	}
 
 	cfg, err := s.configStore.GetTransportConfig(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -281,19 +281,19 @@ func (s *APIServer) handleTransportUpdate(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if s.configStore == nil {
-		http.Error(w, "configuration store not available", http.StatusServiceUnavailable)
+		writeError(w, http.StatusServiceUnavailable, "configuration store not available")
 		return
 	}
 
 	var payload transportRequest
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		http.Error(w, fmt.Sprintf("invalid JSON payload: %v", err), http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid JSON payload: %v", err))
 		return
 	}
 
 	current, err := s.configStore.GetTransportConfig(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -304,7 +304,7 @@ func (s *APIServer) handleTransportUpdate(w http.ResponseWriter, r *http.Request
 
 	if payload.Port != nil {
 		if *payload.Port < 0 || *payload.Port > 65535 {
-			http.Error(w, "port must be between 0 and 65535", http.StatusBadRequest)
+			writeError(w, http.StatusBadRequest, "port must be between 0 and 65535")
 			return
 		}
 		current.Port = *payload.Port
@@ -326,7 +326,7 @@ func (s *APIServer) handleTransportUpdate(w http.ResponseWriter, r *http.Request
 	}
 	if payload.GRPCPort != nil {
 		if *payload.GRPCPort < 0 || *payload.GRPCPort > 65535 {
-			http.Error(w, "grpc_port must be between 0 and 65535", http.StatusBadRequest)
+			writeError(w, http.StatusBadRequest, "grpc_port must be between 0 and 65535")
 			return
 		}
 		current.GRPCPort = *payload.GRPCPort
@@ -344,18 +344,18 @@ func (s *APIServer) handleTransportUpdate(w http.ResponseWriter, r *http.Request
 	}
 
 	if err := validateTransportConfig(current); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	if err := s.configStore.SaveTransportConfig(r.Context(), current); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	newToken, err := s.applyTransportConfig(r.Context(), current)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("failed to apply transport config: %v", err), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("failed to apply transport config: %v", err))
 		return
 	}
 
