@@ -219,8 +219,8 @@ func setupRoutingTestFull(t *testing.T, sessions ...intentrouter.SessionInfo) *r
 		intentrouter.WithCommandExecutor(executor),
 	)
 
-	replySub := bus.Subscribe(eventbus.TopicConversationReply, eventbus.WithSubscriptionName("test_reply"))
-	speakSub := bus.Subscribe(eventbus.TopicConversationSpeak, eventbus.WithSubscriptionName("test_speak"))
+	replySub := eventbus.SubscribeTo(bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("test_reply"))
+	speakSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Speak, eventbus.WithSubscriptionName("test_speak"))
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -424,7 +424,7 @@ func TestProactiveIdleNotification(t *testing.T) {
 	}
 	defer router.Shutdown(context.Background())
 
-	speakSub := bus.Subscribe(eventbus.TopicConversationSpeak, eventbus.WithSubscriptionName("test_speak"))
+	speakSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Speak, eventbus.WithSubscriptionName("test_speak"))
 	defer speakSub.Close()
 
 	// Publish notable pipeline message (simulates content pipeline detecting idle)
@@ -496,7 +496,7 @@ func TestProactiveNotificationRateLimiting(t *testing.T) {
 	}
 	defer router.Shutdown(context.Background())
 
-	speakSub := bus.Subscribe(eventbus.TopicConversationSpeak, eventbus.WithSubscriptionName("test_speak"))
+	speakSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Speak, eventbus.WithSubscriptionName("test_speak"))
 	defer speakSub.Close()
 
 	// Publish 3 notable events in quick succession
@@ -522,13 +522,11 @@ func TestProactiveNotificationRateLimiting(t *testing.T) {
 	extraCount := 0
 	for {
 		select {
-		case env, ok := <-speakSub.C():
+		case _, ok := <-speakSub.C():
 			if !ok {
 				goto done
 			}
-			if _, ok := env.Payload.(eventbus.ConversationSpeakEvent); ok {
-				extraCount++
-			}
+			extraCount++
 		case <-timer.C:
 			goto done
 		}
@@ -586,10 +584,10 @@ func TestProactiveNotificationIncludesContext(t *testing.T) {
 	}
 	defer router.Shutdown(context.Background())
 
-	speakSub := bus.Subscribe(eventbus.TopicConversationSpeak, eventbus.WithSubscriptionName("test_speak"))
+	speakSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Speak, eventbus.WithSubscriptionName("test_speak"))
 	defer speakSub.Close()
 
-	replySub := bus.Subscribe(eventbus.TopicConversationReply, eventbus.WithSubscriptionName("test_reply"))
+	replySub := eventbus.SubscribeTo(bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("test_reply"))
 	defer replySub.Close()
 
 	// First: add conversation history via PipelineMessageEvent with OriginUser.
@@ -701,7 +699,7 @@ func TestSessionHistorySummarization(t *testing.T) {
 	}
 	defer router.Shutdown(context.Background())
 
-	speakSub := bus.Subscribe(eventbus.TopicConversationSpeak, eventbus.WithSubscriptionName("test_speak"))
+	speakSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Speak, eventbus.WithSubscriptionName("test_speak"))
 	defer speakSub.Close()
 
 	// Build conversation history via PipelineMessageEvent (OriginUser triggers
@@ -786,7 +784,7 @@ func TestHistorySummarizationUsesCorrectSessionContext(t *testing.T) {
 	}
 	defer router.Shutdown(context.Background())
 
-	speakSub := bus.Subscribe(eventbus.TopicConversationSpeak, eventbus.WithSubscriptionName("test_speak"))
+	speakSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Speak, eventbus.WithSubscriptionName("test_speak"))
 	defer speakSub.Close()
 
 	// Build history for sess-one via PipelineMessageEvent
@@ -1021,7 +1019,7 @@ func TestSessionOutputForNonNotableEventsIgnored(t *testing.T) {
 	}
 	defer router.Shutdown(context.Background())
 
-	speakSub := bus.Subscribe(eventbus.TopicConversationSpeak, eventbus.WithSubscriptionName("test_speak"))
+	speakSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Speak, eventbus.WithSubscriptionName("test_speak"))
 	defer speakSub.Close()
 
 	// Step 1: Publish non-notable tool output — should be ignored by conversation service.

@@ -842,8 +842,7 @@ func TestAdapterBridgePublishesErrorOnInvalidConfig(t *testing.T) {
 	defer bus.Shutdown()
 
 	// Subscribe to bridge diagnostics topic to capture errors
-	sub := bus.Subscribe(
-		eventbus.TopicIntentRouterDiagnostics,
+	sub := eventbus.SubscribeTo(bus, eventbus.IntentRouter.Diagnostics,
 		eventbus.WithSubscriptionName("test_error_capture"),
 	)
 	defer sub.Close()
@@ -877,14 +876,11 @@ func TestAdapterBridgePublishesErrorOnInvalidConfig(t *testing.T) {
 	for time.Now().Before(deadline) {
 		select {
 		case env := <-sub.C():
-			evt, ok := env.Payload.(eventbus.BridgeDiagnosticEvent)
-			if ok {
-				errorReceived = true
-				if evt.AdapterID != adapters.MockAIAdapterID {
-					t.Errorf("Expected adapter ID %s, got %s", adapters.MockAIAdapterID, evt.AdapterID)
-				}
-				diagnosticType = evt.Type
+			errorReceived = true
+			if env.Payload.AdapterID != adapters.MockAIAdapterID {
+				t.Errorf("Expected adapter ID %s, got %s", adapters.MockAIAdapterID, env.Payload.AdapterID)
 			}
+			diagnosticType = env.Payload.Type
 		default:
 			time.Sleep(10 * time.Millisecond)
 		}
@@ -914,8 +910,7 @@ func TestAdapterBridgePublishesErrorOnNoAddress(t *testing.T) {
 	defer bus.Shutdown()
 
 	// Subscribe to bridge diagnostics topic
-	sub := bus.Subscribe(
-		eventbus.TopicIntentRouterDiagnostics,
+	sub := eventbus.SubscribeTo(bus, eventbus.IntentRouter.Diagnostics,
 		eventbus.WithSubscriptionName("test_error_capture"),
 	)
 	defer sub.Close()
@@ -943,10 +938,9 @@ func TestAdapterBridgePublishesErrorOnNoAddress(t *testing.T) {
 	for time.Now().Before(deadline) {
 		select {
 		case env := <-sub.C():
-			evt, ok := env.Payload.(eventbus.BridgeDiagnosticEvent)
-			if ok && evt.AdapterID == "some.nap.adapter" {
+			if env.Payload.AdapterID == "some.nap.adapter" {
 				errorReceived = true
-				diagnosticType = evt.Type
+				diagnosticType = env.Payload.Type
 			}
 		default:
 			time.Sleep(10 * time.Millisecond)
@@ -991,8 +985,7 @@ func TestAdapterBridgePublishesErrorOnControllerError(t *testing.T) {
 	}
 
 	// Subscribe AFTER bridge.Start() to avoid receiving duplicate events
-	sub := bus.Subscribe(
-		eventbus.TopicIntentRouterDiagnostics,
+	sub := eventbus.SubscribeTo(bus, eventbus.IntentRouter.Diagnostics,
 		eventbus.WithSubscriptionName("test_error_capture"),
 	)
 	defer sub.Close()
@@ -1010,9 +1003,8 @@ func TestAdapterBridgePublishesErrorOnControllerError(t *testing.T) {
 	for time.Now().Before(deadline) {
 		select {
 		case env := <-sub.C():
-			evt, ok := env.Payload.(eventbus.BridgeDiagnosticEvent)
-			if ok && evt.AdapterID == "some.adapter" {
-				diagnosticEvents = append(diagnosticEvents, evt)
+			if env.Payload.AdapterID == "some.adapter" {
+				diagnosticEvents = append(diagnosticEvents, env.Payload)
 			}
 		default:
 			time.Sleep(10 * time.Millisecond)
@@ -1160,8 +1152,7 @@ func TestAdapterBridgeDiagnosticRecoverable(t *testing.T) {
 			bus := eventbus.New()
 			defer bus.Shutdown()
 
-			sub := bus.Subscribe(
-				eventbus.TopicIntentRouterDiagnostics,
+			sub := eventbus.SubscribeTo(bus, eventbus.IntentRouter.Diagnostics,
 				eventbus.WithSubscriptionName("test"),
 			)
 			defer sub.Close()
@@ -1177,15 +1168,11 @@ func TestAdapterBridgeDiagnosticRecoverable(t *testing.T) {
 			// Capture the event
 			select {
 			case env := <-sub.C():
-				evt, ok := env.Payload.(eventbus.BridgeDiagnosticEvent)
-				if !ok {
-					t.Fatal("Expected BridgeDiagnosticEvent")
+				if env.Payload.Recoverable != tt.recoverable {
+					t.Errorf("Expected recoverable=%v, got %v", tt.recoverable, env.Payload.Recoverable)
 				}
-				if evt.Recoverable != tt.recoverable {
-					t.Errorf("Expected recoverable=%v, got %v", tt.recoverable, evt.Recoverable)
-				}
-				if evt.Type != tt.diagnosticType {
-					t.Errorf("Expected type=%s, got %s", tt.diagnosticType, evt.Type)
+				if env.Payload.Type != tt.diagnosticType {
+					t.Errorf("Expected type=%s, got %s", tt.diagnosticType, env.Payload.Type)
 				}
 			case <-time.After(time.Second):
 				t.Fatal("Timeout waiting for diagnostic event")
@@ -1541,8 +1528,7 @@ func TestAdapterBridgeConfigValidationAgainstManifest(t *testing.T) {
 	}
 
 	// Subscribe to catch diagnostic events
-	sub := bus.Subscribe(
-		eventbus.TopicIntentRouterDiagnostics,
+	sub := eventbus.SubscribeTo(bus, eventbus.IntentRouter.Diagnostics,
 		eventbus.WithSubscriptionName("test_validation"),
 	)
 	defer sub.Close()
@@ -1561,10 +1547,9 @@ func TestAdapterBridgeConfigValidationAgainstManifest(t *testing.T) {
 	for time.Now().Before(deadline) {
 		select {
 		case env := <-sub.C():
-			evt, ok := env.Payload.(eventbus.BridgeDiagnosticEvent)
-			if ok && evt.AdapterID == adapterID {
+			if env.Payload.AdapterID == adapterID {
 				errorReceived = true
-				diagnosticType = evt.Type
+				diagnosticType = env.Payload.Type
 			}
 		default:
 			time.Sleep(10 * time.Millisecond)

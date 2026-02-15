@@ -1949,9 +1949,9 @@ func TestHandleAudioIngressStreamsData(t *testing.T) {
 	apiServer.SetAudioIngress(newTestAudioIngressProvider(ingressSvc))
 	apiServer.sessionManager = nil
 
-	rawSub := bus.Subscribe(eventbus.TopicAudioIngressRaw)
+	rawSub := eventbus.SubscribeTo(bus, eventbus.Audio.IngressRaw)
 	defer rawSub.Close()
-	segSub := bus.Subscribe(eventbus.TopicAudioIngressSegment)
+	segSub := eventbus.SubscribeTo(bus, eventbus.Audio.IngressSegment)
 	defer segSub.Close()
 
 	payload := bytes.Repeat([]byte{0x01, 0x02}, 320)
@@ -1965,11 +1965,7 @@ func TestHandleAudioIngressStreamsData(t *testing.T) {
 		t.Fatalf("unexpected status: %d", rec.Result().StatusCode)
 	}
 
-	rawEvtEnv := recvEvent(t, rawSub)
-	rawEvt, ok := rawEvtEnv.Payload.(eventbus.AudioIngressRawEvent)
-	if !ok {
-		t.Fatalf("unexpected raw payload %T", rawEvtEnv.Payload)
-	}
+	rawEvt := recvEvent(t, rawSub)
 	if rawEvt.SessionID != "sess" || rawEvt.StreamID != "mic" {
 		t.Fatalf("unexpected raw identifiers: %+v", rawEvt)
 	}
@@ -1985,11 +1981,7 @@ func TestHandleAudioIngressStreamsData(t *testing.T) {
 		observed []time.Duration
 	)
 	for {
-		env := recvEvent(t, segSub)
-		segEvt, ok := env.Payload.(eventbus.AudioIngressSegmentEvent)
-		if !ok {
-			t.Fatalf("unexpected segment payload %T", env.Payload)
-		}
+		segEvt := recvEvent(t, segSub)
 		observed = append(observed, segEvt.Duration)
 		if segEvt.Last {
 			finalSeg = segEvt
@@ -2109,14 +2101,16 @@ func TestHandleAudioEgressStreamsChunks(t *testing.T) {
 	}
 }
 
-func recvEvent(t *testing.T, sub *eventbus.Subscription) eventbus.Envelope {
+func recvEvent[T any](t *testing.T, sub *eventbus.TypedSubscription[T]) T {
+	t.Helper()
 	select {
 	case env := <-sub.C():
-		return env
+		return env.Payload
 	case <-time.After(time.Second):
 		t.Fatal("timeout waiting for event")
 	}
-	return eventbus.Envelope{}
+	var zero T
+	return zero
 }
 
 func TestHandleAudioIngressRejectsInvalidFormat(t *testing.T) {
@@ -2296,9 +2290,9 @@ func TestHandleAudioIngressWebSocket(t *testing.T) {
 	}
 	defer conn.Close()
 
-	rawSub := bus.Subscribe(eventbus.TopicAudioIngressRaw)
+	rawSub := eventbus.SubscribeTo(bus, eventbus.Audio.IngressRaw)
 	defer rawSub.Close()
-	segSub := bus.Subscribe(eventbus.TopicAudioIngressSegment)
+	segSub := eventbus.SubscribeTo(bus, eventbus.Audio.IngressSegment)
 	defer segSub.Close()
 
 	payload := []byte{1, 2, 3, 4}
@@ -2310,20 +2304,12 @@ func TestHandleAudioIngressWebSocket(t *testing.T) {
 		// ignore close errors
 	}
 
-	rawEnv := recvEvent(t, rawSub)
-	rawEvt, ok := rawEnv.Payload.(eventbus.AudioIngressRawEvent)
-	if !ok {
-		t.Fatalf("expected AudioIngressRawEvent, got %T", rawEnv.Payload)
-	}
+	rawEvt := recvEvent(t, rawSub)
 	if !bytes.Equal(rawEvt.Data, payload) {
 		t.Fatalf("unexpected raw data: %v", rawEvt.Data)
 	}
 
-	segEnv := recvEvent(t, segSub)
-	segEvt, ok := segEnv.Payload.(eventbus.AudioIngressSegmentEvent)
-	if !ok {
-		t.Fatalf("expected AudioIngressSegmentEvent, got %T", segEnv.Payload)
-	}
+	segEvt := recvEvent(t, segSub)
 	if segEvt.SessionID != "sess" {
 		t.Fatalf("unexpected segment session: %s", segEvt.SessionID)
 	}
@@ -2781,7 +2767,7 @@ func TestHandleAudioInterruptEndpoint(t *testing.T) {
 	defer mgr.KillSession(sess.ID)
 
 	// Subscribe to interrupt events to verify the business effect.
-	sub := bus.Subscribe(eventbus.TopicAudioInterrupt)
+	sub := eventbus.SubscribeTo(bus, eventbus.Audio.Interrupt)
 	defer sub.Close()
 
 	body := fmt.Sprintf(`{"session_id":%q,"stream_id":"tts","reason":"user_interrupt","metadata":{"source":"test"}}`, sess.ID)
@@ -2799,10 +2785,7 @@ func TestHandleAudioInterruptEndpoint(t *testing.T) {
 	// Verify the interrupt event was published to the event bus.
 	select {
 	case env := <-sub.C():
-		event, ok := env.Payload.(eventbus.AudioInterruptEvent)
-		if !ok {
-			t.Fatalf("unexpected payload type: %T", env.Payload)
-		}
+		event := env.Payload
 		if event.SessionID != sess.ID {
 			t.Fatalf("expected session %s, got %s", sess.ID, event.SessionID)
 		}

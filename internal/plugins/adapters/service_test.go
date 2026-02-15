@@ -42,7 +42,7 @@ func TestServicePublishesStatusOnStart(t *testing.T) {
 	})
 
 	bus := eventbus.New()
-	sub := bus.Subscribe(eventbus.TopicAdaptersStatus)
+	sub := eventbus.SubscribeTo(bus, eventbus.Adapters.Status)
 	defer sub.Close()
 
 	svc := NewService(manager, nil, bus, WithEnsureInterval(0))
@@ -56,10 +56,7 @@ func TestServicePublishesStatusOnStart(t *testing.T) {
 
 	select {
 	case evt := <-sub.C():
-		status, ok := evt.Payload.(eventbus.AdapterStatusEvent)
-		if !ok {
-			t.Fatalf("unexpected payload type %T", evt.Payload)
-		}
+		status := evt.Payload
 		if status.Status != eventbus.AdapterHealthReady {
 			t.Fatalf("expected ready status, got %s", status.Status)
 		}
@@ -102,7 +99,7 @@ func TestServicePublishesRestartOnConfigChange(t *testing.T) {
 	})
 
 	bus := eventbus.New()
-	sub := bus.Subscribe(eventbus.TopicAdaptersStatus)
+	sub := eventbus.SubscribeTo(bus, eventbus.Adapters.Status)
 	defer sub.Close()
 
 	svc := NewService(manager, nil, bus, WithEnsureInterval(0))
@@ -133,10 +130,7 @@ collect:
 	for {
 		select {
 		case evt := <-sub.C():
-			payload, ok := evt.Payload.(eventbus.AdapterStatusEvent)
-			if !ok {
-				t.Fatalf("unexpected payload type %T", evt.Payload)
-			}
+			payload := evt.Payload
 			events = append(events, payload)
 			if len(events) >= 2 {
 				break collect
@@ -185,7 +179,7 @@ func TestServicePublishesErrorOnEnsureFailure(t *testing.T) {
 	})
 
 	bus := eventbus.New()
-	sub := bus.Subscribe(eventbus.TopicAdaptersStatus)
+	sub := eventbus.SubscribeTo(bus, eventbus.Adapters.Status)
 	defer sub.Close()
 
 	svc := NewService(manager, nil, bus, WithEnsureInterval(0))
@@ -195,10 +189,7 @@ func TestServicePublishesErrorOnEnsureFailure(t *testing.T) {
 
 	select {
 	case evt := <-sub.C():
-		status, ok := evt.Payload.(eventbus.AdapterStatusEvent)
-		if !ok {
-			t.Fatalf("unexpected payload type %T", evt.Payload)
-		}
+		status := evt.Payload
 		if status.Status != eventbus.AdapterHealthError {
 			t.Fatalf("expected error status, got %s", status.Status)
 		}
@@ -244,7 +235,7 @@ func TestServiceErrorCacheClearedOnRecovery(t *testing.T) {
 	})
 
 	bus := eventbus.New()
-	sub := bus.Subscribe(eventbus.TopicAdaptersStatus)
+	sub := eventbus.SubscribeTo(bus, eventbus.Adapters.Status)
 	defer sub.Close()
 
 	svc := NewService(manager, nil, bus, WithEnsureInterval(0))
@@ -254,10 +245,7 @@ func TestServiceErrorCacheClearedOnRecovery(t *testing.T) {
 
 	select {
 	case evt := <-sub.C():
-		status, ok := evt.Payload.(eventbus.AdapterStatusEvent)
-		if !ok {
-			t.Fatalf("unexpected payload type %T", evt.Payload)
-		}
+		status := evt.Payload
 		if status.Status != eventbus.AdapterHealthError {
 			t.Fatalf("expected error status, got %s", status.Status)
 		}
@@ -272,10 +260,7 @@ func TestServiceErrorCacheClearedOnRecovery(t *testing.T) {
 	}
 	select {
 	case evt := <-sub.C():
-		status, ok := evt.Payload.(eventbus.AdapterStatusEvent)
-		if !ok {
-			t.Fatalf("expected AdapterStatusEvent, got %T", evt.Payload)
-		}
+		status := evt.Payload
 		if status.Status != eventbus.AdapterHealthReady {
 			t.Fatalf("expected ready status, got %s", status.Status)
 		}
@@ -293,10 +278,7 @@ func TestServiceErrorCacheClearedOnRecovery(t *testing.T) {
 
 	select {
 	case evt := <-sub.C():
-		status, ok := evt.Payload.(eventbus.AdapterStatusEvent)
-		if !ok {
-			t.Fatalf("expected AdapterStatusEvent, got %T", evt.Payload)
-		}
+		status := evt.Payload
 		if status.Status != eventbus.AdapterHealthError {
 			t.Fatalf("expected repeated error status, got %s", status.Status)
 		}

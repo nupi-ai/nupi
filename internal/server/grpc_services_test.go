@@ -531,9 +531,9 @@ func TestAudioServiceStreamAudioIn(t *testing.T) {
 
 	service := newAudioService(apiServer)
 
-	rawSub := bus.Subscribe(eventbus.TopicAudioIngressRaw)
+	rawSub := eventbus.SubscribeTo(bus, eventbus.Audio.IngressRaw)
 	defer rawSub.Close()
-	segSub := bus.Subscribe(eventbus.TopicAudioIngressSegment)
+	segSub := eventbus.SubscribeTo(bus, eventbus.Audio.IngressSegment)
 	defer segSub.Close()
 
 	stream := &fakeAudioInStream{
@@ -574,32 +574,20 @@ func TestAudioServiceStreamAudioIn(t *testing.T) {
 		t.Fatalf("unexpected response: %+v", stream.resp)
 	}
 
-	raw1, ok := recvEnvelope(t, rawSub).Payload.(eventbus.AudioIngressRawEvent)
-	if !ok {
-		t.Fatal("expected AudioIngressRawEvent")
-	}
+	raw1 := recvEnvelope(t, rawSub).Payload
 	if raw1.Sequence != 1 || len(raw1.Data) != 640 {
 		t.Fatalf("unexpected raw event #1: %+v", raw1)
 	}
-	raw2, ok := recvEnvelope(t, rawSub).Payload.(eventbus.AudioIngressRawEvent)
-	if !ok {
-		t.Fatal("expected AudioIngressRawEvent")
-	}
+	raw2 := recvEnvelope(t, rawSub).Payload
 	if raw2.Sequence != 2 || len(raw2.Data) != 320 {
 		t.Fatalf("unexpected raw event #2: %+v", raw2)
 	}
 
-	seg1, ok := recvEnvelope(t, segSub).Payload.(eventbus.AudioIngressSegmentEvent)
-	if !ok {
-		t.Fatal("expected AudioIngressSegmentEvent")
-	}
+	seg1 := recvEnvelope(t, segSub).Payload
 	if !seg1.First || seg1.Last || len(seg1.Data) != 640 || seg1.Duration != 20*time.Millisecond {
 		t.Fatalf("unexpected segment #1: %+v", seg1)
 	}
-	seg2, ok := recvEnvelope(t, segSub).Payload.(eventbus.AudioIngressSegmentEvent)
-	if !ok {
-		t.Fatal("expected AudioIngressSegmentEvent")
-	}
+	seg2 := recvEnvelope(t, segSub).Payload
 	if seg2.First || !seg2.Last || len(seg2.Data) != 320 {
 		t.Fatalf("unexpected segment #2: %+v", seg2)
 	}
@@ -744,7 +732,7 @@ func TestAudioServiceGetAudioCapabilities(t *testing.T) {
 	}
 }
 
-func recvEnvelope(t *testing.T, sub *eventbus.Subscription) eventbus.Envelope {
+func recvEnvelope[T any](t *testing.T, sub *eventbus.TypedSubscription[T]) eventbus.TypedEnvelope[T] {
 	t.Helper()
 	select {
 	case env := <-sub.C():
@@ -752,10 +740,10 @@ func recvEnvelope(t *testing.T, sub *eventbus.Subscription) eventbus.Envelope {
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("timed out waiting for event")
 	}
-	return eventbus.Envelope{}
+	return eventbus.TypedEnvelope[T]{}
 }
 
-func expectNoEnvelope(t *testing.T, sub *eventbus.Subscription) {
+func expectNoEnvelope[T any](t *testing.T, sub *eventbus.TypedSubscription[T]) {
 	t.Helper()
 	select {
 	case env := <-sub.C():

@@ -25,8 +25,8 @@ func TestStreamSegmentation(t *testing.T) {
 		t.Fatalf("open stream: %v", err)
 	}
 
-	rawSub := bus.Subscribe(eventbus.TopicAudioIngressRaw)
-	segSub := bus.Subscribe(eventbus.TopicAudioIngressSegment)
+	rawSub := eventbus.SubscribeTo(bus, eventbus.Audio.IngressRaw)
+	segSub := eventbus.SubscribeTo(bus, eventbus.Audio.IngressSegment)
 
 	// Write one full segment (640 bytes)
 	data := make([]byte, 640)
@@ -35,19 +35,13 @@ func TestStreamSegmentation(t *testing.T) {
 	}
 
 	rawEvt := receiveEvent(t, rawSub)
-	rawPayload, ok := rawEvt.Payload.(eventbus.AudioIngressRawEvent)
-	if !ok {
-		t.Fatalf("expected AudioIngressRawEvent, got %T", rawEvt.Payload)
-	}
+	rawPayload := rawEvt.Payload
 	if rawPayload.Sequence != 1 {
 		t.Fatalf("unexpected raw sequence")
 	}
 
 	segEvt := receiveEvent(t, segSub)
-	segment, ok := segEvt.Payload.(eventbus.AudioIngressSegmentEvent)
-	if !ok {
-		t.Fatalf("expected AudioIngressSegmentEvent, got %T", segEvt.Payload)
-	}
+	segment := segEvt.Payload
 	if !segment.First {
 		t.Fatalf("expected first segment")
 	}
@@ -79,10 +73,7 @@ func TestStreamSegmentation(t *testing.T) {
 	}
 
 	finalEvt := receiveEvent(t, segSub)
-	finalSegment, ok := finalEvt.Payload.(eventbus.AudioIngressSegmentEvent)
-	if !ok {
-		t.Fatalf("expected AudioIngressSegmentEvent, got %T", finalEvt.Payload)
-	}
+	finalSegment := finalEvt.Payload
 	if finalSegment.Last != true {
 		t.Fatalf("expected last segment flag")
 	}
@@ -113,7 +104,7 @@ func TestStreamCloseOnBoundaryEmitsTerminalSegment(t *testing.T) {
 		t.Fatalf("open stream: %v", err)
 	}
 
-	segSub := bus.Subscribe(eventbus.TopicAudioIngressSegment)
+	segSub := eventbus.SubscribeTo(bus, eventbus.Audio.IngressSegment)
 
 	data := make([]byte, 640)
 	if err := stream.Write(data); err != nil {
@@ -121,10 +112,7 @@ func TestStreamCloseOnBoundaryEmitsTerminalSegment(t *testing.T) {
 	}
 
 	firstEvt := receiveEvent(t, segSub)
-	firstSegment, ok := firstEvt.Payload.(eventbus.AudioIngressSegmentEvent)
-	if !ok {
-		t.Fatalf("expected AudioIngressSegmentEvent, got %T", firstEvt.Payload)
-	}
+	firstSegment := firstEvt.Payload
 	if firstSegment.Last {
 		t.Fatalf("expected first segment not to be last")
 	}
@@ -134,10 +122,7 @@ func TestStreamCloseOnBoundaryEmitsTerminalSegment(t *testing.T) {
 	}
 
 	terminalEvt := receiveEvent(t, segSub)
-	terminal, ok := terminalEvt.Payload.(eventbus.AudioIngressSegmentEvent)
-	if !ok {
-		t.Fatalf("expected AudioIngressSegmentEvent, got %T", terminalEvt.Payload)
-	}
+	terminal := terminalEvt.Payload
 	if !terminal.Last {
 		t.Fatalf("expected terminal envelope with Last=true")
 	}
@@ -187,7 +172,7 @@ func TestServiceShutdownClosesStreams(t *testing.T) {
 		t.Fatalf("open stream: %v", err)
 	}
 
-	segSub := bus.Subscribe(eventbus.TopicAudioIngressSegment)
+	segSub := eventbus.SubscribeTo(bus, eventbus.Audio.IngressSegment)
 
 	segmentData := make([]byte, 640)
 	if err := stream.Write(segmentData); err != nil {
@@ -195,10 +180,7 @@ func TestServiceShutdownClosesStreams(t *testing.T) {
 	}
 
 	firstEvt := receiveEvent(t, segSub)
-	first, ok := firstEvt.Payload.(eventbus.AudioIngressSegmentEvent)
-	if !ok {
-		t.Fatalf("expected AudioIngressSegmentEvent, got %T", firstEvt.Payload)
-	}
+	first := firstEvt.Payload
 	if first.Last {
 		t.Fatalf("expected first segment to not be last before shutdown")
 	}
@@ -208,10 +190,7 @@ func TestServiceShutdownClosesStreams(t *testing.T) {
 	}
 
 	terminalEvt := receiveEvent(t, segSub)
-	terminal, ok := terminalEvt.Payload.(eventbus.AudioIngressSegmentEvent)
-	if !ok {
-		t.Fatalf("expected AudioIngressSegmentEvent, got %T", terminalEvt.Payload)
-	}
+	terminal := terminalEvt.Payload
 	if !terminal.Last {
 		t.Fatalf("expected shutdown to emit terminal segment")
 	}
@@ -265,7 +244,7 @@ func TestServiceMetricsTracksBytes(t *testing.T) {
 	}
 }
 
-func receiveEvent(t *testing.T, sub *eventbus.Subscription) eventbus.Envelope {
+func receiveEvent[T any](t *testing.T, sub *eventbus.TypedSubscription[T]) eventbus.TypedEnvelope[T] {
 	t.Helper()
 	select {
 	case env := <-sub.C():
@@ -273,5 +252,5 @@ func receiveEvent(t *testing.T, sub *eventbus.Subscription) eventbus.Envelope {
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("timed out waiting for event")
 	}
-	return eventbus.Envelope{}
+	return eventbus.TypedEnvelope[T]{}
 }

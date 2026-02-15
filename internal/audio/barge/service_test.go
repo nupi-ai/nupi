@@ -20,7 +20,7 @@ func TestCoordinatorPublishesBargeInOnVAD(t *testing.T) {
 	}
 	defer svc.Shutdown(context.Background())
 
-	bargeSub := bus.Subscribe(eventbus.TopicSpeechBargeIn)
+	bargeSub := eventbus.SubscribeTo(bus, eventbus.Speech.BargeIn)
 	defer bargeSub.Close()
 
 	sessionID := "sess-1"
@@ -58,10 +58,7 @@ func TestCoordinatorPublishesBargeInOnVAD(t *testing.T) {
 		if env.Source != eventbus.SourceSpeechBarge {
 			t.Fatalf("unexpected source %s", env.Source)
 		}
-		event, ok := env.Payload.(eventbus.SpeechBargeInEvent)
-		if !ok {
-			t.Fatalf("unexpected payload type %T", env.Payload)
-		}
+		event := env.Payload
 		if event.SessionID != sessionID || event.StreamID != ttsStream {
 			t.Fatalf("unexpected event payload: %+v", event)
 		}
@@ -90,7 +87,7 @@ func TestCoordinatorCooldownPreventsRapidDuplicates(t *testing.T) {
 	}
 	defer svc.Shutdown(context.Background())
 
-	bargeSub := bus.Subscribe(eventbus.TopicSpeechBargeIn)
+	bargeSub := eventbus.SubscribeTo(bus, eventbus.Speech.BargeIn)
 	defer bargeSub.Close()
 
 	eventbus.Publish(context.Background(), bus, eventbus.Audio.EgressPlayback, "", eventbus.AudioEgressPlaybackEvent{
@@ -120,10 +117,7 @@ func TestCoordinatorCooldownPreventsRapidDuplicates(t *testing.T) {
 
 	select {
 	case env := <-bargeSub.C():
-		evt, ok := env.Payload.(eventbus.SpeechBargeInEvent)
-		if !ok {
-			t.Fatalf("unexpected payload type %T", env.Payload)
-		}
+		evt := env.Payload
 		if evt.StreamID != slots.TTS {
 			t.Fatalf("expected barge for tts stream, got %s", evt.StreamID)
 		}
@@ -152,7 +146,7 @@ func TestCoordinatorPublishesBargeInOnClientInterrupt(t *testing.T) {
 	}
 	defer svc.Shutdown(context.Background())
 
-	bargeSub := bus.Subscribe(eventbus.TopicSpeechBargeIn)
+	bargeSub := eventbus.SubscribeTo(bus, eventbus.Speech.BargeIn)
 	defer bargeSub.Close()
 
 	sessionID := "sess-client"
@@ -185,10 +179,7 @@ func TestCoordinatorPublishesBargeInOnClientInterrupt(t *testing.T) {
 		if env.Source != eventbus.SourceSpeechBarge {
 			t.Fatalf("unexpected source %s", env.Source)
 		}
-		event, ok := env.Payload.(eventbus.SpeechBargeInEvent)
-		if !ok {
-			t.Fatalf("unexpected payload type %T", env.Payload)
-		}
+		event := env.Payload
 		if event.SessionID != sessionID || event.StreamID != ttsStream {
 			t.Fatalf("unexpected event payload: %+v", event)
 		}
@@ -220,7 +211,7 @@ func TestCoordinatorQuietPeriodBlocksVAD(t *testing.T) {
 	}
 	defer svc.Shutdown(context.Background())
 
-	bargeSub := bus.Subscribe(eventbus.TopicSpeechBargeIn)
+	bargeSub := eventbus.SubscribeTo(bus, eventbus.Speech.BargeIn)
 	defer bargeSub.Close()
 
 	now := time.Now().UTC()
@@ -251,10 +242,7 @@ func TestCoordinatorQuietPeriodBlocksVAD(t *testing.T) {
 
 	select {
 	case env := <-bargeSub.C():
-		event, ok := env.Payload.(eventbus.SpeechBargeInEvent)
-		if !ok {
-			t.Fatalf("unexpected payload type %T", env.Payload)
-		}
+		event := env.Payload
 		if event.SessionID != "sess-quiet" || event.StreamID != slots.TTS {
 			t.Fatalf("unexpected event: %+v", event)
 		}

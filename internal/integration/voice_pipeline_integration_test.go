@@ -119,11 +119,11 @@ func TestVoicePipelineEndToEndWithBarge(t *testing.T) {
 		defer svc.Shutdown(context.Background())
 	}
 
-	promptSub := bus.Subscribe(eventbus.TopicConversationPrompt)
+	promptSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Prompt)
 	defer promptSub.Close()
-	playbackSub := bus.Subscribe(eventbus.TopicAudioEgressPlayback)
+	playbackSub := eventbus.SubscribeTo(bus, eventbus.Audio.EgressPlayback)
 	defer playbackSub.Close()
-	bargeSub := bus.Subscribe(eventbus.TopicSpeechBargeIn)
+	bargeSub := eventbus.SubscribeTo(bus, eventbus.Speech.BargeIn)
 	defer bargeSub.Close()
 
 	var bridgeWG sync.WaitGroup
@@ -144,10 +144,7 @@ func TestVoicePipelineEndToEndWithBarge(t *testing.T) {
 				if !ok {
 					return
 				}
-				prompt, ok := env.Payload.(eventbus.ConversationPromptEvent)
-				if !ok {
-					continue
-				}
+				prompt := env.Payload
 				replyText := "Acknowledged: " + prompt.NewMessage.Text
 				eventbus.Publish(context.Background(), bus, eventbus.Conversation.Reply, eventbus.SourceConversation, eventbus.ConversationReplyEvent{
 					SessionID: prompt.SessionID,
@@ -308,7 +305,7 @@ func (s *streamingSynth) Close(ctx context.Context) ([]egress.SynthesisChunk, er
 	return out, err
 }
 
-func waitForPlayback(t *testing.T, sub *eventbus.Subscription, timeout time.Duration, predicate func(eventbus.AudioEgressPlaybackEvent) bool) eventbus.AudioEgressPlaybackEvent {
+func waitForPlayback(t *testing.T, sub *eventbus.TypedSubscription[eventbus.AudioEgressPlaybackEvent], timeout time.Duration, predicate func(eventbus.AudioEgressPlaybackEvent) bool) eventbus.AudioEgressPlaybackEvent {
 	t.Helper()
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
@@ -316,12 +313,8 @@ func waitForPlayback(t *testing.T, sub *eventbus.Subscription, timeout time.Dura
 	for {
 		select {
 		case env := <-sub.C():
-			evt, ok := env.Payload.(eventbus.AudioEgressPlaybackEvent)
-			if !ok {
-				continue
-			}
-			if predicate == nil || predicate(evt) {
-				return evt
+			if predicate == nil || predicate(env.Payload) {
+				return env.Payload
 			}
 		case <-timer.C:
 			t.Fatalf("timeout waiting for playback event (%s)", timeout)
@@ -412,9 +405,9 @@ func TestAudioIngressToSTTGRPCPipeline(t *testing.T) {
 	}
 	defer conversationSvc.Shutdown(context.Background())
 
-	finalSub := bus.Subscribe(eventbus.TopicSpeechTranscriptFinal, eventbus.WithSubscriptionName("test_final_transcripts"))
+	finalSub := eventbus.SubscribeTo(bus, eventbus.Speech.TranscriptFinal, eventbus.WithSubscriptionName("test_final_transcripts"))
 	defer finalSub.Close()
-	promptSub := bus.Subscribe(eventbus.TopicConversationPrompt, eventbus.WithSubscriptionName("test_conversation_prompt"))
+	promptSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Prompt, eventbus.WithSubscriptionName("test_conversation_prompt"))
 	defer promptSub.Close()
 
 	finalCh := make(chan eventbus.SpeechTranscriptEvent, 1)
@@ -439,19 +432,15 @@ func TestAudioIngressToSTTGRPCPipeline(t *testing.T) {
 				if !ok {
 					return
 				}
-				tr, ok := env.Payload.(eventbus.SpeechTranscriptEvent)
-				if !ok {
-					continue
-				}
 				select {
-				case finalCh <- tr:
+				case finalCh <- env.Payload:
 				default:
 				}
 			}
 		}
 	}()
 
-	pipelineSub := bus.Subscribe(eventbus.TopicPipelineCleaned, eventbus.WithSubscriptionName("test_pipeline_cleaned"))
+	pipelineSub := eventbus.SubscribeTo(bus, eventbus.Pipeline.Cleaned, eventbus.WithSubscriptionName("test_pipeline_cleaned"))
 	defer pipelineSub.Close()
 
 	bridgeWG.Add(1)
@@ -465,12 +454,8 @@ func TestAudioIngressToSTTGRPCPipeline(t *testing.T) {
 				if !ok {
 					return
 				}
-				evt, ok := env.Payload.(eventbus.PipelineMessageEvent)
-				if !ok {
-					continue
-				}
 				select {
-				case pipelineCh <- evt:
+				case pipelineCh <- env.Payload:
 				default:
 				}
 			}
@@ -487,12 +472,8 @@ func TestAudioIngressToSTTGRPCPipeline(t *testing.T) {
 				if !ok {
 					return
 				}
-				prompt, ok := env.Payload.(eventbus.ConversationPromptEvent)
-				if !ok {
-					continue
-				}
 				select {
-				case promptCh <- prompt:
+				case promptCh <- env.Payload:
 				default:
 				}
 			}
@@ -566,7 +547,7 @@ func waitFor[T any](t *testing.T, ch <-chan T, timeout time.Duration) T {
 	}
 }
 
-func waitForBargeEvent(t *testing.T, sub *eventbus.Subscription, timeout time.Duration) eventbus.SpeechBargeInEvent {
+func waitForBargeEvent(t *testing.T, sub *eventbus.TypedSubscription[eventbus.SpeechBargeInEvent], timeout time.Duration) eventbus.SpeechBargeInEvent {
 	t.Helper()
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
@@ -574,11 +555,7 @@ func waitForBargeEvent(t *testing.T, sub *eventbus.Subscription, timeout time.Du
 	for {
 		select {
 		case env := <-sub.C():
-			evt, ok := env.Payload.(eventbus.SpeechBargeInEvent)
-			if !ok {
-				continue
-			}
-			return evt
+			return env.Payload
 		case <-timer.C:
 			t.Fatalf("timeout waiting for barge event (%s)", timeout)
 		}
@@ -590,7 +567,7 @@ func waitForBargeEvent(t *testing.T, sub *eventbus.Subscription, timeout time.Du
 // pattern of time.Sleep(100ms) + single publish, and is deterministic regardless
 // of scheduling delays. The barge coordinator only fires once per cooldown
 // window, so repeated VAD publishes are harmless.
-func publishVADUntilBarge(t *testing.T, bus *eventbus.Bus, bargeSub *eventbus.Subscription, sessionID, streamID string, timeout time.Duration) eventbus.SpeechBargeInEvent {
+func publishVADUntilBarge(t *testing.T, bus *eventbus.Bus, bargeSub *eventbus.TypedSubscription[eventbus.SpeechBargeInEvent], sessionID, streamID string, timeout time.Duration) eventbus.SpeechBargeInEvent {
 	t.Helper()
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
@@ -611,8 +588,8 @@ func publishVADUntilBarge(t *testing.T, bus *eventbus.Bus, bargeSub *eventbus.Su
 	for {
 		select {
 		case env := <-bargeSub.C():
-			if evt, ok := env.Payload.(eventbus.SpeechBargeInEvent); ok && evt.SessionID == sessionID {
-				return evt
+			if env.Payload.SessionID == sessionID {
+				return env.Payload
 			}
 		case <-ticker.C:
 			publish()
@@ -783,13 +760,13 @@ func TestFullVoicePipelineEndToEnd(t *testing.T) {
 	}
 
 	// Subscribe to intermediate topics to verify the chain.
-	transcriptSub := bus.Subscribe(eventbus.TopicSpeechTranscriptFinal, eventbus.WithSubscriptionName("test_transcript"))
+	transcriptSub := eventbus.SubscribeTo(bus, eventbus.Speech.TranscriptFinal, eventbus.WithSubscriptionName("test_transcript"))
 	defer transcriptSub.Close()
-	promptSub := bus.Subscribe(eventbus.TopicConversationPrompt, eventbus.WithSubscriptionName("test_prompt"))
+	promptSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Prompt, eventbus.WithSubscriptionName("test_prompt"))
 	defer promptSub.Close()
-	speakSub := bus.Subscribe(eventbus.TopicConversationSpeak, eventbus.WithSubscriptionName("test_speak"))
+	speakSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Speak, eventbus.WithSubscriptionName("test_speak"))
 	defer speakSub.Close()
-	playbackSub := bus.Subscribe(eventbus.TopicAudioEgressPlayback, eventbus.WithSubscriptionName("test_playback"))
+	playbackSub := eventbus.SubscribeTo(bus, eventbus.Audio.EgressPlayback, eventbus.WithSubscriptionName("test_playback"))
 	defer playbackSub.Close()
 
 	transcriptCh := make(chan eventbus.SpeechTranscriptEvent, 1)
@@ -934,11 +911,11 @@ func TestFullVoicePipelineNoopAction(t *testing.T) {
 
 	// Subscribe to transcript to confirm pipeline progresses, and to speak/playback
 	// to confirm they are NOT triggered.
-	transcriptSub := bus.Subscribe(eventbus.TopicSpeechTranscriptFinal, eventbus.WithSubscriptionName("test_transcript"))
+	transcriptSub := eventbus.SubscribeTo(bus, eventbus.Speech.TranscriptFinal, eventbus.WithSubscriptionName("test_transcript"))
 	defer transcriptSub.Close()
-	speakSub := bus.Subscribe(eventbus.TopicConversationSpeak, eventbus.WithSubscriptionName("test_speak"))
+	speakSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Speak, eventbus.WithSubscriptionName("test_speak"))
 	defer speakSub.Close()
-	playbackSub := bus.Subscribe(eventbus.TopicAudioEgressPlayback, eventbus.WithSubscriptionName("test_playback"))
+	playbackSub := eventbus.SubscribeTo(bus, eventbus.Audio.EgressPlayback, eventbus.WithSubscriptionName("test_playback"))
 	defer playbackSub.Close()
 
 	transcriptCh := make(chan eventbus.SpeechTranscriptEvent, 4)
@@ -1066,15 +1043,15 @@ func TestVoicePipelineEventOrdering(t *testing.T) {
 		mu.Unlock()
 	}
 
-	segmentSub := bus.Subscribe(eventbus.TopicAudioIngressSegment, eventbus.WithSubscriptionName("test_segment"))
+	segmentSub := eventbus.SubscribeTo(bus, eventbus.Audio.IngressSegment, eventbus.WithSubscriptionName("test_segment"))
 	defer segmentSub.Close()
-	transcriptSub := bus.Subscribe(eventbus.TopicSpeechTranscriptFinal, eventbus.WithSubscriptionName("test_transcript"))
+	transcriptSub := eventbus.SubscribeTo(bus, eventbus.Speech.TranscriptFinal, eventbus.WithSubscriptionName("test_transcript"))
 	defer transcriptSub.Close()
-	promptSub := bus.Subscribe(eventbus.TopicConversationPrompt, eventbus.WithSubscriptionName("test_prompt"))
+	promptSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Prompt, eventbus.WithSubscriptionName("test_prompt"))
 	defer promptSub.Close()
-	speakSub := bus.Subscribe(eventbus.TopicConversationSpeak, eventbus.WithSubscriptionName("test_speak"))
+	speakSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Speak, eventbus.WithSubscriptionName("test_speak"))
 	defer speakSub.Close()
-	playbackSub := bus.Subscribe(eventbus.TopicAudioEgressPlayback, eventbus.WithSubscriptionName("test_playback"))
+	playbackSub := eventbus.SubscribeTo(bus, eventbus.Audio.EgressPlayback, eventbus.WithSubscriptionName("test_playback"))
 	defer playbackSub.Close()
 
 	bridgeCtx, bridgeCancel := context.WithCancel(runCtx)
@@ -1111,10 +1088,10 @@ func TestVoicePipelineEventOrdering(t *testing.T) {
 				if !ok {
 					return
 				}
-				if evt, ok := env.Payload.(eventbus.SpeechTranscriptEvent); ok && evt.Final {
+				if env.Payload.Final {
 					record("transcript", env.Timestamp)
 					select {
-					case transcriptCh <- evt:
+					case transcriptCh <- env.Payload:
 					default:
 					}
 				}
@@ -1133,12 +1110,10 @@ func TestVoicePipelineEventOrdering(t *testing.T) {
 				if !ok {
 					return
 				}
-				if evt, ok := env.Payload.(eventbus.ConversationPromptEvent); ok {
-					record("prompt", env.Timestamp)
-					select {
-					case promptCh <- evt:
-					default:
-					}
+				record("prompt", env.Timestamp)
+				select {
+				case promptCh <- env.Payload:
+				default:
 				}
 			}
 		}
@@ -1155,12 +1130,10 @@ func TestVoicePipelineEventOrdering(t *testing.T) {
 				if !ok {
 					return
 				}
-				if evt, ok := env.Payload.(eventbus.ConversationSpeakEvent); ok {
-					record("speak", env.Timestamp)
-					select {
-					case speakCh <- evt:
-					default:
-					}
+				record("speak", env.Timestamp)
+				select {
+				case speakCh <- env.Payload:
+				default:
 				}
 			}
 		}
@@ -1177,10 +1150,10 @@ func TestVoicePipelineEventOrdering(t *testing.T) {
 				if !ok {
 					return
 				}
-				if evt, ok := env.Payload.(eventbus.AudioEgressPlaybackEvent); ok && evt.Final {
+				if env.Payload.Final {
 					record("playback", env.Timestamp)
 					select {
-					case playbackCh <- evt:
+					case playbackCh <- env.Payload:
 					default:
 					}
 				}
@@ -1327,7 +1300,7 @@ func (a *noopAdapter) Ready() bool  { return true }
 
 // forwardEvents reads envelopes from a subscription and sends typed payloads to
 // the destination channel. T must match the payload type.
-func forwardEvents[T any](ctx context.Context, sub *eventbus.Subscription, dst chan<- T) {
+func forwardEvents[T any](ctx context.Context, sub *eventbus.TypedSubscription[T], dst chan<- T) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -1336,11 +1309,9 @@ func forwardEvents[T any](ctx context.Context, sub *eventbus.Subscription, dst c
 			if !ok {
 				return
 			}
-			if evt, ok := env.Payload.(T); ok {
-				select {
-				case dst <- evt:
-				default:
-				}
+			select {
+			case dst <- env.Payload:
+			default:
 			}
 		}
 	}
@@ -1535,9 +1506,9 @@ func TestGRPCSTTAndTTSNAPPipeline(t *testing.T) {
 	defer egressSvc.Shutdown(context.Background())
 
 	// --- Subscribe to output topics ---
-	transcriptSub := bus.Subscribe(eventbus.TopicSpeechTranscriptFinal, eventbus.WithSubscriptionName("test_transcript"))
+	transcriptSub := eventbus.SubscribeTo(bus, eventbus.Speech.TranscriptFinal, eventbus.WithSubscriptionName("test_transcript"))
 	defer transcriptSub.Close()
-	playbackSub := bus.Subscribe(eventbus.TopicAudioEgressPlayback, eventbus.WithSubscriptionName("test_playback"))
+	playbackSub := eventbus.SubscribeTo(bus, eventbus.Audio.EgressPlayback, eventbus.WithSubscriptionName("test_playback"))
 	defer playbackSub.Close()
 
 	transcriptCh := make(chan eventbus.SpeechTranscriptEvent, 1)
@@ -1709,7 +1680,7 @@ func TestVoicePipelineTTSAdapterError(t *testing.T) {
 	}
 
 	// Subscribe to speak to confirm intent router still works.
-	speakSub := bus.Subscribe(eventbus.TopicConversationSpeak, eventbus.WithSubscriptionName("test_speak"))
+	speakSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Speak, eventbus.WithSubscriptionName("test_speak"))
 	defer speakSub.Close()
 	speakCh := make(chan eventbus.ConversationSpeakEvent, 4)
 
@@ -1718,7 +1689,7 @@ func TestVoicePipelineTTSAdapterError(t *testing.T) {
 	go forwardEvents(bridgeCtx, speakSub, speakCh)
 
 	// Subscribe to playback — we expect NO final playback since synthesizer errors.
-	playbackSub := bus.Subscribe(eventbus.TopicAudioEgressPlayback, eventbus.WithSubscriptionName("test_playback"))
+	playbackSub := eventbus.SubscribeTo(bus, eventbus.Audio.EgressPlayback, eventbus.WithSubscriptionName("test_playback"))
 	defer playbackSub.Close()
 
 	const sessionID = "tts-error-session"
@@ -1761,11 +1732,8 @@ func TestVoicePipelineTTSAdapterError(t *testing.T) {
 	for {
 		select {
 		case evt := <-playbackSub.C():
-			pb, ok := evt.Payload.(eventbus.AudioEgressPlaybackEvent)
-			if ok {
-				t.Fatalf("unexpected playback event after TTS error: final=%v len=%d",
-					pb.Final, len(pb.Data))
-			}
+			t.Fatalf("unexpected playback event after TTS error: final=%v len=%d",
+				evt.Payload.Final, len(evt.Payload.Data))
 		case <-noPlayback.C:
 			// No playback within window — expected when TTS adapter errors.
 			return
@@ -1841,7 +1809,7 @@ func TestVoicePipelineGoroutineLifecycle(t *testing.T) {
 		State:     eventbus.SessionStateRunning,
 	})
 
-	playbackSub := bus.Subscribe(eventbus.TopicAudioEgressPlayback, eventbus.WithSubscriptionName("test_playback"))
+	playbackSub := eventbus.SubscribeTo(bus, eventbus.Audio.EgressPlayback, eventbus.WithSubscriptionName("test_playback"))
 	defer playbackSub.Close()
 
 	stream, err := ingressSvc.OpenStream(sessionID, "mic", eventbus.AudioFormat{
@@ -1934,15 +1902,15 @@ func TestVoicePipelinePayloadIntegrity(t *testing.T) {
 	}
 
 	// Subscribe to all intermediate topics.
-	segmentSub := bus.Subscribe(eventbus.TopicAudioIngressSegment, eventbus.WithSubscriptionName("test_seg"))
+	segmentSub := eventbus.SubscribeTo(bus, eventbus.Audio.IngressSegment, eventbus.WithSubscriptionName("test_seg"))
 	defer segmentSub.Close()
-	transcriptSub := bus.Subscribe(eventbus.TopicSpeechTranscriptFinal, eventbus.WithSubscriptionName("test_tr"))
+	transcriptSub := eventbus.SubscribeTo(bus, eventbus.Speech.TranscriptFinal, eventbus.WithSubscriptionName("test_tr"))
 	defer transcriptSub.Close()
-	promptSub := bus.Subscribe(eventbus.TopicConversationPrompt, eventbus.WithSubscriptionName("test_pr"))
+	promptSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Prompt, eventbus.WithSubscriptionName("test_pr"))
 	defer promptSub.Close()
-	speakSub := bus.Subscribe(eventbus.TopicConversationSpeak, eventbus.WithSubscriptionName("test_sp"))
+	speakSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Speak, eventbus.WithSubscriptionName("test_sp"))
 	defer speakSub.Close()
-	playbackSub := bus.Subscribe(eventbus.TopicAudioEgressPlayback, eventbus.WithSubscriptionName("test_pb"))
+	playbackSub := eventbus.SubscribeTo(bus, eventbus.Audio.EgressPlayback, eventbus.WithSubscriptionName("test_pb"))
 	defer playbackSub.Close()
 
 	segmentCh := make(chan eventbus.AudioIngressSegmentEvent, 8)
@@ -2206,9 +2174,9 @@ func TestVoicePipelineBargeInDuringTTSStreaming(t *testing.T) {
 		defer svc.Shutdown(context.Background())
 	}
 
-	playbackSub := bus.Subscribe(eventbus.TopicAudioEgressPlayback, eventbus.WithSubscriptionName("test_playback"))
+	playbackSub := eventbus.SubscribeTo(bus, eventbus.Audio.EgressPlayback, eventbus.WithSubscriptionName("test_playback"))
 	defer playbackSub.Close()
-	bargeSub := bus.Subscribe(eventbus.TopicSpeechBargeIn, eventbus.WithSubscriptionName("test_barge"))
+	bargeSub := eventbus.SubscribeTo(bus, eventbus.Speech.BargeIn, eventbus.WithSubscriptionName("test_barge"))
 	defer bargeSub.Close()
 
 	// Emit session lifecycle so services track the session.
@@ -2351,9 +2319,9 @@ func TestVoicePipelineBargeInRecovery(t *testing.T) {
 		defer svc.Shutdown(context.Background())
 	}
 
-	playbackSub := bus.Subscribe(eventbus.TopicAudioEgressPlayback, eventbus.WithSubscriptionName("test_playback"))
+	playbackSub := eventbus.SubscribeTo(bus, eventbus.Audio.EgressPlayback, eventbus.WithSubscriptionName("test_playback"))
 	defer playbackSub.Close()
-	bargeSub := bus.Subscribe(eventbus.TopicSpeechBargeIn, eventbus.WithSubscriptionName("test_barge"))
+	bargeSub := eventbus.SubscribeTo(bus, eventbus.Speech.BargeIn, eventbus.WithSubscriptionName("test_barge"))
 	defer bargeSub.Close()
 
 	const sessionID = "barge-recovery-session"
@@ -2509,7 +2477,7 @@ func TestVoicePipelineBargeInCooldown(t *testing.T) {
 		defer svc.Shutdown(context.Background())
 	}
 
-	bargeSub := bus.Subscribe(eventbus.TopicSpeechBargeIn, eventbus.WithSubscriptionName("test_barge"))
+	bargeSub := eventbus.SubscribeTo(bus, eventbus.Speech.BargeIn, eventbus.WithSubscriptionName("test_barge"))
 	defer bargeSub.Close()
 
 	const sessionID = "barge-cooldown-session"
@@ -2564,10 +2532,7 @@ func TestVoicePipelineBargeInCooldown(t *testing.T) {
 	defer timer.Stop()
 	select {
 	case env := <-bargeSub.C():
-		evt, ok := env.Payload.(eventbus.SpeechBargeInEvent)
-		if ok {
-			t.Errorf("expected no second barge event, but got one: session=%s reason=%s", evt.SessionID, evt.Reason)
-		}
+		t.Errorf("expected no second barge event, but got one: session=%s reason=%s", env.Payload.SessionID, env.Payload.Reason)
 	case <-timer.C:
 		// No second barge event within 250ms — correct.
 		t.Log("cooldown: second VAD event correctly suppressed (no duplicate barge)")
@@ -2654,9 +2619,9 @@ func TestVoicePipelineBargeInQuietPeriod(t *testing.T) {
 		defer svc.Shutdown(context.Background())
 	}
 
-	bargeSub := bus.Subscribe(eventbus.TopicSpeechBargeIn, eventbus.WithSubscriptionName("test_barge"))
+	bargeSub := eventbus.SubscribeTo(bus, eventbus.Speech.BargeIn, eventbus.WithSubscriptionName("test_barge"))
 	defer bargeSub.Close()
-	playbackSub := bus.Subscribe(eventbus.TopicAudioEgressPlayback, eventbus.WithSubscriptionName("test_playback"))
+	playbackSub := eventbus.SubscribeTo(bus, eventbus.Audio.EgressPlayback, eventbus.WithSubscriptionName("test_playback"))
 	defer playbackSub.Close()
 
 	const sessionID = "barge-quiet-session"
@@ -2717,10 +2682,7 @@ func TestVoicePipelineBargeInQuietPeriod(t *testing.T) {
 	defer timer.Stop()
 	select {
 	case env := <-bargeSub.C():
-		evt, ok := env.Payload.(eventbus.SpeechBargeInEvent)
-		if ok {
-			t.Errorf("expected no barge event during quiet period, but got: session=%s reason=%s", evt.SessionID, evt.Reason)
-		}
+		t.Errorf("expected no barge event during quiet period, but got: session=%s reason=%s", env.Payload.SessionID, env.Payload.Reason)
 	case <-timer.C:
 		t.Log("quiet period: VAD event correctly suppressed after playback")
 	}
@@ -2806,7 +2768,7 @@ func TestVoiceFallbackServicesStartWithoutAdapters(t *testing.T) {
 
 	// Verify services are alive: publish a session lifecycle event and confirm
 	// the bus delivers it (proves event bus and services are running).
-	lifecycleSub := bus.Subscribe(eventbus.TopicSessionsLifecycle, eventbus.WithSubscriptionName("test_lifecycle"))
+	lifecycleSub := eventbus.SubscribeTo(bus, eventbus.Sessions.Lifecycle, eventbus.WithSubscriptionName("test_lifecycle"))
 	defer lifecycleSub.Close()
 
 	const sessionID = "fallback-session"
@@ -2819,12 +2781,8 @@ func TestVoiceFallbackServicesStartWithoutAdapters(t *testing.T) {
 	defer timer.Stop()
 	select {
 	case env := <-lifecycleSub.C():
-		evt, ok := env.Payload.(eventbus.SessionLifecycleEvent)
-		if !ok {
-			t.Fatalf("unexpected payload type: %T", env.Payload)
-		}
-		if evt.SessionID != sessionID {
-			t.Fatalf("lifecycle sessionID: got %q want %q", evt.SessionID, sessionID)
+		if env.Payload.SessionID != sessionID {
+			t.Fatalf("lifecycle sessionID: got %q want %q", env.Payload.SessionID, sessionID)
 		}
 	case <-timer.C:
 		t.Fatal("timeout waiting for lifecycle event — bus not delivering")
@@ -2881,9 +2839,9 @@ func TestVoiceFallbackEgressDropsWithoutTTS(t *testing.T) {
 
 	// Subscribe to conversation reply (proves text is available) and playback
 	// (should NOT fire since no TTS factory).
-	replySub := bus.Subscribe(eventbus.TopicConversationReply, eventbus.WithSubscriptionName("test_reply"))
+	replySub := eventbus.SubscribeTo(bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("test_reply"))
 	defer replySub.Close()
-	playbackSub := bus.Subscribe(eventbus.TopicAudioEgressPlayback, eventbus.WithSubscriptionName("test_playback"))
+	playbackSub := eventbus.SubscribeTo(bus, eventbus.Audio.EgressPlayback, eventbus.WithSubscriptionName("test_playback"))
 	defer playbackSub.Close()
 
 	const sessionID = "fallback-egress-session"
@@ -2917,10 +2875,8 @@ func TestVoiceFallbackEgressDropsWithoutTTS(t *testing.T) {
 					if !ok {
 						return
 					}
-					if evt, ok := env.Payload.(eventbus.ConversationReplyEvent); ok {
-						ch <- evt
-						return
-					}
+					ch <- env.Payload
+					return
 				}
 			}
 		}()
@@ -2935,10 +2891,7 @@ func TestVoiceFallbackEgressDropsWithoutTTS(t *testing.T) {
 	defer noPlayback.Stop()
 	select {
 	case env := <-playbackSub.C():
-		pb, ok := env.Payload.(eventbus.AudioEgressPlaybackEvent)
-		if ok {
-			t.Fatalf("unexpected playback event without TTS factory: final=%v len=%d", pb.Final, len(pb.Data))
-		}
+		t.Fatalf("unexpected playback event without TTS factory: final=%v len=%d", env.Payload.Final, len(env.Payload.Data))
 	case <-noPlayback.C:
 		// No playback — correct: factory unavailable drops the request.
 	}
@@ -2977,7 +2930,7 @@ func TestVoiceFallbackSTTDropsWithoutAdapter(t *testing.T) {
 	defer sttSvc.Shutdown(context.Background())
 
 	// Subscribe to transcript topics — should NOT fire since STT drops segments.
-	transcriptSub := bus.Subscribe(eventbus.TopicSpeechTranscriptFinal, eventbus.WithSubscriptionName("test_transcript"))
+	transcriptSub := eventbus.SubscribeTo(bus, eventbus.Speech.TranscriptFinal, eventbus.WithSubscriptionName("test_transcript"))
 	defer transcriptSub.Close()
 
 	const sessionID = "fallback-stt-session"
@@ -3069,9 +3022,9 @@ func TestVoiceFallbackBargeInertWithoutVAD(t *testing.T) {
 		defer svc.Shutdown(context.Background())
 	}
 
-	bargeSub := bus.Subscribe(eventbus.TopicSpeechBargeIn, eventbus.WithSubscriptionName("test_barge"))
+	bargeSub := eventbus.SubscribeTo(bus, eventbus.Speech.BargeIn, eventbus.WithSubscriptionName("test_barge"))
 	defer bargeSub.Close()
-	playbackSub := bus.Subscribe(eventbus.TopicAudioEgressPlayback, eventbus.WithSubscriptionName("test_playback"))
+	playbackSub := eventbus.SubscribeTo(bus, eventbus.Audio.EgressPlayback, eventbus.WithSubscriptionName("test_playback"))
 	defer playbackSub.Close()
 
 	const sessionID = "fallback-barge-session"
@@ -3173,9 +3126,9 @@ func TestVoiceFallbackEgressBuffersWithAdapterFactory(t *testing.T) {
 
 	// Subscribe to conversation reply (proves text available) and playback
 	// (should NOT fire — no TTS adapter bound).
-	replySub := bus.Subscribe(eventbus.TopicConversationReply, eventbus.WithSubscriptionName("test_reply_af"))
+	replySub := eventbus.SubscribeTo(bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("test_reply_af"))
 	defer replySub.Close()
-	playbackSub := bus.Subscribe(eventbus.TopicAudioEgressPlayback, eventbus.WithSubscriptionName("test_playback_af"))
+	playbackSub := eventbus.SubscribeTo(bus, eventbus.Audio.EgressPlayback, eventbus.WithSubscriptionName("test_playback_af"))
 	defer playbackSub.Close()
 
 	const sessionID = "fallback-adapter-factory-session"
@@ -3206,10 +3159,8 @@ func TestVoiceFallbackEgressBuffersWithAdapterFactory(t *testing.T) {
 					if !ok {
 						return
 					}
-					if evt, ok := env.Payload.(eventbus.ConversationReplyEvent); ok {
-						ch <- evt
-						return
-					}
+					ch <- env.Payload
+					return
 				}
 			}
 		}()
@@ -3225,10 +3176,7 @@ func TestVoiceFallbackEgressBuffersWithAdapterFactory(t *testing.T) {
 	defer noPlayback.Stop()
 	select {
 	case env := <-playbackSub.C():
-		pb, ok := env.Payload.(eventbus.AudioEgressPlaybackEvent)
-		if ok {
-			t.Fatalf("unexpected playback without TTS adapter: final=%v", pb.Final)
-		}
+		t.Fatalf("unexpected playback without TTS adapter: final=%v", env.Payload.Final)
 	case <-noPlayback.C:
 		// No playback — correct: adapter unavailable, request buffered but never fulfilled.
 	}
@@ -3289,7 +3237,7 @@ func TestVoiceFallbackSTTBuffersWithAdapterFactory(t *testing.T) {
 	defer sttSvc.Shutdown(context.Background())
 
 	// Subscribe to transcript — should NOT fire since no STT adapter is bound.
-	transcriptSub := bus.Subscribe(eventbus.TopicSpeechTranscriptFinal, eventbus.WithSubscriptionName("test_transcript_af"))
+	transcriptSub := eventbus.SubscribeTo(bus, eventbus.Speech.TranscriptFinal, eventbus.WithSubscriptionName("test_transcript_af"))
 	defer transcriptSub.Close()
 
 	const sessionID = "fallback-stt-af-session"
@@ -3347,7 +3295,7 @@ func TestVoiceFallbackSTTBuffersWithAdapterFactory(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // waitForVADEvent waits for a SpeechVADEvent matching the predicate.
-func waitForVADEvent(t *testing.T, sub *eventbus.Subscription, timeout time.Duration, predicate func(eventbus.SpeechVADEvent) bool) eventbus.SpeechVADEvent {
+func waitForVADEvent(t *testing.T, sub *eventbus.TypedSubscription[eventbus.SpeechVADEvent], timeout time.Duration, predicate func(eventbus.SpeechVADEvent) bool) eventbus.SpeechVADEvent {
 	t.Helper()
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
@@ -3355,12 +3303,8 @@ func waitForVADEvent(t *testing.T, sub *eventbus.Subscription, timeout time.Dura
 	for {
 		select {
 		case env := <-sub.C():
-			evt, ok := env.Payload.(eventbus.SpeechVADEvent)
-			if !ok {
-				continue
-			}
-			if predicate == nil || predicate(evt) {
-				return evt
+			if predicate == nil || predicate(env.Payload) {
+				return env.Payload
 			}
 		case <-timer.C:
 			t.Fatalf("timeout waiting for VAD event (%s)", timeout)
@@ -3465,13 +3409,13 @@ func TestVADDrivenVoiceLoop(t *testing.T) {
 		defer svc.Shutdown(context.Background())
 	}
 
-	vadSub := bus.Subscribe(eventbus.TopicSpeechVADDetected, eventbus.WithSubscriptionName("test_vad"))
+	vadSub := eventbus.SubscribeTo(bus, eventbus.Speech.VADDetected, eventbus.WithSubscriptionName("test_vad"))
 	defer vadSub.Close()
-	transcriptSub := bus.Subscribe(eventbus.TopicSpeechTranscriptFinal, eventbus.WithSubscriptionName("test_transcript"))
+	transcriptSub := eventbus.SubscribeTo(bus, eventbus.Speech.TranscriptFinal, eventbus.WithSubscriptionName("test_transcript"))
 	defer transcriptSub.Close()
-	promptSub := bus.Subscribe(eventbus.TopicConversationPrompt, eventbus.WithSubscriptionName("test_prompt"))
+	promptSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Prompt, eventbus.WithSubscriptionName("test_prompt"))
 	defer promptSub.Close()
-	playbackSub := bus.Subscribe(eventbus.TopicAudioEgressPlayback, eventbus.WithSubscriptionName("test_playback"))
+	playbackSub := eventbus.SubscribeTo(bus, eventbus.Audio.EgressPlayback, eventbus.WithSubscriptionName("test_playback"))
 	defer playbackSub.Close()
 
 	transcriptCh := make(chan eventbus.SpeechTranscriptEvent, 4)
@@ -3597,7 +3541,7 @@ func TestVADSilenceDoesNotTriggerDetection(t *testing.T) {
 		defer svc.Shutdown(context.Background())
 	}
 
-	vadSub := bus.Subscribe(eventbus.TopicSpeechVADDetected, eventbus.WithSubscriptionName("test_vad"))
+	vadSub := eventbus.SubscribeTo(bus, eventbus.Speech.VADDetected, eventbus.WithSubscriptionName("test_vad"))
 	defer vadSub.Close()
 
 	format := eventbus.AudioFormat{
@@ -3631,9 +3575,8 @@ func TestVADSilenceDoesNotTriggerDetection(t *testing.T) {
 	for {
 		select {
 		case env := <-vadSub.C():
-			evt, ok := env.Payload.(eventbus.SpeechVADEvent)
-			if ok && evt.Active {
-				t.Fatalf("unexpected active VAD detection from silence: confidence=%f", evt.Confidence)
+			if env.Payload.Active {
+				t.Fatalf("unexpected active VAD detection from silence: confidence=%f", env.Payload.Confidence)
 			}
 			// Inactive events are fine (mock emits on Close if was active).
 		case <-timer.C:
@@ -3722,9 +3665,9 @@ func TestVADBargeInDuringPlayback(t *testing.T) {
 		defer svc.Shutdown(context.Background())
 	}
 
-	playbackSub := bus.Subscribe(eventbus.TopicAudioEgressPlayback, eventbus.WithSubscriptionName("test_playback"))
+	playbackSub := eventbus.SubscribeTo(bus, eventbus.Audio.EgressPlayback, eventbus.WithSubscriptionName("test_playback"))
 	defer playbackSub.Close()
-	bargeSub := bus.Subscribe(eventbus.TopicSpeechBargeIn, eventbus.WithSubscriptionName("test_barge"))
+	bargeSub := eventbus.SubscribeTo(bus, eventbus.Speech.BargeIn, eventbus.WithSubscriptionName("test_barge"))
 	defer bargeSub.Close()
 
 	const sessionID = "vad-barge-session"
@@ -3873,11 +3816,11 @@ func TestVADMultiSessionIsolation(t *testing.T) {
 		defer svc.Shutdown(context.Background())
 	}
 
-	vadSub := bus.Subscribe(eventbus.TopicSpeechVADDetected, eventbus.WithSubscriptionName("test_vad"))
+	vadSub := eventbus.SubscribeTo(bus, eventbus.Speech.VADDetected, eventbus.WithSubscriptionName("test_vad"))
 	defer vadSub.Close()
-	bargeSub := bus.Subscribe(eventbus.TopicSpeechBargeIn, eventbus.WithSubscriptionName("test_barge"))
+	bargeSub := eventbus.SubscribeTo(bus, eventbus.Speech.BargeIn, eventbus.WithSubscriptionName("test_barge"))
 	defer bargeSub.Close()
-	playbackSub := bus.Subscribe(eventbus.TopicAudioEgressPlayback, eventbus.WithSubscriptionName("test_playback"))
+	playbackSub := eventbus.SubscribeTo(bus, eventbus.Audio.EgressPlayback, eventbus.WithSubscriptionName("test_playback"))
 	defer playbackSub.Close()
 
 	const sessionA = "multi-session-a"
@@ -3928,14 +3871,10 @@ func TestVADMultiSessionIsolation(t *testing.T) {
 	for !seenA || !seenB {
 		select {
 		case env := <-playbackSub.C():
-			evt, ok := env.Payload.(eventbus.AudioEgressPlaybackEvent)
-			if !ok {
-				continue
-			}
-			if evt.SessionID == sessionA && !evt.Final {
+			if env.Payload.SessionID == sessionA && !env.Payload.Final {
 				seenA = true
 			}
-			if evt.SessionID == sessionB && !evt.Final {
+			if env.Payload.SessionID == sessionB && !env.Payload.Final {
 				seenB = true
 			}
 		case <-deadline.C:
@@ -3974,9 +3913,8 @@ func TestVADMultiSessionIsolation(t *testing.T) {
 	for {
 		select {
 		case env := <-bargeSub.C():
-			evt, ok := env.Payload.(eventbus.SpeechBargeInEvent)
-			if ok && evt.SessionID == sessionB {
-				t.Fatalf("unexpected barge event for session B: %+v", evt)
+			if env.Payload.SessionID == sessionB {
+				t.Fatalf("unexpected barge event for session B: %+v", env.Payload)
 			}
 		case <-noBarge.C:
 			// No barge for B — correct: session B had no loud audio input.
@@ -4045,7 +3983,7 @@ func TestVADMidStreamRecovery(t *testing.T) {
 	}
 	defer vadSvc.Shutdown(context.Background())
 
-	vadSub := bus.Subscribe(eventbus.TopicSpeechVADDetected, eventbus.WithSubscriptionName("test_vad"))
+	vadSub := eventbus.SubscribeTo(bus, eventbus.Speech.VADDetected, eventbus.WithSubscriptionName("test_vad"))
 	defer vadSub.Close()
 
 	format := eventbus.AudioFormat{
@@ -4168,7 +4106,7 @@ func TestVADNoStaleStateAcrossSessions(t *testing.T) {
 	}
 	defer vadSvc.Shutdown(context.Background())
 
-	vadSub := bus.Subscribe(eventbus.TopicSpeechVADDetected, eventbus.WithSubscriptionName("test_vad"))
+	vadSub := eventbus.SubscribeTo(bus, eventbus.Speech.VADDetected, eventbus.WithSubscriptionName("test_vad"))
 	defer vadSub.Close()
 
 	format := eventbus.AudioFormat{

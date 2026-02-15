@@ -178,10 +178,10 @@ func TestServiceNoAdapterPublishesError(t *testing.T) {
 	svc := NewService(bus)
 
 	// Subscribe to replies to verify error is published
-	replySub := bus.Subscribe(eventbus.TopicConversationReply, eventbus.WithSubscriptionName("test_reply"))
+	replySub := eventbus.SubscribeTo(bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("test_reply"))
 	defer replySub.Close()
 
-	speakSub := bus.Subscribe(eventbus.TopicConversationSpeak, eventbus.WithSubscriptionName("test_speak"))
+	speakSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Speak, eventbus.WithSubscriptionName("test_speak"))
 	defer speakSub.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -201,10 +201,7 @@ func TestServiceNoAdapterPublishesError(t *testing.T) {
 	// Should receive error reply
 	select {
 	case env := <-replySub.C():
-		reply, ok := env.Payload.(eventbus.ConversationReplyEvent)
-		if !ok {
-			t.Fatal("Expected ConversationReplyEvent")
-		}
+		reply := env.Payload
 		if reply.Metadata["error"] != "true" {
 			t.Errorf("Expected error metadata")
 		}
@@ -218,10 +215,7 @@ func TestServiceNoAdapterPublishesError(t *testing.T) {
 	// Should also receive speak event for TTS feedback
 	select {
 	case env := <-speakSub.C():
-		speak, ok := env.Payload.(eventbus.ConversationSpeakEvent)
-		if !ok {
-			t.Fatal("Expected ConversationSpeakEvent")
-		}
+		speak := env.Payload
 		if speak.Metadata["type"] != "error" {
 			t.Errorf("Expected type=error metadata")
 		}
@@ -249,7 +243,7 @@ func TestServiceAdapterNotReady(t *testing.T) {
 	adapter := &testAdapter{name: "test-adapter", ready: false}
 	svc := NewService(bus, WithAdapter(adapter))
 
-	replySub := bus.Subscribe(eventbus.TopicConversationReply, eventbus.WithSubscriptionName("test_reply"))
+	replySub := eventbus.SubscribeTo(bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("test_reply"))
 	defer replySub.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -268,10 +262,7 @@ func TestServiceAdapterNotReady(t *testing.T) {
 	// Should receive error with recoverable=true
 	select {
 	case env := <-replySub.C():
-		reply, ok := env.Payload.(eventbus.ConversationReplyEvent)
-		if !ok {
-			t.Fatal("Expected ConversationReplyEvent")
-		}
+		reply := env.Payload
 		if reply.Metadata["recoverable"] != "true" {
 			t.Errorf("Expected recoverable=true for adapter not ready")
 		}
@@ -322,7 +313,7 @@ func TestServiceCommandAction(t *testing.T) {
 		WithCommandExecutor(commandExecutor),
 	)
 
-	replySub := bus.Subscribe(eventbus.TopicConversationReply, eventbus.WithSubscriptionName("test_reply"))
+	replySub := eventbus.SubscribeTo(bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("test_reply"))
 	defer replySub.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -343,10 +334,7 @@ func TestServiceCommandAction(t *testing.T) {
 	// Wait for reply with command confirmation
 	select {
 	case env := <-replySub.C():
-		reply, ok := env.Payload.(eventbus.ConversationReplyEvent)
-		if !ok {
-			t.Fatal("Expected ConversationReplyEvent")
-		}
+		reply := env.Payload
 		if reply.Metadata["status"] != "command_queued" {
 			t.Errorf("Expected status=command_queued, got %s", reply.Metadata["status"])
 		}
@@ -405,10 +393,10 @@ func TestServiceSpeakAction(t *testing.T) {
 
 	svc := NewService(bus, WithAdapter(adapter))
 
-	speakSub := bus.Subscribe(eventbus.TopicConversationSpeak, eventbus.WithSubscriptionName("test_speak"))
+	speakSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Speak, eventbus.WithSubscriptionName("test_speak"))
 	defer speakSub.Close()
 
-	replySub := bus.Subscribe(eventbus.TopicConversationReply, eventbus.WithSubscriptionName("test_reply"))
+	replySub := eventbus.SubscribeTo(bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("test_reply"))
 	defer replySub.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -429,10 +417,7 @@ func TestServiceSpeakAction(t *testing.T) {
 	// Wait for speak event
 	select {
 	case env := <-speakSub.C():
-		speak, ok := env.Payload.(eventbus.ConversationSpeakEvent)
-		if !ok {
-			t.Fatal("Expected ConversationSpeakEvent")
-		}
+		speak := env.Payload
 		if speak.Text != "Hello, how can I help you?" {
 			t.Errorf("Unexpected speak text: %s", speak.Text)
 		}
@@ -443,10 +428,7 @@ func TestServiceSpeakAction(t *testing.T) {
 	// Wait for reply event
 	select {
 	case env := <-replySub.C():
-		reply, ok := env.Payload.(eventbus.ConversationReplyEvent)
-		if !ok {
-			t.Fatal("Expected ConversationReplyEvent")
-		}
+		reply := env.Payload
 		if reply.Metadata["status"] != "speak" {
 			t.Errorf("Expected status=speak, got %s", reply.Metadata["status"])
 		}
@@ -484,7 +466,7 @@ func TestServiceClarifyAction(t *testing.T) {
 
 	svc := NewService(bus, WithAdapter(adapter))
 
-	speakSub := bus.Subscribe(eventbus.TopicConversationSpeak, eventbus.WithSubscriptionName("test_speak"))
+	speakSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Speak, eventbus.WithSubscriptionName("test_speak"))
 	defer speakSub.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -504,10 +486,7 @@ func TestServiceClarifyAction(t *testing.T) {
 
 	select {
 	case env := <-speakSub.C():
-		speak, ok := env.Payload.(eventbus.ConversationSpeakEvent)
-		if !ok {
-			t.Fatal("Expected ConversationSpeakEvent")
-		}
+		speak := env.Payload
 		if speak.Metadata["type"] != "clarification" {
 			t.Errorf("Expected clarification type metadata")
 		}
@@ -537,7 +516,7 @@ func TestServiceAdapterError(t *testing.T) {
 
 	svc := NewService(bus, WithAdapter(adapter))
 
-	replySub := bus.Subscribe(eventbus.TopicConversationReply, eventbus.WithSubscriptionName("test_reply"))
+	replySub := eventbus.SubscribeTo(bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("test_reply"))
 	defer replySub.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -557,10 +536,7 @@ func TestServiceAdapterError(t *testing.T) {
 
 	select {
 	case env := <-replySub.C():
-		reply, ok := env.Payload.(eventbus.ConversationReplyEvent)
-		if !ok {
-			t.Fatal("Expected ConversationReplyEvent")
-		}
+		reply := env.Payload
 		if reply.Metadata["error"] != "true" {
 			t.Errorf("Expected error metadata")
 		}
@@ -609,7 +585,7 @@ func TestServiceNoCommandExecutorPublishesError(t *testing.T) {
 		WithSessionProvider(sessionProvider),
 	)
 
-	replySub := bus.Subscribe(eventbus.TopicConversationReply, eventbus.WithSubscriptionName("test_reply"))
+	replySub := eventbus.SubscribeTo(bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("test_reply"))
 	defer replySub.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -629,10 +605,7 @@ func TestServiceNoCommandExecutorPublishesError(t *testing.T) {
 
 	select {
 	case env := <-replySub.C():
-		reply, ok := env.Payload.(eventbus.ConversationReplyEvent)
-		if !ok {
-			t.Fatal("Expected ConversationReplyEvent")
-		}
+		reply := env.Payload
 		if reply.Metadata["error"] != "true" {
 			t.Errorf("Expected error metadata")
 		}
@@ -681,7 +654,7 @@ func TestServiceInvalidSession(t *testing.T) {
 		WithCommandExecutor(commandExecutor),
 	)
 
-	replySub := bus.Subscribe(eventbus.TopicConversationReply, eventbus.WithSubscriptionName("test_reply"))
+	replySub := eventbus.SubscribeTo(bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("test_reply"))
 	defer replySub.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -701,10 +674,7 @@ func TestServiceInvalidSession(t *testing.T) {
 
 	select {
 	case env := <-replySub.C():
-		reply, ok := env.Payload.(eventbus.ConversationReplyEvent)
-		if !ok {
-			t.Fatal("Expected ConversationReplyEvent")
-		}
+		reply := env.Payload
 		if reply.Metadata["error"] != "true" {
 			t.Errorf("Expected error metadata for invalid session")
 		}
@@ -747,7 +717,7 @@ func TestServiceContextPassedToAdapter(t *testing.T) {
 		WithSessionProvider(sessionProvider),
 	)
 
-	replySub := bus.Subscribe(eventbus.TopicConversationReply, eventbus.WithSubscriptionName("test_reply"))
+	replySub := eventbus.SubscribeTo(bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("test_reply"))
 	defer replySub.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1001,7 +971,7 @@ func TestE2ECommandFlowWithMockAdapter(t *testing.T) {
 	)
 
 	// Subscribe to replies
-	replySub := bus.Subscribe(eventbus.TopicConversationReply, eventbus.WithSubscriptionName("test_reply"))
+	replySub := eventbus.SubscribeTo(bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("test_reply"))
 	defer replySub.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1023,10 +993,7 @@ func TestE2ECommandFlowWithMockAdapter(t *testing.T) {
 	// Wait for reply confirming command was queued
 	select {
 	case env := <-replySub.C():
-		reply, ok := env.Payload.(eventbus.ConversationReplyEvent)
-		if !ok {
-			t.Fatal("Expected ConversationReplyEvent")
-		}
+		reply := env.Payload
 		if reply.Metadata["status"] != "command_queued" {
 			t.Errorf("Expected status=command_queued, got %s", reply.Metadata["status"])
 		}
@@ -1081,10 +1048,10 @@ func TestE2ESpeakFlowWithEchoAdapter(t *testing.T) {
 	)
 
 	// Subscribe to speak events
-	speakSub := bus.Subscribe(eventbus.TopicConversationSpeak, eventbus.WithSubscriptionName("test_speak"))
+	speakSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Speak, eventbus.WithSubscriptionName("test_speak"))
 	defer speakSub.Close()
 
-	replySub := bus.Subscribe(eventbus.TopicConversationReply, eventbus.WithSubscriptionName("test_reply"))
+	replySub := eventbus.SubscribeTo(bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("test_reply"))
 	defer replySub.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1106,10 +1073,7 @@ func TestE2ESpeakFlowWithEchoAdapter(t *testing.T) {
 	// Wait for speak event
 	select {
 	case env := <-speakSub.C():
-		speak, ok := env.Payload.(eventbus.ConversationSpeakEvent)
-		if !ok {
-			t.Fatal("Expected ConversationSpeakEvent")
-		}
+		speak := env.Payload
 		if speak.Text != "You said: hello world" {
 			t.Errorf("Unexpected speak text: %s", speak.Text)
 		}
@@ -1123,10 +1087,7 @@ func TestE2ESpeakFlowWithEchoAdapter(t *testing.T) {
 	// Wait for reply
 	select {
 	case env := <-replySub.C():
-		reply, ok := env.Payload.(eventbus.ConversationReplyEvent)
-		if !ok {
-			t.Fatal("Expected ConversationReplyEvent")
-		}
+		reply := env.Payload
 		if reply.Metadata["status"] != "speak" {
 			t.Errorf("Expected status=speak, got %s", reply.Metadata["status"])
 		}
@@ -1158,10 +1119,10 @@ func TestE2EClarifyFlowWithMockAdapter(t *testing.T) {
 	)
 
 	// Subscribe to speak events (clarifications go through speak)
-	speakSub := bus.Subscribe(eventbus.TopicConversationSpeak, eventbus.WithSubscriptionName("test_speak"))
+	speakSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Speak, eventbus.WithSubscriptionName("test_speak"))
 	defer speakSub.Close()
 
-	replySub := bus.Subscribe(eventbus.TopicConversationReply, eventbus.WithSubscriptionName("test_reply"))
+	replySub := eventbus.SubscribeTo(bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("test_reply"))
 	defer replySub.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1183,10 +1144,7 @@ func TestE2EClarifyFlowWithMockAdapter(t *testing.T) {
 	// Wait for speak event with clarification
 	select {
 	case env := <-speakSub.C():
-		speak, ok := env.Payload.(eventbus.ConversationSpeakEvent)
-		if !ok {
-			t.Fatal("Expected ConversationSpeakEvent")
-		}
+		speak := env.Payload
 		if speak.Metadata["type"] != "clarification" {
 			t.Errorf("Expected clarification type, got %s", speak.Metadata["type"])
 		}
@@ -1197,10 +1155,7 @@ func TestE2EClarifyFlowWithMockAdapter(t *testing.T) {
 	// Wait for reply
 	select {
 	case env := <-replySub.C():
-		reply, ok := env.Payload.(eventbus.ConversationReplyEvent)
-		if !ok {
-			t.Fatal("Expected ConversationReplyEvent")
-		}
+		reply := env.Payload
 		if reply.Metadata["status"] != "clarification" {
 			t.Errorf("Expected status=clarification, got %s", reply.Metadata["status"])
 		}
@@ -1265,7 +1220,7 @@ func TestE2EMultipleSessionsCommandRouting(t *testing.T) {
 		WithCommandExecutor(commandExecutor),
 	)
 
-	replySub := bus.Subscribe(eventbus.TopicConversationReply, eventbus.WithSubscriptionName("test_reply"))
+	replySub := eventbus.SubscribeTo(bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("test_reply"))
 	defer replySub.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1287,10 +1242,7 @@ func TestE2EMultipleSessionsCommandRouting(t *testing.T) {
 	// Wait for reply
 	select {
 	case env := <-replySub.C():
-		reply, ok := env.Payload.(eventbus.ConversationReplyEvent)
-		if !ok {
-			t.Fatal("Expected ConversationReplyEvent")
-		}
+		reply := env.Payload
 		if reply.Metadata["session_id"] != "session-2" {
 			t.Errorf("Expected session-2, got %s", reply.Metadata["session_id"])
 		}
@@ -1333,7 +1285,7 @@ func TestServiceToolChangeEventsUpdateCache(t *testing.T) {
 
 	svc := NewService(bus, WithAdapter(adapter))
 
-	replySub := bus.Subscribe(eventbus.TopicConversationReply, eventbus.WithSubscriptionName("test_reply"))
+	replySub := eventbus.SubscribeTo(bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("test_reply"))
 	defer replySub.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1425,7 +1377,7 @@ func TestServiceToolCacheCleanupOnSessionLifecycle(t *testing.T) {
 
 	svc := NewService(bus, WithAdapter(adapter))
 
-	replySub := bus.Subscribe(eventbus.TopicConversationReply, eventbus.WithSubscriptionName("test_reply"))
+	replySub := eventbus.SubscribeTo(bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("test_reply"))
 	defer replySub.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1521,7 +1473,7 @@ func TestServiceEventTypeMetadataPropagation(t *testing.T) {
 
 	svc := NewService(bus, WithAdapter(adapter))
 
-	replySub := bus.Subscribe(eventbus.TopicConversationReply, eventbus.WithSubscriptionName("test_reply"))
+	replySub := eventbus.SubscribeTo(bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("test_reply"))
 	defer replySub.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1629,7 +1581,7 @@ func TestServicePromptEnginePopulatesSystemAndUserPrompts(t *testing.T) {
 
 	svc := NewService(bus, WithAdapter(adapter), WithPromptEngine(mockEngine))
 
-	replySub := bus.Subscribe(eventbus.TopicConversationReply, eventbus.WithSubscriptionName("test_reply"))
+	replySub := eventbus.SubscribeTo(bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("test_reply"))
 	defer replySub.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1696,7 +1648,7 @@ func TestServiceExtendedMetadataPropagation(t *testing.T) {
 
 	svc := NewService(bus, WithAdapter(adapter))
 
-	replySub := bus.Subscribe(eventbus.TopicConversationReply, eventbus.WithSubscriptionName("test_reply"))
+	replySub := eventbus.SubscribeTo(bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("test_reply"))
 	defer replySub.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
