@@ -12,10 +12,7 @@ import (
 )
 
 const (
-	errorMessageLimit            = 2048
-	adapterSlugMaxLength         = 64
-	adapterLogsScannerInitialBuf = 64 * 1024
-	adapterLogsScannerMaxBuf     = 1024 * 1024
+	adapterSlugMaxLength = 64
 )
 
 // Global variables for use across commands

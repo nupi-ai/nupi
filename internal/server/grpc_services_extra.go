@@ -160,7 +160,7 @@ func (m *adapterRuntimeService) RegisterAdapter(ctx context.Context, req *apiv1.
 				endpoint.Args = append([]string(nil), args...)
 			}
 			if env := ep.GetEnv(); len(env) > 0 {
-				endpoint.Env = copyStringMap(env)
+				endpoint.Env = cloneStringMap(env)
 			}
 			if err := m.api.configStore.UpsertAdapterEndpoint(ctx, endpoint); err != nil {
 				return nil, status.Errorf(codes.Internal, "register adapter endpoint: %v", err)

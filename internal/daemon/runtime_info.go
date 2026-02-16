@@ -8,23 +8,8 @@ import (
 // RuntimeInfo stores runtime metadata exposed to clients.
 type RuntimeInfo struct {
 	mu        sync.RWMutex
-	httpPort  int
 	grpcPort  int
 	startTime time.Time
-}
-
-// SetPort updates the active HTTP port.
-func (r *RuntimeInfo) SetPort(port int) {
-	r.mu.Lock()
-	r.httpPort = port
-	r.mu.Unlock()
-}
-
-// Port returns the current HTTP port.
-func (r *RuntimeInfo) Port() int {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.httpPort
 }
 
 // SetGRPCPort updates the active gRPC port.

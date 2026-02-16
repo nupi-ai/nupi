@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log"
-	"net/http"
 
 	"github.com/nupi-ai/nupi/internal/server"
 	transportgateway "github.com/nupi-ai/nupi/internal/transport/gateway"
@@ -35,10 +34,6 @@ func (s *gatewayService) Start(ctx context.Context) error {
 	}
 
 	if s.info != nil {
-		if info.HTTP.Port > 0 {
-			s.info.SetPort(info.HTTP.Port)
-			log.Printf("Transport gateway HTTP listening on %s://%s", info.HTTP.Scheme, info.HTTP.Address)
-		}
 		if info.GRPC.Port > 0 {
 			s.info.SetGRPCPort(info.GRPC.Port)
 			log.Printf("Transport gateway gRPC listening on %s://%s", info.GRPC.Scheme, info.GRPC.Address)
@@ -49,7 +44,7 @@ func (s *gatewayService) Start(ctx context.Context) error {
 }
 
 func (s *gatewayService) Shutdown(ctx context.Context) error {
-	if err := s.gateway.Shutdown(ctx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, http.ErrServerClosed) {
+	if err := s.gateway.Shutdown(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		return err
 	}
 	return nil

@@ -3,6 +3,7 @@ package daemon_test
 import (
 	"bytes"
 	"context"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,12 +13,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nupi-ai/nupi/internal/client"
+	apiv1 "github.com/nupi-ai/nupi/internal/api/grpc/v1"
 	"github.com/nupi-ai/nupi/internal/config"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/daemon"
+	"github.com/nupi-ai/nupi/internal/grpcclient"
 	"github.com/nupi-ai/nupi/internal/jsrunner"
-	"github.com/nupi-ai/nupi/internal/protocol"
 )
 
 // ensureJSRuntime sets up NUPI_JS_RUNTIME if the runtime is not available
@@ -60,7 +61,6 @@ func TestDaemonClientIntegration_CreateAttachStream(t *testing.T) {
 		d.Shutdown()
 		if err := <-startErr; err != nil {
 			if shouldSkipRuntimeError(err) {
-				// Already skipped or skip-worthy error, don't fail
 				return
 			}
 			t.Errorf("daemon start returned error: %v", err)
@@ -71,22 +71,8 @@ func TestDaemonClientIntegration_CreateAttachStream(t *testing.T) {
 	paths := config.GetInstancePaths(config.DefaultInstance)
 	waitForSocket(t, startErr, paths.Socket)
 
-	var c *client.Client
-	var err error
-	for i := 0; i < 50; i++ {
-		c, err = client.New()
-		if err == nil {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if err != nil {
-		if shouldSkipRuntimeError(err) {
-			t.Skipf("skipping: client connection failed: %v", err)
-		}
-		t.Fatalf("failed to connect client to daemon: %v", err)
-	}
-	defer c.Close()
+	gc := connectGRPCClient(t)
+	defer gc.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -118,28 +104,53 @@ func TestDaemonClientIntegration_CreateAttachStream(t *testing.T) {
 	}
 	envList = append(envList, "PATH="+pathValue, "CUSTOM_VAR=client-env-value")
 
-	opts := protocol.CreateSessionData{
+	createResp, err := gc.CreateSession(ctx, &apiv1.CreateSessionRequest{
 		Command:  "/bin/sh",
 		Args:     []string{"-c", "customcmd"},
 		Detached: false,
 		Rows:     24,
 		Cols:     80,
 		Env:      envList,
-	}
-
-	sess, err := c.CreateSession(opts)
+	})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
+	sessionID := createResp.GetSession().GetId()
 
-	if err := c.AttachSession(sess.ID, true); err != nil {
+	stream, err := gc.AttachSession(ctx)
+	if err != nil {
 		t.Fatalf("AttachSession failed: %v", err)
+	}
+
+	if err := stream.Send(&apiv1.AttachSessionRequest{
+		Payload: &apiv1.AttachSessionRequest_Init{
+			Init: &apiv1.AttachInit{
+				SessionId:      sessionID,
+				IncludeHistory: true,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("AttachSession init send failed: %v", err)
 	}
 
 	streamDone := make(chan error, 1)
 	var streamMu sync.Mutex
 	go func() {
-		streamDone <- c.StreamOutputContext(ctx, lockedBuffer{buf: &streamBuf, mu: &streamMu})
+		for {
+			resp, err := stream.Recv()
+			if err != nil {
+				if err == io.EOF || ctx.Err() != nil {
+					streamDone <- ctx.Err()
+					return
+				}
+				streamDone <- err
+				return
+			}
+			if output := resp.GetOutput(); len(output) > 0 {
+				lb := lockedBuffer{buf: &streamBuf, mu: &streamMu}
+				lb.Write(output)
+			}
+		}
 	}()
 
 	deadline := time.Now().Add(5 * time.Second)
@@ -161,24 +172,27 @@ func TestDaemonClientIntegration_CreateAttachStream(t *testing.T) {
 
 	cancel()
 	if err := <-streamDone; err != nil && err != context.Canceled {
-		t.Fatalf("StreamOutputContext returned error: %v", err)
+		t.Fatalf("stream ended with error: %v", err)
 	}
+
+	listCtx, listCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer listCancel()
 
 	deadline = time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		sessions, err := c.ListSessions()
+		listResp, err := gc.ListSessions(listCtx)
 		if err != nil {
 			t.Fatalf("ListSessions failed: %v", err)
 		}
-		for _, s := range sessions {
-			if s.ID == sess.ID && s.Status == "stopped" {
+		for _, s := range listResp.GetSessions() {
+			if s.GetId() == sessionID && s.GetStatus() == "stopped" {
 				return
 			}
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 
-	t.Fatalf("session %s did not reach stopped state", sess.ID)
+	t.Fatalf("session %s did not reach stopped state", sessionID)
 }
 
 func TestDaemonClientIntegration_DetachAndKill(t *testing.T) {
@@ -195,7 +209,6 @@ func TestDaemonClientIntegration_DetachAndKill(t *testing.T) {
 		d.Shutdown()
 		if err := <-startErr; err != nil {
 			if shouldSkipRuntimeError(err) {
-				// Already skipped or skip-worthy error, don't fail
 				return
 			}
 			t.Errorf("daemon start returned error: %v", err)
@@ -206,42 +219,29 @@ func TestDaemonClientIntegration_DetachAndKill(t *testing.T) {
 	paths := config.GetInstancePaths(config.DefaultInstance)
 	waitForSocket(t, startErr, paths.Socket)
 
-	var c *client.Client
-	var err error
-	for i := 0; i < 50; i++ {
-		c, err = client.New()
-		if err == nil {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if err != nil {
-		if shouldSkipRuntimeError(err) {
-			t.Skipf("skipping: client connection failed: %v", err)
-		}
-		t.Fatalf("failed to connect client to daemon: %v", err)
-	}
-	defer c.Close()
+	gc := connectGRPCClient(t)
+	defer gc.Close()
 
-	opts := protocol.CreateSessionData{
+	ctx := context.Background()
+
+	createResp, err := gc.CreateSession(ctx, &apiv1.CreateSessionRequest{
 		Command:  "/bin/sh",
 		Args:     []string{"-c", "sleep 1"},
 		Detached: true,
-	}
-
-	sess, err := c.CreateSession(opts)
+	})
 	if err != nil {
 		t.Fatalf("CreateSession failed: %v", err)
 	}
+	sessionID := createResp.GetSession().GetId()
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		sessions, err := c.ListSessions()
+		listResp, err := gc.ListSessions(ctx)
 		if err != nil {
 			t.Fatalf("ListSessions failed: %v", err)
 		}
-		for _, s := range sessions {
-			if s.ID == sess.ID && s.Status == "detached" {
+		for _, s := range listResp.GetSessions() {
+			if s.GetId() == sessionID && s.GetStatus() == "detached" {
 				goto kill
 			}
 		}
@@ -250,21 +250,21 @@ func TestDaemonClientIntegration_DetachAndKill(t *testing.T) {
 	t.Fatalf("session did not report detached status")
 
 kill:
-	if err := c.KillSession(sess.ID); err != nil {
+	if _, err := gc.KillSession(ctx, sessionID); err != nil {
 		t.Fatalf("KillSession failed: %v", err)
 	}
 
 	deadline = time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		sessions, err := c.ListSessions()
+		listResp, err := gc.ListSessions(ctx)
 		if err != nil {
 			t.Fatalf("ListSessions failed: %v", err)
 		}
 		foundStopped := false
 		otherSessions := false
-		for _, s := range sessions {
-			if s.ID == sess.ID {
-				if s.Status == "stopped" {
+		for _, s := range listResp.GetSessions() {
+			if s.GetId() == sessionID {
+				if s.GetStatus() == "stopped" {
 					foundStopped = true
 				}
 				continue
@@ -276,7 +276,26 @@ kill:
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("session %s did not stop after kill", sess.ID)
+	t.Fatalf("session %s did not stop after kill", sessionID)
+}
+
+func connectGRPCClient(t *testing.T) *grpcclient.Client {
+	t.Helper()
+
+	var gc *grpcclient.Client
+	var err error
+	for i := 0; i < 50; i++ {
+		gc, err = grpcclient.New()
+		if err == nil {
+			return gc
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if shouldSkipRuntimeError(err) {
+		t.Skipf("skipping: gRPC client connection failed: %v", err)
+	}
+	t.Fatalf("failed to connect gRPC client to daemon: %v", err)
+	return nil
 }
 
 func mustSetTempHome(t *testing.T) (string, func()) {

@@ -4,14 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
-	"net/http"
 	"os"
 	"strings"
 	"testing"
 )
 
 func TestAdapterTypeForSlot(t *testing.T) {
-	t.Helper()
 	cases := map[string]string{
 		"stt":      "stt",
 		"ai":       "ai",
@@ -78,73 +76,6 @@ func TestResolveAdapterChoice(t *testing.T) {
 
 	if id, ok := resolveAdapterChoice("Mock AI", ordered, all); !ok || id != "adapter.ai" {
 		t.Fatalf("expected selection by name Mock AI, got %q (ok=%v)", id, ok)
-	}
-}
-
-func TestReadErrorMessage(t *testing.T) {
-	tests := []struct {
-		name       string
-		statusCode int
-		status     string
-		body       string
-		want       string
-	}{
-		{
-			name:       "json error field",
-			statusCode: 400,
-			status:     "400 Bad Request",
-			body:       `{"error":"invalid adapter ID"}`,
-			want:       "invalid adapter ID",
-		},
-		{
-			name:       "json error with trailing newline",
-			statusCode: 500,
-			status:     "500 Internal Server Error",
-			body:       "{\"error\":\"something broke\"}\n",
-			want:       "something broke",
-		},
-		{
-			name:       "non-json body falls back to body text",
-			statusCode: 500,
-			status:     "500 Internal Server Error",
-			body:       "plain text error",
-			want:       "plain text error",
-		},
-		{
-			name:       "empty body falls back to status",
-			statusCode: 404,
-			status:     "404 Not Found",
-			body:       "",
-			want:       "404 Not Found",
-		},
-		{
-			name:       "json without error field falls back to raw",
-			statusCode: 400,
-			status:     "400 Bad Request",
-			body:       `{"message":"no error field"}`,
-			want:       `{"message":"no error field"}`,
-		},
-		{
-			name:       "json with empty error field falls back to raw",
-			statusCode: 400,
-			status:     "400 Bad Request",
-			body:       `{"error":""}`,
-			want:       `{"error":""}`,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			resp := &http.Response{
-				StatusCode: tt.statusCode,
-				Status:     tt.status,
-				Body:       io.NopCloser(strings.NewReader(tt.body)),
-			}
-			got := readErrorMessage(resp)
-			if got != tt.want {
-				t.Errorf("readErrorMessage() = %q, want %q", got, tt.want)
-			}
-		})
 	}
 }
 

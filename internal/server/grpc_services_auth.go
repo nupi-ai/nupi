@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"log"
 	"sort"
 	"strings"
 	"time"
@@ -63,6 +62,9 @@ func (a *authService) CreateToken(ctx context.Context, req *apiv1.CreateTokenReq
 		return nil, err
 	}
 
+	a.api.tokenOpsMu.Lock()
+	defer a.api.tokenOpsMu.Unlock()
+
 	tokens, err := a.api.loadAuthTokens(ctx)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "load tokens: %v", err)
@@ -107,6 +109,9 @@ func (a *authService) DeleteToken(ctx context.Context, req *apiv1.DeleteTokenReq
 		return nil, err
 	}
 
+	a.api.tokenOpsMu.Lock()
+	defer a.api.tokenOpsMu.Unlock()
+
 	id := strings.TrimSpace(req.GetId())
 	tokenValue := strings.TrimSpace(req.GetToken())
 	if id == "" && tokenValue == "" {
@@ -150,10 +155,9 @@ func (a *authService) ListPairings(ctx context.Context, _ *apiv1.ListPairingsReq
 		return nil, status.Errorf(codes.Internal, "load pairings: %v", err)
 	}
 
-	// Persist cleanup of expired pairings.
-	if err := a.api.storePairings(ctx, pairings); err != nil {
-		log.Printf("[gRPC] failed to persist pairings cleanup: %v", err)
-	}
+	// Expired pairings are already filtered by loadPairings. Cleanup is
+	// persisted lazily on the next mutating operation (CreatePairing,
+	// ClaimPairing) to avoid a TOCTOU race with concurrent writers.
 
 	sort.Slice(pairings, func(i, j int) bool {
 		return pairings[i].ExpiresAt.Before(pairings[j].ExpiresAt)
@@ -172,6 +176,9 @@ func (a *authService) CreatePairing(ctx context.Context, req *apiv1.CreatePairin
 	if _, err := a.api.requireRoleGRPC(ctx, roleAdmin); err != nil {
 		return nil, err
 	}
+
+	a.api.tokenOpsMu.Lock()
+	defer a.api.tokenOpsMu.Unlock()
 
 	pairings, err := a.api.loadPairings(ctx)
 	if err != nil {
@@ -213,6 +220,9 @@ func (a *authService) CreatePairing(ctx context.Context, req *apiv1.CreatePairin
 
 func (a *authService) ClaimPairing(ctx context.Context, req *apiv1.ClaimPairingRequest) (*apiv1.ClaimPairingResponse, error) {
 	// ClaimPairing is auth-exempt — no requireRoleGRPC check.
+
+	a.api.tokenOpsMu.Lock()
+	defer a.api.tokenOpsMu.Unlock()
 
 	code := strings.ToUpper(strings.TrimSpace(req.GetCode()))
 	if code == "" {
@@ -282,16 +292,24 @@ func (a *authService) ClaimPairing(ctx context.Context, req *apiv1.ClaimPairingR
 	var daemonPort int32
 	var tlsEnabled bool
 	if a.api.runtime != nil {
-		daemonPort = int32(a.api.runtime.Port())
+		daemonPort = int32(a.api.runtime.GRPCPort())
 	}
 	if a.api.configStore != nil {
 		cfg, err := a.api.configStore.GetTransportConfig(ctx)
 		if err == nil {
-			daemonHost = cfg.Binding
 			cert := strings.TrimSpace(cfg.TLSCertPath)
 			key := strings.TrimSpace(cfg.TLSKeyPath)
 			if cert != "" && key != "" {
 				tlsEnabled = true
+			}
+			rawGRPC := strings.TrimSpace(cfg.GRPCBinding)
+			if rawGRPC == "" {
+				rawGRPC = cfg.Binding
+			}
+			if tlsEnabled {
+				daemonHost = "localhost"
+			} else if host, err := resolveBindingHost(normalizeBinding(rawGRPC)); err == nil {
+				daemonHost = host
 			}
 		}
 	}

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -44,18 +43,15 @@ type ListenerInfo struct {
 
 // Info summarises the listeners exposed by the gateway.
 type Info struct {
-	HTTP ListenerInfo
 	GRPC ListenerInfo
 }
 
-// Gateway orchestrates HTTP and gRPC listeners exposed by the daemon.
+// Gateway orchestrates gRPC listeners exposed by the daemon.
 type Gateway struct {
 	apiServer *server.APIServer
 	opts      Options
 
 	mu               sync.RWMutex
-	httpPrepared     *server.PreparedHTTPServer
-	httpListener     net.Listener
 	grpcServer       *grpc.Server
 	grpcListener     net.Listener
 	grpcUnixListener net.Listener
@@ -76,34 +72,23 @@ func New(api *server.APIServer, opts ...Options) *Gateway {
 	}
 }
 
-// Start launches HTTP and gRPC listeners. It must not be called concurrently with Shutdown.
+// Start launches gRPC listeners. It must not be called concurrently with Shutdown.
 func (g *Gateway) Start(ctx context.Context) (*Info, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	if g.httpListener != nil || g.grpcListener != nil {
+	if g.grpcListener != nil {
 		return nil, fmt.Errorf("gateway: already started")
 	}
 
 	prepared, err := g.apiServer.Prepare(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("gateway: prepare http server: %w", err)
+		return nil, fmt.Errorf("gateway: prepare transport: %w", err)
 	}
-
-	httpListener, err := net.Listen("tcp", prepared.Server.Addr)
-	if err != nil {
-		return nil, fmt.Errorf("gateway: listen http: %w", err)
-	}
-
-	httpPort := listenerPort(httpListener)
 
 	grpcBinding := prepared.GRPCBinding
-	if grpcBinding == "" {
-		grpcBinding = prepared.Binding
-	}
 	grpcHost, err := resolveBindingHost(grpcBinding)
 	if err != nil {
-		_ = httpListener.Close()
 		return nil, err
 	}
 
@@ -114,7 +99,6 @@ func (g *Gateway) Start(ctx context.Context) (*Info, error) {
 
 	grpcListener, err := net.Listen("tcp", grpcAddr)
 	if err != nil {
-		_ = httpListener.Close()
 		return nil, fmt.Errorf("gateway: listen grpc: %w", err)
 	}
 
@@ -127,7 +111,6 @@ func (g *Gateway) Start(ctx context.Context) (*Info, error) {
 	if prepared.UseTLS {
 		creds, err := credentials.NewServerTLSFromFile(prepared.CertPath, prepared.KeyPath)
 		if err != nil {
-			_ = httpListener.Close()
 			_ = grpcListener.Close()
 			return nil, fmt.Errorf("gateway: load tls credentials: %w", err)
 		}
@@ -146,47 +129,35 @@ func (g *Gateway) Start(ctx context.Context) (*Info, error) {
 	var grpcUnixListener net.Listener
 	if g.opts.GRPCUnixSocket != "" {
 		if err := os.MkdirAll(filepath.Dir(g.opts.GRPCUnixSocket), 0o755); err != nil {
-			_ = httpListener.Close()
 			_ = grpcListener.Close()
 			return nil, fmt.Errorf("gateway: create grpc socket dir: %w", err)
 		}
 		if err := os.Remove(g.opts.GRPCUnixSocket); err != nil && !errors.Is(err, os.ErrNotExist) {
-			_ = httpListener.Close()
 			_ = grpcListener.Close()
 			return nil, fmt.Errorf("gateway: remove existing grpc socket: %w", err)
 		}
 		grpcUnixListener, err = net.Listen("unix", g.opts.GRPCUnixSocket)
 		if err != nil {
-			_ = httpListener.Close()
 			_ = grpcListener.Close()
 			return nil, fmt.Errorf("gateway: listen grpc unix: %w", err)
 		}
 		if err := os.Chmod(g.opts.GRPCUnixSocket, 0o600); err != nil {
-			_ = httpListener.Close()
 			_ = grpcListener.Close()
 			_ = grpcUnixListener.Close()
 			return nil, fmt.Errorf("gateway: chmod grpc socket: %w", err)
 		}
 	}
 
-	numListeners := 2
+	numListeners := 1
 	if grpcUnixListener != nil {
-		numListeners = 3
+		numListeners = 2
 	}
 
-	g.httpPrepared = prepared
-	g.httpListener = httpListener
 	g.grpcServer = grpcServer
 	g.grpcListener = grpcListener
 	g.grpcUnixListener = grpcUnixListener
 	g.errCh = make(chan error, numListeners)
 	g.info = Info{
-		HTTP: ListenerInfo{
-			Scheme:  prepared.Scheme,
-			Address: httpListener.Addr().String(),
-			Port:    httpPort,
-			Binding: prepared.Binding,
-		},
 		GRPC: ListenerInfo{
 			Scheme:  grpcScheme(prepared.UseTLS),
 			Address: grpcListener.Addr().String(),
@@ -197,7 +168,6 @@ func (g *Gateway) Start(ctx context.Context) (*Info, error) {
 	errCh := g.errCh
 
 	g.wg.Add(numListeners)
-	go g.serveHTTP(ctx, prepared, httpListener)
 	go g.serveGRPC(ctx, grpcServer, grpcListener)
 	if grpcUnixListener != nil {
 		go g.serveGRPC(ctx, grpcServer, grpcUnixListener)
@@ -211,35 +181,10 @@ func (g *Gateway) Start(ctx context.Context) (*Info, error) {
 		}
 	}(errCh)
 
-	g.apiServer.UpdateActualPort(context.Background(), httpPort)
 	g.apiServer.UpdateActualGRPCPort(context.Background(), grpcPort)
 
 	infoCopy := g.info
 	return &infoCopy, nil
-}
-
-func (g *Gateway) serveHTTP(ctx context.Context, prepared *server.PreparedHTTPServer, listener net.Listener) {
-	defer g.wg.Done()
-
-	go func() {
-		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := g.apiServer.Shutdown(shutdownCtx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, http.ErrServerClosed) {
-			g.pushError(err)
-		}
-	}()
-
-	var err error
-	if prepared.UseTLS {
-		err = prepared.Server.ServeTLS(listener, prepared.CertPath, prepared.KeyPath)
-	} else {
-		err = prepared.Server.Serve(listener)
-	}
-
-	if err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
-		g.pushError(err)
-	}
 }
 
 func (g *Gateway) serveGRPC(ctx context.Context, grpcServer *grpc.Server, listener net.Listener) {
@@ -284,41 +229,25 @@ func (g *Gateway) pushError(err error) {
 // Shutdown stops all listeners and waits for goroutines to exit.
 func (g *Gateway) Shutdown(ctx context.Context) error {
 	g.mu.Lock()
-	httpListener := g.httpListener
 	grpcListener := g.grpcListener
 	grpcUnixListener := g.grpcUnixListener
 	grpcServer := g.grpcServer
-	prepared := g.httpPrepared
 	errCh := g.errCh
-	g.httpListener = nil
 	g.grpcListener = nil
 	g.grpcUnixListener = nil
 	g.grpcServer = nil
-	g.httpPrepared = nil
 	g.errCh = nil
 	g.mu.Unlock()
 
-	if httpListener == nil && grpcListener == nil && prepared == nil {
+	if grpcListener == nil && grpcServer == nil {
 		return nil
 	}
 
-	if httpListener != nil {
-		_ = httpListener.Close()
-	}
 	if grpcListener != nil {
 		_ = grpcListener.Close()
 	}
 	if grpcUnixListener != nil {
 		_ = grpcUnixListener.Close()
-	}
-
-	if prepared != nil {
-		shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		if err := g.apiServer.Shutdown(shutdownCtx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, http.ErrServerClosed) {
-			cancel()
-			return err
-		}
-		cancel()
 	}
 
 	if grpcServer != nil {
@@ -344,7 +273,7 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 	if errCh != nil {
 		select {
 		case err := <-errCh:
-			if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, http.ErrServerClosed) {
+			if err != nil && !errors.Is(err, context.Canceled) {
 				return err
 			}
 		default:

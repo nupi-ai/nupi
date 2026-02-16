@@ -86,7 +86,7 @@ func New(opts Options) (*Daemon, error) {
 		return nil, fmt.Errorf("daemon: ensure builtin adapters: %w", err)
 	}
 
-	apiServer, err := server.NewAPIServer(sessionManager, opts.Store, runtimeInfo, transportCfg.Port)
+	apiServer, err := server.NewAPIServer(sessionManager, opts.Store, runtimeInfo)
 	if err != nil {
 		return nil, fmt.Errorf("daemon: create API server: %w", err)
 	}
@@ -233,7 +233,7 @@ func New(opts Options) (*Daemon, error) {
 		return nil, err
 	}
 
-	// transport gateway service (serves HTTP on TCP, gRPC on TCP + Unix socket)
+	// transport gateway service (gRPC on TCP + Unix socket)
 	grpcSocketPath := paths.Socket
 	if !filepath.IsAbs(grpcSocketPath) {
 		grpcSocketPath = filepath.Clean(grpcSocketPath)
@@ -244,7 +244,6 @@ func New(opts Options) (*Daemon, error) {
 		return nil, err
 	}
 
-	runtimeInfo.SetPort(transportCfg.Port)
 	runtimeInfo.SetGRPCPort(transportCfg.GRPCPort)
 
 	d := &Daemon{
@@ -597,7 +596,7 @@ func (d *Daemon) SessionManager() *session.Manager {
 	return d.sessionManager
 }
 
-// APIServer returns the HTTP/WebSocket API server.
+// APIServer returns the API server.
 func (d *Daemon) APIServer() *server.APIServer {
 	return d.apiServer
 }

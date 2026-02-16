@@ -3,8 +3,6 @@ package gateway
 import (
 	"context"
 	"net"
-	"net/http"
-	"os"
 	"runtime"
 	"strings"
 	"testing"
@@ -43,7 +41,6 @@ func skipIfNoNetwork(t *testing.T) {
 
 type runtimeStub struct{}
 
-func (runtimeStub) Port() int            { return 0 }
 func (runtimeStub) GRPCPort() int        { return 0 }
 func (runtimeStub) StartTime() time.Time { return time.Unix(0, 0) }
 
@@ -51,13 +48,7 @@ func newGatewayTestAPIServer(t *testing.T) (*server.APIServer, *configstore.Stor
 	t.Helper()
 
 	tmpHome := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	if err := os.Setenv("HOME", tmpHome); err != nil {
-		t.Fatalf("failed to set HOME: %v", err)
-	}
-	t.Cleanup(func() {
-		os.Setenv("HOME", oldHome)
-	})
+	t.Setenv("HOME", tmpHome)
 
 	if _, err := config.EnsureInstanceDirs(config.DefaultInstance); err != nil {
 		t.Fatalf("failed to ensure instance dirs: %v", err)
@@ -75,7 +66,7 @@ func newGatewayTestAPIServer(t *testing.T) (*server.APIServer, *configstore.Stor
 	})
 
 	sessionManager := session.NewManager()
-	apiServer, err := server.NewAPIServer(sessionManager, store, runtimeStub{}, 0)
+	apiServer, err := server.NewAPIServer(sessionManager, store, runtimeStub{})
 	if err != nil {
 		t.Fatalf("failed to create api server: %v", err)
 	}
@@ -99,21 +90,8 @@ func TestGatewayStartLoopback(t *testing.T) {
 	}
 	defer gw.Shutdown(context.Background())
 
-	if info.HTTP.Port <= 0 {
-		t.Fatalf("expected HTTP port to be assigned, got %d", info.HTTP.Port)
-	}
 	if info.GRPC.Port <= 0 {
 		t.Fatalf("expected gRPC port to be assigned, got %d", info.GRPC.Port)
-	}
-
-	client := &http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Get("http://" + info.HTTP.Address + "/daemon/status")
-	if err != nil {
-		t.Fatalf("http status request failed: %v", err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected status %d, got %d", http.StatusOK, resp.StatusCode)
 	}
 
 	dialCtx, dialCancel := context.WithTimeout(ctx, 5*time.Second)

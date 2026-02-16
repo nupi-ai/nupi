@@ -38,14 +38,13 @@ func newDaemonService(api *APIServer) *daemonService {
 }
 
 func (d *daemonService) Status(ctx context.Context, _ *apiv1.DaemonStatusRequest) (*apiv1.DaemonStatusResponse, error) {
-	snapshot, err := d.api.daemonStatusSnapshot(ctx)
+	snapshot, err := d.api.daemonStatus(ctx)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to compute daemon status: %v", err)
 	}
 	return &apiv1.DaemonStatusResponse{
 		Version:       snapshot.Version,
 		SessionsCount: int32(snapshot.SessionsCount),
-		Port:          int32(snapshot.Port),
 		GrpcPort:      int32(snapshot.GRPCPort),
 		Binding:       snapshot.Binding,
 		GrpcBinding:   snapshot.GRPCBinding,
@@ -186,7 +185,7 @@ func (a *audioService) StreamAudioIn(stream apiv1.AudioService_StreamAudioInServ
 			}
 			var metadata map[string]string
 			if chunk != nil {
-				metadata = copyStringMap(chunk.GetMetadata())
+				metadata = cloneStringMap(chunk.GetMetadata())
 			}
 			ingressStream, err = a.api.audioIngress.OpenStream(sessionID, streamID, format, metadata)
 			if err != nil {
@@ -310,7 +309,7 @@ func (a *audioService) StreamAudioOut(req *apiv1.StreamAudioOutRequest, srv apiv
 					Sequence:   evt.Sequence,
 					DurationMs: durationToMillis(chunkDuration),
 					Last:       evt.Final,
-					Metadata:   copyStringMap(evt.Metadata),
+					Metadata:   cloneStringMap(evt.Metadata),
 				},
 			}
 			if firstChunk {
@@ -906,17 +905,6 @@ func pcmDuration(format eventbus.AudioFormat, dataLen int) time.Duration {
 	return time.Duration(float64(samples) / float64(format.SampleRate) * float64(time.Second))
 }
 
-func copyStringMap(in map[string]string) map[string]string {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make(map[string]string, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
-	return out
-}
-
 func (c *configService) GetTransportConfig(ctx context.Context, _ *emptypb.Empty) (*apiv1.TransportConfig, error) {
 	if _, err := c.api.requireRoleGRPC(ctx, roleAdmin); err != nil {
 		return nil, err
@@ -971,6 +959,31 @@ func (c *configService) UpdateTransportConfig(ctx context.Context, req *apiv1.Up
 	}
 
 	return transportConfigToProto(storeCfg, c.api.AuthRequired()), nil
+}
+
+func (c *configService) Migrate(ctx context.Context, _ *apiv1.ConfigMigrateRequest) (*apiv1.ConfigMigrateResponse, error) {
+	if _, err := c.api.requireRoleGRPC(ctx, roleAdmin); err != nil {
+		return nil, err
+	}
+	if c.api.configStore == nil {
+		return nil, status.Error(codes.Unavailable, "configuration store unavailable")
+	}
+
+	result, err := c.api.configStore.EnsureRequiredAdapterSlots(ctx)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "migration failed: %v", err)
+	}
+
+	audioUpdated, err := c.api.configStore.EnsureAudioSettings(ctx)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "audio settings migration failed: %v", err)
+	}
+
+	return &apiv1.ConfigMigrateResponse{
+		UpdatedSlots:         append([]string{}, result.UpdatedSlots...),
+		PendingSlots:         append([]string{}, result.PendingSlots...),
+		AudioSettingsUpdated: audioUpdated,
+	}, nil
 }
 
 func (a *adaptersService) ListAdapters(ctx context.Context, _ *emptypb.Empty) (*apiv1.ListAdaptersResponse, error) {
