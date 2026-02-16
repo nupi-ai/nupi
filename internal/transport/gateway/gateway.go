@@ -324,6 +324,11 @@ func (g *Gateway) unaryAuthInterceptor(ctx context.Context, req interface{}, inf
 		return handler(ctx, req)
 	}
 
+	// ClaimPairing is public — new clients use it to obtain their first token.
+	if info.FullMethod == "/nupi.api.v1.AuthService/ClaimPairing" {
+		return handler(ctx, req)
+	}
+
 	token := tokenFromMetadata(ctx)
 	if token == "" {
 		return nil, status.Error(codes.Unauthenticated, "unauthorized")

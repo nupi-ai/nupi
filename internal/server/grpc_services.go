@@ -17,6 +17,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/plugins/adapters"
 	"github.com/nupi-ai/nupi/internal/protocol"
+	"github.com/nupi-ai/nupi/internal/session"
 	"github.com/nupi-ai/nupi/internal/voice/slots"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -24,6 +25,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	emptypb "google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 type daemonService struct {
@@ -41,14 +43,15 @@ func (d *daemonService) Status(ctx context.Context, _ *apiv1.DaemonStatusRequest
 		return nil, status.Errorf(codes.Internal, "failed to compute daemon status: %v", err)
 	}
 	return &apiv1.DaemonStatusResponse{
-		Version:      snapshot.Version,
-		Sessions:     int32(snapshot.SessionsCount),
-		Port:         int32(snapshot.Port),
-		GrpcPort:     int32(snapshot.GRPCPort),
-		Binding:      snapshot.Binding,
-		GrpcBinding:  snapshot.GRPCBinding,
-		AuthRequired: snapshot.AuthRequired,
-		UptimeSec:    snapshot.UptimeSeconds,
+		Version:       snapshot.Version,
+		SessionsCount: int32(snapshot.SessionsCount),
+		Port:          int32(snapshot.Port),
+		GrpcPort:      int32(snapshot.GRPCPort),
+		Binding:       snapshot.Binding,
+		GrpcBinding:   snapshot.GRPCBinding,
+		AuthRequired:  snapshot.AuthRequired,
+		UptimeSec:     snapshot.UptimeSeconds,
+		TlsEnabled:    snapshot.TLSEnabled,
 	}, nil
 }
 
@@ -446,14 +449,7 @@ func (s *sessionsService) ListSessions(ctx context.Context, _ *apiv1.ListSession
 
 	out := make([]*apiv1.Session, 0, len(dto))
 	for _, session := range dto {
-		out = append(out, &apiv1.Session{
-			Id:        session.ID,
-			Command:   session.Command,
-			Args:      append([]string(nil), session.Args...),
-			Status:    session.Status,
-			Pid:       int32(session.PID),
-			StartUnix: session.StartTime.Unix(),
-		})
+		out = append(out, dtoToSessionProto(session, s.api))
 	}
 
 	return &apiv1.ListSessionsResponse{Sessions: out}, nil
@@ -489,16 +485,7 @@ func (s *sessionsService) CreateSession(ctx context.Context, req *apiv1.CreateSe
 	}
 
 	dto := api.ToDTO(sess)
-	sessionPB := &apiv1.Session{
-		Id:        dto.ID,
-		Command:   dto.Command,
-		Args:      append([]string(nil), dto.Args...),
-		Status:    dto.Status,
-		Pid:       int32(dto.PID),
-		StartUnix: dto.StartTime.Unix(),
-	}
-
-	return &apiv1.CreateSessionResponse{Session: sessionPB}, nil
+	return &apiv1.CreateSessionResponse{Session: dtoToSessionProto(dto, s.api)}, nil
 }
 
 func (s *sessionsService) KillSession(ctx context.Context, req *apiv1.KillSessionRequest) (*apiv1.KillSessionResponse, error) {
@@ -520,6 +507,122 @@ func (s *sessionsService) KillSession(ctx context.Context, req *apiv1.KillSessio
 	}
 
 	return &apiv1.KillSessionResponse{}, nil
+}
+
+func (s *sessionsService) GetSession(ctx context.Context, req *apiv1.GetSessionRequest) (*apiv1.GetSessionResponse, error) {
+	if _, err := s.api.requireRoleGRPC(ctx, roleAdmin, roleReadOnly); err != nil {
+		return nil, err
+	}
+
+	if s.api.sessionManager == nil {
+		return nil, status.Error(codes.Unavailable, "session manager unavailable")
+	}
+
+	sessionID := strings.TrimSpace(req.GetSessionId())
+	if sessionID == "" {
+		return nil, status.Error(codes.InvalidArgument, "session_id is required")
+	}
+
+	sess, err := s.api.sessionManager.GetSession(sessionID)
+	if err != nil {
+		return nil, status.Errorf(codes.NotFound, "session %s not found", sessionID)
+	}
+
+	dto := api.ToDTO(sess)
+	return &apiv1.GetSessionResponse{Session: dtoToSessionProto(dto, s.api)}, nil
+}
+
+func (s *sessionsService) SendInput(ctx context.Context, req *apiv1.SendInputRequest) (*apiv1.SendInputResponse, error) {
+	if _, err := s.api.requireRoleGRPC(ctx, roleAdmin); err != nil {
+		return nil, err
+	}
+
+	if s.api.sessionManager == nil {
+		return nil, status.Error(codes.Unavailable, "session manager unavailable")
+	}
+
+	sessionID := strings.TrimSpace(req.GetSessionId())
+	if sessionID == "" {
+		return nil, status.Error(codes.InvalidArgument, "session_id is required")
+	}
+
+	if _, err := s.api.sessionManager.GetSession(sessionID); err != nil {
+		return nil, status.Errorf(codes.NotFound, "session %s not found", sessionID)
+	}
+
+	if input := req.GetInput(); len(input) > 0 {
+		if err := s.api.sessionManager.WriteToSession(sessionID, input); err != nil {
+			return nil, status.Errorf(codes.Internal, "write to session: %v", err)
+		}
+	}
+
+	if req.GetEof() {
+		// Send Ctrl-D (EOT) to signal EOF.
+		if err := s.api.sessionManager.WriteToSession(sessionID, []byte{4}); err != nil {
+			return nil, status.Errorf(codes.Internal, "send EOF: %v", err)
+		}
+	}
+
+	return &apiv1.SendInputResponse{}, nil
+}
+
+func (s *sessionsService) GetSessionMode(ctx context.Context, req *apiv1.GetSessionModeRequest) (*apiv1.GetSessionModeResponse, error) {
+	if _, err := s.api.requireRoleGRPC(ctx, roleAdmin, roleReadOnly); err != nil {
+		return nil, err
+	}
+
+	sessionID := strings.TrimSpace(req.GetSessionId())
+	if sessionID == "" {
+		return nil, status.Error(codes.InvalidArgument, "session_id is required")
+	}
+
+	if s.api.sessionManager == nil {
+		return nil, status.Error(codes.Unavailable, "session manager unavailable")
+	}
+	if _, err := s.api.sessionManager.GetSession(sessionID); err != nil {
+		return nil, status.Errorf(codes.NotFound, "session %s not found", sessionID)
+	}
+
+	mode := ""
+	if s.api.resizeManager != nil {
+		mode = s.api.resizeManager.GetSessionMode(sessionID)
+	}
+
+	return &apiv1.GetSessionModeResponse{SessionId: sessionID, Mode: mode}, nil
+}
+
+func (s *sessionsService) SetSessionMode(ctx context.Context, req *apiv1.SetSessionModeRequest) (*apiv1.SetSessionModeResponse, error) {
+	if _, err := s.api.requireRoleGRPC(ctx, roleAdmin); err != nil {
+		return nil, err
+	}
+
+	sessionID := strings.TrimSpace(req.GetSessionId())
+	if sessionID == "" {
+		return nil, status.Error(codes.InvalidArgument, "session_id is required")
+	}
+
+	modeStr := strings.TrimSpace(req.GetMode())
+	if modeStr == "" {
+		return nil, status.Error(codes.InvalidArgument, "mode is required")
+	}
+
+	if s.api.sessionManager == nil {
+		return nil, status.Error(codes.Unavailable, "session manager unavailable")
+	}
+	if _, err := s.api.sessionManager.GetSession(sessionID); err != nil {
+		return nil, status.Errorf(codes.NotFound, "session %s not found", sessionID)
+	}
+
+	if s.api.resizeManager == nil {
+		return nil, status.Error(codes.Unavailable, "resize manager unavailable")
+	}
+
+	if err := s.api.resizeManager.SetSessionMode(sessionID, modeStr); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "set session mode: %v", err)
+	}
+
+	mode := s.api.resizeManager.GetSessionMode(sessionID)
+	return &apiv1.SetSessionModeResponse{SessionId: sessionID, Mode: mode}, nil
 }
 
 func (s *sessionsService) GetConversation(ctx context.Context, req *apiv1.GetConversationRequest) (*apiv1.GetConversationResponse, error) {
@@ -695,6 +798,8 @@ func RegisterGRPCServices(api *APIServer, registrar grpc.ServiceRegistrar) {
 	apiv1.RegisterAdaptersServiceServer(registrar, newAdaptersService(api))
 	apiv1.RegisterQuickstartServiceServer(registrar, newQuickstartService(api))
 	apiv1.RegisterAdapterRuntimeServiceServer(registrar, newAdapterRuntimeService(api))
+	apiv1.RegisterAuthServiceServer(registrar, newAuthService(api))
+	apiv1.RegisterRecordingsServiceServer(registrar, newRecordingsService(api))
 	if api.audioIngress != nil {
 		apiv1.RegisterAudioServiceServer(registrar, newAudioService(api))
 	}
@@ -886,8 +991,8 @@ func (a *adaptersService) ListAdapters(ctx context.Context, _ *emptypb.Empty) (*
 			Type:      record.Type,
 			Name:      record.Name,
 			Manifest:  record.Manifest,
-			CreatedAt: record.CreatedAt,
-			UpdatedAt: record.UpdatedAt,
+			CreatedAt: parseTimestampString(record.CreatedAt),
+			UpdatedAt: parseTimestampString(record.UpdatedAt),
 		})
 	}
 	return resp, nil
@@ -912,8 +1017,8 @@ func (a *adaptersService) ListAdapterBindings(ctx context.Context, _ *emptypb.Em
 			Slot:      binding.Slot,
 			AdapterId: adapterID,
 			Status:    binding.Status,
-			Config:    binding.Config,
-			UpdatedAt: binding.UpdatedAt,
+			ConfigJson: binding.Config,
+			UpdatedAt: parseTimestampString(binding.UpdatedAt),
 		})
 	}
 	return resp, nil
@@ -980,8 +1085,8 @@ func (a *adaptersService) bindingForSlot(ctx context.Context, slot string) (*api
 			Slot:      binding.Slot,
 			AdapterId: adapterID,
 			Status:    binding.Status,
-			Config:    binding.Config,
-			UpdatedAt: binding.UpdatedAt,
+			ConfigJson: binding.Config,
+			UpdatedAt: parseTimestampString(binding.UpdatedAt),
 		}, nil
 	}
 	return nil, status.Errorf(codes.NotFound, "binding for slot %s not found", slot)
@@ -1060,7 +1165,7 @@ func (q *quickstartService) fetchStatus(ctx context.Context) (*apiv1.QuickstartS
 		PendingSlots: append([]string{}, pending...),
 	}
 	if completedAt != nil {
-		resp.CompletedAt = completedAt.UTC().Format(time.RFC3339)
+		resp.CompletedAt = timestamppb.New(completedAt.UTC())
 	}
 
 	adapterStatuses, adaptersErr := q.api.quickstartAdapterStatuses(ctx)
@@ -1205,7 +1310,7 @@ func bindingStatusToProto(status adapters.BindingStatus) *apiv1.AdapterEntry {
 		Slot:       string(status.Slot),
 		Status:     status.Status,
 		ConfigJson: status.Config,
-		UpdatedAt:  status.UpdatedAt,
+		UpdatedAt:  parseTimestampString(status.UpdatedAt),
 	}
 	if status.AdapterID != nil {
 		if id := strings.TrimSpace(*status.AdapterID); id != "" {
@@ -1240,6 +1345,53 @@ func runtimeStatusToProto(rt *adapters.RuntimeStatus) *apiv1.AdapterRuntime {
 		result.UpdatedAt = timestamppb.New(rt.UpdatedAt.UTC())
 	}
 	return result
+}
+
+// dtoToSessionProto converts a SessionDTO to a proto Session message, populating all fields.
+func dtoToSessionProto(dto api.SessionDTO, apiServer *APIServer) *apiv1.Session {
+	pb := &apiv1.Session{
+		Id:      dto.ID,
+		Command: dto.Command,
+		Args:    append([]string(nil), dto.Args...),
+		Status:  dto.Status,
+		Pid:     int32(dto.PID),
+		WorkDir: dto.WorkDir,
+		Tool:      dto.Tool,
+		ToolIcon:  dto.ToolIcon,
+		ToolIconData: dto.ToolIconData,
+		Mode:      dto.Mode,
+	}
+	if !dto.StartTime.IsZero() {
+		pb.StartTime = timestamppb.New(dto.StartTime.UTC())
+	}
+	// Set exit_code only when process has actually exited (status == "stopped").
+	// Without this guard, proto3 default 0 is ambiguous with "exited with code 0".
+	if dto.Status == string(session.StatusStopped) {
+		pb.ExitCode = wrapperspb.Int32(int32(dto.ExitCode))
+	}
+	// Populate mode from resize manager if available and not already set.
+	if pb.Mode == "" && apiServer != nil && apiServer.resizeManager != nil {
+		pb.Mode = apiServer.resizeManager.GetSessionMode(dto.ID)
+	}
+	return pb
+}
+
+// parseTimestampString parses a timestamp string into a protobuf Timestamp.
+// Supports RFC3339 ("2006-01-02T15:04:05Z07:00") and SQLite CURRENT_TIMESTAMP
+// format ("2006-01-02 15:04:05"). Returns nil for empty or unparseable strings.
+func parseTimestampString(s string) *timestamppb.Timestamp {
+	if s == "" {
+		return nil
+	}
+	// Try RFC3339 first (used by most API responses).
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return timestamppb.New(t.UTC())
+	}
+	// Fall back to SQLite CURRENT_TIMESTAMP format.
+	if t, err := time.ParseInLocation("2006-01-02 15:04:05", s, time.Local); err == nil {
+		return timestamppb.New(t.UTC())
+	}
+	return nil
 }
 
 func transportConfigToProto(cfg configstore.TransportConfig, authRequired bool) *apiv1.TransportConfig {
