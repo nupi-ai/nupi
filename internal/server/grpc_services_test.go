@@ -323,8 +323,7 @@ func TestSessionsServiceGetGlobalConversationNoService(t *testing.T) {
 }
 
 func TestAdaptersServiceOverview(t *testing.T) {
-	apiServer, _ := newTestAPIServer(t)
-	store := openTestStore(t)
+	apiServer, _, store := newTestAPIServerWithStore(t)
 	adaptersSvc := newTestAdaptersService(t, store)
 	apiServer.SetAdaptersController(adaptersSvc)
 
@@ -373,35 +372,28 @@ func TestAdaptersServiceOverview(t *testing.T) {
 }
 
 func TestAdaptersServiceBindStartStop(t *testing.T) {
-	apiServer, _ := newTestAPIServer(t)
-	store := openTestStore(t)
+	apiServer, _, store := newTestAPIServerWithStore(t)
 	adaptersSvc := newTestAdaptersService(t, store)
 	apiServer.SetAdaptersController(adaptersSvc)
 
 	ctx := context.Background()
-	adapter := configstore.Adapter{ID: "adapter.ai.bind", Source: "builtin", Type: "ai", Name: "Bind AI"}
-	if err := store.UpsertAdapter(ctx, adapter); err != nil {
-		t.Fatalf("upsert adapter: %v", err)
+	// Use builtin mock adapter so that Bind+Start runs in-process without network.
+	if err := adapters.EnsureBuiltinAdapters(ctx, store); err != nil {
+		t.Fatalf("ensure builtin adapters: %v", err)
 	}
-	if err := store.UpsertAdapterEndpoint(ctx, configstore.AdapterEndpoint{
-		AdapterID: adapter.ID,
-		Transport: "grpc",
-		Address:   "127.0.0.1:9940",
-	}); err != nil {
-		t.Fatalf("upsert adapter endpoint: %v", err)
-	}
+	adapterID := adapters.MockAIAdapterID
 
 	service := newAdapterRuntimeService(apiServer)
 
 	bindResp, err := service.BindAdapter(ctx, &apiv1.BindAdapterRequest{
 		Slot:      "ai",
-		AdapterId: adapter.ID,
+		AdapterId: adapterID,
 	})
 	if err != nil {
 		t.Fatalf("BindAdapter error: %v", err)
 	}
-	if bindResp.GetAdapter().AdapterId == nil || bindResp.GetAdapter().GetAdapterId() != adapter.ID {
-		t.Fatalf("expected bound adapter %s, got %v", adapter.ID, bindResp.GetAdapter().AdapterId)
+	if bindResp.GetAdapter().AdapterId == nil || bindResp.GetAdapter().GetAdapterId() != adapterID {
+		t.Fatalf("expected bound adapter %s, got %v", adapterID, bindResp.GetAdapter().AdapterId)
 	}
 	if bindResp.GetAdapter().GetStatus() != configstore.BindingStatusActive {
 		t.Fatalf("expected status %s, got %s", configstore.BindingStatusActive, bindResp.GetAdapter().GetStatus())

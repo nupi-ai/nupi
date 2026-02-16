@@ -12,9 +12,7 @@ import (
 
 	apiv1 "github.com/nupi-ai/nupi/internal/api/grpc/v1"
 	"github.com/nupi-ai/nupi/internal/bootstrap"
-	"github.com/nupi-ai/nupi/internal/client"
 	"github.com/nupi-ai/nupi/internal/config"
-	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
@@ -73,7 +71,7 @@ func newFromUnixSocket() (*Client, error) {
 	token := strings.TrimSpace(os.Getenv("NUPI_API_TOKEN"))
 	if token == "" {
 		// Try loading token from config store.
-		_, tokens, err := client.LoadTransportSettings()
+		_, tokens, err := LoadTransportSettings()
 		if err == nil && len(tokens) > 0 {
 			token = tokens[0]
 		}
@@ -103,25 +101,30 @@ func dialUnixSocket(sockPath string, token string) (*Client, error) {
 }
 
 func newFromStore() (*Client, error) {
-	cfg, tokens, err := client.LoadTransportSettings()
+	cfg, tokens, err := LoadTransportSettings()
 	if err != nil {
 		return nil, err
 	}
 
 	tlsEnabled := strings.TrimSpace(cfg.TLSCertPath) != "" && strings.TrimSpace(cfg.TLSKeyPath) != ""
 
-	host := client.DetermineHost(cfg.Binding, tlsEnabled)
+	grpcBinding := strings.TrimSpace(cfg.GRPCBinding)
+	if grpcBinding == "" {
+		grpcBinding = cfg.Binding
+	}
+	host := DetermineHost(grpcBinding, tlsEnabled)
 	if override := strings.TrimSpace(os.Getenv("NUPI_DAEMON_HOST")); override != "" {
 		host = override
 	}
 
-	if cfg.Port <= 0 {
-		return nil, fmt.Errorf("grpc: daemon HTTP port not available; is nupid running?")
+	grpcPort := cfg.GRPCPort
+	if grpcPort <= 0 {
+		return nil, fmt.Errorf("grpc: daemon gRPC port not available; is nupid running?")
 	}
 
-	address := net.JoinHostPort(host, fmt.Sprintf("%d", effectiveGRPCPort(cfg)))
+	address := net.JoinHostPort(host, fmt.Sprintf("%d", grpcPort))
 
-	tlsConfig, err := client.PrepareTLSConfig(cfg, host, tlsEnabled)
+	tlsConfig, err := PrepareTLSConfig(cfg, host, tlsEnabled)
 	if err != nil {
 		return nil, err
 	}
@@ -159,11 +162,11 @@ func newExplicit(raw string, boot *bootstrap.Config) (*Client, error) {
 
 	address := net.JoinHostPort(host, port)
 
-	token, tlsOpts := client.ResolveExplicitOptions(boot)
+	token, tlsOpts := ResolveExplicitOptions(boot)
 
 	var tlsConfig *tls.Config
 	if strings.EqualFold(u.Scheme, "https") {
-		tlsConfig, err = client.TLSConfigForExplicit(u, &tlsOpts)
+		tlsConfig, err = TLSConfigForExplicit(u, &tlsOpts)
 		if err != nil {
 			return nil, err
 		}
@@ -399,6 +402,30 @@ func (c *Client) ClaimPairing(ctx context.Context, req *apiv1.ClaimPairingReques
 	return c.auth.ClaimPairing(ctx, req)
 }
 
+// ─── AdapterRuntimeService (extended) ───
+
+func (c *Client) RegisterAdapter(ctx context.Context, req *apiv1.RegisterAdapterRequest) (*apiv1.RegisterAdapterResponse, error) {
+	ctx = c.attachToken(ctx)
+	return c.adapterRuntime.RegisterAdapter(ctx, req)
+}
+
+func (c *Client) StreamAdapterLogs(ctx context.Context, req *apiv1.StreamAdapterLogsRequest) (apiv1.AdapterRuntimeService_StreamAdapterLogsClient, error) {
+	ctx = c.attachToken(ctx)
+	return c.adapterRuntime.StreamAdapterLogs(ctx, req)
+}
+
+func (c *Client) GetAdapterLogs(ctx context.Context, req *apiv1.GetAdapterLogsRequest) (*apiv1.GetAdapterLogsResponse, error) {
+	ctx = c.attachToken(ctx)
+	return c.adapterRuntime.GetAdapterLogs(ctx, req)
+}
+
+// ─── ConfigService (extended) ───
+
+func (c *Client) Migrate(ctx context.Context, req *apiv1.ConfigMigrateRequest) (*apiv1.ConfigMigrateResponse, error) {
+	ctx = c.attachToken(ctx)
+	return c.config.Migrate(ctx, req)
+}
+
 // ─── RecordingsService ───
 
 func (c *Client) ListRecordings(ctx context.Context, req *apiv1.ListRecordingsRequest) (*apiv1.ListRecordingsResponse, error) {
@@ -419,16 +446,6 @@ func (c *Client) attachToken(ctx context.Context) context.Context {
 		return ctx
 	}
 	return metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+token)
-}
-
-func effectiveGRPCPort(cfg configstore.TransportConfig) int {
-	if cfg.GRPCPort > 0 {
-		return cfg.GRPCPort
-	}
-	if cfg.Port > 0 {
-		return cfg.Port
-	}
-	return 0
 }
 
 func defaultPortForScheme(scheme string) string {

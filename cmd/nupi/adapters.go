@@ -1,16 +1,12 @@
 package main
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
-	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,7 +18,6 @@ import (
 
 	apiv1 "github.com/nupi-ai/nupi/internal/api/grpc/v1"
 	apihttp "github.com/nupi-ai/nupi/internal/api/http"
-	"github.com/nupi-ai/nupi/internal/client"
 	"github.com/nupi-ai/nupi/internal/config"
 	"github.com/nupi-ai/nupi/internal/grpcclient"
 	manifestpkg "github.com/nupi-ai/nupi/internal/plugins/manifest"
@@ -222,7 +217,7 @@ func adaptersRegister(cmd *cobra.Command, _ []string) error {
 		return out.Error("Invalid --endpoint-env value", err)
 	}
 
-	var endpoint *apihttp.AdapterEndpointConfig
+	var endpoint *apiv1.AdapterEndpointConfig
 	if transportOpt != "" || addressOpt != "" || commandOpt != "" || len(argsOpt) > 0 || len(endpointEnv) > 0 {
 		if transportOpt == "" {
 			return out.Error("--endpoint-transport required when endpoint flags are specified", errors.New("missing transport"))
@@ -251,7 +246,7 @@ func adaptersRegister(cmd *cobra.Command, _ []string) error {
 			}
 		}
 
-		endpoint = &apihttp.AdapterEndpointConfig{
+		endpoint = &apiv1.AdapterEndpointConfig{
 			Transport: transportOpt,
 			Address:   addressOpt,
 			Command:   commandOpt,
@@ -260,28 +255,28 @@ func adaptersRegister(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	payload := apihttp.AdapterRegistrationRequest{
-		AdapterID: adapterID,
-		Source:    source,
-		Version:   version,
-		Type:      adapterType,
-		Name:      name,
-		Manifest:  manifest,
-		Endpoint:  endpoint,
+	req := &apiv1.RegisterAdapterRequest{
+		AdapterId:    adapterID,
+		Source:       source,
+		Version:      version,
+		Type:         adapterType,
+		Name:         name,
+		ManifestYaml: string(manifest),
+		Endpoint:     endpoint,
 	}
 
-	adapter, err := adaptersRegisterHTTP(out, payload)
+	resp, err := adaptersRegisterGRPC(out, req)
 	if err != nil {
 		return err
 	}
 
 	if out.jsonMode {
-		return out.Print(apihttp.AdapterRegistrationResult{Adapter: adapter})
+		return out.Print(adapterRegistrationResultFromProto(resp))
 	}
 
-	fmt.Printf("Registered adapter %s", adapter.ID)
-	if adapter.Type != "" {
-		fmt.Printf(" (%s)", adapter.Type)
+	fmt.Printf("Registered adapter %s", resp.GetAdapterId())
+	if resp.GetType() != "" {
+		fmt.Printf(" (%s)", resp.GetType())
 	}
 	fmt.Println()
 	return nil
@@ -503,33 +498,32 @@ func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 		command = destPath
 	}
 
-	regPayload := apihttp.AdapterRegistrationRequest{
-		AdapterID: adapterID,
-		Source:    "local",
-		Type:      slotType,
-		Name:      adapterName,
-		Manifest:  manifestJSON,
+	regReq := &apiv1.RegisterAdapterRequest{
+		AdapterId:    adapterID,
+		Source:       "local",
+		Type:         slotType,
+		Name:         adapterName,
+		ManifestYaml: string(manifestJSON),
+		Endpoint: &apiv1.AdapterEndpointConfig{
+			Transport: transport,
+			Address:   address,
+			Command:   command,
+			Args:      args,
+			Env:       endpointEnv,
+		},
 	}
 
-	regPayload.Endpoint = &apihttp.AdapterEndpointConfig{
-		Transport: transport,
-		Address:   address,
-		Command:   command,
-		Args:      args,
-		Env:       endpointEnv,
-	}
-
-	adapter, err := adaptersRegisterHTTP(out, regPayload)
+	resp, err := adaptersRegisterGRPC(out, regReq)
 	if err != nil {
 		return err
 	}
 
 	if out.jsonMode {
-		if err := out.Print(apihttp.AdapterRegistrationResult{Adapter: adapter}); err != nil {
+		if err := out.Print(adapterRegistrationResultFromProto(resp)); err != nil {
 			return err
 		}
 	} else {
-		fmt.Printf("Installed local adapter %s (%s)\n", adapter.Name, adapter.ID)
+		fmt.Printf("Installed local adapter %s (%s)\n", resp.GetName(), resp.GetAdapterId())
 	}
 
 	slot, _ := cmd.Flags().GetString("slot")
@@ -544,12 +538,7 @@ func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 		return out.Error("Config must be valid JSON", errors.New("invalid config payload"))
 	}
 
-	var bindConfig json.RawMessage
-	if configRaw != "" {
-		bindConfig = json.RawMessage(configRaw)
-	}
-
-	if err := adaptersBindHTTP(out, slot, adapterID, bindConfig); err != nil {
+	if err := adaptersBindGRPC(out, slot, adapterID, configRaw); err != nil {
 		return err
 	}
 
@@ -567,108 +556,126 @@ func adaptersLogs(cmd *cobra.Command, _ []string) error {
 	slot = strings.TrimSpace(slot)
 	adapter = strings.TrimSpace(adapter)
 
-	c, err := client.New()
+	gc, err := grpcclient.New()
 	if err != nil {
-		return out.Error("Failed to connect to daemon", err)
+		return out.Error("Failed to connect to daemon via gRPC", err)
 	}
-	defer c.Close()
+	defer gc.Close()
 
-	params := url.Values{}
-	if slot != "" {
-		params.Set("slot", slot)
-	}
-	if adapter != "" {
-		params.Set("adapter", adapter)
-	}
-
-	endpoint := c.BaseURL() + "/adapters/logs"
-	if len(params) > 0 {
-		endpoint += "?" + params.Encode()
-	}
-
-	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	stream, err := gc.StreamAdapterLogs(context.Background(), &apiv1.StreamAdapterLogsRequest{
+		Slot:    slot,
+		Adapter: adapter,
+	})
 	if err != nil {
-		return out.Error("Failed to create request", err)
+		return out.Error("Failed to stream adapter logs", err)
 	}
 
-	resp, err := doStreamingRequest(c, req)
-	if err != nil {
-		return out.Error("Failed to fetch adapter logs", err)
-	}
-	defer resp.Body.Close()
+	for {
+		entry, err := stream.Recv()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return out.Error("Adapter log stream ended with error", err)
+		}
 
-	if resp.StatusCode != http.StatusOK {
-		return out.Error("Failed to fetch adapter logs", fmt.Errorf("%s", readErrorMessage(resp)))
-	}
-
-	scanner := bufio.NewScanner(resp.Body)
-	buf := make([]byte, 0, adapterLogsScannerInitialBuf)
-	scanner.Buffer(buf, adapterLogsScannerMaxBuf)
-
-	for scanner.Scan() {
-		line := scanner.Text()
 		if out.jsonMode {
-			fmt.Println(line)
+			printAdapterLogEntryJSON(entry)
 			continue
 		}
 
-		var entry apihttp.AdapterLogStreamEntry
-		if err := json.Unmarshal([]byte(line), &entry); err != nil {
-			fmt.Fprintf(os.Stderr, "decode log entry failed: %v\n", err)
-			fmt.Println(line)
-			continue
-		}
 		printAdapterLogEntry(entry)
 	}
-
-	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
-		if errors.Is(err, bufio.ErrTooLong) {
-			return out.Error("Adapter log entry exceeded 1MB limit", err)
-		}
-		return out.Error("Adapter log stream ended with error", err)
-	}
-
-	return nil
 }
 
-func printAdapterLogEntry(entry apihttp.AdapterLogStreamEntry) {
-	ts := entry.Timestamp
-	if ts.IsZero() {
-		ts = time.Now().UTC()
-	}
-	timestamp := ts.Format(time.RFC3339)
-
-	switch entry.Type {
-	case "log":
-		level := strings.ToUpper(strings.TrimSpace(entry.Level))
+func printAdapterLogEntry(entry *apiv1.AdapterLogStreamEntry) {
+	switch payload := entry.GetPayload().(type) {
+	case *apiv1.AdapterLogStreamEntry_Log:
+		log := payload.Log
+		ts := time.Now().UTC()
+		if log.GetTimestamp() != nil {
+			ts = log.GetTimestamp().AsTime()
+		}
+		timestamp := ts.Format(time.RFC3339)
+		level := strings.ToUpper(strings.TrimSpace(log.GetLevel()))
 		if level == "" {
 			level = "INFO"
 		}
-		slot := strings.TrimSpace(entry.Slot)
-		entryAdapterID := strings.TrimSpace(entry.AdapterID)
+		slot := strings.TrimSpace(log.GetSlot())
+		adapterID := strings.TrimSpace(log.GetAdapterId())
 		if slot != "" {
-			if entryAdapterID != "" {
-				fmt.Printf("%s [%s] %s %s: %s\n", timestamp, slot, entryAdapterID, level, entry.Message)
+			if adapterID != "" {
+				fmt.Printf("%s [%s] %s %s: %s\n", timestamp, slot, adapterID, level, log.GetMessage())
 			} else {
-				fmt.Printf("%s [%s] %s: %s\n", timestamp, slot, level, entry.Message)
+				fmt.Printf("%s [%s] %s: %s\n", timestamp, slot, level, log.GetMessage())
 			}
 		} else {
-			if entryAdapterID != "" {
-				fmt.Printf("%s %s %s: %s\n", timestamp, entryAdapterID, level, entry.Message)
+			if adapterID != "" {
+				fmt.Printf("%s %s %s: %s\n", timestamp, adapterID, level, log.GetMessage())
 			} else {
-				fmt.Printf("%s %s: %s\n", timestamp, level, entry.Message)
+				fmt.Printf("%s %s: %s\n", timestamp, level, log.GetMessage())
 			}
 		}
-	case "transcript":
+	case *apiv1.AdapterLogStreamEntry_Transcript:
+		tr := payload.Transcript
+		ts := time.Now().UTC()
+		if tr.GetTimestamp() != nil {
+			ts = tr.GetTimestamp().AsTime()
+		}
+		timestamp := ts.Format(time.RFC3339)
 		stage := "partial"
-		if entry.Final {
+		if tr.GetIsFinal() {
 			stage = "final"
 		}
 		fmt.Printf("%s [transcript %s] session=%s stream=%s conf=%.2f %s\n",
-			timestamp, stage, entry.SessionID, entry.StreamID, entry.Confidence, entry.Text)
-	default:
-		fmt.Printf("%s [unknown type=%s] %s\n", timestamp, entry.Type, entry.Message)
+			timestamp, stage, tr.GetSessionId(), tr.GetStreamId(), tr.GetConfidence(), tr.GetText())
 	}
+}
+
+func printAdapterLogEntryJSON(entry *apiv1.AdapterLogStreamEntry) {
+	var m map[string]interface{}
+	switch payload := entry.GetPayload().(type) {
+	case *apiv1.AdapterLogStreamEntry_Log:
+		log := payload.Log
+		m = map[string]interface{}{
+			"type":    "log",
+			"level":   log.GetLevel(),
+			"message": log.GetMessage(),
+		}
+		if log.GetTimestamp() != nil {
+			m["timestamp"] = log.GetTimestamp().AsTime().Format(time.RFC3339Nano)
+		}
+		if s := log.GetSlot(); s != "" {
+			m["slot"] = s
+		}
+		if id := log.GetAdapterId(); id != "" {
+			m["adapter_id"] = id
+		}
+	case *apiv1.AdapterLogStreamEntry_Transcript:
+		tr := payload.Transcript
+		m = map[string]interface{}{
+			"type":       "transcript",
+			"text":       tr.GetText(),
+			"confidence": tr.GetConfidence(),
+			"final":      tr.GetIsFinal(),
+		}
+		if tr.GetTimestamp() != nil {
+			m["timestamp"] = tr.GetTimestamp().AsTime().Format(time.RFC3339Nano)
+		}
+		if s := tr.GetSessionId(); s != "" {
+			m["session_id"] = s
+		}
+		if s := tr.GetStreamId(); s != "" {
+			m["stream_id"] = s
+		}
+	default:
+		return
+	}
+	data, err := json.Marshal(m)
+	if err != nil {
+		return
+	}
+	fmt.Println(string(data))
 }
 
 func adaptersBind(cmd *cobra.Command, args []string) error {
@@ -715,68 +722,36 @@ func adaptersStop(cmd *cobra.Command, args []string) error {
 	return adaptersStopGRPC(out, slot)
 }
 
-// --- HTTP transport handlers (register/install-local – no gRPC equivalent) ---
-
-func adaptersBindHTTP(out *OutputFormatter, slot, adapter string, raw json.RawMessage) error {
-	c, err := client.New()
-	if err != nil {
-		return out.Error("Failed to initialise client", err)
-	}
-	defer c.Close()
-
-	entry, err := postAdapterAction(c, "/adapters/bind", adapterActionRequestPayload{
-		Slot:      slot,
-		AdapterID: adapter,
-		Config:    raw,
-	})
-	if err != nil {
-		return out.Error("Failed to bind adapter", err)
-	}
-
-	if out.jsonMode {
-		return out.Print(apihttp.AdapterActionResult{Adapter: entry})
-	}
-
-	printAdapterSummary("Bound", entry)
-	return nil
-}
-
-func adaptersRegisterHTTP(out *OutputFormatter, payload apihttp.AdapterRegistrationRequest) (apihttp.AdapterDescriptor, error) {
-	c, err := client.New()
-	if err != nil {
-		return apihttp.AdapterDescriptor{}, out.Error("Failed to initialise client", err)
-	}
-	defer c.Close()
-
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return apihttp.AdapterDescriptor{}, out.Error("Failed to encode registration payload", err)
-	}
-
-	req, err := http.NewRequest(http.MethodPost, c.BaseURL()+"/adapters/register", bytes.NewReader(body))
-	if err != nil {
-		return apihttp.AdapterDescriptor{}, out.Error("Failed to create request", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := doRequest(c, req)
-	if err != nil {
-		return apihttp.AdapterDescriptor{}, out.Error("Failed to register adapter", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return apihttp.AdapterDescriptor{}, out.Error("Adapter registration failed", errors.New(readErrorMessage(resp)))
-	}
-
-	var result apihttp.AdapterRegistrationResult
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return apihttp.AdapterDescriptor{}, out.Error("Invalid response from daemon", err)
-	}
-	return result.Adapter, nil
-}
-
 // --- gRPC transport handlers ---
+
+func adaptersRegisterGRPC(out *OutputFormatter, req *apiv1.RegisterAdapterRequest) (*apiv1.RegisterAdapterResponse, error) {
+	gc, err := grpcclient.New()
+	if err != nil {
+		return nil, out.Error("Failed to connect to daemon via gRPC", err)
+	}
+	defer gc.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resp, err := gc.RegisterAdapter(ctx, req)
+	if err != nil {
+		return nil, out.Error("Failed to register adapter via gRPC", err)
+	}
+	return resp, nil
+}
+
+func adapterRegistrationResultFromProto(resp *apiv1.RegisterAdapterResponse) apihttp.AdapterRegistrationResult {
+	return apihttp.AdapterRegistrationResult{
+		Adapter: apihttp.AdapterDescriptor{
+			ID:      resp.GetAdapterId(),
+			Source:  resp.GetSource(),
+			Version: resp.GetVersion(),
+			Type:    resp.GetType(),
+			Name:    resp.GetName(),
+		},
+	}
+}
 
 func adaptersListGRPC(out *OutputFormatter) error {
 	gc, err := grpcclient.New()

@@ -584,7 +584,7 @@ message ConfigMigrateResponse {
   bool audio_settings_updated = 3;
 }
 
-// TransportConfig represents daemon transport settings (HTTP + gRPC bindings, TLS, CORS).
+// TransportConfig represents daemon transport settings (gRPC bindings, TLS).
 message TransportConfig {
   string binding = 1;
   int32 port = 2;

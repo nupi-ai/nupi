@@ -78,7 +78,7 @@ func (s *GRPCStreamSink) Close() {
 }
 
 // grpcUTF8Accumulator buffers incomplete UTF-8 runes so that partial sequences
-// are not sent to the client. This is identical to the WebSocket utf8Accumulator.
+// are not sent to the client.
 // Thread safety is provided by the caller (GRPCStreamSink.mu).
 type grpcUTF8Accumulator struct {
 	pending []byte
@@ -142,7 +142,7 @@ func (s *sessionsService) AttachSession(stream apiv1.SessionsService_AttachSessi
 		return status.Errorf(codes.NotFound, "session %s not found", sessionID)
 	}
 
-	// Generate a unique client ID for this gRPC stream (matches WebSocket's UUID per client).
+	// Generate a unique client ID for this gRPC stream.
 	clientID := fmt.Sprintf("grpc_%s", uuid.NewString())
 
 	// Create serialized sender to protect concurrent stream.Send() calls.
@@ -162,12 +162,12 @@ func (s *sessionsService) AttachSession(stream apiv1.SessionsService_AttachSessi
 		}
 	}()
 
-	// Register client with resize manager (parity with WebSocket handler).
+	// Register client with resize manager.
 	if s.api.resizeManager != nil {
 		s.api.resizeManager.RegisterClient(sessionID, clientID, nil)
 		defer s.api.resizeManager.UnregisterClient(sessionID, clientID)
 
-		// Send initial resize state to the newly attached client (parity with WebSocket handler).
+		// Send initial resize state to the newly attached client.
 		if state := s.api.resizeManager.Snapshot(sessionID); state != nil && state.Host != nil {
 			_ = sender.Send(&apiv1.AttachSessionResponse{
 				Payload: &apiv1.AttachSessionResponse_Event{

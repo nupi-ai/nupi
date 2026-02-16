@@ -7,7 +7,6 @@ import (
 	"time"
 
 	apiv1 "github.com/nupi-ai/nupi/internal/api/grpc/v1"
-	"github.com/nupi-ai/nupi/internal/client"
 	"github.com/nupi-ai/nupi/internal/grpcclient"
 	"github.com/spf13/cobra"
 )
@@ -148,45 +147,51 @@ func configTransport(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// configMigrate remains HTTP-based as there is no gRPC endpoint for config migration.
-func configMigrate(cmd *cobra.Command, args []string) error {
+func configMigrate(cmd *cobra.Command, _ []string) error {
 	out := newOutputFormatter(cmd)
 
-	c, err := client.New()
+	gc, err := grpcclient.New()
 	if err != nil {
 		return out.Error("Failed to connect to daemon", err)
 	}
-	defer c.Close()
+	defer gc.Close()
 
-	summary, err := runConfigMigration(c)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resp, err := gc.Migrate(ctx, &apiv1.ConfigMigrateRequest{})
 	if err != nil {
 		return out.Error("Failed to run configuration migration", err)
 	}
 
 	if out.jsonMode {
-		return out.Print(summary)
+		return out.Print(map[string]interface{}{
+			"updated_slots":          resp.GetUpdatedSlots(),
+			"pending_slots":          resp.GetPendingSlots(),
+			"audio_settings_updated": resp.GetAudioSettingsUpdated(),
+		})
 	}
 
 	fmt.Println("Configuration migration summary:")
-	if len(summary.UpdatedSlots) > 0 {
+	if len(resp.GetUpdatedSlots()) > 0 {
 		fmt.Println("  Updated slots:")
-		for _, slot := range summary.UpdatedSlots {
+		for _, slot := range resp.GetUpdatedSlots() {
 			fmt.Printf("    - %s\n", slot)
 		}
 	} else {
 		fmt.Println("  Updated slots: (none)")
 	}
 
-	if len(summary.PendingSlots) > 0 {
+	if len(resp.GetPendingSlots()) > 0 {
 		fmt.Println("  Pending quickstart slots:")
-		for _, slot := range summary.PendingSlots {
+		for _, slot := range resp.GetPendingSlots() {
 			fmt.Printf("    - %s\n", slot)
 		}
 	} else {
 		fmt.Println("  Pending quickstart slots: (none)")
 	}
 
-	if summary.AudioSettingsUpdated {
+	if resp.GetAudioSettingsUpdated() {
 		fmt.Println("  Audio settings: defaults reconciled")
 	} else {
 		fmt.Println("  Audio settings: already up-to-date")

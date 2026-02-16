@@ -1,20 +1,17 @@
 package main
 
 import (
-	"bytes"
-	"crypto/tls"
-	"encoding/json"
+	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"net/url"
 	"os"
 	"strings"
 	"time"
 
+	apiv1 "github.com/nupi-ai/nupi/internal/api/grpc/v1"
 	"github.com/nupi-ai/nupi/internal/bootstrap"
-	"github.com/nupi-ai/nupi/internal/client"
-	"github.com/nupi-ai/nupi/internal/tlswarn"
+	"github.com/nupi-ai/nupi/internal/grpcclient"
 	"github.com/spf13/cobra"
 )
 
@@ -54,8 +51,6 @@ func newPairRootCommand() *cobra.Command {
 	}
 	pairClaimCmd.Flags().String("code", "", "Pairing code provided by the daemon")
 	pairClaimCmd.Flags().String("name", "", "Optional name for this device")
-	pairClaimCmd.Flags().String("url", "", "Base URL of the daemon (e.g. https://host:port)")
-	pairClaimCmd.Flags().Bool("insecure", false, "Skip TLS verification when claiming pairing code")
 
 	pairRootCmd.AddCommand(pairClaimCmd)
 	return pairRootCmd
@@ -217,7 +212,7 @@ func bootstrapLogin(cmd *cobra.Command, args []string) error {
 	return out.Success("Bootstrap configuration saved", info)
 }
 
-func pairClaim(cmd *cobra.Command, args []string) error {
+func pairClaim(cmd *cobra.Command, _ []string) error {
 	out := newOutputFormatter(cmd)
 
 	code, _ := cmd.Flags().GetString("code")
@@ -226,69 +221,41 @@ func pairClaim(cmd *cobra.Command, args []string) error {
 		return out.Error("Pairing code is required", nil)
 	}
 	name, _ := cmd.Flags().GetString("name")
-	baseURL, _ := cmd.Flags().GetString("url")
-	baseURL = strings.TrimSpace(baseURL)
-	insecure, _ := cmd.Flags().GetBool("insecure")
 
-	if baseURL == "" {
-		if c, err := client.New(); err == nil {
-			baseURL = c.BaseURL()
-			c.Close()
-		} else {
-			return out.Error("Provide --url when local configuration is unavailable", err)
-		}
+	gc, err := grpcclient.New()
+	if err != nil {
+		return out.Error("Failed to connect to daemon via gRPC", err)
 	}
+	defer gc.Close()
 
-	pairURL := strings.TrimSuffix(baseURL, "/") + "/auth/pair"
-	body, err := json.Marshal(map[string]string{
-		"code": strings.ToUpper(code),
-		"name": strings.TrimSpace(name),
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := gc.ClaimPairing(ctx, &apiv1.ClaimPairingRequest{
+		Code:       strings.ToUpper(code),
+		ClientName: strings.TrimSpace(name),
 	})
-	if err != nil {
-		return out.Error("Failed to encode pairing payload", err)
-	}
-
-	httpClient := &http.Client{Timeout: 10 * time.Second}
-	if insecure {
-		tlswarn.LogInsecure()
-		httpClient.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12}} //nolint:gosec // user explicitly requested --insecure
-	}
-
-	req, err := http.NewRequest(http.MethodPost, pairURL, bytes.NewReader(body))
-	if err != nil {
-		return out.Error("Failed to create request", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := httpClient.Do(req)
 	if err != nil {
 		return out.Error("Failed to claim pairing code", err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return out.Error("Failed to claim pairing code", fmt.Errorf("%s", readErrorMessage(resp)))
-	}
-
-	var payload struct {
-		Token     string `json:"token"`
-		Name      string `json:"name"`
-		Role      string `json:"role"`
-		CreatedAt string `json:"created_at"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return out.Error("Invalid response from daemon", err)
-	}
 
 	if out.jsonMode {
-		return out.Print(payload)
+		result := map[string]interface{}{
+			"token": resp.GetToken(),
+			"name":  resp.GetName(),
+			"role":  resp.GetRole(),
+		}
+		if resp.GetCreatedAt() != nil {
+			result["created_at"] = resp.GetCreatedAt().AsTime().Format(time.RFC3339)
+		}
+		return out.Print(result)
 	}
 
 	fmt.Println("Pairing successful. Store this token securely:")
-	fmt.Printf("  Token: %s\n", payload.Token)
-	if strings.TrimSpace(payload.Name) != "" {
-		fmt.Printf("  Name:  %s\n", payload.Name)
+	fmt.Printf("  Token: %s\n", resp.GetToken())
+	if strings.TrimSpace(resp.GetName()) != "" {
+		fmt.Printf("  Name:  %s\n", resp.GetName())
 	}
-	fmt.Printf("  Role:  %s\n", payload.Role)
+	fmt.Printf("  Role:  %s\n", resp.GetRole())
 	return nil
 }
