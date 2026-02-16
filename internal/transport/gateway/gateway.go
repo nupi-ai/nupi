@@ -357,20 +357,6 @@ func tokenFromMetadata(ctx context.Context) string {
 		}
 	}
 
-	if values := md.Get("x-nupi-token"); len(values) > 0 {
-		token := strings.TrimSpace(values[0])
-		if token != "" {
-			return token
-		}
-	}
-
-	if values := md.Get("token"); len(values) > 0 {
-		token := strings.TrimSpace(values[0])
-		if token != "" {
-			return token
-		}
-	}
-
 	return ""
 }
 
