@@ -16,12 +16,13 @@ type gatewayService struct {
 	info    *RuntimeInfo
 }
 
-func newGatewayService(api *server.APIServer, info *RuntimeInfo) *gatewayService {
+func newGatewayService(api *server.APIServer, info *RuntimeInfo, grpcUnixSocket string) *gatewayService {
 	return &gatewayService{
 		gateway: transportgateway.New(api, transportgateway.Options{
 			RegisterGRPC: func(srv *grpc.Server) {
 				server.RegisterGRPCServices(api, srv)
 			},
+			GRPCUnixSocket: grpcUnixSocket,
 		}),
 		info: info,
 	}

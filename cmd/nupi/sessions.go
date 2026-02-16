@@ -1,16 +1,20 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
 	"strings"
+	"time"
 
-	"github.com/nupi-ai/nupi/internal/client"
-	"github.com/nupi-ai/nupi/internal/protocol"
+	apiv1 "github.com/nupi-ai/nupi/internal/api/grpc/v1"
+	"github.com/nupi-ai/nupi/internal/grpcclient"
 	"github.com/spf13/cobra"
-	"golang.org/x/crypto/ssh/terminal"
+	"golang.org/x/term"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func newRunCommand() *cobra.Command {
@@ -122,68 +126,94 @@ func runCommand(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Connect to daemon
-	c, err := client.New()
+	out := &OutputFormatter{jsonMode: jsonOutput}
+
+	// Connect to daemon via gRPC
+	c, err := grpcclient.New()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		return err
+		return out.Error("Failed to connect to daemon", err)
 	}
 	defer c.Close()
 
-	// Create session
-	opts := protocol.CreateSessionData{
-		Command:    command,
-		Args:       commandArgs,
-		WorkingDir: localWorkDir,
-		Env:        os.Environ(), // Pass all current environment variables
-		Detached:   localDetached,
-		Rows:       24,
-		Cols:       80,
-	}
-
-	// Get terminal size if available
-	if terminal.IsTerminal(0) {
-		if cols, rows, err := terminal.GetSize(0); err == nil {
-			opts.Cols = uint16(cols)
-			opts.Rows = uint16(rows)
+	// Get terminal size
+	var rows, cols uint32 = 24, 80
+	if term.IsTerminal(0) {
+		if w, h, err := term.GetSize(0); err == nil {
+			cols = uint32(w)
+			rows = uint32(h)
 		}
 	}
 
-	session, err := c.CreateSession(opts)
+	// Create session
+	createCtx, createCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer createCancel()
+
+	resp, err := c.CreateSession(createCtx, &apiv1.CreateSessionRequest{
+		Command:    command,
+		Args:       commandArgs,
+		WorkingDir: localWorkDir,
+		Env:        os.Environ(),
+		Detached:   localDetached,
+		Rows:       rows,
+		Cols:       cols,
+	})
 	if err != nil {
-		return fmt.Errorf("failed to create session: %w", err)
+		return out.Error("Failed to create session", err)
+	}
+
+	session := resp.GetSession()
+	if session == nil {
+		return out.Error("Failed to create session", fmt.Errorf("empty response"))
 	}
 
 	if localDetached {
-		out := &OutputFormatter{jsonMode: jsonOutput}
 		return out.Success("Session created and running in background", map[string]interface{}{
-			"session_id": session.ID,
+			"session_id": session.GetId(),
 			"command":    command,
 			"args":       commandArgs,
 		})
 	}
 
 	// Attach to the session
-	return attachToExistingSession(c, session.ID, true)
+	return attachToExistingSession(c, session.GetId(), true)
 }
 
 // listSessions lists all active sessions
 func listSessions(cmd *cobra.Command, args []string) error {
 	out := newOutputFormatter(cmd)
 
-	c, err := client.New()
+	c, err := grpcclient.New()
 	if err != nil {
 		return out.Error("Failed to connect to daemon", err)
 	}
 	defer c.Close()
 
-	sessions, err := c.ListSessions()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resp, err := c.ListSessions(ctx)
 	if err != nil {
 		return out.Error("Failed to list sessions", err)
 	}
 
+	sessions := resp.GetSessions()
+
 	if out.jsonMode {
-		return out.Print(map[string]interface{}{"sessions": sessions})
+		// Build JSON-compatible list.
+		list := make([]map[string]interface{}, 0, len(sessions))
+		for _, sess := range sessions {
+			entry := map[string]interface{}{
+				"id":      sess.GetId(),
+				"status":  sess.GetStatus(),
+				"command": sess.GetCommand(),
+				"args":    sess.GetArgs(),
+			}
+			if sess.GetPid() != 0 {
+				entry["pid"] = sess.GetPid()
+			}
+			list = append(list, entry)
+		}
+		return out.Print(map[string]interface{}{"sessions": list})
 	}
 
 	if len(sessions) == 0 {
@@ -197,10 +227,10 @@ func listSessions(cmd *cobra.Command, args []string) error {
 
 	for _, sess := range sessions {
 		fmt.Printf("%s\t%s\t\t%s %s\n",
-			sess.ID,
-			sess.Status,
-			sess.Command,
-			strings.Join(sess.Args, " "))
+			sess.GetId(),
+			sess.GetStatus(),
+			sess.GetCommand(),
+			strings.Join(sess.GetArgs(), " "))
 	}
 
 	return nil
@@ -210,10 +240,9 @@ func listSessions(cmd *cobra.Command, args []string) error {
 func attachToSession(cmd *cobra.Command, args []string) error {
 	sessionID := args[0]
 
-	c, err := client.New()
+	c, err := grpcclient.New()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		return err
+		return fmt.Errorf("failed to connect to daemon: %w", err)
 	}
 	defer c.Close()
 
@@ -223,53 +252,98 @@ func attachToSession(cmd *cobra.Command, args []string) error {
 	return attachToExistingSession(c, sessionID, true)
 }
 
-// attachToExistingSession handles the actual attachment
-func attachToExistingSession(c *client.Client, sessionID string, includeHistory bool) error {
-	// Attach to session
-	if err := c.AttachSession(sessionID, includeHistory); err != nil {
-		return fmt.Errorf("failed to attach: %w", err)
+// attachToExistingSession handles the actual attachment via gRPC bidirectional streaming.
+func attachToExistingSession(c *grpcclient.Client, sessionID string, includeHistory bool) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	stream, err := c.AttachSession(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to open attach stream: %w", err)
 	}
 
-	// Set terminal to raw mode if available
-	var oldState *terminal.State
-	if terminal.IsTerminal(0) {
+	// Send init message.
+	if err := stream.Send(&apiv1.AttachSessionRequest{
+		Payload: &apiv1.AttachSessionRequest_Init{
+			Init: &apiv1.AttachInit{
+				SessionId:      sessionID,
+				IncludeHistory: includeHistory,
+			},
+		},
+	}); err != nil {
+		return fmt.Errorf("failed to send init: %w", err)
+	}
+
+	// Set terminal to raw mode if available.
+	var oldState *term.State
+	if term.IsTerminal(0) {
 		var err error
-		oldState, err = terminal.MakeRaw(0)
+		oldState, err = term.MakeRaw(0)
 		if err != nil {
 			return fmt.Errorf("failed to set raw mode: %w", err)
 		}
-		defer terminal.Restore(0, oldState)
+		defer term.Restore(0, oldState)
 	}
 
-	// Handle signals
+	// Handle signals.
 	sigChan := make(chan os.Signal, 2)
 	notifyAttachSignals(sigChan)
 	defer signal.Stop(sigChan)
 
 	sendResize := func() {
-		if !terminal.IsTerminal(0) {
+		if !term.IsTerminal(0) {
 			return
 		}
-		cols, rows, err := terminal.GetSize(0)
+		cols, rows, err := term.GetSize(0)
 		if err != nil {
 			return
 		}
-		if err := c.ResizeSession(sessionID, cols, rows, nil); err != nil && !strings.Contains(err.Error(), "session") {
-			fmt.Fprintf(os.Stderr, "Warning: failed to notify resize: %v\n", err)
-		}
+		_ = stream.Send(&apiv1.AttachSessionRequest{
+			Payload: &apiv1.AttachSessionRequest_Resize{
+				Resize: &apiv1.ResizeRequest{
+					Cols:   uint32(cols),
+					Rows:   uint32(rows),
+					Source: "host",
+				},
+			},
+		})
 	}
 
-	// Send initial resize snapshot so modes know local host geometry
+	// Send initial resize snapshot so modes know local host geometry.
 	sendResize()
 
-	// Stream output in goroutine
-	errChan := make(chan error, 1)
+	// Error/completion channel.
+	errChan := make(chan error, 2)
+
+	// Output goroutine: receive stream responses and write to stdout.
 	go func() {
-		err := c.StreamOutput(os.Stdout)
-		errChan <- err // Send nil or error
+		for {
+			resp, err := stream.Recv()
+			if err != nil {
+				if err == io.EOF {
+					errChan <- nil
+				} else {
+					errChan <- err
+				}
+				return
+			}
+
+			switch payload := resp.GetPayload().(type) {
+			case *apiv1.AttachSessionResponse_Output:
+				if len(payload.Output) > 0 {
+					os.Stdout.Write(payload.Output)
+				}
+			case *apiv1.AttachSessionResponse_Event:
+				evt := payload.Event
+				if evt.GetType() == apiv1.SessionEventType_SESSION_EVENT_TYPE_KILLED {
+					errChan <- nil
+					return
+				}
+			}
+		}
 	}()
 
-	// Handle input from stdin to session
+	// Input goroutine: read from stdin and send on stream.
 	go func() {
 		buffer := make([]byte, 1024)
 		for {
@@ -281,10 +355,11 @@ func attachToExistingSession(c *client.Client, sessionID string, includeHistory 
 				return
 			}
 			if n > 0 {
-				if err := c.SendInput(sessionID, buffer[:n]); err != nil {
-					if !strings.Contains(err.Error(), "broken pipe") {
-						errChan <- err
-					}
+				if sendErr := stream.Send(&apiv1.AttachSessionRequest{
+					Payload: &apiv1.AttachSessionRequest_Input{
+						Input: buffer[:n],
+					},
+				}); sendErr != nil {
 					return
 				}
 			}
@@ -300,13 +375,28 @@ func attachToExistingSession(c *client.Client, sessionID string, includeHistory 
 			}
 			// Non-resize signal (SIGINT or SIGTERM) — detach.
 			fmt.Println("\nDetaching from session...")
-			c.DetachSession()
+			_ = stream.Send(&apiv1.AttachSessionRequest{
+				Payload: &apiv1.AttachSessionRequest_Control{
+					Control: "detach",
+				},
+			})
+			_ = stream.CloseSend()
 			return nil
 		case err := <-errChan:
-			if err != nil && !strings.Contains(err.Error(), "EOF") {
-				return err
+			if err == nil {
+				return nil
 			}
-			return nil
+			// Treat expected gRPC stream termination conditions as clean exit.
+			if st, ok := status.FromError(err); ok {
+				switch st.Code() {
+				case codes.Canceled, codes.Unavailable:
+					return nil
+				}
+			}
+			if strings.Contains(err.Error(), "EOF") {
+				return nil
+			}
+			return err
 		}
 	}
 }
@@ -358,58 +448,64 @@ func inspectCommand(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Connect to daemon
-	c, err := client.New()
+	out := &OutputFormatter{jsonMode: jsonOutput}
+
+	// Connect to daemon via gRPC
+	c, err := grpcclient.New()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		return err
+		return out.Error("Failed to connect to daemon", err)
 	}
 	defer c.Close()
 
-	// Create session with inspect mode enabled
-	opts := protocol.CreateSessionData{
-		Command:    command,
-		Args:       commandArgs,
-		WorkingDir: localWorkDir,
-		Env:        os.Environ(), // Pass all current environment variables
-		Detached:   localDetached,
-		Rows:       24,
-		Cols:       80,
-		Inspect:    true, // Enable inspection mode
-	}
-
-	// Get terminal size if available
-	if terminal.IsTerminal(0) {
-		if cols, rows, err := terminal.GetSize(0); err == nil {
-			opts.Cols = uint16(cols)
-			opts.Rows = uint16(rows)
+	// Get terminal size
+	var rows, cols uint32 = 24, 80
+	if term.IsTerminal(0) {
+		if w, h, err := term.GetSize(0); err == nil {
+			cols = uint32(w)
+			rows = uint32(h)
 		}
 	}
 
-	session, err := c.CreateSession(opts)
+	// Create session with inspect mode enabled
+	createCtx, createCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer createCancel()
+
+	resp, err := c.CreateSession(createCtx, &apiv1.CreateSessionRequest{
+		Command:    command,
+		Args:       commandArgs,
+		WorkingDir: localWorkDir,
+		Env:        os.Environ(),
+		Detached:   localDetached,
+		Rows:       rows,
+		Cols:       cols,
+		Inspect:    true,
+	})
 	if err != nil {
-		return fmt.Errorf("failed to create session: %w", err)
+		return out.Error("Failed to create session", err)
 	}
 
-	out := &OutputFormatter{jsonMode: jsonOutput}
+	session := resp.GetSession()
+	if session == nil {
+		return out.Error("Failed to create session", fmt.Errorf("empty response"))
+	}
 
 	if localDetached {
 		return out.Success("Session created in inspection mode", map[string]interface{}{
-			"session_id":  session.ID,
+			"session_id":  session.GetId(),
 			"command":     command,
 			"args":        commandArgs,
 			"inspect":     true,
-			"output_file": fmt.Sprintf("~/.nupi/inspect/%s.raw", session.ID),
+			"output_file": fmt.Sprintf("~/.nupi/inspect/%s.raw", session.GetId()),
 		})
 	}
 
 	// Show inspection mode notice in human-readable mode only
 	if !out.jsonMode {
-		fmt.Printf("\033[33mInspection mode enabled. Raw output will be saved to ~/.nupi/inspect/%s.raw\033[0m\n", session.ID)
+		fmt.Printf("\033[33mInspection mode enabled. Raw output will be saved to ~/.nupi/inspect/%s.raw\033[0m\n", session.GetId())
 	}
 
 	// Attach to the session
-	return attachToExistingSession(c, session.ID, true)
+	return attachToExistingSession(c, session.GetId(), true)
 }
 
 // killSession kills a running session
@@ -417,15 +513,18 @@ func killSession(cmd *cobra.Command, args []string) error {
 	sessionID := args[0]
 	out := newOutputFormatter(cmd)
 
-	c, err := client.New()
+	c, err := grpcclient.New()
 	if err != nil {
 		return out.Error("Failed to connect to daemon", err)
 	}
 	defer c.Close()
 
-	if err := c.KillSession(sessionID); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if _, err := c.KillSession(ctx, sessionID); err != nil {
 		errMsg := "Failed to kill session"
-		if strings.Contains(strings.ToLower(err.Error()), "not found") {
+		if st, ok := status.FromError(err); ok && st.Code() == codes.NotFound {
 			errMsg = fmt.Sprintf("Session %s not found", sessionID)
 		}
 		return out.Error(errMsg, err)

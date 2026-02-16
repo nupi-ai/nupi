@@ -1,13 +1,14 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
+	"context"
 	"fmt"
-	"net/http"
 	"strings"
+	"time"
 
+	apiv1 "github.com/nupi-ai/nupi/internal/api/grpc/v1"
 	"github.com/nupi-ai/nupi/internal/client"
+	"github.com/nupi-ai/nupi/internal/grpcclient"
 	"github.com/spf13/cobra"
 )
 
@@ -49,147 +50,105 @@ func newConfigCommand() *cobra.Command {
 func configTransport(cmd *cobra.Command, args []string) error {
 	out := newOutputFormatter(cmd)
 
-	c, err := client.New()
+	gc, err := grpcclient.New()
 	if err != nil {
 		return out.Error("Failed to connect to daemon", err)
 	}
-	defer c.Close()
+	defer gc.Close()
 
-	baseURL, _, err := resolveDaemonBaseURL(c)
-	if err != nil {
-		return out.Error("Failed to resolve daemon HTTP endpoint", err)
-	}
 	flags := cmd.Flags()
 
-	payload := make(map[string]interface{})
-	if flags.Changed("binding") {
-		binding, _ := flags.GetString("binding")
-		payload["binding"] = binding
-	}
-	if flags.Changed("port") {
-		p, _ := flags.GetInt("port")
-		payload["port"] = p
-	}
-	if flags.Changed("tls-cert") {
-		path, _ := flags.GetString("tls-cert")
-		payload["tls_cert_path"] = path
-	}
-	if flags.Changed("tls-key") {
-		path, _ := flags.GetString("tls-key")
-		payload["tls_key_path"] = path
-	}
-	if flags.Changed("allowed-origin") {
-		origins, _ := flags.GetStringSlice("allowed-origin")
-		payload["allowed_origins"] = origins
-	}
-	if flags.Changed("grpc-port") {
-		gp, _ := flags.GetInt("grpc-port")
-		payload["grpc_port"] = gp
-	}
-	if flags.Changed("grpc-binding") {
-		gb, _ := flags.GetString("grpc-binding")
-		payload["grpc_binding"] = gb
-	}
+	// Check if any update flags were provided.
+	hasUpdate := flags.Changed("binding") || flags.Changed("port") ||
+		flags.Changed("tls-cert") || flags.Changed("tls-key") ||
+		flags.Changed("allowed-origin") || flags.Changed("grpc-port") ||
+		flags.Changed("grpc-binding")
 
-	var newToken string
+	if hasUpdate {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
 
-	if len(payload) > 0 {
-		body, err := json.Marshal(payload)
-		if err != nil {
-			return out.Error("Failed to encode update payload", err)
+		updateCfg := &apiv1.TransportConfig{}
+		if flags.Changed("binding") {
+			binding, _ := flags.GetString("binding")
+			updateCfg.Binding = binding
+		}
+		if flags.Changed("port") {
+			p, _ := flags.GetInt("port")
+			updateCfg.Port = int32(p)
+		}
+		if flags.Changed("tls-cert") {
+			path, _ := flags.GetString("tls-cert")
+			updateCfg.TlsCertPath = path
+		}
+		if flags.Changed("tls-key") {
+			path, _ := flags.GetString("tls-key")
+			updateCfg.TlsKeyPath = path
+		}
+		if flags.Changed("allowed-origin") {
+			origins, _ := flags.GetStringSlice("allowed-origin")
+			updateCfg.AllowedOrigins = origins
+		}
+		if flags.Changed("grpc-port") {
+			gp, _ := flags.GetInt("grpc-port")
+			updateCfg.GrpcPort = int32(gp)
+		}
+		if flags.Changed("grpc-binding") {
+			gb, _ := flags.GetString("grpc-binding")
+			updateCfg.GrpcBinding = gb
 		}
 
-		req, err := http.NewRequest(http.MethodPut, baseURL+"/config/transport", bytes.NewReader(body))
-		if err != nil {
-			return out.Error("Failed to construct update request", err)
-		}
-		req.Header.Set("Content-Type", "application/json")
-
-		resp, err := doRequest(c, req)
-		if err != nil {
+		if _, err := gc.UpdateTransportConfig(ctx, updateCfg); err != nil {
 			return out.Error("Failed to update transport configuration", err)
 		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode >= 300 {
-			msg := readErrorMessage(resp)
-			return out.Error("Transport configuration update failed", fmt.Errorf("%s", msg))
-		}
-
-		if resp.StatusCode == http.StatusOK {
-			var updateResp struct {
-				Status    string `json:"status"`
-				Binding   string `json:"binding"`
-				AuthToken string `json:"auth_token"`
-			}
-			if err := json.NewDecoder(resp.Body).Decode(&updateResp); err != nil {
-				return out.Error("Invalid response from daemon", err)
-			}
-			newToken = strings.TrimSpace(updateResp.AuthToken)
-		} else if resp.StatusCode != http.StatusNoContent {
-			msg := readErrorMessage(resp)
-			return out.Error("Unexpected response while updating transport configuration", fmt.Errorf("%s", msg))
-		}
 	}
 
-	req, err := http.NewRequest(http.MethodGet, baseURL+"/config/transport", nil)
-	if err != nil {
-		return out.Error("Failed to create request", err)
-	}
-	resp, err := doStreamingRequest(c, req)
+	// Fetch current config.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cfg, err := gc.TransportConfig(ctx)
 	if err != nil {
 		return out.Error("Failed to fetch transport configuration", err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		msg := readErrorMessage(resp)
-		return out.Error("Failed to fetch transport configuration", fmt.Errorf("%s", msg))
-	}
-
-	var cfg transportConfigResponse
-	if err := json.NewDecoder(resp.Body).Decode(&cfg); err != nil {
-		return out.Error("Invalid response from daemon", err)
-	}
 
 	if out.jsonMode {
-		payload := map[string]interface{}{
-			"config": cfg,
-		}
-		if newToken != "" {
-			payload["new_api_token"] = newToken
-		}
-		return out.Print(payload)
+		return out.Print(map[string]interface{}{
+			"config": map[string]interface{}{
+				"binding":         cfg.GetBinding(),
+				"port":            cfg.GetPort(),
+				"tls_cert_path":   cfg.GetTlsCertPath(),
+				"tls_key_path":    cfg.GetTlsKeyPath(),
+				"allowed_origins": cfg.GetAllowedOrigins(),
+				"grpc_port":       cfg.GetGrpcPort(),
+				"grpc_binding":    cfg.GetGrpcBinding(),
+				"auth_required":   cfg.GetAuthRequired(),
+			},
+		})
 	}
 
 	fmt.Println("Transport configuration:")
-	fmt.Printf("  Binding: %s\n", cfg.Binding)
-	fmt.Printf("  HTTP Port: %d\n", cfg.Port)
-	fmt.Printf("  gRPC Binding: %s\n", cfg.GRPCBinding)
-	fmt.Printf("  gRPC Port: %d\n", cfg.GRPCPort)
-	if cfg.TLSCertPath != "" {
-		fmt.Printf("  TLS Cert: %s\n", cfg.TLSCertPath)
+	fmt.Printf("  Binding: %s\n", cfg.GetBinding())
+	fmt.Printf("  HTTP Port: %d\n", cfg.GetPort())
+	fmt.Printf("  gRPC Binding: %s\n", cfg.GetGrpcBinding())
+	fmt.Printf("  gRPC Port: %d\n", cfg.GetGrpcPort())
+	if cfg.GetTlsCertPath() != "" {
+		fmt.Printf("  TLS Cert: %s\n", cfg.GetTlsCertPath())
 	}
-	if cfg.TLSKeyPath != "" {
-		fmt.Printf("  TLS Key: %s\n", cfg.TLSKeyPath)
+	if cfg.GetTlsKeyPath() != "" {
+		fmt.Printf("  TLS Key: %s\n", cfg.GetTlsKeyPath())
 	}
-	if len(cfg.AllowedOrigins) > 0 {
-		fmt.Printf("  Allowed Origins: %s\n", strings.Join(cfg.AllowedOrigins, ", "))
+	if len(cfg.GetAllowedOrigins()) > 0 {
+		fmt.Printf("  Allowed Origins: %s\n", strings.Join(cfg.GetAllowedOrigins(), ", "))
 	} else {
 		fmt.Println("  Allowed Origins: (none)")
 	}
-	fmt.Printf("  Auth Required: %v\n", cfg.AuthRequired)
-
-	if newToken != "" {
-		fmt.Println()
-		fmt.Println("A new API token was generated:")
-		fmt.Printf("  %s\n", newToken)
-		fmt.Println("Store it securely; it will be required for LAN/public connections.")
-	}
+	fmt.Printf("  Auth Required: %v\n", cfg.GetAuthRequired())
 
 	return nil
 }
 
+// configMigrate remains HTTP-based as there is no gRPC endpoint for config migration.
 func configMigrate(cmd *cobra.Command, args []string) error {
 	out := newOutputFormatter(cmd)
 

@@ -37,8 +37,6 @@ func newAdaptersCommand() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	adaptersCmd.PersistentFlags().Bool("grpc", false, "Use gRPC transport for adapter operations")
-
 	adaptersRegisterCmd := &cobra.Command{
 		Use:           "register",
 		Short:         "Register or update an adapter",
@@ -177,11 +175,7 @@ func adaptersList(cmd *cobra.Command, _ []string) error {
 		fmt.Fprintln(os.Stderr, "Hint: use 'nupi plugins list' for a unified view of all plugins")
 	}
 
-	useGRPC, _ := cmd.Flags().GetBool("grpc")
-	if useGRPC {
-		return adaptersListGRPC(out)
-	}
-	return adaptersListHTTP(out)
+	return adaptersListGRPC(out)
 }
 
 func adaptersRegister(cmd *cobra.Command, _ []string) error {
@@ -264,11 +258,6 @@ func adaptersRegister(cmd *cobra.Command, _ []string) error {
 			Args:      append([]string(nil), argsOpt...),
 			Env:       endpointEnv,
 		}
-	}
-
-	useGRPC, _ := cmd.Flags().GetBool("grpc")
-	if useGRPC {
-		return out.Error("Adapter registration is only available over HTTP. Use without --grpc flag", errors.New("register RPC not in proto"))
 	}
 
 	payload := apihttp.AdapterRegistrationRequest{
@@ -551,11 +540,12 @@ func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 
 	configRaw, _ := cmd.Flags().GetString("config")
 	configRaw = strings.TrimSpace(configRaw)
+	if configRaw != "" && !json.Valid([]byte(configRaw)) {
+		return out.Error("Config must be valid JSON", errors.New("invalid config payload"))
+	}
+
 	var bindConfig json.RawMessage
 	if configRaw != "" {
-		if !json.Valid([]byte(configRaw)) {
-			return out.Error("Config must be valid JSON", errors.New("invalid config payload"))
-		}
 		bindConfig = json.RawMessage(configRaw)
 	}
 
@@ -571,11 +561,6 @@ func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 
 func adaptersLogs(cmd *cobra.Command, _ []string) error {
 	out := newOutputFormatter(cmd)
-
-	useGRPC, _ := cmd.Flags().GetBool("grpc")
-	if useGRPC {
-		return out.Error("Adapter logs are only available over HTTP. Use without --grpc flag", errors.New("logs RPC not in proto"))
-	}
 
 	slot, _ := cmd.Flags().GetString("slot")
 	adapter, _ := cmd.Flags().GetString("adapter")
@@ -700,19 +685,12 @@ func adaptersBind(cmd *cobra.Command, args []string) error {
 		return out.Error("Failed to read --config flag", err)
 	}
 
-	var raw json.RawMessage
-	if trimmed := strings.TrimSpace(cfg); trimmed != "" {
-		if !json.Valid([]byte(trimmed)) {
-			return out.Error("Config must be valid JSON", fmt.Errorf("invalid config payload"))
-		}
-		raw = json.RawMessage(trimmed)
+	cfgTrimmed := strings.TrimSpace(cfg)
+	if cfgTrimmed != "" && !json.Valid([]byte(cfgTrimmed)) {
+		return out.Error("Config must be valid JSON", fmt.Errorf("invalid config payload"))
 	}
 
-	useGRPC, _ := cmd.Flags().GetBool("grpc")
-	if useGRPC {
-		return adaptersBindGRPC(out, slot, adapter, string(raw))
-	}
-	return adaptersBindHTTP(out, slot, adapter, raw)
+	return adaptersBindGRPC(out, slot, adapter, cfgTrimmed)
 }
 
 func adaptersStart(cmd *cobra.Command, args []string) error {
@@ -723,11 +701,7 @@ func adaptersStart(cmd *cobra.Command, args []string) error {
 		return out.Error("Slot must be provided", errors.New("invalid arguments"))
 	}
 
-	useGRPC, _ := cmd.Flags().GetBool("grpc")
-	if useGRPC {
-		return adaptersStartGRPC(out, slot)
-	}
-	return adaptersStartHTTP(out, slot)
+	return adaptersStartGRPC(out, slot)
 }
 
 func adaptersStop(cmd *cobra.Command, args []string) error {
@@ -738,40 +712,10 @@ func adaptersStop(cmd *cobra.Command, args []string) error {
 		return out.Error("Slot must be provided", errors.New("invalid arguments"))
 	}
 
-	useGRPC, _ := cmd.Flags().GetBool("grpc")
-	if useGRPC {
-		return adaptersStopGRPC(out, slot)
-	}
-	return adaptersStopHTTP(out, slot)
+	return adaptersStopGRPC(out, slot)
 }
 
-// --- HTTP transport handlers ---
-
-func adaptersListHTTP(out *OutputFormatter) error {
-	c, err := client.New()
-	if err != nil {
-		return out.Error("Failed to initialise client", err)
-	}
-	defer c.Close()
-
-	overview, err := fetchAdaptersOverview(c)
-	if err != nil {
-		return out.Error("Failed to fetch adapters overview", err)
-	}
-
-	if out.jsonMode {
-		return out.Print(overview)
-	}
-
-	if len(overview.Adapters) == 0 {
-		fmt.Println("No adapter slots found.")
-		return nil
-	}
-
-	printAdapterTable(overview.Adapters)
-	printAdapterRuntimeMessages(overview.Adapters)
-	return nil
-}
+// --- HTTP transport handlers (register/install-local – no gRPC equivalent) ---
 
 func adaptersBindHTTP(out *OutputFormatter, slot, adapter string, raw json.RawMessage) error {
 	c, err := client.New()
@@ -794,46 +738,6 @@ func adaptersBindHTTP(out *OutputFormatter, slot, adapter string, raw json.RawMe
 	}
 
 	printAdapterSummary("Bound", entry)
-	return nil
-}
-
-func adaptersStartHTTP(out *OutputFormatter, slot string) error {
-	c, err := client.New()
-	if err != nil {
-		return out.Error("Failed to initialise client", err)
-	}
-	defer c.Close()
-
-	entry, err := postAdapterAction(c, "/adapters/start", adapterActionRequestPayload{Slot: slot})
-	if err != nil {
-		return out.Error("Failed to start adapter", err)
-	}
-
-	if out.jsonMode {
-		return out.Print(apihttp.AdapterActionResult{Adapter: entry})
-	}
-
-	printAdapterSummary("Started", entry)
-	return nil
-}
-
-func adaptersStopHTTP(out *OutputFormatter, slot string) error {
-	c, err := client.New()
-	if err != nil {
-		return out.Error("Failed to initialise client", err)
-	}
-	defer c.Close()
-
-	entry, err := postAdapterAction(c, "/adapters/stop", adapterActionRequestPayload{Slot: slot})
-	if err != nil {
-		return out.Error("Failed to stop adapter", err)
-	}
-
-	if out.jsonMode {
-		return out.Print(apihttp.AdapterActionResult{Adapter: entry})
-	}
-
-	printAdapterSummary("Stopped", entry)
 	return nil
 }
 

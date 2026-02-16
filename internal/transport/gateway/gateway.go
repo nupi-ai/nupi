@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,6 +28,10 @@ import (
 type Options struct {
 	// RegisterGRPC allows callers to register additional gRPC services on the shared server.
 	RegisterGRPC func(*grpc.Server)
+	// GRPCUnixSocket is an optional Unix socket path on which the gRPC server
+	// will also listen. When set, the same gRPC server serves on both the TCP
+	// listener and this Unix socket.
+	GRPCUnixSocket string
 }
 
 // ListenerInfo represents a single listener started by the gateway.
@@ -46,14 +53,15 @@ type Gateway struct {
 	apiServer *server.APIServer
 	opts      Options
 
-	mu           sync.RWMutex
-	httpPrepared *server.PreparedHTTPServer
-	httpListener net.Listener
-	grpcServer   *grpc.Server
-	grpcListener net.Listener
-	errCh        chan error
-	wg           sync.WaitGroup
-	info         Info
+	mu               sync.RWMutex
+	httpPrepared     *server.PreparedHTTPServer
+	httpListener     net.Listener
+	grpcServer       *grpc.Server
+	grpcListener     net.Listener
+	grpcUnixListener net.Listener
+	errCh            chan error
+	wg               sync.WaitGroup
+	info             Info
 }
 
 // New constructs a Gateway bound to the provided API server.
@@ -134,11 +142,44 @@ func (g *Gateway) Start(ctx context.Context) (*Info, error) {
 		g.opts.RegisterGRPC(grpcServer)
 	}
 
+	// Optionally create a Unix socket listener for the same gRPC server.
+	var grpcUnixListener net.Listener
+	if g.opts.GRPCUnixSocket != "" {
+		if err := os.MkdirAll(filepath.Dir(g.opts.GRPCUnixSocket), 0o755); err != nil {
+			_ = httpListener.Close()
+			_ = grpcListener.Close()
+			return nil, fmt.Errorf("gateway: create grpc socket dir: %w", err)
+		}
+		if err := os.Remove(g.opts.GRPCUnixSocket); err != nil && !errors.Is(err, os.ErrNotExist) {
+			_ = httpListener.Close()
+			_ = grpcListener.Close()
+			return nil, fmt.Errorf("gateway: remove existing grpc socket: %w", err)
+		}
+		grpcUnixListener, err = net.Listen("unix", g.opts.GRPCUnixSocket)
+		if err != nil {
+			_ = httpListener.Close()
+			_ = grpcListener.Close()
+			return nil, fmt.Errorf("gateway: listen grpc unix: %w", err)
+		}
+		if err := os.Chmod(g.opts.GRPCUnixSocket, 0o600); err != nil {
+			_ = httpListener.Close()
+			_ = grpcListener.Close()
+			_ = grpcUnixListener.Close()
+			return nil, fmt.Errorf("gateway: chmod grpc socket: %w", err)
+		}
+	}
+
+	numListeners := 2
+	if grpcUnixListener != nil {
+		numListeners = 3
+	}
+
 	g.httpPrepared = prepared
 	g.httpListener = httpListener
 	g.grpcServer = grpcServer
 	g.grpcListener = grpcListener
-	g.errCh = make(chan error, 2)
+	g.grpcUnixListener = grpcUnixListener
+	g.errCh = make(chan error, numListeners)
 	g.info = Info{
 		HTTP: ListenerInfo{
 			Scheme:  prepared.Scheme,
@@ -155,9 +196,13 @@ func (g *Gateway) Start(ctx context.Context) (*Info, error) {
 	}
 	errCh := g.errCh
 
-	g.wg.Add(2)
+	g.wg.Add(numListeners)
 	go g.serveHTTP(ctx, prepared, httpListener)
 	go g.serveGRPC(ctx, grpcServer, grpcListener)
+	if grpcUnixListener != nil {
+		go g.serveGRPC(ctx, grpcServer, grpcUnixListener)
+		log.Printf("Transport gateway gRPC Unix socket listening on %s", g.opts.GRPCUnixSocket)
+	}
 
 	go func(ch chan error) {
 		g.wg.Wait()
@@ -241,11 +286,13 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 	g.mu.Lock()
 	httpListener := g.httpListener
 	grpcListener := g.grpcListener
+	grpcUnixListener := g.grpcUnixListener
 	grpcServer := g.grpcServer
 	prepared := g.httpPrepared
 	errCh := g.errCh
 	g.httpListener = nil
 	g.grpcListener = nil
+	g.grpcUnixListener = nil
 	g.grpcServer = nil
 	g.httpPrepared = nil
 	g.errCh = nil
@@ -260,6 +307,9 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 	}
 	if grpcListener != nil {
 		_ = grpcListener.Close()
+	}
+	if grpcUnixListener != nil {
+		_ = grpcUnixListener.Close()
 	}
 
 	if prepared != nil {
@@ -285,6 +335,11 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 	}
 
 	g.wg.Wait()
+
+	// Clean up Unix socket file.
+	if g.opts.GRPCUnixSocket != "" {
+		_ = os.Remove(g.opts.GRPCUnixSocket)
+	}
 
 	if errCh != nil {
 		select {

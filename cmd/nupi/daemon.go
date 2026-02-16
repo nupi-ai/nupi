@@ -1,22 +1,20 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
-	"net/http"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/nupi-ai/nupi/internal/client"
+	apiv1 "github.com/nupi-ai/nupi/internal/api/grpc/v1"
 	"github.com/nupi-ai/nupi/internal/config"
 	"github.com/nupi-ai/nupi/internal/grpcclient"
 	"github.com/nupi-ai/nupi/internal/procutil"
 	"github.com/spf13/cobra"
+	"google.golang.org/grpc/codes"
+	grpcstatus "google.golang.org/grpc/status"
 )
 
 func newDaemonCommand() *cobra.Command {
@@ -34,7 +32,6 @@ func newDaemonCommand() *cobra.Command {
 		SilenceErrors: true,
 		RunE:          daemonStatus,
 	}
-	daemonStatusCmd.Flags().Bool("grpc", false, "Use gRPC transport for daemon status")
 
 	daemonStopCmd := &cobra.Command{
 		Use:           "stop",
@@ -115,69 +112,38 @@ func newDaemonCommand() *cobra.Command {
 	return daemonCmd
 }
 
-// daemonStatus gets the daemon status
+// daemonStatus gets the daemon status via gRPC
 func daemonStatus(cmd *cobra.Command, args []string) error {
 	out := newOutputFormatter(cmd)
-	useGRPC, _ := cmd.Flags().GetBool("grpc")
 
-	if useGRPC {
-		gc, err := grpcclient.New()
-		if err != nil {
-			return out.Error("Failed to connect to daemon via gRPC", err)
-		}
-		defer gc.Close()
-
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		resp, err := gc.DaemonStatus(ctx)
-		if err != nil {
-			return out.Error("Failed to fetch daemon status via gRPC", err)
-		}
-
-		status := map[string]interface{}{
-			"version":        resp.GetVersion(),
-			"sessions_count": resp.GetSessionsCount(),
-			"port":           resp.GetPort(),
-			"grpc_port":      resp.GetGrpcPort(),
-			"binding":        resp.GetBinding(),
-			"grpc_binding":   resp.GetGrpcBinding(),
-			"auth_required":  resp.GetAuthRequired(),
-		}
-		if resp.GetUptimeSec() > 0 {
-			status["uptime"] = resp.GetUptimeSec()
-		}
-		if resp.GetTlsEnabled() {
-			status["tls_enabled"] = true
-		}
-
-		if out.jsonMode {
-			return out.Print(status)
-		}
-
-		fmt.Println("Daemon Status (gRPC):")
-		fmt.Printf("  Version: %v\n", status["version"])
-		fmt.Printf("  Sessions: %v\n", status["sessions_count"])
-		fmt.Printf("  Port: %v\n", status["port"])
-		fmt.Printf("  gRPC Port: %v\n", status["grpc_port"])
-		fmt.Printf("  Binding: %v\n", status["binding"])
-		fmt.Printf("  gRPC Binding: %v\n", status["grpc_binding"])
-		fmt.Printf("  Auth Required: %v\n", status["auth_required"])
-		if uptime, ok := status["uptime"]; ok {
-			fmt.Printf("  Uptime: %v seconds\n", uptime)
-		}
-		return nil
-	}
-
-	c, err := client.New()
+	gc, err := grpcclient.New()
 	if err != nil {
 		return out.Error("Failed to connect to daemon", err)
 	}
-	defer c.Close()
+	defer gc.Close()
 
-	_, status, err := resolveDaemonBaseURL(c)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resp, err := gc.DaemonStatus(ctx)
 	if err != nil {
-		return out.Error("Failed to resolve daemon HTTP endpoint", err)
+		return out.Error("Failed to fetch daemon status", err)
+	}
+
+	status := map[string]interface{}{
+		"version":        resp.GetVersion(),
+		"sessions_count": resp.GetSessionsCount(),
+		"port":           resp.GetPort(),
+		"grpc_port":      resp.GetGrpcPort(),
+		"binding":        resp.GetBinding(),
+		"grpc_binding":   resp.GetGrpcBinding(),
+		"auth_required":  resp.GetAuthRequired(),
+	}
+	if resp.GetUptimeSec() > 0 {
+		status["uptime"] = resp.GetUptimeSec()
+	}
+	if resp.GetTlsEnabled() {
+		status["tls_enabled"] = true
 	}
 
 	if out.jsonMode {
@@ -188,55 +154,47 @@ func daemonStatus(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  Version: %v\n", status["version"])
 	fmt.Printf("  Sessions: %v\n", status["sessions_count"])
 	fmt.Printf("  Port: %v\n", status["port"])
-	if grpcPort, ok := status["grpc_port"]; ok {
-		fmt.Printf("  gRPC Port: %v\n", grpcPort)
-	}
-	if binding, ok := status["binding"]; ok {
-		fmt.Printf("  Binding: %v\n", binding)
-	}
-	if grpcBinding, ok := status["grpc_binding"]; ok {
-		fmt.Printf("  gRPC Binding: %v\n", grpcBinding)
-	}
-	if authRequired, ok := status["auth_required"]; ok {
-		fmt.Printf("  Auth Required: %v\n", authRequired)
-	}
+	fmt.Printf("  gRPC Port: %v\n", status["grpc_port"])
+	fmt.Printf("  Binding: %v\n", status["binding"])
+	fmt.Printf("  gRPC Binding: %v\n", status["grpc_binding"])
+	fmt.Printf("  Auth Required: %v\n", status["auth_required"])
 	if uptime, ok := status["uptime"]; ok {
 		fmt.Printf("  Uptime: %v seconds\n", uptime)
 	}
-
 	return nil
 }
 
-// daemonStop stops the daemon
+// daemonStop stops the daemon via gRPC with signal fallback
 func daemonStop(cmd *cobra.Command, args []string) error {
 	out := newOutputFormatter(cmd)
 
 	var (
-		apiErr      error
-		apiAttempt  bool
-		apiFallback bool
+		apiErr     error
+		apiAttempt bool
 	)
 
-	if c, err := client.New(); err == nil {
+	if gc, err := grpcclient.New(); err == nil {
 		apiAttempt = true
-		defer c.Close()
-		if err := c.ShutdownDaemon(); err == nil {
+		defer gc.Close()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		if _, err := gc.Shutdown(ctx); err == nil {
 			return out.Success("Shutdown request sent to daemon", map[string]any{
-				"method": "api",
+				"method": "grpc",
 			})
 		} else {
 			apiErr = err
-			if strings.Contains(strings.ToLower(err.Error()), "unauthorized") {
+			if st, ok := grpcstatus.FromError(err); ok && st.Code() == codes.Unauthenticated {
 				return out.Error("Daemon shutdown requires admin privileges", err)
-			}
-			if errors.Is(err, client.ErrShutdownUnavailable) {
-				apiFallback = true
 			}
 		}
 	} else {
 		apiErr = err
 	}
 
+	// Fallback to PID-based signal.
 	paths := config.GetInstancePaths("")
 	data, err := os.ReadFile(paths.Lock)
 	if err != nil {
@@ -258,63 +216,58 @@ func daemonStop(cmd *cobra.Command, args []string) error {
 	return out.Success("Sent termination signal to daemon", map[string]any{
 		"pid":          pid,
 		"method":       "signal",
-		"api_fallback": apiFallback || apiErr != nil,
+		"api_fallback": apiErr != nil,
 	})
 }
 
 func tokensList(cmd *cobra.Command, args []string) error {
 	out := newOutputFormatter(cmd)
 
-	c, err := client.New()
+	gc, err := grpcclient.New()
 	if err != nil {
 		return out.Error("Failed to connect to daemon", err)
 	}
-	defer c.Close()
+	defer gc.Close()
 
-	req, err := http.NewRequest(http.MethodGet, c.BaseURL()+"/auth/tokens", nil)
-	if err != nil {
-		return out.Error("Failed to create request", err)
-	}
-	resp, err := doRequest(c, req)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resp, err := gc.ListTokens(ctx)
 	if err != nil {
 		return out.Error("Failed to list tokens", err)
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return out.Error("Failed to list tokens", fmt.Errorf("%s", readErrorMessage(resp)))
-	}
-
-	var payload struct {
-		Tokens []struct {
-			ID          string `json:"id"`
-			Name        string `json:"name"`
-			Role        string `json:"role"`
-			MaskedToken string `json:"masked_token"`
-			CreatedAt   string `json:"created_at"`
-		} `json:"tokens"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return out.Error("Invalid response from daemon", err)
-	}
+	tokens := resp.GetTokens()
 
 	if out.jsonMode {
-		return out.Print(payload)
+		list := make([]map[string]interface{}, 0, len(tokens))
+		for _, tok := range tokens {
+			entry := map[string]interface{}{
+				"id":           tok.GetId(),
+				"name":         tok.GetName(),
+				"role":         tok.GetRole(),
+				"masked_token": tok.GetMaskedValue(),
+			}
+			if tok.GetCreatedAt() != nil {
+				entry["created_at"] = tok.GetCreatedAt().AsTime().UTC().Format(time.RFC3339)
+			}
+			list = append(list, entry)
+		}
+		return out.Print(map[string]interface{}{"tokens": list})
 	}
 
-	if len(payload.Tokens) == 0 {
+	if len(tokens) == 0 {
 		fmt.Println("No API tokens configured")
 		return nil
 	}
 
 	fmt.Println("API tokens:")
-	for _, tok := range payload.Tokens {
-		name := tok.Name
+	for _, tok := range tokens {
+		name := tok.GetName()
 		if strings.TrimSpace(name) == "" {
 			name = "-"
 		}
-		fmt.Printf("  ID: %-12s  Role: %-9s  Name: %-20s  Token: %s\n", tok.ID, tok.Role, name, tok.MaskedToken)
+		fmt.Printf("  ID: %-12s  Role: %-9s  Name: %-20s  Token: %s\n", tok.GetId(), tok.GetRole(), name, tok.GetMaskedValue())
 	}
 
 	return nil
@@ -322,12 +275,6 @@ func tokensList(cmd *cobra.Command, args []string) error {
 
 func tokensCreate(cmd *cobra.Command, args []string) error {
 	out := newOutputFormatter(cmd)
-
-	c, err := client.New()
-	if err != nil {
-		return out.Error("Failed to connect to daemon", err)
-	}
-	defer c.Close()
 
 	name, _ := cmd.Flags().GetString("name")
 	role, _ := cmd.Flags().GetString("role")
@@ -339,50 +286,44 @@ func tokensCreate(cmd *cobra.Command, args []string) error {
 		return out.Error("Role must be 'admin' or 'read-only'", nil)
 	}
 
-	body, err := json.Marshal(map[string]string{
-		"name": strings.TrimSpace(name),
-		"role": role,
-	})
+	gc, err := grpcclient.New()
 	if err != nil {
-		return out.Error("Failed to encode request", err)
+		return out.Error("Failed to connect to daemon", err)
 	}
+	defer gc.Close()
 
-	req, err := http.NewRequest(http.MethodPost, c.BaseURL()+"/auth/tokens", bytes.NewReader(body))
-	if err != nil {
-		return out.Error("Failed to create request", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := doRequest(c, req)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resp, err := gc.CreateToken(ctx, &apiv1.CreateTokenRequest{
+		Name: strings.TrimSpace(name),
+		Role: role,
+	})
 	if err != nil {
 		return out.Error("Failed to create token", err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return out.Error("Failed to create token", fmt.Errorf("%s", readErrorMessage(resp)))
-	}
-
-	var payload struct {
-		Token string `json:"token"`
-		ID    string `json:"id"`
-		Name  string `json:"name"`
-		Role  string `json:"role"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return out.Error("Invalid response from daemon", err)
-	}
 
 	if out.jsonMode {
+		payload := map[string]interface{}{
+			"token": resp.GetToken(),
+		}
+		if info := resp.GetInfo(); info != nil {
+			payload["id"] = info.GetId()
+			payload["name"] = info.GetName()
+			payload["role"] = info.GetRole()
+		}
 		return out.Print(payload)
 	}
 
 	fmt.Println("New API token:")
-	fmt.Printf("  Token: %s\n", payload.Token)
-	fmt.Printf("  ID:    %s\n", payload.ID)
-	if strings.TrimSpace(payload.Name) != "" {
-		fmt.Printf("  Name:  %s\n", payload.Name)
+	fmt.Printf("  Token: %s\n", resp.GetToken())
+	if info := resp.GetInfo(); info != nil {
+		fmt.Printf("  ID:    %s\n", info.GetId())
+		if strings.TrimSpace(info.GetName()) != "" {
+			fmt.Printf("  Name:  %s\n", info.GetName())
+		}
+		fmt.Printf("  Role:  %s\n", info.GetRole())
 	}
-	fmt.Printf("  Role:  %s\n", payload.Role)
 	fmt.Println("Store this token securely; it will not be shown again.")
 	return nil
 }
@@ -400,37 +341,20 @@ func tokensDelete(cmd *cobra.Command, args []string) error {
 		return out.Error("Provide a token or --id", nil)
 	}
 
-	c, err := client.New()
+	gc, err := grpcclient.New()
 	if err != nil {
 		return out.Error("Failed to connect to daemon", err)
 	}
-	defer c.Close()
+	defer gc.Close()
 
-	payload := map[string]string{}
-	if token != "" {
-		payload["token"] = token
-	}
-	if idFlag != "" {
-		payload["id"] = idFlag
-	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return out.Error("Failed to encode request payload", err)
-	}
-	req, err := http.NewRequest(http.MethodDelete, c.BaseURL()+"/auth/tokens", bytes.NewReader(body))
-	if err != nil {
-		return out.Error("Failed to construct delete request", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
-	resp, err := doRequest(c, req)
-	if err != nil {
+	if err := gc.DeleteToken(ctx, &apiv1.DeleteTokenRequest{
+		Id:    idFlag,
+		Token: token,
+	}); err != nil {
 		return out.Error("Failed to delete token", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusNoContent {
-		return out.Error("Failed to delete token", fmt.Errorf("%s", readErrorMessage(resp)))
 	}
 
 	if out.jsonMode {
@@ -443,12 +367,6 @@ func tokensDelete(cmd *cobra.Command, args []string) error {
 
 func daemonPairCreate(cmd *cobra.Command, args []string) error {
 	out := newOutputFormatter(cmd)
-
-	c, err := client.New()
-	if err != nil {
-		return out.Error("Failed to connect to daemon", err)
-	}
-	defer c.Close()
 
 	name, _ := cmd.Flags().GetString("name")
 	role, _ := cmd.Flags().GetString("role")
@@ -464,53 +382,44 @@ func daemonPairCreate(cmd *cobra.Command, args []string) error {
 		return out.Error("Pairing code validity (--expires-in) must be a positive number of seconds", nil)
 	}
 
-	body, err := json.Marshal(map[string]any{
-		"name":               strings.TrimSpace(name),
-		"role":               role,
-		"expires_in_seconds": expiresIn,
+	gc, err := grpcclient.New()
+	if err != nil {
+		return out.Error("Failed to connect to daemon", err)
+	}
+	defer gc.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resp, err := gc.CreatePairing(ctx, &apiv1.CreatePairingRequest{
+		Name:             strings.TrimSpace(name),
+		Role:             role,
+		ExpiresInSeconds: int32(expiresIn),
 	})
-	if err != nil {
-		return out.Error("Failed to encode pairing request", err)
-	}
-
-	req, err := http.NewRequest(http.MethodPost, c.BaseURL()+"/auth/pairings", bytes.NewReader(body))
-	if err != nil {
-		return out.Error("Failed to create request", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := doRequest(c, req)
 	if err != nil {
 		return out.Error("Failed to create pairing", err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return out.Error("Failed to create pairing", fmt.Errorf("%s", readErrorMessage(resp)))
-	}
-
-	var payload struct {
-		Code      string `json:"pair_code"`
-		Name      string `json:"name"`
-		Role      string `json:"role"`
-		ExpiresAt string `json:"expires_at"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return out.Error("Invalid response from daemon", err)
-	}
 
 	if out.jsonMode {
+		payload := map[string]interface{}{
+			"pair_code": resp.GetCode(),
+			"name":      resp.GetName(),
+			"role":      resp.GetRole(),
+		}
+		if resp.GetExpiresAt() != nil {
+			payload["expires_at"] = resp.GetExpiresAt().AsTime().UTC().Format(time.RFC3339)
+		}
 		return out.Print(payload)
 	}
 
 	fmt.Println("Pairing code created:")
-	fmt.Printf("  Code:   %s\n", payload.Code)
-	if strings.TrimSpace(payload.Name) != "" {
-		fmt.Printf("  Name:   %s\n", payload.Name)
+	fmt.Printf("  Code:   %s\n", resp.GetCode())
+	if strings.TrimSpace(resp.GetName()) != "" {
+		fmt.Printf("  Name:   %s\n", resp.GetName())
 	}
-	fmt.Printf("  Role:   %s\n", payload.Role)
-	if payload.ExpiresAt != "" {
-		fmt.Printf("  Expires: %s\n", payload.ExpiresAt)
+	fmt.Printf("  Role:   %s\n", resp.GetRole())
+	if resp.GetExpiresAt() != nil {
+		fmt.Printf("  Expires: %s\n", resp.GetExpiresAt().AsTime().UTC().Format(time.RFC3339))
 	}
 	fmt.Println("Share this code with the device you want to pair.")
 	return nil
@@ -519,56 +428,57 @@ func daemonPairCreate(cmd *cobra.Command, args []string) error {
 func daemonPairList(cmd *cobra.Command, args []string) error {
 	out := newOutputFormatter(cmd)
 
-	c, err := client.New()
+	gc, err := grpcclient.New()
 	if err != nil {
 		return out.Error("Failed to connect to daemon", err)
 	}
-	defer c.Close()
+	defer gc.Close()
 
-	req, err := http.NewRequest(http.MethodGet, c.BaseURL()+"/auth/pairings", nil)
-	if err != nil {
-		return out.Error("Failed to create request", err)
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
-	resp, err := doRequest(c, req)
+	resp, err := gc.ListPairings(ctx)
 	if err != nil {
 		return out.Error("Failed to list pairings", err)
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return out.Error("Failed to list pairings", fmt.Errorf("%s", readErrorMessage(resp)))
-	}
-
-	var payload struct {
-		Pairings []struct {
-			Code      string `json:"code"`
-			Name      string `json:"name"`
-			Role      string `json:"role"`
-			CreatedAt string `json:"created_at"`
-			ExpiresAt string `json:"expires_at"`
-		} `json:"pairings"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return out.Error("Invalid response from daemon", err)
-	}
+	pairings := resp.GetPairings()
 
 	if out.jsonMode {
-		return out.Print(payload)
+		list := make([]map[string]interface{}, 0, len(pairings))
+		for _, p := range pairings {
+			entry := map[string]interface{}{
+				"code": p.GetCode(),
+				"name": p.GetName(),
+				"role": p.GetRole(),
+			}
+			if p.GetCreatedAt() != nil {
+				entry["created_at"] = p.GetCreatedAt().AsTime().UTC().Format(time.RFC3339)
+			}
+			if p.GetExpiresAt() != nil {
+				entry["expires_at"] = p.GetExpiresAt().AsTime().UTC().Format(time.RFC3339)
+			}
+			list = append(list, entry)
+		}
+		return out.Print(map[string]interface{}{"pairings": list})
 	}
 
-	if len(payload.Pairings) == 0 {
+	if len(pairings) == 0 {
 		fmt.Println("No active pairing codes")
 		return nil
 	}
 
 	fmt.Println("Active pairing codes:")
-	for _, pairing := range payload.Pairings {
-		name := pairing.Name
+	for _, p := range pairings {
+		name := p.GetName()
 		if strings.TrimSpace(name) == "" {
 			name = "-"
 		}
-		fmt.Printf("  Code: %s  Role: %-9s  Name: %-20s  Expires: %s\n", pairing.Code, pairing.Role, name, pairing.ExpiresAt)
+		expiresAt := ""
+		if p.GetExpiresAt() != nil {
+			expiresAt = p.GetExpiresAt().AsTime().UTC().Format(time.RFC3339)
+		}
+		fmt.Printf("  Code: %s  Role: %-9s  Name: %-20s  Expires: %s\n", p.GetCode(), p.GetRole(), name, expiresAt)
 	}
 	return nil
 }

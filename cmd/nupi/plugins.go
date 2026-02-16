@@ -1,14 +1,16 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"text/tabwriter"
+	"time"
 
-	"github.com/nupi-ai/nupi/internal/client"
+	"github.com/nupi-ai/nupi/internal/grpcclient"
 	manifestpkg "github.com/nupi-ai/nupi/internal/plugins/manifest"
 	toolhandlers "github.com/nupi-ai/nupi/internal/plugins/tool_handlers"
 	"github.com/spf13/cobra"
@@ -96,26 +98,31 @@ This shows the current state from the most recent plugin discovery scan. Warning
 disappear when manifests are fixed and the daemon reloads plugins (e.g., after restart
 or config change). For historical tracking, check daemon logs.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		c, err := client.New()
+		gc, err := grpcclient.New()
 		if err != nil {
 			return fmt.Errorf("failed to connect to daemon: %w", err)
 		}
+		defer gc.Close()
 
-		count, warnings, err := c.GetPluginWarnings()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		resp, err := gc.GetPluginWarnings(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to get plugin warnings: %w", err)
 		}
 
-		if count == 0 {
+		warnings := resp.GetWarnings()
+		if len(warnings) == 0 {
 			fmt.Println("No plugin discovery warnings.")
 			fmt.Println("All plugins loaded successfully.")
 			return nil
 		}
 
-		fmt.Printf("Found %d plugin(s) with warnings:\n\n", count)
+		fmt.Printf("Found %d plugin(s) with warnings:\n\n", len(warnings))
 		for i, w := range warnings {
-			fmt.Printf("%d. %s\n", i+1, w.Dir)
-			fmt.Printf("   Error: %s\n\n", w.Error)
+			fmt.Printf("%d. %s\n", i+1, w.GetDir())
+			fmt.Printf("   Error: %s\n\n", w.GetError())
 		}
 
 		return nil
@@ -271,16 +278,21 @@ func listAllPlugins(pluginDir string) ([]pluginRow, error) {
 // enrichWithDaemonData tries to fetch adapter runtime data from the daemon.
 // Returns true if the daemon connection succeeded.
 func enrichWithDaemonData(rows []pluginRow) bool {
-	c, err := client.New()
+	gc, err := grpcclient.New()
 	if err != nil {
 		return false
 	}
-	defer c.Close()
+	defer gc.Close()
 
-	overview, err := fetchAdaptersOverview(c)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resp, err := gc.AdaptersOverview(ctx)
 	if err != nil {
 		return false
 	}
+
+	overview := adaptersOverviewFromProto(resp)
 
 	// Build lookup map: catalog/slug -> AdapterEntry
 	adapterMap := make(map[string]int, len(overview.Adapters))
