@@ -137,7 +137,7 @@ func daemonStatus(cmd *cobra.Command, args []string) error {
 
 		status := map[string]interface{}{
 			"version":        resp.GetVersion(),
-			"sessions_count": resp.GetSessions(),
+			"sessions_count": resp.GetSessionsCount(),
 			"port":           resp.GetPort(),
 			"grpc_port":      resp.GetGrpcPort(),
 			"binding":        resp.GetBinding(),
@@ -146,6 +146,9 @@ func daemonStatus(cmd *cobra.Command, args []string) error {
 		}
 		if resp.GetUptimeSec() > 0 {
 			status["uptime"] = resp.GetUptimeSec()
+		}
+		if resp.GetTlsEnabled() {
+			status["tls_enabled"] = true
 		}
 
 		if out.jsonMode {

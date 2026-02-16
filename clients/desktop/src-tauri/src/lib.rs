@@ -22,6 +22,7 @@ use tauri_plugin_shell::ShellExt;
 use tokio::sync::watch;
 
 mod installer;
+mod proto;
 mod rest_client;
 mod settings;
 

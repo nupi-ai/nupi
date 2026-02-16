@@ -1005,7 +1005,12 @@ func adapterEntryFromProto(entry *apiv1.AdapterEntry) apihttp.AdapterEntry {
 		Slot:      entry.GetSlot(),
 		Status:    entry.GetStatus(),
 		Config:    entry.GetConfigJson(),
-		UpdatedAt: entry.GetUpdatedAt(),
+		UpdatedAt: func() string {
+			if ts := entry.GetUpdatedAt(); ts != nil {
+				return ts.AsTime().UTC().Format(time.RFC3339)
+			}
+			return ""
+		}(),
 	}
 	if entry.AdapterId != nil {
 		id := strings.TrimSpace(entry.GetAdapterId())
