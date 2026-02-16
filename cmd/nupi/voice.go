@@ -318,9 +318,11 @@ func voiceInterrupt(cmd *cobra.Command, defaultReason string) error {
 		return out.Error("Session ID is required", nil)
 	}
 	streamID := strings.TrimSpace(cmd.Flag("stream").Value.String())
-	reason := strings.TrimSpace(cmd.Flag("reason").Value.String())
-	if reason == "" {
-		reason = defaultReason
+	reason := defaultReason
+	if f := cmd.Flag("reason"); f != nil {
+		if v := strings.TrimSpace(f.Value.String()); v != "" {
+			reason = v
+		}
 	}
 	if streamID == "" {
 		streamID = slots.TTS

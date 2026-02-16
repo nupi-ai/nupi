@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -562,7 +563,21 @@ func adaptersLogs(cmd *cobra.Command, _ []string) error {
 	}
 	defer gc.Close()
 
-	stream, err := gc.StreamAdapterLogs(context.Background(), &apiv1.StreamAdapterLogsRequest{
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, os.Interrupt)
+	defer signal.Stop(sigs)
+	go func() {
+		select {
+		case <-sigs:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+
+	stream, err := gc.StreamAdapterLogs(ctx, &apiv1.StreamAdapterLogsRequest{
 		Slot:    slot,
 		Adapter: adapter,
 	})
