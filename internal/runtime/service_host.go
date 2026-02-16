@@ -27,6 +27,7 @@ type ServiceHost struct {
 type Option func(*serviceRegistration)
 
 type serviceRegistration struct {
+	mu              sync.Mutex // serialises Restart calls for this registration
 	name            string
 	factory         ServiceFactory
 	service         Service
@@ -154,7 +155,8 @@ func (h *ServiceHost) Stop(ctx context.Context) error {
 	return stopErr
 }
 
-// Restart stops and starts the given service.
+// Restart stops and starts the given service. Concurrent calls for the same
+// service are serialised by reg.mu to prevent leaked instances.
 func (h *ServiceHost) Restart(ctx context.Context, name string) error {
 	h.mu.Lock()
 	if !h.started {
@@ -167,6 +169,9 @@ func (h *ServiceHost) Restart(ctx context.Context, name string) error {
 	if reg == nil {
 		return fmt.Errorf("runtime: service %q not registered", name)
 	}
+
+	reg.mu.Lock()
+	defer reg.mu.Unlock()
 
 	if reg.service != nil {
 		timeout := reg.shutdownTimeout

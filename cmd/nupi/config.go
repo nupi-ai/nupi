@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	apiv1 "github.com/nupi-ai/nupi/internal/api/grpc/v1"
@@ -27,10 +26,8 @@ func newConfigCommand() *cobra.Command {
 		RunE:          configTransport,
 	}
 	configTransportCmd.Flags().String("binding", "", "Set binding mode (loopback|lan|public)")
-	configTransportCmd.Flags().Int("port", 0, "Set HTTP port (0 for auto-select)")
 	configTransportCmd.Flags().String("tls-cert", "", "Set TLS certificate path")
 	configTransportCmd.Flags().String("tls-key", "", "Set TLS key path")
-	configTransportCmd.Flags().StringSlice("allowed-origin", nil, "Allowed origins for HTTP API (repeatable)")
 	configTransportCmd.Flags().Int("grpc-port", 0, "Set gRPC port (0 for auto-select)")
 	configTransportCmd.Flags().String("grpc-binding", "", "Set gRPC binding (loopback|lan|public)")
 
@@ -58,10 +55,9 @@ func configTransport(cmd *cobra.Command, args []string) error {
 	flags := cmd.Flags()
 
 	// Check if any update flags were provided.
-	hasUpdate := flags.Changed("binding") || flags.Changed("port") ||
+	hasUpdate := flags.Changed("binding") ||
 		flags.Changed("tls-cert") || flags.Changed("tls-key") ||
-		flags.Changed("allowed-origin") || flags.Changed("grpc-port") ||
-		flags.Changed("grpc-binding")
+		flags.Changed("grpc-port") || flags.Changed("grpc-binding")
 
 	if hasUpdate {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -72,10 +68,6 @@ func configTransport(cmd *cobra.Command, args []string) error {
 			binding, _ := flags.GetString("binding")
 			updateCfg.Binding = binding
 		}
-		if flags.Changed("port") {
-			p, _ := flags.GetInt("port")
-			updateCfg.Port = int32(p)
-		}
 		if flags.Changed("tls-cert") {
 			path, _ := flags.GetString("tls-cert")
 			updateCfg.TlsCertPath = path
@@ -83,10 +75,6 @@ func configTransport(cmd *cobra.Command, args []string) error {
 		if flags.Changed("tls-key") {
 			path, _ := flags.GetString("tls-key")
 			updateCfg.TlsKeyPath = path
-		}
-		if flags.Changed("allowed-origin") {
-			origins, _ := flags.GetStringSlice("allowed-origin")
-			updateCfg.AllowedOrigins = origins
 		}
 		if flags.Changed("grpc-port") {
 			gp, _ := flags.GetInt("grpc-port")
@@ -114,21 +102,18 @@ func configTransport(cmd *cobra.Command, args []string) error {
 	if out.jsonMode {
 		return out.Print(map[string]interface{}{
 			"config": map[string]interface{}{
-				"binding":         cfg.GetBinding(),
-				"port":            cfg.GetPort(),
-				"tls_cert_path":   cfg.GetTlsCertPath(),
-				"tls_key_path":    cfg.GetTlsKeyPath(),
-				"allowed_origins": cfg.GetAllowedOrigins(),
-				"grpc_port":       cfg.GetGrpcPort(),
-				"grpc_binding":    cfg.GetGrpcBinding(),
-				"auth_required":   cfg.GetAuthRequired(),
+				"binding":       cfg.GetBinding(),
+				"tls_cert_path": cfg.GetTlsCertPath(),
+				"tls_key_path":  cfg.GetTlsKeyPath(),
+				"grpc_port":     cfg.GetGrpcPort(),
+				"grpc_binding":  cfg.GetGrpcBinding(),
+				"auth_required": cfg.GetAuthRequired(),
 			},
 		})
 	}
 
 	fmt.Println("Transport configuration:")
 	fmt.Printf("  Binding: %s\n", cfg.GetBinding())
-	fmt.Printf("  HTTP Port: %d\n", cfg.GetPort())
 	fmt.Printf("  gRPC Binding: %s\n", cfg.GetGrpcBinding())
 	fmt.Printf("  gRPC Port: %d\n", cfg.GetGrpcPort())
 	if cfg.GetTlsCertPath() != "" {
@@ -136,11 +121,6 @@ func configTransport(cmd *cobra.Command, args []string) error {
 	}
 	if cfg.GetTlsKeyPath() != "" {
 		fmt.Printf("  TLS Key: %s\n", cfg.GetTlsKeyPath())
-	}
-	if len(cfg.GetAllowedOrigins()) > 0 {
-		fmt.Printf("  Allowed Origins: %s\n", strings.Join(cfg.GetAllowedOrigins(), ", "))
-	} else {
-		fmt.Println("  Allowed Origins: (none)")
 	}
 	fmt.Printf("  Auth Required: %v\n", cfg.GetAuthRequired())
 
