@@ -13,6 +13,7 @@ import (
 	apiv1 "github.com/nupi-ai/nupi/internal/api/grpc/v1"
 	"github.com/nupi-ai/nupi/internal/bootstrap"
 	"github.com/nupi-ai/nupi/internal/client"
+	"github.com/nupi-ai/nupi/internal/config"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -24,11 +25,14 @@ import (
 type Client struct {
 	conn           *grpc.ClientConn
 	daemon         apiv1.DaemonServiceClient
+	sessions       apiv1.SessionsServiceClient
 	config         apiv1.ConfigServiceClient
 	adapters       apiv1.AdaptersServiceClient
 	quickstart     apiv1.QuickstartServiceClient
 	adapterRuntime apiv1.AdapterRuntimeServiceClient
 	audio          apiv1.AudioServiceClient
+	auth           apiv1.AuthServiceClient
+	recordings     apiv1.RecordingsServiceClient
 	token          string
 }
 
@@ -45,7 +49,57 @@ func New() (*Client, error) {
 		return newExplicit(boot.BaseURL, boot)
 	}
 
-	return newFromStore()
+	c, err := newFromStore()
+	if err != nil {
+		// Fall back to Unix socket if TCP config is unavailable.
+		sockClient, sockErr := newFromUnixSocket()
+		if sockErr == nil {
+			return sockClient, nil
+		}
+		return nil, err
+	}
+	return c, nil
+}
+
+// NewUnixSocket creates a client connected via Unix socket at the default path.
+func NewUnixSocket() (*Client, error) {
+	return newFromUnixSocket()
+}
+
+func newFromUnixSocket() (*Client, error) {
+	paths := config.GetInstancePaths("")
+	sockPath := paths.Socket
+
+	token := strings.TrimSpace(os.Getenv("NUPI_API_TOKEN"))
+	if token == "" {
+		// Try loading token from config store.
+		_, tokens, err := client.LoadTransportSettings()
+		if err == nil && len(tokens) > 0 {
+			token = tokens[0]
+		}
+	}
+
+	return dialUnixSocket(sockPath, token)
+}
+
+func dialUnixSocket(sockPath string, token string) (*Client, error) {
+	opts := []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(ctx context.Context, addr string) (net.Conn, error) {
+			return net.DialTimeout("unix", sockPath, 5*time.Second)
+		}),
+		grpc.WithBlock(),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, err := grpc.DialContext(ctx, "unix:"+sockPath, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("grpc: dial unix %s: %w", sockPath, err)
+	}
+
+	return newClientFromConn(conn, token), nil
 }
 
 func newFromStore() (*Client, error) {
@@ -134,16 +188,23 @@ func dial(address string, tlsConfig *tls.Config, token string) (*Client, error) 
 		return nil, fmt.Errorf("grpc: dial %s: %w", address, err)
 	}
 
+	return newClientFromConn(conn, token), nil
+}
+
+func newClientFromConn(conn *grpc.ClientConn, token string) *Client {
 	return &Client{
 		conn:           conn,
 		daemon:         apiv1.NewDaemonServiceClient(conn),
+		sessions:       apiv1.NewSessionsServiceClient(conn),
 		config:         apiv1.NewConfigServiceClient(conn),
 		adapters:       apiv1.NewAdaptersServiceClient(conn),
 		quickstart:     apiv1.NewQuickstartServiceClient(conn),
 		adapterRuntime: apiv1.NewAdapterRuntimeServiceClient(conn),
 		audio:          apiv1.NewAudioServiceClient(conn),
+		auth:           apiv1.NewAuthServiceClient(conn),
+		recordings:     apiv1.NewRecordingsServiceClient(conn),
 		token:          strings.TrimSpace(token),
-	}, nil
+	}
 }
 
 func (c *Client) Close() error {
@@ -153,10 +214,66 @@ func (c *Client) Close() error {
 	return nil
 }
 
+// ─── DaemonService ───
+
 func (c *Client) DaemonStatus(ctx context.Context) (*apiv1.DaemonStatusResponse, error) {
 	ctx = c.attachToken(ctx)
 	return c.daemon.Status(ctx, &apiv1.DaemonStatusRequest{})
 }
+
+func (c *Client) Shutdown(ctx context.Context) (*apiv1.ShutdownResponse, error) {
+	ctx = c.attachToken(ctx)
+	return c.daemon.Shutdown(ctx, &apiv1.ShutdownRequest{})
+}
+
+func (c *Client) GetPluginWarnings(ctx context.Context) (*apiv1.GetPluginWarningsResponse, error) {
+	ctx = c.attachToken(ctx)
+	return c.daemon.GetPluginWarnings(ctx, &apiv1.GetPluginWarningsRequest{})
+}
+
+// ─── SessionsService ───
+
+func (c *Client) ListSessions(ctx context.Context) (*apiv1.ListSessionsResponse, error) {
+	ctx = c.attachToken(ctx)
+	return c.sessions.ListSessions(ctx, &apiv1.ListSessionsRequest{})
+}
+
+func (c *Client) CreateSession(ctx context.Context, req *apiv1.CreateSessionRequest) (*apiv1.CreateSessionResponse, error) {
+	ctx = c.attachToken(ctx)
+	return c.sessions.CreateSession(ctx, req)
+}
+
+func (c *Client) GetSession(ctx context.Context, sessionID string) (*apiv1.GetSessionResponse, error) {
+	ctx = c.attachToken(ctx)
+	return c.sessions.GetSession(ctx, &apiv1.GetSessionRequest{SessionId: sessionID})
+}
+
+func (c *Client) KillSession(ctx context.Context, sessionID string) (*apiv1.KillSessionResponse, error) {
+	ctx = c.attachToken(ctx)
+	return c.sessions.KillSession(ctx, &apiv1.KillSessionRequest{SessionId: sessionID})
+}
+
+func (c *Client) SendInput(ctx context.Context, req *apiv1.SendInputRequest) (*apiv1.SendInputResponse, error) {
+	ctx = c.attachToken(ctx)
+	return c.sessions.SendInput(ctx, req)
+}
+
+func (c *Client) AttachSession(ctx context.Context) (apiv1.SessionsService_AttachSessionClient, error) {
+	ctx = c.attachToken(ctx)
+	return c.sessions.AttachSession(ctx)
+}
+
+func (c *Client) GetSessionMode(ctx context.Context, sessionID string) (*apiv1.GetSessionModeResponse, error) {
+	ctx = c.attachToken(ctx)
+	return c.sessions.GetSessionMode(ctx, &apiv1.GetSessionModeRequest{SessionId: sessionID})
+}
+
+func (c *Client) SetSessionMode(ctx context.Context, req *apiv1.SetSessionModeRequest) (*apiv1.SetSessionModeResponse, error) {
+	ctx = c.attachToken(ctx)
+	return c.sessions.SetSessionMode(ctx, req)
+}
+
+// ─── ConfigService ───
 
 func (c *Client) TransportConfig(ctx context.Context) (*apiv1.TransportConfig, error) {
 	ctx = c.attachToken(ctx)
@@ -167,6 +284,8 @@ func (c *Client) UpdateTransportConfig(ctx context.Context, cfg *apiv1.Transport
 	ctx = c.attachToken(ctx)
 	return c.config.UpdateTransportConfig(ctx, &apiv1.UpdateTransportConfigRequest{Config: cfg})
 }
+
+// ─── AdaptersService ───
 
 func (c *Client) ListAdapters(ctx context.Context) (*apiv1.ListAdaptersResponse, error) {
 	ctx = c.attachToken(ctx)
@@ -189,6 +308,8 @@ func (c *Client) ClearAdapterBinding(ctx context.Context, slot string) error {
 	return err
 }
 
+// ─── QuickstartService ───
+
 func (c *Client) QuickstartStatus(ctx context.Context) (*apiv1.QuickstartStatusResponse, error) {
 	ctx = c.attachToken(ctx)
 	return c.quickstart.GetStatus(ctx, &emptypb.Empty{})
@@ -198,6 +319,8 @@ func (c *Client) UpdateQuickstart(ctx context.Context, req *apiv1.UpdateQuicksta
 	ctx = c.attachToken(ctx)
 	return c.quickstart.Update(ctx, req)
 }
+
+// ─── AdapterRuntimeService ───
 
 func (c *Client) AdaptersOverview(ctx context.Context) (*apiv1.AdaptersOverviewResponse, error) {
 	ctx = c.attachToken(ctx)
@@ -219,6 +342,8 @@ func (c *Client) StopAdapter(ctx context.Context, slot string) (*apiv1.AdapterAc
 	return c.adapterRuntime.StopAdapter(ctx, &apiv1.AdapterSlotRequest{Slot: slot})
 }
 
+// ─── AudioService ───
+
 func (c *Client) StreamAudioIn(ctx context.Context) (apiv1.AudioService_StreamAudioInClient, error) {
 	ctx = c.attachToken(ctx)
 	return c.audio.StreamAudioIn(ctx)
@@ -239,6 +364,54 @@ func (c *Client) AudioCapabilities(ctx context.Context, req *apiv1.GetAudioCapab
 	ctx = c.attachToken(ctx)
 	return c.audio.GetAudioCapabilities(ctx, req)
 }
+
+// ─── AuthService ───
+
+func (c *Client) ListTokens(ctx context.Context) (*apiv1.ListTokensResponse, error) {
+	ctx = c.attachToken(ctx)
+	return c.auth.ListTokens(ctx, &apiv1.ListTokensRequest{})
+}
+
+func (c *Client) CreateToken(ctx context.Context, req *apiv1.CreateTokenRequest) (*apiv1.CreateTokenResponse, error) {
+	ctx = c.attachToken(ctx)
+	return c.auth.CreateToken(ctx, req)
+}
+
+func (c *Client) DeleteToken(ctx context.Context, req *apiv1.DeleteTokenRequest) error {
+	ctx = c.attachToken(ctx)
+	_, err := c.auth.DeleteToken(ctx, req)
+	return err
+}
+
+func (c *Client) ListPairings(ctx context.Context) (*apiv1.ListPairingsResponse, error) {
+	ctx = c.attachToken(ctx)
+	return c.auth.ListPairings(ctx, &apiv1.ListPairingsRequest{})
+}
+
+func (c *Client) CreatePairing(ctx context.Context, req *apiv1.CreatePairingRequest) (*apiv1.CreatePairingResponse, error) {
+	ctx = c.attachToken(ctx)
+	return c.auth.CreatePairing(ctx, req)
+}
+
+func (c *Client) ClaimPairing(ctx context.Context, req *apiv1.ClaimPairingRequest) (*apiv1.ClaimPairingResponse, error) {
+	// ClaimPairing is auth-exempt, but include token if available.
+	ctx = c.attachToken(ctx)
+	return c.auth.ClaimPairing(ctx, req)
+}
+
+// ─── RecordingsService ───
+
+func (c *Client) ListRecordings(ctx context.Context, req *apiv1.ListRecordingsRequest) (*apiv1.ListRecordingsResponse, error) {
+	ctx = c.attachToken(ctx)
+	return c.recordings.ListRecordings(ctx, req)
+}
+
+func (c *Client) GetRecording(ctx context.Context, req *apiv1.GetRecordingRequest) (apiv1.RecordingsService_GetRecordingClient, error) {
+	ctx = c.attachToken(ctx)
+	return c.recordings.GetRecording(ctx, req)
+}
+
+// ─── internal helpers ───
 
 func (c *Client) attachToken(ctx context.Context) context.Context {
 	token := strings.TrimSpace(c.token)

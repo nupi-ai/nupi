@@ -233,20 +233,13 @@ func New(opts Options) (*Daemon, error) {
 		return nil, err
 	}
 
-	// unix socket service
-	if err := host.Register("unix_socket", func(ctx context.Context) (daemonruntime.Service, error) {
-		socket := paths.Socket
-		if !filepath.IsAbs(socket) {
-			socket = filepath.Clean(socket)
-		}
-		return newUnixSocketService(socket, sessionManager, apiServer, runtimeInfo), nil
-	}); err != nil {
-		return nil, err
+	// transport gateway service (serves HTTP on TCP, gRPC on TCP + Unix socket)
+	grpcSocketPath := paths.Socket
+	if !filepath.IsAbs(grpcSocketPath) {
+		grpcSocketPath = filepath.Clean(grpcSocketPath)
 	}
-
-	// transport gateway service
 	if err := host.Register("transport_gateway", func(ctx context.Context) (daemonruntime.Service, error) {
-		return newGatewayService(apiServer, runtimeInfo), nil
+		return newGatewayService(apiServer, runtimeInfo, grpcSocketPath), nil
 	}); err != nil {
 		return nil, err
 	}
