@@ -22,7 +22,7 @@ type AudioCaptureStream interface {
 	Close() error
 }
 
-// AudioCaptureProvider exposes operations required by the HTTP/gRPC layer to accept audio input.
+// AudioCaptureProvider exposes operations required by the gRPC layer to accept audio input.
 type AudioCaptureProvider interface {
 	OpenStream(sessionID, streamID string, format eventbus.AudioFormat, metadata map[string]string) (AudioCaptureStream, error)
 }
@@ -58,7 +58,7 @@ var (
 	_ ConfigStore    = (*configstore.Store)(nil)
 )
 
-// SessionManager abstracts session lifecycle operations used by API handlers and WebSocket server.
+// SessionManager abstracts session lifecycle operations used by gRPC services.
 type SessionManager interface {
 	ListSessions() []*session.Session
 	CreateSession(opts pty.StartOptions, inspect bool) (*session.Session, error)
