@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"time"
 
 	apiv1 "github.com/nupi-ai/nupi/internal/api/grpc/v1"
@@ -285,6 +286,15 @@ func attachToExistingSession(c *grpcclient.Client, sessionID string, includeHist
 		defer term.Restore(0, oldState)
 	}
 
+	// Serialise all stream.Send() calls — gRPC ClientStream is not safe for
+	// concurrent SendMsg from multiple goroutines.
+	var sendMu sync.Mutex
+	safeSend := func(req *apiv1.AttachSessionRequest) error {
+		sendMu.Lock()
+		defer sendMu.Unlock()
+		return stream.Send(req)
+	}
+
 	// Handle signals.
 	sigChan := make(chan os.Signal, 2)
 	notifyAttachSignals(sigChan)
@@ -298,7 +308,7 @@ func attachToExistingSession(c *grpcclient.Client, sessionID string, includeHist
 		if err != nil {
 			return
 		}
-		_ = stream.Send(&apiv1.AttachSessionRequest{
+		_ = safeSend(&apiv1.AttachSessionRequest{
 			Payload: &apiv1.AttachSessionRequest_Resize{
 				Resize: &apiv1.ResizeRequest{
 					Cols:   uint32(cols),
@@ -344,6 +354,9 @@ func attachToExistingSession(c *grpcclient.Client, sessionID string, includeHist
 	}()
 
 	// Input goroutine: read from stdin and send on stream.
+	// Note: os.Stdin.Read is a blocking syscall not interruptible by context
+	// cancellation. This goroutine may outlive attachToExistingSession until
+	// the next keystroke or process exit. Acceptable for CLI usage.
 	go func() {
 		buffer := make([]byte, 1024)
 		for {
@@ -355,7 +368,7 @@ func attachToExistingSession(c *grpcclient.Client, sessionID string, includeHist
 				return
 			}
 			if n > 0 {
-				if sendErr := stream.Send(&apiv1.AttachSessionRequest{
+				if sendErr := safeSend(&apiv1.AttachSessionRequest{
 					Payload: &apiv1.AttachSessionRequest_Input{
 						Input: buffer[:n],
 					},
@@ -374,8 +387,8 @@ func attachToExistingSession(c *grpcclient.Client, sessionID string, includeHist
 				continue
 			}
 			// Non-resize signal (SIGINT or SIGTERM) — detach.
-			fmt.Println("\nDetaching from session...")
-			_ = stream.Send(&apiv1.AttachSessionRequest{
+			fmt.Print("\r\nDetaching from session...\r\n")
+			_ = safeSend(&apiv1.AttachSessionRequest{
 				Payload: &apiv1.AttachSessionRequest_Control{
 					Control: "detach",
 				},
