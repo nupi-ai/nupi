@@ -1,7 +1,7 @@
 use once_cell::sync::Lazy;
-use rest_client::{
-    ClaimedToken, CreatedPairing, CreatedToken, PairingEntry, RestClient, RestClientError,
-    TokenEntry, VoiceStreamRequest, claim_pairing_token,
+use grpc_client::{
+    ClaimedToken, CreatedPairing, CreatedToken, GrpcClient, GrpcClientError, PairingEntry,
+    RecordingInfo, SessionInfo, TokenEntry, VoiceStreamRequest, claim_pairing_grpc,
 };
 use serde_json::{Value, json, to_value};
 use std::{
@@ -21,16 +21,27 @@ use tauri::{
 use tauri_plugin_shell::ShellExt;
 use tokio::sync::watch;
 
+mod grpc_client;
 mod installer;
 mod proto;
-mod rest_client;
 mod settings;
 
+use proto::nupi_api;
 use settings::ClientSettings;
+
+// ---------------------------------------------------------------------------
+// Session stream management
+// ---------------------------------------------------------------------------
+
+struct SessionStream {
+    sender: tokio::sync::mpsc::Sender<nupi_api::AttachSessionRequest>,
+    task_handle: tokio::task::JoinHandle<()>,
+}
 
 struct AppState {
     daemon_pid: Mutex<Option<u32>>,
     daemon_running: Mutex<bool>,
+    active_streams: tokio::sync::Mutex<HashMap<String, SessionStream>>,
 }
 
 const CANCELLED_MESSAGE: &str = "Voice stream cancelled by user";
@@ -106,7 +117,7 @@ async fn start_daemon(
     _app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<String, String> {
-    if let Ok(client) = RestClient::discover().await {
+    if let Ok(client) = GrpcClient::discover().await {
         if client.is_reachable().await {
             *state.daemon_pid.lock().unwrap() = None;
             *state.daemon_running.lock().unwrap() = true;
@@ -147,7 +158,7 @@ async fn stop_daemon(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<String, String> {
-    if let Ok(client) = RestClient::discover().await {
+    if let Ok(client) = GrpcClient::discover().await {
         match client.shutdown_daemon().await {
             Ok(()) => {
                 *state.daemon_pid.lock().unwrap() = None;
@@ -159,13 +170,15 @@ async fn stop_daemon(
                 });
                 return Ok(payload.to_string());
             }
-            Err(RestClientError::Status(code))
-                if code == reqwest::StatusCode::NOT_IMPLEMENTED
-                    || code == reqwest::StatusCode::NOT_FOUND =>
+            Err(GrpcClientError::Grpc(ref s))
+                if s.code() == tonic::Code::Unimplemented
+                    || s.code() == tonic::Code::NotFound =>
             {
                 // Fallback handled below
             }
-            Err(RestClientError::Status(reqwest::StatusCode::UNAUTHORIZED)) => {
+            Err(GrpcClientError::Grpc(ref s))
+                if s.code() == tonic::Code::Unauthenticated =>
+            {
                 return Err("Daemon rejected shutdown request (unauthorized)".into());
             }
             Err(err) => {
@@ -238,7 +251,7 @@ async fn set_api_token(token: Option<String>) -> Result<ClientSettings, String> 
 
 #[tauri::command]
 async fn list_api_tokens() -> Result<Vec<TokenEntry>, String> {
-    let client = RestClient::discover().await.map_err(|e| e.to_string())?;
+    let client = GrpcClient::discover().await.map_err(|e| e.to_string())?;
     client.list_tokens().await.map_err(|e| e.to_string())
 }
 
@@ -247,7 +260,7 @@ async fn create_api_token(
     name: Option<String>,
     role: Option<String>,
 ) -> Result<CreatedToken, String> {
-    let client = RestClient::discover().await.map_err(|e| e.to_string())?;
+    let client = GrpcClient::discover().await.map_err(|e| e.to_string())?;
     let created = client
         .create_token(name, role)
         .await
@@ -261,7 +274,7 @@ async fn create_api_token(
 
 #[tauri::command]
 async fn delete_api_token(id: Option<String>, token: Option<String>) -> Result<(), String> {
-    let client = RestClient::discover().await.map_err(|e| e.to_string())?;
+    let client = GrpcClient::discover().await.map_err(|e| e.to_string())?;
     client
         .delete_token(id.clone(), token.clone())
         .await
@@ -282,7 +295,7 @@ async fn delete_api_token(id: Option<String>, token: Option<String>) -> Result<(
 
 #[tauri::command]
 async fn list_pairings() -> Result<Vec<PairingEntry>, String> {
-    let client = RestClient::discover().await.map_err(|e| e.to_string())?;
+    let client = GrpcClient::discover().await.map_err(|e| e.to_string())?;
     client.list_pairings().await.map_err(|e| e.to_string())
 }
 
@@ -292,7 +305,7 @@ async fn create_pairing(
     role: Option<String>,
     expires_in_seconds: Option<u32>,
 ) -> Result<CreatedPairing, String> {
-    let client = RestClient::discover().await.map_err(|e| e.to_string())?;
+    let client = GrpcClient::discover().await.map_err(|e| e.to_string())?;
     client
         .create_pairing(name, role, expires_in_seconds)
         .await
@@ -312,7 +325,7 @@ async fn claim_pairing(
         return Err("Base URL and pairing code are required".into());
     }
 
-    let claimed = claim_pairing_token(&trimmed_base, &trimmed_code, name, insecure)
+    let claimed = claim_pairing_grpc(&trimmed_base, &trimmed_code, name, insecure)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -327,6 +340,331 @@ async fn claim_pairing(
 
     Ok(claimed)
 }
+
+// ---------------------------------------------------------------------------
+// Session streaming commands (Task 1: AC #2)
+// ---------------------------------------------------------------------------
+
+fn forward_session_event(app: &tauri::AppHandle, session_id: &str, event: nupi_api::SessionEvent) {
+    let event_type = match event.r#type() {
+        nupi_api::SessionEventType::Created => "session_created",
+        nupi_api::SessionEventType::Killed => "session_killed",
+        nupi_api::SessionEventType::StatusChanged => "session_status_changed",
+        nupi_api::SessionEventType::ModeChanged => "session_mode_changed",
+        nupi_api::SessionEventType::ToolDetected => "tool_detected",
+        nupi_api::SessionEventType::ResizeInstruction => "resize_instruction",
+        _ => "unknown",
+    };
+
+    let payload = json!({
+        "event_type": event_type,
+        "session_id": event.session_id,
+        "data": event.data,
+    });
+
+    // Emit session-specific event (for the attached terminal)
+    app.emit(&format!("session_event:{session_id}"), &payload)
+        .ok();
+    // Emit global event (for session list updates)
+    app.emit("session_event", &payload).ok();
+}
+
+#[tauri::command]
+async fn attach_session(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+) -> Result<(), String> {
+    let trimmed = session_id.trim().to_string();
+    if trimmed.is_empty() {
+        return Err("session_id is required".into());
+    }
+
+    // If already attached, detach first
+    {
+        let mut streams = state.active_streams.lock().await;
+        if let Some(old) = streams.remove(&trimmed) {
+            let _ = old
+                .sender
+                .send(nupi_api::AttachSessionRequest {
+                    payload: Some(nupi_api::attach_session_request::Payload::Control(
+                        "detach".to_string(),
+                    )),
+                })
+                .await;
+            old.task_handle.abort();
+        }
+    }
+
+    let client = GrpcClient::discover()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<nupi_api::AttachSessionRequest>(64);
+
+    // Buffer init message before opening the stream
+    tx.send(nupi_api::AttachSessionRequest {
+        payload: Some(nupi_api::attach_session_request::Payload::Init(
+            nupi_api::AttachInit {
+                session_id: trimmed.clone(),
+                include_history: true,
+            },
+        )),
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    // Open bidirectional gRPC stream
+    let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+    let request = client.auth_request(stream);
+
+    let mut sessions_client =
+        nupi_api::sessions_service_client::SessionsServiceClient::new(client.channel());
+    let response = sessions_client
+        .attach_session(request)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut resp_stream = response.into_inner();
+
+    // Spawn background task to forward output/events to frontend
+    let sid = trimmed.clone();
+    let app_clone = app.clone();
+
+    let task_handle = tokio::spawn(async move {
+        while let Ok(Some(msg)) = resp_stream.message().await {
+            match msg.payload {
+                Some(nupi_api::attach_session_response::Payload::Output(bytes)) => {
+                    let text = String::from_utf8_lossy(&bytes);
+                    app_clone
+                        .emit(&format!("session_output:{sid}"), text.as_ref())
+                        .ok();
+                }
+                Some(nupi_api::attach_session_response::Payload::Event(event)) => {
+                    forward_session_event(&app_clone, &sid, event);
+                }
+                None => {}
+            }
+        }
+
+        // Stream ended — notify frontend and clean up
+        app_clone
+            .emit(&format!("session_disconnected:{sid}"), ())
+            .ok();
+        let state = app_clone.state::<AppState>();
+        state.active_streams.lock().await.remove(&sid);
+    });
+
+    state
+        .active_streams
+        .lock()
+        .await
+        .insert(trimmed, SessionStream { sender: tx, task_handle });
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn send_input(
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+    input: Vec<u8>,
+) -> Result<(), String> {
+    let trimmed = session_id.trim().to_string();
+    if trimmed.is_empty() {
+        return Err("session_id is required".into());
+    }
+    if input.len() > 64 * 1024 {
+        return Err("input exceeds 64 KiB limit".into());
+    }
+
+    let streams = state.active_streams.lock().await;
+    let stream = streams
+        .get(&trimmed)
+        .ok_or("Not attached to this session")?;
+
+    stream
+        .sender
+        .send(nupi_api::AttachSessionRequest {
+            payload: Some(nupi_api::attach_session_request::Payload::Input(input)),
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn resize_session(
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+    cols: u32,
+    rows: u32,
+) -> Result<(), String> {
+    let trimmed = session_id.trim().to_string();
+    if trimmed.is_empty() {
+        return Err("session_id is required".into());
+    }
+    if cols == 0 || cols > 500 || rows == 0 || rows > 500 {
+        return Err("cols and rows must be between 1 and 500".into());
+    }
+
+    let streams = state.active_streams.lock().await;
+    let stream = streams
+        .get(&trimmed)
+        .ok_or("Not attached to this session")?;
+
+    stream
+        .sender
+        .send(nupi_api::AttachSessionRequest {
+            payload: Some(nupi_api::attach_session_request::Payload::Resize(
+                nupi_api::ResizeRequest {
+                    cols,
+                    rows,
+                    source: "desktop".to_string(),
+                    metadata: HashMap::new(),
+                },
+            )),
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn detach_session(
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+) -> Result<(), String> {
+    let trimmed = session_id.trim().to_string();
+    if trimmed.is_empty() {
+        return Err("session_id is required".into());
+    }
+
+    let mut streams = state.active_streams.lock().await;
+    if let Some(stream) = streams.remove(&trimmed) {
+        // Send detach control message, then drop the sender
+        let _ = stream
+            .sender
+            .send(nupi_api::AttachSessionRequest {
+                payload: Some(nupi_api::attach_session_request::Payload::Control(
+                    "detach".to_string(),
+                )),
+            })
+            .await;
+        stream.task_handle.abort();
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Session management commands (Task 2: AC #6)
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+async fn list_sessions() -> Result<Vec<SessionInfo>, String> {
+    let client = GrpcClient::discover()
+        .await
+        .map_err(|e| e.to_string())?;
+    client.list_sessions().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_session(session_id: String) -> Result<SessionInfo, String> {
+    let trimmed = session_id.trim();
+    if trimmed.is_empty() {
+        return Err("session_id is required".into());
+    }
+    let client = GrpcClient::discover()
+        .await
+        .map_err(|e| e.to_string())?;
+    client.get_session(trimmed).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn create_session(
+    command: String,
+    args: Option<Vec<String>>,
+    cols: Option<u32>,
+    rows: Option<u32>,
+    work_dir: Option<String>,
+    detached: Option<bool>,
+) -> Result<SessionInfo, String> {
+    let trimmed = command.trim();
+    if trimmed.is_empty() {
+        return Err("command is required".into());
+    }
+    let client = GrpcClient::discover()
+        .await
+        .map_err(|e| e.to_string())?;
+    client
+        .create_session(
+            trimmed,
+            args.unwrap_or_default(),
+            cols.unwrap_or(80),
+            rows.unwrap_or(24),
+            work_dir,
+            Vec::new(),
+            detached.unwrap_or(false),
+            false,
+        )
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn kill_session(session_id: String) -> Result<(), String> {
+    let trimmed = session_id.trim();
+    if trimmed.is_empty() {
+        return Err("session_id is required".into());
+    }
+    let client = GrpcClient::discover()
+        .await
+        .map_err(|e| e.to_string())?;
+    client
+        .kill_session(trimmed)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Recording commands
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+async fn list_recordings(session_id: Option<String>) -> Result<Vec<RecordingInfo>, String> {
+    let client = GrpcClient::discover()
+        .await
+        .map_err(|e| e.to_string())?;
+    let filter = session_id
+        .as_ref()
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty());
+    client
+        .list_recordings(filter)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn get_recording(session_id: String) -> Result<String, String> {
+    let trimmed = session_id.trim();
+    if trimmed.is_empty() {
+        return Err("session_id is required".into());
+    }
+    let client = GrpcClient::discover()
+        .await
+        .map_err(|e| e.to_string())?;
+    client
+        .get_recording(trimmed)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Voice / audio commands
+// ---------------------------------------------------------------------------
 
 #[tauri::command]
 async fn voice_stream_from_file(
@@ -348,7 +686,7 @@ async fn voice_stream_from_file(
         return Err("input_path is required".into());
     }
 
-    let client = RestClient::discover()
+    let client = GrpcClient::discover()
         .await
         .map_err(|err| err.to_string())?;
 
@@ -387,7 +725,7 @@ async fn voice_stream_from_file(
     if let Some(op) = registered_operation {
         let cancelled = matches!(
             result.as_ref(),
-            Err(RestClientError::Audio(msg)) if msg.trim().eq_ignore_ascii_case(CANCELLED_MESSAGE)
+            Err(GrpcClientError::Audio(msg)) if msg.trim().eq_ignore_ascii_case(CANCELLED_MESSAGE)
         );
         if !cancelled {
             complete_voice_operation(&op);
@@ -417,7 +755,7 @@ async fn voice_interrupt_command(
         return Err("session_id is required".into());
     }
 
-    let client = RestClient::discover()
+    let client = GrpcClient::discover()
         .await
         .map_err(|err| err.to_string())?;
 
@@ -444,7 +782,7 @@ async fn voice_status_command(
     _app: tauri::AppHandle,
     session_id: Option<String>,
 ) -> Result<Value, String> {
-    let client = RestClient::discover()
+    let client = GrpcClient::discover()
         .await
         .map_err(|err| err.to_string())?;
 
@@ -462,7 +800,7 @@ async fn voice_status_command(
 
 #[tauri::command]
 async fn daemon_status(_app: tauri::AppHandle) -> Result<bool, String> {
-    match RestClient::discover().await {
+    match GrpcClient::discover().await {
         Ok(client) => Ok(client.is_reachable().await),
         Err(err) => {
             println!("[nupi-desktop] daemon_status probe failed: {err}");
@@ -481,17 +819,7 @@ async fn install_binaries(app: tauri::AppHandle) -> Result<String, String> {
     installer::ensure_binaries_installed(&app).await
 }
 
-#[tauri::command]
-async fn get_daemon_port(_app: tauri::AppHandle) -> Result<u16, String> {
-    let client = RestClient::discover()
-        .await
-        .map_err(|e| format!("Failed to discover daemon: {}", e))?;
-    client
-        .daemon_status()
-        .await
-        .map(|status| status.port as u16)
-        .map_err(|e| format!("Failed to fetch daemon status: {}", e))
-}
+
 
 // Helper function to update tray menu with current daemon state
 fn update_tray_menu(
@@ -556,13 +884,13 @@ pub fn run() {
         .manage(AppState {
             daemon_pid: Mutex::new(None),
             daemon_running: Mutex::new(false),
+            active_streams: tokio::sync::Mutex::new(HashMap::new()),
         })
         .invoke_handler(tauri::generate_handler![
             greet,
             start_daemon,
             stop_daemon,
             daemon_status,
-            get_daemon_port,
             check_binaries_installed,
             install_binaries,
             get_client_settings,
@@ -574,6 +902,20 @@ pub fn run() {
             list_pairings,
             create_pairing,
             claim_pairing,
+            // Session streaming (Task 1)
+            attach_session,
+            send_input,
+            resize_session,
+            detach_session,
+            // Session management (Task 2)
+            list_sessions,
+            get_session,
+            create_session,
+            kill_session,
+            // Recordings
+            list_recordings,
+            get_recording,
+            // Voice / audio
             voice_stream_from_file,
             voice_cancel_stream,
             voice_interrupt_command,
