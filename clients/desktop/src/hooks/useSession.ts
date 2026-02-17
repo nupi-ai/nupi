@@ -1,17 +1,21 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
-import { parseBinaryFrame, BINARY_FRAME_OUTPUT } from '../utils/protocol';
-import { parseServerMessage } from '../types/messages';
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import type { Session } from '../types/session';
 import { isSessionActive } from '../utils/sessionHelpers';
 
 export type { Session };
 
-const BACKOFF_INITIAL = 500;
-const BACKOFF_MAX = 10_000;
+// Session event payload emitted by the Rust backend
+interface SessionEventPayload {
+  event_type: string;
+  session_id: string;
+  data: Record<string, string>;
+}
 
-export function useSession(daemonPort: number | null) {
+export function useSession() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
 
@@ -30,22 +34,16 @@ export function useSession(daemonPort: number | null) {
   const syncRafId = useRef<number | null>(null);
   const attachedSessionId = useRef<string | null>(null);
 
-  // --- Socket refs ---
-  const wsRef = useRef<WebSocket | null>(null);
-
-  // Stable ref for sendMessage — closures in terminal onData read this
-  const sendMessageRef = useRef<(msg: object) => void>(() => {});
-
-  // Refs for values needed inside socket effect closures without re-triggering
+  // Refs for values needed inside effect closures without re-triggering
   const activeSessionIdRef = useRef(activeSessionId);
   activeSessionIdRef.current = activeSessionId;
   const setActiveSessionIdRef = useRef(setActiveSessionId);
   setActiveSessionIdRef.current = setActiveSessionId;
 
-  // controlsRef: socket effect reads terminal controls without depending on them
+  // controlsRef: effects read terminal controls without depending on them
   const controlsRef = useRef({
     writeChunk: (_data: string | Uint8Array) => {},
-    applyResizeInstructions: (_instructions: any[]) => {},
+    applyResize: (_cols: number) => {},
     markSessionStopped: () => {},
   });
 
@@ -121,26 +119,6 @@ export function useSession(daemonPort: number | null) {
     }
   }, [syncCustomScrollbar]);
 
-  const applyResizeInstructions = useCallback((instructions: any[]) => {
-    if (!xtermRef.current) {
-      return;
-    }
-
-    for (const instruction of instructions) {
-      const size = instruction?.Size ?? instruction?.size;
-      if (!size) {
-        continue;
-      }
-
-      const cols = size?.Cols ?? size?.cols;
-      try {
-        updateTerminalGeometry(typeof cols === 'number' ? cols : undefined);
-      } catch (error) {
-        console.error('[Terminal] Failed to apply resize instruction', error);
-      }
-    }
-  }, [updateTerminalGeometry]);
-
   const writeChunk = useCallback((data: string | Uint8Array) => {
     if (!xtermRef.current) {
       return;
@@ -157,100 +135,67 @@ export function useSession(daemonPort: number | null) {
     }
   }, []);
 
-  // Update controlsRef each render so socket effect always has latest callbacks
-  controlsRef.current = { writeChunk, applyResizeInstructions, markSessionStopped };
+  const applyResize = useCallback((cols: number) => {
+    try {
+      updateTerminalGeometry(cols);
+    } catch (error) {
+      console.error('[Terminal] Failed to apply resize', error);
+    }
+  }, [updateTerminalGeometry]);
+
+  // Update controlsRef each render so effects always have latest callbacks
+  controlsRef.current = { writeChunk, applyResize, markSessionStopped };
 
   // ──────────────────────────────────────────────────────────
-  //  Stable sendMessage
+  //  Session management via Tauri IPC
   // ──────────────────────────────────────────────────────────
 
-  const sendMessage = useCallback((msg: object) => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify(msg));
+  const refreshSessions = useCallback(async () => {
+    try {
+      const list = await invoke<Session[]>('list_sessions');
+      const sorted = [...list].sort((a: Session, b: Session) =>
+        (a.start_time ? new Date(a.start_time).getTime() : 0) -
+        (b.start_time ? new Date(b.start_time).getTime() : 0)
+      );
+      setSessions(sorted);
+      if (sorted.length > 0 && !activeSessionIdRef.current) {
+        setActiveSessionIdRef.current(sorted[0].id);
+      }
+    } catch (err) {
+      console.error('[IPC] Failed to list sessions:', err);
     }
   }, []);
 
-  // Keep sendMessageRef in sync for terminal onData closures
-  sendMessageRef.current = sendMessage;
+  const killSession = useCallback(async (sessionId: string) => {
+    try {
+      await invoke('kill_session', { sessionId });
+    } catch (err) {
+      console.error('[IPC] Failed to kill session:', err);
+    }
+  }, []);
 
   // ──────────────────────────────────────────────────────────
-  //  WebSocket effect [daemonPort]
+  //  Global session events effect
   // ──────────────────────────────────────────────────────────
 
   useEffect(() => {
-    if (!daemonPort) return;
+    // Load initial session list
+    refreshSessions();
 
-    let intentionalClose = false;
-    let backoff = BACKOFF_INITIAL;
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    // Listen for global session events (session list updates)
+    const unlistenPromise = listen<SessionEventPayload>('session_event', (event) => {
+      const { event_type, session_id, data } = event.payload;
 
-    const handleBinaryMessage = (buffer: ArrayBuffer) => {
-      const frame = parseBinaryFrame(buffer);
-      if (!frame) return;
-
-      switch (frame.frameType) {
-        case BINARY_FRAME_OUTPUT: {
-          if (frame.sessionId !== attachedSessionId.current) {
-            return;
-          }
-          if (frame.payload.length === 0) {
-            return;
-          }
-          controlsRef.current.writeChunk(frame.payload);
-          break;
-        }
-        default:
-          console.warn('[WS] Unknown binary frame type:', frame.frameType);
-      }
-    };
-
-    const handleTextMessage = (raw: string) => {
-      const msg = parseServerMessage(raw);
-      if (!msg) return;
-
-      switch (msg.type) {
-        case 'attached':
-          // Ignore attach confirmations (no action needed on client)
+      switch (event_type) {
+        case 'session_created':
+          // Refresh full list to get complete session info
+          refreshSessions();
           break;
 
-        case 'sessions_list': {
-          if (!Array.isArray(msg.data)) break;
-          const sortedSessions = [...msg.data].sort((a: Session, b: Session) =>
-            new Date(a.start_time).getTime() - new Date(b.start_time).getTime()
-          );
-          setSessions(sortedSessions);
-          if (sortedSessions.length > 0 && !activeSessionIdRef.current) {
-            setActiveSessionIdRef.current(sortedSessions[0].id);
-          }
-          break;
-        }
-
-        case 'session_created': {
-          if (!msg.data) break;
+        case 'session_killed':
           setSessions(prev => {
-            const exists = prev.some(s => s.id === msg.data.id);
-            if (exists) return prev;
-
-            const newSessions = [...prev, msg.data];
-            const sorted = newSessions.sort((a: Session, b: Session) =>
-              new Date(a.start_time).getTime() - new Date(b.start_time).getTime()
-            );
-
-            if (!activeSessionIdRef.current && sorted.length === 1) {
-              setActiveSessionIdRef.current(sorted[0].id);
-            }
-
-            return sorted;
-          });
-          break;
-        }
-
-        case 'session_killed': {
-          console.log('[WS] Session killed:', msg.sessionId);
-          if (!msg.sessionId) break;
-          setSessions(prev => {
-            const remaining = prev.filter(s => s.id !== msg.sessionId);
-            if (activeSessionIdRef.current === msg.sessionId) {
+            const remaining = prev.filter(s => s.id !== session_id);
+            if (activeSessionIdRef.current === session_id) {
               const nextId = remaining.length > 0 ? remaining[0].id : null;
               activeSessionIdRef.current = nextId;
               setActiveSessionIdRef.current(nextId);
@@ -258,130 +203,58 @@ export function useSession(daemonPort: number | null) {
             return remaining;
           });
           break;
-        }
 
         case 'session_status_changed': {
-          if (!msg.sessionId || !msg.data) break;
-          setSessions(prev => prev.map(s =>
-            s.id === msg.sessionId ? { ...s, status: msg.data } : s
-          ));
+          // Refresh the specific session to get new status
+          invoke<Session>('get_session', { sessionId: session_id })
+            .then(updated => {
+              setSessions(prev => prev.map(s =>
+                s.id === session_id ? { ...s, status: updated.status } : s
+              ));
+            })
+            .catch(err => console.error('[IPC] get_session failed:', err));
 
-          if (msg.sessionId === attachedSessionId.current && msg.data === 'stopped') {
+          // If attached session stopped, mark terminal
+          if (session_id === attachedSessionId.current && data?.exit_code !== undefined) {
             controlsRef.current.markSessionStopped();
           }
           break;
         }
 
-        case 'session_mode_changed': {
-          if (!msg.sessionId || !msg.data || typeof msg.data.mode !== 'string') break;
-          setSessions(prev => prev.map(s =>
-            s.id === msg.sessionId ? { ...s, mode: msg.data.mode } : s
-          ));
-          break;
-        }
-
         case 'tool_detected': {
-          if (!msg.sessionId || !msg.data) break;
           const updates: Partial<Session> = {};
-          if ('tool' in msg.data) updates.tool = msg.data.tool;
-          if ('tool_icon' in msg.data) updates.tool_icon = msg.data.tool_icon;
-          if ('tool_icon_data' in msg.data) updates.tool_icon_data = msg.data.tool_icon_data;
+          if (data?.new_tool) updates.tool = data.new_tool;
           setSessions(prev => prev.map(s =>
-            s.id === msg.sessionId ? { ...s, ...updates } : s
+            s.id === session_id ? { ...s, ...updates } : s
           ));
           break;
         }
 
-        case 'resize_instruction': {
-          if (msg.sessionId === attachedSessionId.current && msg.data && Array.isArray(msg.data.instructions)) {
-            controlsRef.current.applyResizeInstructions(msg.data.instructions);
+        case 'session_mode_changed': {
+          if (data?.mode) {
+            setSessions(prev => prev.map(s =>
+              s.id === session_id ? { ...s, mode: data.mode } : s
+            ));
           }
           break;
         }
 
-        case 'detached':
-          console.log('[WS] Detached from session:', msg.sessionId);
+        case 'resize_instruction': {
+          if (session_id === attachedSessionId.current && data?.cols) {
+            const cols = parseInt(data.cols, 10);
+            if (!isNaN(cols)) {
+              controlsRef.current.applyResize(cols);
+            }
+          }
           break;
-
-        case 'error':
-          console.error('[WS] Server error:', msg.data);
-          break;
+        }
       }
-    };
-
-    const connect = () => {
-      // Don't reconnect if cleanup has run
-      if (intentionalClose) return;
-
-      const ws = new WebSocket(`ws://127.0.0.1:${daemonPort}/ws`);
-      ws.binaryType = 'arraybuffer';
-
-      ws.onopen = () => {
-        backoff = BACKOFF_INITIAL;
-        console.log('[WS] Connected');
-
-        ws.send(JSON.stringify({ type: 'list' }));
-
-        // Re-attach to the active session after reconnect
-        if (attachedSessionId.current) {
-          ws.send(JSON.stringify({
-            type: 'attach',
-            data: attachedSessionId.current,
-          }));
-        }
-      };
-
-      ws.onmessage = (event) => {
-        if (typeof event.data === 'string') {
-          handleTextMessage(event.data);
-        } else if (event.data instanceof Blob) {
-          event.data.arrayBuffer()
-            .then(handleBinaryMessage)
-            .catch(err => console.error('[WS] Failed to process binary message', err));
-        } else if (event.data instanceof ArrayBuffer) {
-          handleBinaryMessage(event.data);
-        }
-      };
-
-      ws.onerror = (error) => {
-        console.error('[WS] Error:', error);
-      };
-
-      ws.onclose = () => {
-        if (wsRef.current === ws) {
-          wsRef.current = null;
-        }
-
-        if (intentionalClose) {
-          console.log('[WS] Disconnected (intentional)');
-          return;
-        }
-
-        console.log(`[WS] Reconnecting in ${backoff}ms...`);
-        reconnectTimer = setTimeout(() => {
-          reconnectTimer = null;
-          connect();
-        }, backoff);
-        backoff = Math.min(backoff * 2, BACKOFF_MAX);
-      };
-
-      wsRef.current = ws;
-    };
-
-    connect();
+    });
 
     return () => {
-      intentionalClose = true;
-      if (reconnectTimer !== null) {
-        clearTimeout(reconnectTimer);
-        reconnectTimer = null;
-      }
-      if (wsRef.current) {
-        wsRef.current.close();
-        wsRef.current = null;
-      }
+      unlistenPromise.then(fn => fn());
     };
-  }, [daemonPort]); // Don't reconnect on activeSessionId change!
+  }, [refreshSessions]);
 
   // ──────────────────────────────────────────────────────────
   //  Terminal cleanup helper
@@ -415,8 +288,13 @@ export function useSession(daemonPort: number | null) {
   useEffect(() => {
     if (!activeSessionId || !terminalRef.current) return;
 
+    let cancelled = false;
+    const unlisteners: Promise<() => void>[] = [];
+
     // Function to attach to new session
-    const attachToNewSession = () => {
+    const attachToNewSession = async () => {
+      if (cancelled) return;
+
       // Read session status at attachment time (not at effect start) to avoid
       // stale values when called after the 50ms detach delay
       const currentSession = activeSessionRef.current;
@@ -561,41 +439,65 @@ export function useSession(daemonPort: number | null) {
       }
 
       // Attach to all sessions (both active and inactive) to get history
-      console.log('[ATTACH] Attaching to session:', activeSessionId, isActive ? '(active)' : '(inactive)');
-      attachedSessionId.current = activeSessionId; // Set BEFORE sending attach
-      sendMessageRef.current({
-        type: 'attach',
-        data: activeSessionId,
+      attachedSessionId.current = activeSessionId; // Set BEFORE invoking attach
+
+      try {
+        await invoke('attach_session', { sessionId: activeSessionId });
+      } catch (err) {
+        console.error('[IPC] Failed to attach to session:', err);
+        return;
+      }
+
+      if (cancelled) return;
+
+      // Listen for terminal output from the Rust backend
+      unlisteners.push(
+        listen<string>(`session_output:${activeSessionId}`, (event) => {
+          controlsRef.current.writeChunk(event.payload);
+        })
+      );
+
+      // Listen for session disconnection
+      unlisteners.push(
+        listen<void>(`session_disconnected:${activeSessionId}`, () => {
+          controlsRef.current.markSessionStopped();
+        })
+      );
+
+      // Handle terminal input — send to daemon via Tauri IPC
+      const encoder = new TextEncoder();
+      term.onData((data) => {
+        const bytes = Array.from(encoder.encode(data));
+        invoke('send_input', { sessionId: activeSessionId, input: bytes })
+          .catch(err => console.error('[IPC] send_input failed:', err));
       });
 
-      // Handle terminal input - send to daemon
-      // Daemon will validate if session is active
-      term.onData((data) => {
-        sendMessageRef.current({
-          type: 'input',
-          data: {
-            sessionId: activeSessionId,
-            input: data, // Send as plain string
-          },
-        });
+      // Forward terminal resize to daemon so PTY dimensions stay in sync
+      term.onResize(({ cols, rows }) => {
+        invoke('resize_session', { sessionId: activeSessionId, cols, rows })
+          .catch(err => console.error('[IPC] resize_session failed:', err));
       });
     };
 
-    let detachTimer: ReturnType<typeof setTimeout> | null = null;
-
     // Detach from previous session if any
     if (attachedSessionId.current && attachedSessionId.current !== activeSessionId) {
+      const prevId = attachedSessionId.current;
       cleanupTerminal();
-      sendMessageRef.current({
-        type: 'detach',
-        data: attachedSessionId.current,
-      });
-
-      console.log('[DETACH] Detaching from:', attachedSessionId.current);
+      invoke('detach_session', { sessionId: prevId })
+        .catch(err => console.error('[IPC] detach failed:', err));
       attachedSessionId.current = null; // Clear immediately after detach
 
       // Small delay to ensure detach is processed before attach
-      detachTimer = setTimeout(attachToNewSession, 50);
+      const detachTimer = setTimeout(() => {
+        if (!cancelled) attachToNewSession();
+      }, 50);
+
+      return () => {
+        cancelled = true;
+        clearTimeout(detachTimer);
+        unlisteners.forEach(p => p.then(fn => fn()));
+        cleanupTerminal();
+      };
     } else {
       // Clean up previous terminal if exists
       cleanupTerminal();
@@ -603,25 +505,30 @@ export function useSession(daemonPort: number | null) {
     }
 
     return () => {
-      if (detachTimer !== null) {
-        clearTimeout(detachTimer);
-      }
+      cancelled = true;
+      unlisteners.forEach(p => p.then(fn => fn()));
       cleanupTerminal();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSessionId]); // Only re-run when activeSessionId changes
   // We intentionally don't include 'sessions' to avoid re-creating terminal on every status change
 
-  // Cleanup on unmount
+  // Cleanup on unmount — detach from active session
   useEffect(() => {
-    return () => cleanupTerminal();
+    return () => {
+      if (attachedSessionId.current) {
+        invoke('detach_session', { sessionId: attachedSessionId.current })
+          .catch(err => console.error('[IPC] cleanup detach failed:', err));
+      }
+      cleanupTerminal();
+    };
   }, []);
 
   return {
     sessions,
     activeSessionId,
     setActiveSessionId,
-    sendMessage,
+    killSession,
     refs: { terminalRef, customScrollbarRef, customScrollbarContentRef },
   };
 }

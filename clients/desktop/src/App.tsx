@@ -13,9 +13,9 @@ function App() {
   const [daemonRunning, setDaemonRunning] = useState(false);
   const [daemonStatus, setDaemonStatus] = useState("Starting daemon...");
   const [daemonError, setDaemonError] = useState<string | null>(null);
-  const [daemonPort, setDaemonPort] = useState<number | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>("sessions");
   const [playingRecording, setPlayingRecording] = useState<string | null>(null);
+  const [playingCastData, setPlayingCastData] = useState<string | null>(null);
 
   async function checkDaemonStatus() {
     try {
@@ -64,51 +64,17 @@ function App() {
     };
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    let retryTimer: number | null = null;
-
-    if (!daemonRunning) {
-      setDaemonPort(null);
-      return;
+  async function handlePlayRecording(sessionId: string) {
+    setPlayingRecording(sessionId);
+    setPlayingCastData(null);
+    try {
+      const data = await invoke<string>("get_recording", { sessionId });
+      setPlayingCastData(data);
+    } catch (err) {
+      console.error("[App] Failed to load recording:", err);
+      setPlayingRecording(null);
     }
-
-    const pollPort = async (attempt: number = 1) => {
-      retryTimer = null;
-      if (cancelled) {
-        return;
-      }
-
-      try {
-        const port = await invoke<number>("get_daemon_port");
-        if (!cancelled) {
-          console.log(`[App] Daemon port available (attempt ${attempt}):`, port);
-          setDaemonPort(port);
-        }
-      } catch (err) {
-        if (cancelled) {
-          return;
-        }
-
-        console.warn(
-          `[App] Waiting for daemon port (attempt ${attempt})`,
-          err
-        );
-
-        const nextDelay = Math.min(500 * attempt, 5000);
-        retryTimer = window.setTimeout(() => pollPort(attempt + 1), nextDelay);
-      }
-    };
-
-    pollPort();
-
-    return () => {
-      cancelled = true;
-      if (retryTimer !== null) {
-        window.clearTimeout(retryTimer);
-      }
-    };
-  }, [daemonRunning]);
+  }
 
   return (
     <div style={{
@@ -126,7 +92,7 @@ function App() {
         minHeight: 0,
         overflow: 'hidden'
       }}>
-        {/* Only show Sessions if daemon is running */}
+        {/* Only show content if daemon is running */}
         {daemonRunning ? (
           <>
             {/* Navigation tabs */}
@@ -186,25 +152,12 @@ function App() {
 
             {/* Content */}
             {viewMode === 'sessions' && (
-              daemonPort ? (
-                <Sessions
-                  daemonPort={daemonPort}
-                  onPlayRecording={(sessionId) => setPlayingRecording(sessionId)}
-                />
-              ) : (
-                <div className="container" style={{ paddingBottom: "40px" }}>
-                  <h1>Nupi Desktop</h1>
-                  <p style={{ fontSize: '1.2rem', marginTop: '2rem' }}>
-                    Waiting for daemon to publish port...
-                  </p>
-                  <p style={{ fontSize: '0.9rem', color: '#666', marginTop: '1rem' }}>
-                    This usually takes a few seconds after the daemon starts.
-                  </p>
-                </div>
-              )
+              <Sessions
+                onPlayRecording={handlePlayRecording}
+              />
             )}
-            {viewMode === 'history' && daemonPort && (
-              <History daemonPort={daemonPort} />
+            {viewMode === 'history' && (
+              <History />
             )}
             {viewMode === 'voice' && (
               <VoicePanel />
@@ -253,7 +206,7 @@ function App() {
       </div>
 
       {/* Recording player modal */}
-      {playingRecording && daemonPort && (
+      {playingRecording && (
         <div
           style={{
             position: 'fixed',
@@ -271,6 +224,7 @@ function App() {
           onClick={(event) => {
             if (event.target === event.currentTarget) {
               setPlayingRecording(null);
+              setPlayingCastData(null);
             }
           }}
         >
@@ -296,7 +250,7 @@ function App() {
             }}>
               <h3 style={{ margin: 0, fontSize: '16px' }}>Recording Playback</h3>
               <button
-                onClick={() => setPlayingRecording(null)}
+                onClick={() => { setPlayingRecording(null); setPlayingCastData(null); }}
                 style={{
                   padding: '4px 12px',
                   backgroundColor: '#333',
@@ -315,18 +269,25 @@ function App() {
               padding: '16px',
               backgroundColor: '#0d1117',
               position: 'relative',
-              minHeight: 0
+              minHeight: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center'
             }}>
-              <AsciinemaPlayer
-                src={`http://127.0.0.1:${daemonPort}/recordings/${playingRecording}`}
-                autoPlay={true}
-                loop={false}
-                speed={1}
-                idleTimeLimit={2}
-                theme="monokai"
-                fit="both"
-                controls={true}
-              />
+              {playingCastData ? (
+                <AsciinemaPlayer
+                  data={playingCastData}
+                  autoPlay={true}
+                  loop={false}
+                  speed={1}
+                  idleTimeLimit={2}
+                  theme="monokai"
+                  fit="both"
+                  controls={true}
+                />
+              ) : (
+                <div style={{ color: '#999' }}>Loading recording...</div>
+              )}
             </div>
           </div>
         </div>

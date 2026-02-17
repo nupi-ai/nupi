@@ -1,13 +1,14 @@
 import { useState, useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { AsciinemaPlayer } from './AsciinemaPlayer';
 
 interface Recording {
   session_id: string;
   filename: string;
   command: string;
-  args?: string[];
+  args: string[];
   work_dir?: string;
-  start_time: string;
+  start_time?: string;
   duration: number;
   rows: number;
   cols: number;
@@ -16,43 +17,45 @@ interface Recording {
   recording_path: string;
 }
 
-interface HistoryProps {
-  daemonPort: number;
-}
-
-export function History({ daemonPort }: HistoryProps) {
+export function History() {
   const [recordings, setRecordings] = useState<Recording[]>([]);
   const [selectedRecording, setSelectedRecording] = useState<Recording | null>(null);
+  const [castData, setCastData] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     loadRecordings();
-  }, [daemonPort]);
+  }, []);
 
   async function loadRecordings() {
     try {
       setLoading(true);
       setError(null);
-      console.log('[History] Loading recordings from port:', daemonPort);
-      const url = `http://127.0.0.1:${daemonPort}/recordings`;
-      console.log('[History] Fetching:', url);
-      const response = await fetch(url);
-      console.log('[History] Response status:', response.status);
-      if (!response.ok) {
-        const text = await response.text();
-        console.error('[History] Error response:', text);
-        throw new Error(`Failed to load recordings: ${response.statusText}`);
-      }
-      const data = await response.json();
-      console.log('[History] Loaded recordings:', data);
+      const data = await invoke<Recording[]>('list_recordings', {});
       setRecordings(data || []);
     } catch (err) {
       console.error('[History] Failed to load recordings:', err);
-      setError(err instanceof Error ? err.message : 'Failed to load recordings');
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
+  }
+
+  async function loadCastData(sessionId: string) {
+    try {
+      setCastData(null);
+      const data = await invoke<string>('get_recording', { sessionId });
+      setCastData(data);
+    } catch (err) {
+      console.error('[History] Failed to load cast data:', err);
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  function selectRecording(recording: Recording) {
+    setSelectedRecording(recording);
+    loadCastData(recording.session_id);
   }
 
   function formatDuration(seconds: number): string {
@@ -80,7 +83,7 @@ export function History({ daemonPort }: HistoryProps) {
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
             <button
-              onClick={() => setSelectedRecording(null)}
+              onClick={() => { setSelectedRecording(null); setCastData(null); }}
               style={{
                 padding: '6px 12px',
                 backgroundColor: '#333',
@@ -105,22 +108,26 @@ export function History({ daemonPort }: HistoryProps) {
             </div>
           </div>
           <div style={{ fontSize: '13px', color: '#999' }}>
-            {formatDate(selectedRecording.start_time)} · {formatDuration(selectedRecording.duration)}
+            {selectedRecording.start_time ? formatDate(selectedRecording.start_time) : 'Unknown'} · {formatDuration(selectedRecording.duration)}
           </div>
         </div>
 
         {/* Player */}
         <div style={{ flex: 1, padding: '16px', backgroundColor: '#0d1117', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <AsciinemaPlayer
-            src={`http://127.0.0.1:${daemonPort}/recordings/${selectedRecording.session_id}`}
-            autoPlay={true}
-            loop={false}
-            speed={1}
-            idleTimeLimit={2}
-            theme="monokai"
-            fit="both"
-            controls={true}
-          />
+          {castData ? (
+            <AsciinemaPlayer
+              data={castData}
+              autoPlay={true}
+              loop={false}
+              speed={1}
+              idleTimeLimit={2}
+              theme="monokai"
+              fit="both"
+              controls={true}
+            />
+          ) : (
+            <div style={{ color: '#999' }}>Loading recording...</div>
+          )}
         </div>
       </div>
     );
@@ -162,7 +169,7 @@ export function History({ daemonPort }: HistoryProps) {
             {recordings.map((recording) => (
               <div
                 key={recording.session_id}
-                onClick={() => setSelectedRecording(recording)}
+                onClick={() => selectRecording(recording)}
                 style={{
                   padding: '12px 16px',
                   backgroundColor: '#1a1a1a',
@@ -209,7 +216,7 @@ export function History({ daemonPort }: HistoryProps) {
                   </div>
                   <div style={{ textAlign: 'right' }}>
                     <div style={{ fontSize: '13px', color: '#999' }}>
-                      {formatDate(recording.start_time)}
+                      {recording.start_time ? formatDate(recording.start_time) : 'Unknown'}
                     </div>
                     <div style={{ fontSize: '12px', color: '#666', marginTop: '2px' }}>
                       Duration: {formatDuration(recording.duration)}

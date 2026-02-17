@@ -5,17 +5,15 @@ import { KillConfirmDialog } from './KillConfirmDialog';
 import '@xterm/xterm/css/xterm.css';
 
 interface SessionsProps {
-  daemonPort: number | null;
   onPlayRecording?: (sessionId: string) => void;
 }
 
-export function Sessions({ daemonPort, onPlayRecording }: SessionsProps) {
-  const session = useSession(daemonPort);
+export function Sessions({ onPlayRecording }: SessionsProps) {
+  const session = useSession();
   const [killConfirmDialog, setKillConfirmDialog] = useState<{sessionId: string, sessionName: string} | null>(null);
 
   // Kill session handlers
   const handleKillSessionClick = (sessionId: string, sessionName: string) => {
-    console.log('[KILL] Button clicked!', sessionId, sessionName);
     setKillConfirmDialog({ sessionId, sessionName });
   };
 
@@ -23,18 +21,13 @@ export function Sessions({ daemonPort, onPlayRecording }: SessionsProps) {
     if (!killConfirmDialog) return;
 
     const { sessionId } = killConfirmDialog;
-    console.log('[KILL] Confirmed, killing session:', sessionId);
-    session.sendMessage({ type: 'kill', data: sessionId });
+    session.killSession(sessionId);
     setKillConfirmDialog(null);
   };
 
   const cancelKillSession = () => {
-    console.log('[KILL] Cancelled');
     setKillConfirmDialog(null);
   };
-
-  // Don't show "no sessions" message immediately - keep WebSocket listening
-  // This allows the UI to react when sessions are started
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, overflow: 'hidden' }}>

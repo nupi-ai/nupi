@@ -4,7 +4,8 @@ import * as AsciinemaPlayerLibrary from 'asciinema-player';
 import 'asciinema-player/dist/bundle/asciinema-player.css';
 
 interface AsciinemaPlayerProps {
-  src: string; // URL to .cast file
+  src?: string; // URL to .cast file
+  data?: string; // Inline asciicast content (NDJSON)
   autoPlay?: boolean;
   loop?: boolean;
   speed?: number;
@@ -18,6 +19,7 @@ interface AsciinemaPlayerProps {
 
 export function AsciinemaPlayer({
   src,
+  data,
   autoPlay = true,
   loop = false,
   speed = 1,
@@ -35,19 +37,13 @@ export function AsciinemaPlayer({
   useEffect(() => {
     if (!playerRef.current) return;
 
-    console.log('[AsciinemaPlayer] Creating player with options:', {
-      src,
-      autoPlay,
-      loop,
-      speed,
-      idleTimeLimit,
-      theme,
-      fit,
-      controls,
-    });
+    // Use inline data if provided, otherwise fall back to URL
+    const source = data ? { data } : src;
+    if (!source) return;
 
     // Create player instance
-    playerInstance.current = AsciinemaPlayerLibrary.create(src, playerRef.current, {
+    // The library supports { data: string } as source but the type definitions only declare string.
+    playerInstance.current = AsciinemaPlayerLibrary.create(source as any, playerRef.current, {
       autoPlay,
       loop,
       speed,
@@ -58,8 +54,6 @@ export function AsciinemaPlayer({
       terminalLineHeight,
       controls,
     });
-
-    console.log('[AsciinemaPlayer] Player instance created:', playerInstance.current);
 
     // Cleanup on unmount
     return () => {
@@ -75,7 +69,7 @@ export function AsciinemaPlayer({
         playerInstance.current = null;
       }
     };
-  }, [src, autoPlay, loop, speed, idleTimeLimit, theme, fit, terminalFontSize, terminalLineHeight, controls]);
+  }, [src, data, autoPlay, loop, speed, idleTimeLimit, theme, fit, terminalFontSize, terminalLineHeight, controls]);
 
   useEffect(() => {
     if (!playerRef.current) {
@@ -423,7 +417,7 @@ export function AsciinemaPlayer({
         fullscreenCleanupRef.current = null;
       }
     };
-  }, [src]);
+  }, [src, data]);
 
   return (
     <div
