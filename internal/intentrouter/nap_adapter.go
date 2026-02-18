@@ -39,8 +39,8 @@ type NAPAdapterParams struct {
 	Config    map[string]any
 }
 
-// dialTimeout is the maximum time to wait for gRPC connection establishment.
-const dialTimeout = 10 * time.Second
+// connectTimeout is the minimum time for a single gRPC connection attempt to the adapter.
+const connectTimeout = 10 * time.Second
 
 // requestTimeout is the maximum time for a single ResolveIntent RPC call.
 const requestTimeout = 30 * time.Second
@@ -77,15 +77,13 @@ func NewNAPAdapter(ctx context.Context, params NAPAdapterParams) (*NAPAdapter, e
 		return nil, fmt.Errorf("ai: adapter %s: %w", params.AdapterID, err)
 	}
 
-	// Apply dial timeout to prevent hanging on bad addresses
-	// The parent context may be long-lived (e.g., context.Background),
-	// so we create a bounded context for the dial operation.
-	dialCtx, cancel := context.WithTimeout(ctx, dialTimeout)
-	defer cancel()
+	dialOpts = append(dialOpts, grpc.WithConnectParams(grpc.ConnectParams{
+		MinConnectTimeout: connectTimeout,
+	}))
 
-	conn, err := grpc.DialContext(dialCtx, address, dialOpts...)
+	conn, err := grpc.NewClient(napdial.PassthroughPrefix+address, dialOpts...)
 	if err != nil {
-		return nil, fmt.Errorf("ai: dial adapter %s: %w", params.AdapterID, err)
+		return nil, fmt.Errorf("ai: connect adapter %s: %w", params.AdapterID, err)
 	}
 
 	client := napv1.NewIntentResolutionServiceClient(conn)

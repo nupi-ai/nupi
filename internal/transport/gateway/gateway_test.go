@@ -17,6 +17,9 @@ import (
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 )
 
+// passthroughPrefix bypasses gRPC DNS resolution for test connections.
+const passthroughPrefix = "passthrough:///"
+
 // skipIfNoNetwork skips the test if network binding is not available
 // (e.g., in sandboxed environments without network access).
 func skipIfNoNetwork(t *testing.T) {
@@ -94,9 +97,7 @@ func TestGatewayStartLoopback(t *testing.T) {
 		t.Fatalf("expected gRPC port to be assigned, got %d", info.GRPC.Port)
 	}
 
-	dialCtx, dialCancel := context.WithTimeout(ctx, 5*time.Second)
-	defer dialCancel()
-	conn, err := grpc.DialContext(dialCtx, info.GRPC.Address, grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithBlock())
+	conn, err := grpc.NewClient(passthroughPrefix+info.GRPC.Address, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		t.Fatalf("failed to dial grpc: %v", err)
 	}
