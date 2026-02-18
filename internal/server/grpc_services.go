@@ -47,6 +47,7 @@ func (d *daemonService) Status(ctx context.Context, _ *apiv1.DaemonStatusRequest
 		Version:       snapshot.Version,
 		SessionsCount: int32(snapshot.SessionsCount),
 		GrpcPort:      int32(snapshot.GRPCPort),
+		ConnectPort:   int32(snapshot.ConnectPort),
 		Binding:       snapshot.Binding,
 		GrpcBinding:   snapshot.GRPCBinding,
 		AuthRequired:  snapshot.AuthRequired,

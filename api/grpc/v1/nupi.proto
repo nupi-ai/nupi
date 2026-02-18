@@ -23,6 +23,7 @@ message DaemonStatusResponse {
   bool auth_required = 7;
   double uptime_sec = 8;
   bool tls_enabled = 9;
+  int32 connect_port = 10;
 }
 
 // Session represents a managed PTY session with its process state and metadata.

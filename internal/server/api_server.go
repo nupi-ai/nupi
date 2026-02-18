@@ -29,6 +29,7 @@ import (
 // RuntimeInfoProvider defines methods required to expose runtime metadata.
 type RuntimeInfoProvider interface {
 	GRPCPort() int
+	ConnectPort() int
 	StartTime() time.Time
 }
 
@@ -187,6 +188,7 @@ type daemonStatusSnapshot struct {
 	Version       string
 	SessionsCount int
 	GRPCPort      int
+	ConnectPort   int
 	Binding       string
 	GRPCBinding   string
 	AuthRequired  bool
@@ -1020,6 +1022,7 @@ func (s *APIServer) daemonStatus(ctx context.Context) (daemonStatusSnapshot, err
 
 	if s.runtime != nil {
 		snapshot.GRPCPort = s.runtime.GRPCPort()
+		snapshot.ConnectPort = s.runtime.ConnectPort()
 		if start := s.runtime.StartTime(); !start.IsZero() {
 			snapshot.UptimeSeconds = time.Since(start).Seconds()
 		}

@@ -46,10 +46,7 @@ func newNAPSynthesizer(ctx context.Context, params SessionParams, endpoint confi
 	}
 	conn, err := grpc.NewClient(napdial.PassthroughPrefix+address, dialOpts...)
 	if err != nil {
-		if s, ok := status.FromError(err); ok && s.Code() == codes.Unavailable {
-			return nil, fmt.Errorf("tts: connect adapter %s: %w: %w", endpoint.AdapterID, err, ErrAdapterUnavailable)
-		}
-		return nil, fmt.Errorf("tts: connect adapter %s: %w", endpoint.AdapterID, err)
+		return nil, fmt.Errorf("tts: create client for adapter %s: %w", endpoint.AdapterID, err)
 	}
 
 	return &napSynthesizer{
