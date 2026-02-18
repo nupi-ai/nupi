@@ -52,9 +52,9 @@ func TestPipelineToConversationIntegration(t *testing.T) {
 	setHostScriptEnv(t)
 
 	tmp := t.TempDir()
-	const catalog = "test.catalog"
+	const namespace = "test.namespace"
 
-	writePipelinePlugin(t, tmp, catalog, "pipeline-default", `module.exports = {
+	writePipelinePlugin(t, tmp, namespace, "pipeline-default", `module.exports = {
         name: "default",
         transform: function(input) {
             return { text: input.text.toUpperCase(), annotations: { cleaned: "true" } };
@@ -110,9 +110,9 @@ func TestPipelineToConversationIntegration(t *testing.T) {
 	}
 }
 
-func writePipelinePlugin(t *testing.T, root, catalog, slug, body string) {
+func writePipelinePlugin(t *testing.T, root, namespace, slug, body string) {
 	t.Helper()
-	plDir := filepath.Join(root, "plugins", catalog, slug)
+	plDir := filepath.Join(root, "plugins", namespace, slug)
 	if err := os.MkdirAll(plDir, 0o755); err != nil {
 		t.Fatalf("mkdir plugin dir: %v", err)
 	}
@@ -122,11 +122,11 @@ type: pipeline-cleaner
 metadata:
   name: %s
   slug: %s
-  catalog: %s
+  namespace: %s
   version: 0.0.1
 spec:
   main: main.js
-`, slug, slug, catalog)
+`, slug, slug, namespace)
 	if err := os.WriteFile(filepath.Join(plDir, "plugin.yaml"), []byte(manifest), 0o644); err != nil {
 		t.Fatalf("write manifest: %v", err)
 	}

@@ -84,9 +84,9 @@ func TestLoadPipelinePluginReadError(t *testing.T) {
 	}
 }
 
-func writeCleanerPlugin(t *testing.T, root, catalog, slug, script string) {
+func writeCleanerPlugin(t *testing.T, root, namespace, slug, script string) {
 	t.Helper()
-	dir := filepath.Join(root, "plugins", catalog, slug)
+	dir := filepath.Join(root, "plugins", namespace, slug)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir plugin dir: %v", err)
 	}
@@ -96,11 +96,11 @@ type: pipeline-cleaner
 metadata:
   name: %s
   slug: %s
-  catalog: %s
+  namespace: %s
   version: 0.1.0
 spec:
   main: main.js
-`, slug, slug, catalog)
+`, slug, slug, namespace)
 	if err := os.WriteFile(filepath.Join(dir, "plugin.yaml"), []byte(manifest), 0o644); err != nil {
 		t.Fatalf("write manifest: %v", err)
 	}
@@ -114,14 +114,14 @@ func TestServiceLoadPipelinePluginsBuildsIndex(t *testing.T) {
 	setHostScriptEnv(t)
 
 	root := t.TempDir()
-	const catalog = "test.catalog"
+	const namespace = "test.namespace"
 
-	writeCleanerPlugin(t, root, catalog, "default-cleaner", `module.exports = {
+	writeCleanerPlugin(t, root, namespace, "default-cleaner", `module.exports = {
   name: "default",
   commands: ["alias"],
   transform: function(input) { return input; }
 };`)
-	writeCleanerPlugin(t, root, catalog, "skip-cleaner", `module.exports = { name: "skip", transform: "oops" };`)
+	writeCleanerPlugin(t, root, namespace, "skip-cleaner", `module.exports = { name: "skip", transform: "oops" };`)
 
 	svc := plugins.NewService(root)
 
@@ -145,8 +145,8 @@ func TestServiceStartInitialisesPipeline(t *testing.T) {
 	setHostScriptEnv(t)
 
 	root := t.TempDir()
-	const catalog = "test.catalog"
-	writeCleanerPlugin(t, root, catalog, "default-cleaner", `module.exports = {
+	const namespace = "test.namespace"
+	writeCleanerPlugin(t, root, namespace, "default-cleaner", `module.exports = {
   name: "default",
   transform: function(input) { return input; }
 };`)

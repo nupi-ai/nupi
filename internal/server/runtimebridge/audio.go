@@ -111,6 +111,14 @@ func formatError(err error) string {
 	return err.Error()
 }
 
+// PluginReloaderProvider wraps plugins.Service for use as a hot-reload trigger.
+func PluginReloaderProvider(service *plugins.Service) server.PluginReloader {
+	if service == nil {
+		return nil
+	}
+	return service // plugins.Service already implements Reload() error
+}
+
 // PluginWarningsProviderFromManifest creates a provider directly from manifest warnings (for testing).
 func PluginWarningsProviderFromManifest(warnings []manifest.DiscoveryWarning) server.PluginWarningsProvider {
 	result := make([]server.PluginDiscoveryWarning, len(warnings))

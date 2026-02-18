@@ -66,6 +66,22 @@ func (d *daemonService) GetPluginWarnings(ctx context.Context, _ *apiv1.GetPlugi
 	return resp, nil
 }
 
+func (d *daemonService) ReloadPlugins(ctx context.Context, _ *apiv1.ReloadPluginsRequest) (*apiv1.ReloadPluginsResponse, error) {
+	if _, err := d.api.requireRoleGRPC(ctx, roleAdmin); err != nil {
+		return nil, err
+	}
+
+	if d.api.observability.pluginReloader == nil {
+		return nil, status.Error(codes.Unavailable, "plugin reloader unavailable")
+	}
+
+	if err := d.api.observability.pluginReloader.Reload(); err != nil {
+		return nil, status.Errorf(codes.Internal, "reload plugins: %v", err)
+	}
+
+	return &apiv1.ReloadPluginsResponse{Message: "plugins reloaded"}, nil
+}
+
 // ListLanguages returns the complete language registry. No auth check — the
 // language list is public information and does not require any role.
 func (d *daemonService) ListLanguages(_ context.Context, _ *apiv1.ListLanguagesRequest) (*apiv1.ListLanguagesResponse, error) {

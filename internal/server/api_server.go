@@ -174,6 +174,7 @@ type lifecycleState struct {
 type observabilityState struct {
 	metricsExporter PrometheusExporter
 	pluginWarnings  PluginWarningsProvider
+	pluginReloader  PluginReloader
 }
 
 // voiceDiagnostic describes a single voice-related issue.
@@ -308,9 +309,24 @@ func (s *APIServer) SetPluginWarningsProvider(provider PluginWarningsProvider) {
 	s.observability.pluginWarnings = provider
 }
 
+// SetPluginReloader wires the plugin reloader. Must be called before Start.
+func (s *APIServer) SetPluginReloader(reloader PluginReloader) {
+	s.observability.pluginReloader = reloader
+}
+
 // ResizeManager exposes the resize manager for components outside the server package.
 func (s *APIServer) ResizeManager() *termresize.Manager {
 	return s.resizeManager
+}
+
+// SessionMgr exposes the session manager for components outside the server package.
+func (s *APIServer) SessionMgr() SessionManager {
+	return s.sessionManager
+}
+
+// EventBus exposes the event bus for components outside the server package.
+func (s *APIServer) EventBus() *eventbus.Bus {
+	return s.eventBus
 }
 
 // ---------------------------------------------------------------------------

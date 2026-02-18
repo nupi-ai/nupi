@@ -310,7 +310,7 @@ func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 	adapterIDFlag, _ := cmd.Flags().GetString("id")
 	adapterID := strings.TrimSpace(adapterIDFlag)
 	if adapterID == "" {
-		adapterID = formatAdapterID(manifest.Metadata.Catalog, manifest.Metadata.Slug)
+		adapterID = formatAdapterID(manifest.Metadata.Namespace, manifest.Metadata.Slug)
 	}
 	if adapterID == "" {
 		return out.Error("Adapter identifier required", errors.New("manifest metadata.slug missing; use --id"))
@@ -933,16 +933,16 @@ func adapterEntryFromProto(entry *apiv1.AdapterEntry) apihttp.AdapterEntry {
 
 // --- Display helpers ---
 
-func formatAdapterID(catalog, slug string) string {
-	catalog = strings.TrimSpace(catalog)
+func formatAdapterID(namespace, slug string) string {
+	namespace = strings.TrimSpace(namespace)
 	slug = strings.TrimSpace(slug)
-	if catalog == "" {
-		catalog = "others"
+	if namespace == "" {
+		namespace = "others"
 	}
 	if slug == "" {
 		return ""
 	}
-	return catalog + "/" + slug
+	return namespace + "/" + slug
 }
 
 func adapterLabel(entry apihttp.AdapterEntry) string {

@@ -29,13 +29,13 @@ const (
 	manifestYML  = "plugin.yml"
 	manifestJSON = "plugin.json"
 
-	fallbackCatalog = "others"
+	fallbackNamespace = "others"
 )
 
 type Metadata struct {
 	Name        string `yaml:"name"`
 	Slug        string `yaml:"slug"`
-	Catalog     string `yaml:"catalog"`
+	Namespace   string `yaml:"namespace"`
 	Description string `yaml:"description"`
 	Version     string `yaml:"version"`
 }
@@ -173,23 +173,23 @@ func DiscoverWithWarnings(root string) ([]*Manifest, []DiscoveryWarning) {
 	var manifests []*Manifest
 	var warnings []DiscoveryWarning
 
-	for _, catalogEntry := range entries {
-		if !catalogEntry.IsDir() {
+	for _, nsEntry := range entries {
+		if !nsEntry.IsDir() {
 			continue
 		}
-		catalogName := catalogEntry.Name()
-		catalogDir := filepath.Join(root, catalogName)
+		nsDirName := nsEntry.Name()
+		nsDir := filepath.Join(root, nsDirName)
 
-		slugEntries, err := os.ReadDir(catalogDir)
+		slugEntries, err := os.ReadDir(nsDir)
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				continue
 			}
 			warnings = append(warnings, DiscoveryWarning{
-				Dir: catalogDir,
-				Err: fmt.Errorf("read catalog dir: %w", err),
+				Dir: nsDir,
+				Err: fmt.Errorf("read namespace dir: %w", err),
 			})
-			log.Printf("[PluginManifest] skipping catalog %s: %v", catalogDir, err)
+			log.Printf("[PluginManifest] skipping namespace %s: %v", nsDir, err)
 			continue
 		}
 
@@ -197,7 +197,7 @@ func DiscoverWithWarnings(root string) ([]*Manifest, []DiscoveryWarning) {
 			if !slugEntry.IsDir() {
 				continue
 			}
-			slugDir := filepath.Join(catalogDir, slugEntry.Name())
+			slugDir := filepath.Join(nsDir, slugEntry.Name())
 
 			manifest, err := LoadFromDir(slugDir)
 			if errors.Is(err, fs.ErrNotExist) {
@@ -209,11 +209,12 @@ func DiscoverWithWarnings(root string) ([]*Manifest, []DiscoveryWarning) {
 				continue
 			}
 
-			if manifest.Metadata.Catalog == "" {
-				manifest.Metadata.Catalog = fallbackCatalog
-				log.Printf("[PluginManifest] directory %s missing catalog metadata, using fallback %q", slugDir, fallbackCatalog)
-			} else if trimmed := strings.TrimSpace(catalogName); trimmed != "" && manifest.Metadata.Catalog != trimmed {
-				log.Printf("[PluginManifest] directory %s catalog mismatch: manifest=%q dir=%q", slugDir, manifest.Metadata.Catalog, trimmed)
+			if manifest.Metadata.Namespace == "" {
+				manifest.Metadata.Namespace = fallbackNamespace
+				log.Printf("[PluginManifest] directory %s missing namespace metadata, using fallback %q", slugDir, fallbackNamespace)
+			} else if trimmed := strings.TrimSpace(nsDirName); trimmed != "" && manifest.Metadata.Namespace != trimmed {
+				log.Printf("[PluginManifest] directory %s namespace mismatch: manifest=%q dir=%q — using directory namespace", slugDir, manifest.Metadata.Namespace, trimmed)
+				manifest.Metadata.Namespace = trimmed
 			}
 
 			if manifest.Metadata.Slug == "" {
@@ -292,7 +293,7 @@ func decodeManifest(data []byte, dir, file string) (*Manifest, error) {
 		Metadata:   doc.Metadata,
 	}
 
-	manifest.Metadata.Catalog = strings.TrimSpace(manifest.Metadata.Catalog)
+	manifest.Metadata.Namespace = strings.TrimSpace(manifest.Metadata.Namespace)
 	manifest.Metadata.Slug = strings.TrimSpace(manifest.Metadata.Slug)
 
 	if doc.Spec.IsZero() {

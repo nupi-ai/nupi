@@ -143,9 +143,34 @@ func seedDefaults(ctx context.Context, db *sql.DB, instanceName, profileName str
 		}
 	}
 
+	// Seed builtin marketplaces: official Nupi marketplace + "others" for local/URL installs
+	for _, mp := range builtinMarketplaces {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO marketplaces (instance_name, namespace, url, is_builtin, created_at)
+			VALUES (?, ?, ?, 1, CURRENT_TIMESTAMP)
+			ON CONFLICT(instance_name, namespace) DO NOTHING
+		`, instanceName, mp.Namespace, mp.URL); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("config: seed marketplace %s: %w", mp.Namespace, err)
+		}
+	}
+
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("config: commit seed transaction: %w", err)
 	}
 
 	return nil
+}
+
+// BuiltinMarketplaceURL is the official Nupi marketplace index URL.
+const BuiltinMarketplaceURL = "https://raw.githubusercontent.com/nupi-ai/marketplace/main/index.yaml"
+
+type builtinMarketplace struct {
+	Namespace string
+	URL       string
+}
+
+var builtinMarketplaces = []builtinMarketplace{
+	{Namespace: "ai.nupi", URL: BuiltinMarketplaceURL},
+	{Namespace: "others", URL: ""},
 }

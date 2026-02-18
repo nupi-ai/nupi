@@ -41,9 +41,9 @@ func skipIfNoBun(t *testing.T) {
 	}
 }
 
-func writePlugin(t *testing.T, root, catalog, slug, pluginType, script string) {
+func writePlugin(t *testing.T, root, namespace, slug, pluginType, script string) {
 	t.Helper()
-	dir := filepath.Join(root, "plugins", catalog, slug)
+	dir := filepath.Join(root, "plugins", namespace, slug)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir plugin dir: %v", err)
 	}
@@ -53,11 +53,11 @@ type: %s
 metadata:
   name: %s
   slug: %s
-  catalog: %s
+  namespace: %s
   version: 0.1.0
 spec:
   main: main.js
-`, pluginType, slug, slug, catalog)
+`, pluginType, slug, slug, namespace)
 	if err := os.WriteFile(filepath.Join(dir, "plugin.yaml"), []byte(manifest), 0o644); err != nil {
 		t.Fatalf("write manifest: %v", err)
 	}
@@ -522,18 +522,18 @@ spec:
 	}
 }
 
-func TestServiceDiscoverMultipleCatalogs(t *testing.T) {
+func TestServiceDiscoverMultipleNamespaces(t *testing.T) {
 	skipIfNoBun(t)
 	t.Parallel()
 
 	root := t.TempDir()
 
-	writePlugin(t, root, "catalog-a", "handler-x", "tool-handler", `module.exports = {
+	writePlugin(t, root, "namespace-a", "handler-x", "tool-handler", `module.exports = {
   name: "handler-x",
   commands: ["xcmd"],
   detect: function(output) { return output.includes("xcmd"); }
 };`)
-	writePlugin(t, root, "catalog-b", "handler-y", "tool-handler", `module.exports = {
+	writePlugin(t, root, "namespace-b", "handler-y", "tool-handler", `module.exports = {
   name: "handler-y",
   commands: ["ycmd"],
   detect: function(output) { return output.includes("ycmd"); }
@@ -546,10 +546,10 @@ func TestServiceDiscoverMultipleCatalogs(t *testing.T) {
 	defer svc.Shutdown(context.Background())
 
 	if _, ok := svc.ToolHandlerPluginFor("xcmd"); !ok {
-		t.Fatal("expected tool handler for xcmd from catalog-a")
+		t.Fatal("expected tool handler for xcmd from namespace-a")
 	}
 	if _, ok := svc.ToolHandlerPluginFor("ycmd"); !ok {
-		t.Fatal("expected tool handler for ycmd from catalog-b")
+		t.Fatal("expected tool handler for ycmd from namespace-b")
 	}
 }
 

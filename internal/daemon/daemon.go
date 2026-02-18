@@ -94,6 +94,13 @@ func New(opts Options) (*Daemon, error) {
 	host := daemonruntime.NewServiceHost()
 
 	pluginService := plugins.NewService(paths.Home)
+	pluginService.SetEnabledChecker(func(namespace, slug string) bool {
+		p, err := opts.Store.GetInstalledPlugin(context.Background(), namespace, slug)
+		if err != nil {
+			return true // not tracked in DB → backward compat, load it
+		}
+		return p.Enabled
+	})
 	sessionManager.SetPluginDir(pluginService.PluginDir())
 	sessionManager.SetJSRuntimeFunc(pluginService.JSRuntime)
 
@@ -134,6 +141,7 @@ func New(opts Options) (*Daemon, error) {
 	apiServer.SetAudioEgress(runtimebridge.AudioEgressController(audioEgressService))
 	apiServer.SetEventBus(bus)
 	apiServer.SetPluginWarningsProvider(runtimebridge.PluginWarningsProvider(pluginService))
+	apiServer.SetPluginReloader(runtimebridge.PluginReloaderProvider(pluginService))
 
 	if err := host.Register("audio_ingress", func(ctx context.Context) (daemonruntime.Service, error) {
 		return audioIngressService, nil

@@ -369,6 +369,14 @@ message GetPluginWarningsResponse {
   repeated PluginWarning warnings = 1;
 }
 
+// ReloadPluginsRequest triggers a hot-reload of all plugin indices.
+message ReloadPluginsRequest {}
+
+// ReloadPluginsResponse confirms the reload.
+message ReloadPluginsResponse {
+  string message = 1;
+}
+
 // ─── Authentication ───
 
 // TokenInfo describes an authentication token with its value masked.
@@ -614,7 +622,7 @@ message Adapter {
   google.protobuf.Timestamp updated_at = 8;
 }
 
-// ListAdaptersResponse returns the catalog of known adapters.
+// ListAdaptersResponse returns the registry of known adapters.
 message ListAdaptersResponse {
   repeated Adapter adapters = 1;
 }
@@ -692,6 +700,7 @@ service DaemonService {
   rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
   rpc GetPluginWarnings(GetPluginWarningsRequest) returns (GetPluginWarningsResponse);
   rpc ListLanguages(ListLanguagesRequest) returns (ListLanguagesResponse);
+  rpc ReloadPlugins(ReloadPluginsRequest) returns (ReloadPluginsResponse);
 }
 
 service SessionsService {
