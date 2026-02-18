@@ -136,6 +136,10 @@ func DialerFromContext(ctx context.Context) func(context.Context, string) (net.C
 	return dialer
 }
 
+// PassthroughPrefix is the gRPC target scheme that bypasses DNS resolution,
+// preserving the address-passthrough behavior of the deprecated grpc.DialContext.
+const PassthroughPrefix = "passthrough:///"
+
 // DialOptions returns gRPC dial options for connecting to a NAP adapter.
 //
 // When tlsCfg is nil the connection uses insecure credentials (suitable for

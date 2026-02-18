@@ -53,12 +53,12 @@ func newNAPAnalyzer(ctx context.Context, params SessionParams, endpoint configst
 	if err != nil {
 		return nil, fmt.Errorf("vad: adapter %s: %w", endpoint.AdapterID, err)
 	}
-	conn, err := grpc.DialContext(ctx, address, dialOpts...)
+	conn, err := grpc.NewClient(napdial.PassthroughPrefix+address, dialOpts...)
 	if err != nil {
 		if s, ok := status.FromError(err); ok && s.Code() == codes.Unavailable {
-			return nil, fmt.Errorf("vad: dial adapter %s: %w: %w", endpoint.AdapterID, err, ErrAdapterUnavailable)
+			return nil, fmt.Errorf("vad: connect adapter %s: %w: %w", endpoint.AdapterID, err, ErrAdapterUnavailable)
 		}
-		return nil, fmt.Errorf("vad: dial adapter %s: %w", endpoint.AdapterID, err)
+		return nil, fmt.Errorf("vad: connect adapter %s: %w", endpoint.AdapterID, err)
 	}
 
 	streamCtx, cancel := context.WithCancel(ctx)

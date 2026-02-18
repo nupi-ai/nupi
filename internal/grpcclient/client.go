@@ -20,6 +20,9 @@ import (
 	emptypb "google.golang.org/protobuf/types/known/emptypb"
 )
 
+// passthroughPrefix bypasses gRPC DNS resolution, matching deprecated DialContext behaviour.
+const passthroughPrefix = "passthrough:///"
+
 type Client struct {
 	conn           *grpc.ClientConn
 	daemon         apiv1.DaemonServiceClient
@@ -86,15 +89,11 @@ func dialUnixSocket(sockPath string, token string) (*Client, error) {
 		grpc.WithContextDialer(func(ctx context.Context, addr string) (net.Conn, error) {
 			return net.DialTimeout("unix", sockPath, 5*time.Second)
 		}),
-		grpc.WithBlock(),
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	conn, err := grpc.DialContext(ctx, "unix:"+sockPath, opts...)
+	conn, err := grpc.NewClient("unix:"+sockPath, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("grpc: dial unix %s: %w", sockPath, err)
+		return nil, fmt.Errorf("grpc: connect unix %s: %w", sockPath, err)
 	}
 
 	return newClientFromConn(conn, token), nil
@@ -176,19 +175,20 @@ func newExplicit(raw string, boot *bootstrap.Config) (*Client, error) {
 }
 
 func dial(address string, tlsConfig *tls.Config, token string) (*Client, error) {
-	opts := []grpc.DialOption{grpc.WithBlock()}
+	opts := []grpc.DialOption{
+		grpc.WithConnectParams(grpc.ConnectParams{
+			MinConnectTimeout: 5 * time.Second,
+		}),
+	}
 	if tlsConfig != nil {
 		opts = append(opts, grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)))
 	} else {
 		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	conn, err := grpc.DialContext(ctx, address, opts...)
+	conn, err := grpc.NewClient(passthroughPrefix+address, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("grpc: dial %s: %w", address, err)
+		return nil, fmt.Errorf("grpc: connect %s: %w", address, err)
 	}
 
 	return newClientFromConn(conn, token), nil
