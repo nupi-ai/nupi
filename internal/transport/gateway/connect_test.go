@@ -87,8 +87,8 @@ func registerTestServices(apiServer *server.APIServer, srv *grpc.Server) {
 var testHTTPClient = &http.Client{Timeout: 10 * time.Second}
 
 // connectPost sends a Connect RPC unary request with the required protocol headers.
-func connectPost(url string, body string) (*http.Response, error) {
-	req, err := http.NewRequest("POST", url, strings.NewReader(body))
+func connectPost(ctx context.Context, url string, body string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, "POST", url, strings.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -165,7 +165,7 @@ func TestConnectDaemonStatus(t *testing.T) {
 	defer gw.Shutdown(context.Background())
 
 	url := fmt.Sprintf("http://%s/nupi.api.v1.DaemonService/Status", info.Connect.Address)
-	resp, err := connectPost(url, "{}")
+	resp, err := connectPost(ctx, url, "{}")
 	if err != nil {
 		t.Fatalf("Connect request failed: %v", err)
 	}
@@ -181,9 +181,14 @@ func TestConnectDaemonStatus(t *testing.T) {
 		t.Fatalf("failed to decode JSON response: %v", err)
 	}
 
-	// DaemonStatusResponse includes version, sessions_count, etc.
+	// DaemonStatusResponse includes version, sessions_count, connect_port, etc.
 	if _, ok := result["version"]; !ok {
 		t.Errorf("expected version in response, got: %v", result)
+	}
+	if cp, ok := result["connectPort"]; !ok {
+		t.Errorf("expected connectPort in response, got: %v", result)
+	} else if _, isNum := cp.(float64); !isNum {
+		t.Errorf("expected connectPort to be a number, got %T", cp)
 	}
 }
 
@@ -207,7 +212,7 @@ func TestConnectListSessions(t *testing.T) {
 	defer gw.Shutdown(context.Background())
 
 	url := fmt.Sprintf("http://%s/nupi.api.v1.SessionsService/ListSessions", info.Connect.Address)
-	resp, err := connectPost(url, "{}")
+	resp, err := connectPost(ctx, url, "{}")
 	if err != nil {
 		t.Fatalf("Connect request failed: %v", err)
 	}
@@ -249,7 +254,7 @@ func TestConnectListLanguages(t *testing.T) {
 	defer gw.Shutdown(context.Background())
 
 	url := fmt.Sprintf("http://%s/nupi.api.v1.DaemonService/ListLanguages", info.Connect.Address)
-	resp, err := connectPost(url, "{}")
+	resp, err := connectPost(ctx, url, "{}")
 	if err != nil {
 		t.Fatalf("Connect request failed: %v", err)
 	}
@@ -304,7 +309,7 @@ func TestConnectGRPCCoexistence(t *testing.T) {
 
 	// Connect should also work concurrently.
 	url := fmt.Sprintf("http://%s/nupi.api.v1.DaemonService/Status", info.Connect.Address)
-	resp, err := connectPost(url, "{}")
+	resp, err := connectPost(ctx, url, "{}")
 	if err != nil {
 		t.Fatalf("Connect request failed: %v", err)
 	}
@@ -338,7 +343,7 @@ func TestConnectLanguageHeaderInvalid(t *testing.T) {
 	baseURL := fmt.Sprintf("http://%s", info.Connect.Address)
 
 	// Invalid language header should be rejected by the language interceptor.
-	req, err := http.NewRequest("POST", baseURL+"/nupi.api.v1.DaemonService/ListLanguages", strings.NewReader("{}"))
+	req, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/nupi.api.v1.DaemonService/ListLanguages", strings.NewReader("{}"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -383,7 +388,7 @@ func TestConnectLanguageHeaderValid(t *testing.T) {
 	defer gw.Shutdown(context.Background())
 
 	// Valid language header should be accepted and propagated.
-	req, err := http.NewRequest("POST",
+	req, err := http.NewRequestWithContext(ctx, "POST",
 		fmt.Sprintf("http://%s/nupi.api.v1.DaemonService/ListLanguages", info.Connect.Address),
 		strings.NewReader("{}"))
 	if err != nil {
@@ -444,14 +449,15 @@ func TestConnectAuthEnforcement(t *testing.T) {
 	tlsClient := &http.Client{
 		Timeout: 10 * time.Second,
 		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // self-signed test cert
 		},
 	}
+	t.Cleanup(tlsClient.CloseIdleConnections)
 
 	url := fmt.Sprintf("https://%s/nupi.api.v1.DaemonService/Status", info.Connect.Address)
 
 	// Unauthenticated request should be rejected.
-	req, err := http.NewRequest("POST", url, strings.NewReader("{}"))
+	req, err := http.NewRequestWithContext(ctx, "POST", url, strings.NewReader("{}"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -462,7 +468,7 @@ func TestConnectAuthEnforcement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Connect request failed: %v", err)
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusOK {
 		t.Fatalf("expected auth rejection for unauthenticated request, got 200")
 	}
@@ -471,10 +477,41 @@ func TestConnectAuthEnforcement(t *testing.T) {
 		t.Errorf("expected 401 Unauthorized, got %d", resp.StatusCode)
 	}
 
-	// Note: The positive auth path (authenticated request succeeds) is tested
-	// indirectly via gRPC interceptor tests in server/grpc_services_test.go.
-	// Vanguard routes Connect requests through the same gRPC interceptor chain,
-	// so the 401 rejection above proves the interceptor is active for Connect.
+	// Positive path: load the auto-generated admin token and verify success.
+	secVals, loadErr := store.LoadSecuritySettings(context.Background(), "auth.http_tokens")
+	if loadErr != nil {
+		t.Fatalf("failed to load auth tokens: %v", loadErr)
+	}
+	raw, ok := secVals["auth.http_tokens"]
+	if !ok || raw == "" {
+		t.Fatal("no auth tokens found in store after gateway start")
+	}
+	var tokenEntries []struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal([]byte(raw), &tokenEntries); err != nil {
+		t.Fatalf("failed to parse auth tokens: %v", err)
+	}
+	if len(tokenEntries) == 0 {
+		t.Fatal("auth token list is empty")
+	}
+
+	authReq, err := http.NewRequestWithContext(ctx, "POST", url, strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	authReq.Header.Set("Content-Type", "application/json")
+	authReq.Header.Set("Connect-Protocol-Version", "1")
+	authReq.Header.Set("Authorization", "Bearer "+tokenEntries[0].Token)
+
+	authResp, err := tlsClient.Do(authReq)
+	if err != nil {
+		t.Fatalf("authenticated Connect request failed: %v", err)
+	}
+	defer authResp.Body.Close()
+	if authResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK for authenticated Connect request, got %d", authResp.StatusCode)
+	}
 }
 
 func TestConnectProtoContentType(t *testing.T) {
@@ -498,7 +535,7 @@ func TestConnectProtoContentType(t *testing.T) {
 
 	// Send a proto-encoded request (empty DaemonStatusRequest = empty bytes).
 	url := fmt.Sprintf("http://%s/nupi.api.v1.DaemonService/Status", info.Connect.Address)
-	req, err := http.NewRequest("POST", url, bytes.NewReader(nil))
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -529,6 +566,7 @@ func TestConnectShutdownClean(t *testing.T) {
 	apiServer, _ := newGatewayTestAPIServer(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel() // safety net for early test failure
 
 	gw := New(apiServer, Options{
 		ConnectEnabled: true,
@@ -539,24 +577,64 @@ func TestConnectShutdownClean(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to start gateway: %v", err)
 	}
+	defer gw.Shutdown(context.Background()) // safety net for early test failure
 
 	// Verify Connect is serving.
 	url := fmt.Sprintf("http://%s/nupi.api.v1.DaemonService/Status", info.Connect.Address)
-	resp, err := connectPost(url, "{}")
+	resp, err := connectPost(ctx, url, "{}")
 	if err != nil {
 		t.Fatalf("Connect request failed: %v", err)
 	}
-	resp.Body.Close()
+	resp.Body.Close() // explicit close (not defer) so the idle connection is released before shutdown
 
-	// Cancel context and shut down.
+	// Cancel context and shut down explicitly (the test subject).
 	cancel()
 	if err := gw.Shutdown(context.Background()); err != nil {
 		t.Fatalf("Shutdown failed: %v", err)
 	}
 
-	// After shutdown, Connect requests should fail.
-	_, err = connectPost(url, "{}")
+	// After shutdown, Connect requests should fail (use fresh context since ctx is cancelled).
+	_, err = connectPost(context.Background(), url, "{}")
 	if err == nil {
 		t.Fatalf("expected Connect request to fail after shutdown")
+	}
+	// Expect a connection-level error (refused/reset), not a timeout or DNS failure.
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "refused") && !strings.Contains(errMsg, "reset") && !strings.Contains(errMsg, "closed") {
+		t.Logf("post-shutdown error (expected connection refused/reset/closed): %v", err)
+	}
+}
+
+func TestConnectStreamingRPCError(t *testing.T) {
+	skipIfNoNetwork(t)
+
+	apiServer, _ := newGatewayTestAPIServer(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	gw := New(apiServer, Options{
+		ConnectEnabled: true,
+		RegisterGRPC:   func(srv *grpc.Server) { registerTestServices(apiServer, srv) },
+	})
+
+	info, err := gw.Start(ctx)
+	if err != nil {
+		t.Fatalf("failed to start gateway: %v", err)
+	}
+	defer gw.Shutdown(context.Background())
+
+	// AttachSession is a bidi-streaming RPC — Connect protocol does not
+	// support bidi streaming. Verify we get an error, not 200 OK.
+	url := fmt.Sprintf("http://%s/nupi.api.v1.SessionsService/AttachSession", info.Connect.Address)
+	resp, err := connectPost(ctx, url, "{}")
+	if err != nil {
+		t.Fatalf("Connect request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnsupportedMediaType {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected HTTP 415 for bidi-streaming RPC via Connect, got %d: %s", resp.StatusCode, string(body))
 	}
 }

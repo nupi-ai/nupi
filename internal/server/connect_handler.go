@@ -19,6 +19,10 @@ var registerJSONCodecOnce sync.Once
 // The transcoder reuses the same service implementations and interceptors
 // (auth, language) already registered on the gRPC server — zero business logic
 // duplication.
+//
+// Note: the first call registers a "json" codec via encoding.RegisterCodec,
+// which is a process-wide, irreversible side effect. Standard gRPC uses the
+// "proto" codec so this does not affect existing gRPC clients.
 func NewConnectTranscoder(grpcServer *grpc.Server) (*vanguard.Transcoder, error) {
 	registerJSONCodecOnce.Do(func() {
 		encoding.RegisterCodec(vanguardgrpc.NewCodec(&vanguard.JSONCodec{

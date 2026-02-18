@@ -187,6 +187,8 @@ func (g *Gateway) Start(ctx context.Context) (*Info, error) {
 			return nil, fmt.Errorf("gateway: listen connect: %w", err)
 		}
 		if prepared.UseTLS {
+			// Cert loaded separately from gRPC's NewServerTLSFromFile — intentional
+			// simplicity over sharing a single tls.Certificate across transports.
 			cert, certErr := tls.LoadX509KeyPair(prepared.CertPath, prepared.KeyPath)
 			if certErr != nil {
 				_ = grpcListener.Close()
@@ -202,12 +204,16 @@ func (g *Gateway) Start(ctx context.Context) (*Info, error) {
 			})
 			connectUseTLS = true
 		}
+		// Note: MaxBytesHandler returns plain-text HTTP 413 when exceeded,
+		// which bypasses Connect protocol error framing. This is acceptable
+		// because legitimate Connect requests are small proto/JSON payloads.
 		connectServer = &http.Server{
-			Handler:        transcoder,
+			Handler:        http.MaxBytesHandler(transcoder, 4<<20), // 4 MB body limit
 			ReadTimeout:    30 * time.Second,
 			WriteTimeout:   30 * time.Second,
 			IdleTimeout:    120 * time.Second,
 			MaxHeaderBytes: 1 << 20, // 1 MB
+			ErrorLog:       log.New(log.Default().Writer(), "Transport gateway Connect: ", log.LstdFlags), // writer captured at Start time
 		}
 		numListeners++
 	}
@@ -253,7 +259,6 @@ func (g *Gateway) Start(ctx context.Context) (*Info, error) {
 	}
 	if connectListener != nil {
 		go g.serveConnect(serveCtx, connectServer, connectListener)
-		log.Printf("Transport gateway Connect RPC (HTTP) listening on %s", connectListener.Addr().String())
 	}
 
 	go func(ch chan error) {
@@ -299,7 +304,11 @@ func (g *Gateway) serveConnect(ctx context.Context, srv *http.Server, listener n
 		<-ctx.Done()
 		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = srv.Shutdown(shutCtx)
+		if err := srv.Shutdown(shutCtx); err != nil {
+			// Forcibly close active connections that didn't drain in time,
+			// mirroring grpcServer.Stop() fallback in serveGRPC.
+			srv.Close()
+		}
 	}()
 
 	if err := srv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
@@ -324,6 +333,12 @@ func (g *Gateway) pushError(err error) {
 }
 
 // Shutdown stops all listeners and waits for goroutines to exit.
+// The ctx parameter controls how long this method blocks waiting for the
+// Connect HTTP server drain (capped at 5 s). The actual drain runs
+// independently in the serveConnect goroutine with its own 5 s timeout,
+// so the server always gets a full 5 s to drain regardless of ctx.
+// The gRPC GracefulStop uses a separate hardcoded 5 s timeout and does
+// not use ctx — grpc.Server does not accept a context for GracefulStop.
 func (g *Gateway) Shutdown(ctx context.Context) error {
 	g.mu.Lock()
 	grpcListener := g.grpcListener
@@ -367,6 +382,9 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 		_ = connectServer.Shutdown(shutCtx)
 	}
 
+	// GracefulStop is also called in serveGRPC's ctx.Done handler — the
+	// duplicate call here is intentional defense-in-depth. Both GracefulStop
+	// and http.Server.Shutdown are idempotent and safe to call concurrently.
 	if grpcServer != nil {
 		done := make(chan struct{})
 		go func() {
@@ -388,12 +406,23 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 	}
 
 	if errCh != nil {
-		select {
-		case err := <-errCh:
-			if err != nil && !errors.Is(err, context.Canceled) {
-				return err
+		var errs []error
+		for {
+			select {
+			case err, ok := <-errCh:
+				if !ok {
+					goto done
+				}
+				if err != nil && !errors.Is(err, context.Canceled) {
+					errs = append(errs, err)
+				}
+			default:
+				goto done
 			}
-		default:
+		}
+	done:
+		if len(errs) > 0 {
+			return errors.Join(errs...)
 		}
 	}
 

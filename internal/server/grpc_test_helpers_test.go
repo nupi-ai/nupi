@@ -15,6 +15,7 @@ import (
 type runtimeStub struct{}
 
 func (runtimeStub) GRPCPort() int        { return 0 }
+func (runtimeStub) ConnectPort() int     { return 0 }
 func (runtimeStub) StartTime() time.Time { return time.Unix(0, 0) }
 
 func openTestStore(t *testing.T) *configstore.Store {

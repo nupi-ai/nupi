@@ -45,6 +45,7 @@ func skipIfNoNetwork(t *testing.T) {
 type runtimeStub struct{}
 
 func (runtimeStub) GRPCPort() int        { return 0 }
+func (runtimeStub) ConnectPort() int     { return 0 }
 func (runtimeStub) StartTime() time.Time { return time.Unix(0, 0) }
 
 func newGatewayTestAPIServer(t *testing.T) (*server.APIServer, *configstore.Store) {
