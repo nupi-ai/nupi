@@ -665,6 +665,21 @@ message UpdateQuickstartRequest {
   google.protobuf.BoolValue complete = 2;
 }
 
+// LanguageInfo describes a language in four standardised formats so that
+// each downstream plugin can pick the representation it needs.
+message LanguageInfo {
+  string iso1 = 1;          // ISO 639-1 two-letter code, e.g. "pl"
+  string bcp47 = 2;         // BCP 47 / IETF language tag, e.g. "pl-PL"
+  string english_name = 3;  // English name, e.g. "Polish"
+  string native_name = 4;   // Native name, e.g. "Polski"
+}
+
+message ListLanguagesRequest {}
+
+message ListLanguagesResponse {
+  repeated LanguageInfo languages = 1;
+}
+
 // ─── Services ───
 //
 // NOTE: The Prometheus /metrics endpoint (GET /metrics) is intentionally NOT
@@ -675,6 +690,7 @@ service DaemonService {
   rpc Status(DaemonStatusRequest) returns (DaemonStatusResponse);
   rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
   rpc GetPluginWarnings(GetPluginWarningsRequest) returns (GetPluginWarningsResponse);
+  rpc ListLanguages(ListLanguagesRequest) returns (ListLanguagesResponse);
 }
 
 service SessionsService {

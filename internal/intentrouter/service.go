@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -602,12 +603,24 @@ func (s *Service) executeSpeak(ctx context.Context, prompt eventbus.Conversation
 		sessionID = prompt.SessionID // fallback to original if no target determined
 	}
 
-	// Publish speak event for TTS
+	// Publish speak event for TTS — merge language metadata from the prompt
+	// so that TTS adapters receive the client's language preference.
+	// Prompt language (from client header) intentionally overrides any
+	// language keys that may already exist in action.Metadata.
+	speakMeta := copyStringMap(action.Metadata)
+	for k, v := range prompt.Metadata {
+		if strings.HasPrefix(k, "nupi.lang.") {
+			if speakMeta == nil {
+				speakMeta = make(map[string]string)
+			}
+			speakMeta[k] = v
+		}
+	}
 	eventbus.Publish(ctx, s.bus, eventbus.Conversation.Speak, eventbus.SourceIntentRouter, eventbus.ConversationSpeakEvent{
 		SessionID: sessionID,
 		PromptID:  prompt.PromptID,
 		Text:      action.Text,
-		Metadata:  action.Metadata,
+		Metadata:  speakMeta,
 	})
 
 	// Also publish as conversation reply for history tracking
@@ -632,14 +645,18 @@ func (s *Service) executeClarify(ctx context.Context, prompt eventbus.Conversati
 		sessionID = prompt.SessionID // fallback to original if no target determined
 	}
 
-	// Publish speak event with clarification
+	// Publish speak event with clarification — include language for TTS
+	clarifyMeta := map[string]string{"type": "clarification"}
+	for k, v := range prompt.Metadata {
+		if strings.HasPrefix(k, "nupi.lang.") {
+			clarifyMeta[k] = v
+		}
+	}
 	eventbus.Publish(ctx, s.bus, eventbus.Conversation.Speak, eventbus.SourceIntentRouter, eventbus.ConversationSpeakEvent{
 		SessionID: sessionID,
 		PromptID:  prompt.PromptID,
 		Text:      action.Text,
-		Metadata: map[string]string{
-			"type": "clarification",
-		},
+		Metadata:  clarifyMeta,
 	})
 
 	// Publish reply with clarify action marker

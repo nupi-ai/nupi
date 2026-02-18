@@ -1,7 +1,8 @@
 use once_cell::sync::Lazy;
 use grpc_client::{
-    ClaimedToken, CreatedPairing, CreatedToken, GrpcClient, GrpcClientError, PairingEntry,
-    RecordingInfo, SessionInfo, TokenEntry, VoiceStreamRequest, claim_pairing_grpc,
+    ClaimedToken, CreatedPairing, CreatedToken, GrpcClient, GrpcClientError, LanguageEntry,
+    PairingEntry, RecordingInfo, SessionInfo, TokenEntry, VoiceStreamRequest,
+    claim_pairing_grpc,
 };
 use serde_json::{Value, json, to_value};
 use std::{
@@ -219,13 +220,12 @@ async fn get_client_settings() -> Result<ClientSettings, String> {
 
 #[tauri::command]
 async fn set_base_url(base_url: Option<String>) -> Result<ClientSettings, String> {
-    let mut settings = settings::load();
     let trimmed = base_url.and_then(|value| {
         let t = value.trim().to_string();
         if t.is_empty() { None } else { Some(t) }
     });
-    settings.base_url = trimmed.clone();
-    settings::save(&settings).map_err(|e| e.to_string())?;
+    let val = trimmed.clone();
+    let settings = settings::modify(|s| { s.base_url = val; }).map_err(|e| e.to_string())?;
     match trimmed {
         Some(ref value) => unsafe { env::set_var("NUPI_BASE_URL", value) },
         None => unsafe { env::remove_var("NUPI_BASE_URL") },
@@ -235,18 +235,51 @@ async fn set_base_url(base_url: Option<String>) -> Result<ClientSettings, String
 
 #[tauri::command]
 async fn set_api_token(token: Option<String>) -> Result<ClientSettings, String> {
-    let mut settings = settings::load();
     let cleaned = token.and_then(|value| {
         let t = value.trim().to_string();
         if t.is_empty() { None } else { Some(t) }
     });
-    settings.api_token = cleaned.clone();
-    settings::save(&settings).map_err(|e| e.to_string())?;
+    let val = cleaned.clone();
+    let settings = settings::modify(|s| { s.api_token = val; }).map_err(|e| e.to_string())?;
     match cleaned {
         Some(ref value) => unsafe { env::set_var("NUPI_API_TOKEN", value) },
         None => unsafe { env::remove_var("NUPI_API_TOKEN") },
     }
     Ok(settings)
+}
+
+#[tauri::command]
+async fn get_language() -> Result<Option<String>, String> {
+    Ok(settings::load().language.and_then(|v| {
+        let t = v.trim().to_lowercase();
+        if t.is_empty() { None } else { Some(t) }
+    }))
+}
+
+#[tauri::command]
+async fn set_language(language: Option<String>) -> Result<ClientSettings, String> {
+    let cleaned = match language {
+        Some(v) => {
+            let t = v.trim().to_string();
+            if t.is_empty() {
+                None
+            } else if t.chars().count() > 35 {
+                return Err("language value too long (max 35 characters)".into());
+            } else {
+                Some(t.to_lowercase())
+            }
+        }
+        None => None,
+    };
+    let val = cleaned.clone();
+    let settings = settings::modify(|s| { s.language = val; }).map_err(|e| e.to_string())?;
+    Ok(settings)
+}
+
+#[tauri::command]
+async fn list_languages() -> Result<Vec<LanguageEntry>, String> {
+    let client = GrpcClient::discover().await.map_err(|e| e.to_string())?;
+    client.list_languages().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -265,9 +298,8 @@ async fn create_api_token(
         .create_token(name, role)
         .await
         .map_err(|e| e.to_string())?;
-    let mut settings = settings::load();
-    settings.api_token = Some(created.token.clone());
-    settings::save(&settings).map_err(|e| e.to_string())?;
+    let token_value = created.token.clone();
+    settings::modify(|s| { s.api_token = Some(token_value); }).map_err(|e| e.to_string())?;
     unsafe { env::set_var("NUPI_API_TOKEN", created.token.as_str()) };
     Ok(created)
 }
@@ -281,13 +313,15 @@ async fn delete_api_token(id: Option<String>, token: Option<String>) -> Result<(
         .map_err(|e| e.to_string())?;
 
     if let Some(candidate) = token {
-        let mut settings = settings::load();
-        if let Some(current) = settings.api_token.clone() {
-            if current == candidate {
-                settings.api_token = None;
-                settings::save(&settings).map_err(|e| e.to_string())?;
-                unsafe { env::remove_var("NUPI_API_TOKEN") };
+        settings::modify(|s| {
+            if s.api_token.as_deref() == Some(candidate.as_str()) {
+                s.api_token = None;
             }
+        }).map_err(|e| e.to_string())?;
+        // Remove env var if it was cleared
+        let current = settings::load();
+        if current.api_token.is_none() {
+            unsafe { env::remove_var("NUPI_API_TOKEN") };
         }
     }
     Ok(())
@@ -329,10 +363,12 @@ async fn claim_pairing(
         .await
         .map_err(|e| e.to_string())?;
 
-    let mut settings = settings::load();
-    settings.base_url = Some(trimmed_base.clone());
-    settings.api_token = Some(claimed.token.clone());
-    settings::save(&settings).map_err(|e| e.to_string())?;
+    let url_val = trimmed_base.clone();
+    let token_val = claimed.token.clone();
+    settings::modify(|s| {
+        s.base_url = Some(url_val);
+        s.api_token = Some(token_val);
+    }).map_err(|e| e.to_string())?;
     unsafe {
         env::set_var("NUPI_BASE_URL", trimmed_base);
         env::set_var("NUPI_API_TOKEN", claimed.token.as_str());
@@ -896,6 +932,9 @@ pub fn run() {
             get_client_settings,
             set_base_url,
             set_api_token,
+            get_language,
+            set_language,
+            list_languages,
             list_api_tokens,
             create_api_token,
             delete_api_token,

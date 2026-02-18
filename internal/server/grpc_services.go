@@ -15,6 +15,7 @@ import (
 	apiv1 "github.com/nupi-ai/nupi/internal/api/grpc/v1"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
+	"github.com/nupi-ai/nupi/internal/language"
 	"github.com/nupi-ai/nupi/internal/plugins/adapters"
 	"github.com/nupi-ai/nupi/internal/protocol"
 	"github.com/nupi-ai/nupi/internal/session"
@@ -187,6 +188,7 @@ func (a *audioService) StreamAudioIn(stream apiv1.AudioService_StreamAudioInServ
 			if chunk != nil {
 				metadata = cloneStringMap(chunk.GetMetadata())
 			}
+			metadata = language.MergeContextLanguage(stream.Context(), metadata)
 			ingressStream, err = a.api.audioIngress.OpenStream(sessionID, streamID, format, metadata)
 			if err != nil {
 				if errors.Is(err, ErrAudioStreamExists) {

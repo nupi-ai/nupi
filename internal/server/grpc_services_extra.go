@@ -11,6 +11,7 @@ import (
 	apiv1 "github.com/nupi-ai/nupi/internal/api/grpc/v1"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
+	"github.com/nupi-ai/nupi/internal/language"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -63,6 +64,22 @@ func (d *daemonService) GetPluginWarnings(ctx context.Context, _ *apiv1.GetPlugi
 	}
 
 	return resp, nil
+}
+
+// ListLanguages returns the complete language registry. No auth check — the
+// language list is public information and does not require any role.
+func (d *daemonService) ListLanguages(_ context.Context, _ *apiv1.ListLanguagesRequest) (*apiv1.ListLanguagesResponse, error) {
+	langs := language.All()
+	out := make([]*apiv1.LanguageInfo, len(langs))
+	for i, l := range langs {
+		out[i] = &apiv1.LanguageInfo{
+			Iso1:        l.ISO1,
+			Bcp47:       l.BCP47,
+			EnglishName: l.EnglishName,
+			NativeName:  l.NativeName,
+		}
+	}
+	return &apiv1.ListLanguagesResponse{Languages: out}, nil
 }
 
 // ─── AdapterRuntimeService: RegisterAdapter, StreamAdapterLogs, GetAdapterLogs ───
