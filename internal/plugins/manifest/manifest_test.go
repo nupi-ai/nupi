@@ -16,7 +16,7 @@ type: adapter
 metadata:
   name: test
   slug: test
-  catalog: ai.nupi
+  namespace: ai.nupi
   version: 0.0.1
 spec:
   slot: stt
@@ -87,7 +87,7 @@ type: adapter
 metadata:
   name: test
   slug: test
-  catalog: ai.nupi
+  namespace: ai.nupi
   version: 0.0.1
 spec:
   slot: stt
@@ -109,7 +109,7 @@ type: adapter
 metadata:
   name: test
   slug: test
-  catalog: ai.nupi
+  namespace: ai.nupi
   version: 0.0.1
 spec:
   slot: stt
@@ -305,7 +305,7 @@ type: adapter
 metadata:
   name: test
   slug: test
-  catalog: ai.nupi
+  namespace: ai.nupi
   version: 0.0.1
 spec:
   entrypoint:
@@ -327,7 +327,7 @@ type: adapter
 metadata:
   name: test
   slug: test
-  catalog: ai.nupi
+  namespace: ai.nupi
   version: 0.0.1
 spec:
   slot: ai
@@ -350,7 +350,7 @@ type: adapter
 metadata:
   name: test
   slug: test
-  catalog: ai.nupi
+  namespace: ai.nupi
   version: 0.0.1
 spec:
   slot: stt
@@ -373,7 +373,7 @@ type: adapter
 metadata:
   name: test
   slug: test
-  catalog: ai.nupi
+  namespace: ai.nupi
   version: 0.0.1
 spec:
   slot: stt
@@ -429,7 +429,7 @@ type: adapter
 metadata:
   name: test
   slug: test
-  catalog: ai.nupi
+  namespace: ai.nupi
   version: 0.0.1
 spec:
   slot: stt
@@ -453,7 +453,7 @@ type: adapter
 metadata:
   name: test
   slug: test
-  catalog: ai.nupi
+  namespace: ai.nupi
   version: 0.0.1
 spec:
   slot: stt
@@ -493,7 +493,7 @@ type: adapter
 metadata:
   name: test
   slug: test
-  catalog: ai.nupi
+  namespace: ai.nupi
   version: 0.0.1
 spec:
   slot: stt
@@ -532,7 +532,7 @@ type: adapter
 metadata:
   name: test
   slug: test
-  catalog: ai.nupi
+  namespace: ai.nupi
   version: 0.0.1
 spec:
   slot: stt
@@ -574,7 +574,7 @@ type: adapter
 metadata:
   name: No Slot
   slug: no-slot
-  catalog: invalid
+  namespace: invalid
 spec:
   entrypoint:
     transport: process`)
@@ -602,10 +602,10 @@ spec:
 	}
 }
 
-func TestDiscoverFindsPluginsInCatalogStructure(t *testing.T) {
+func TestDiscoverFindsPluginsInNamespaceStructure(t *testing.T) {
 	root := t.TempDir()
 
-	// Create catalog/slug directory structure with manifests
+	// Create namespace/slug directory structure with manifests
 	createPluginYAML(t, root, "builtin/adapter.stt.mock", adapterManifest("Mock STT", "adapter.stt.mock", "builtin", "stt"))
 	createPluginYAML(t, root, "ai/claude", adapterManifest("Claude AI", "claude", "ai", "ai"))
 	createPluginYAML(t, root, "tools/handler.git", toolHandlerManifest("Git Handler", "handler.git", "tools"))
@@ -657,7 +657,7 @@ type: adapter
 metadata:
   name: No Slot
   slug: no-slot
-  catalog: invalid
+  namespace: invalid
 spec:
   entrypoint:
     command: ./adapter`)
@@ -683,7 +683,7 @@ spec:
 	}
 }
 
-func TestDiscoverSkipsFilesInRootAndCatalog(t *testing.T) {
+func TestDiscoverSkipsFilesInRootAndNamespace(t *testing.T) {
 	root := t.TempDir()
 
 	// Create files that should be ignored
@@ -767,7 +767,7 @@ func TestLoadFromDirFallsBackToYMLAndJSON(t *testing.T) {
 		"apiVersion": "nap.nupi.ai/v1alpha1",
 		"kind": "Plugin",
 		"type": "adapter",
-		"metadata": {"name": "JSON Plugin", "slug": "json", "catalog": "test"},
+		"metadata": {"name": "JSON Plugin", "slug": "json", "namespace": "test"},
 		"spec": {"slot": "stt", "entrypoint": {"command": "./adapter", "transport": "process"}}
 	}`)
 	mf, err = LoadFromDir(jsonDir)
@@ -876,7 +876,7 @@ kind: Plugin
 type: adapter
 metadata:
   name: Test Silero VAD
-  catalog: ai.nupi
+  namespace: ai.nupi
   slug: vad-local-silero
   description: Local voice activity detection adapter.
   version: 1.0.0
@@ -977,7 +977,7 @@ kind: Plugin
 type: adapter
 metadata:
   name: No Slug Plugin
-  catalog: test
+  namespace: test
 spec:
   slot: vad
   entrypoint:
@@ -1018,14 +1018,14 @@ func createFile(t *testing.T, root, path, content string) {
 	}
 }
 
-func adapterManifest(name, slug, catalog, slot string) string {
+func adapterManifest(name, slug, namespace, slot string) string {
 	return `apiVersion: nap.nupi.ai/v1alpha1
 kind: Plugin
 type: adapter
 metadata:
   name: ` + name + `
   slug: ` + slug + `
-  catalog: ` + catalog + `
+  namespace: ` + namespace + `
   version: 0.0.1
 spec:
   slot: ` + slot + `
@@ -1034,27 +1034,27 @@ spec:
     transport: process`
 }
 
-func toolHandlerManifest(name, slug, catalog string) string {
+func toolHandlerManifest(name, slug, namespace string) string {
 	return `apiVersion: nap.nupi.ai/v1alpha1
 kind: Plugin
 type: tool-handler
 metadata:
   name: ` + name + `
   slug: ` + slug + `
-  catalog: ` + catalog + `
+  namespace: ` + namespace + `
   version: 0.0.1
 spec:
   main: main.js`
 }
 
-func pipelineCleanerManifest(name, slug, catalog, main string) string {
+func pipelineCleanerManifest(name, slug, namespace, main string) string {
 	return `apiVersion: nap.nupi.ai/v1alpha1
 kind: Plugin
 type: pipeline-cleaner
 metadata:
   name: ` + name + `
   slug: ` + slug + `
-  catalog: ` + catalog + `
+  namespace: ` + namespace + `
   version: 0.0.1
 spec:
   main: ` + main

@@ -104,6 +104,28 @@ var schemaStatements = []string{
 		PRIMARY KEY (instance_name, profile_name, event_type),
 		FOREIGN KEY (instance_name, profile_name) REFERENCES profiles(instance_name, name) ON DELETE CASCADE
 	)`,
+	`CREATE TABLE IF NOT EXISTS marketplaces (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		instance_name TEXT NOT NULL,
+		namespace TEXT NOT NULL,
+		url TEXT NOT NULL DEFAULT '',
+		is_builtin INTEGER NOT NULL DEFAULT 0,
+		cached_index TEXT,
+		last_refreshed TEXT,
+		created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE (instance_name, namespace),
+		FOREIGN KEY (instance_name) REFERENCES instances(name) ON DELETE CASCADE
+	)`,
+	`CREATE TABLE IF NOT EXISTS installed_plugins (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		marketplace_id INTEGER NOT NULL,
+		slug TEXT NOT NULL,
+		source_url TEXT,
+		installed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		enabled INTEGER NOT NULL DEFAULT 0,
+		UNIQUE (marketplace_id, slug),
+		FOREIGN KEY (marketplace_id) REFERENCES marketplaces(id) ON DELETE CASCADE
+	)`,
 }
 
 // migrationStatements are ALTER TABLE statements applied after the initial schema.

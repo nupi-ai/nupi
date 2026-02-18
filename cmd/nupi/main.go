@@ -158,6 +158,7 @@ func main() {
 		newVoiceCommand(),
 		newPairRootCommand(),
 		newPromptsCommand(),
+		newMarketplaceCommand(),
 	)
 
 	// Execute

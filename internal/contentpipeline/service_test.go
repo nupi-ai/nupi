@@ -59,9 +59,9 @@ func setHostScriptEnv(t *testing.T) {
 	t.Setenv("NUPI_JS_HOST_SCRIPT", hostScript)
 }
 
-func writeCleanerPlugin(t *testing.T, root, catalog, slug, script string) {
+func writeCleanerPlugin(t *testing.T, root, namespace, slug, script string) {
 	t.Helper()
-	dir := filepath.Join(root, "plugins", catalog, slug)
+	dir := filepath.Join(root, "plugins", namespace, slug)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir plugin dir: %v", err)
 	}
@@ -71,11 +71,11 @@ type: pipeline-cleaner
 metadata:
   name: %s
   slug: %s
-  catalog: %s
+  namespace: %s
   version: 0.0.1
 spec:
   main: main.js
-`, slug, slug, catalog)
+`, slug, slug, namespace)
 	if err := os.WriteFile(filepath.Join(dir, "plugin.yaml"), []byte(manifest), 0o644); err != nil {
 		t.Fatalf("write manifest: %v", err)
 	}
@@ -102,9 +102,9 @@ func TestContentPipelineTransformsOutput(t *testing.T) {
 	setHostScriptEnv(t)
 
 	tmp := t.TempDir()
-	const catalog = "test.catalog"
+	const namespace = "test.namespace"
 
-	writeCleanerPlugin(t, tmp, catalog, "pipeline-tool-x", `module.exports = {
+	writeCleanerPlugin(t, tmp, namespace, "pipeline-tool-x", `module.exports = {
         name: "default",
         commands: ["tool-x"],
         transform: function(input) {
@@ -167,9 +167,9 @@ func TestContentPipelineEmitsErrors(t *testing.T) {
 	setHostScriptEnv(t)
 
 	tmp := t.TempDir()
-	const catalog = "test.catalog"
+	const namespace = "test.namespace"
 
-	writeCleanerPlugin(t, tmp, catalog, "pipeline-tool-err", `module.exports = {
+	writeCleanerPlugin(t, tmp, namespace, "pipeline-tool-err", `module.exports = {
         name: "tool-err",
         commands: ["tool-err"],
         transform: function(input) {

@@ -16,12 +16,19 @@ import (
 	toolhandlers "github.com/nupi-ai/nupi/internal/plugins/tool_handlers"
 )
 
+// EnabledChecker returns whether a plugin identified by namespace/slug should be loaded.
+// Return true to load, false to skip. If the plugin is not tracked (e.g., pre-marketplace
+// plugin on disk), it should return true for backward compatibility.
+type EnabledChecker func(namespace, slug string) bool
+
 // Service manages plugin assets and metadata for the daemon.
 type Service struct {
-	pluginDir   string
-	runDir      string // directory for runtime sockets (IPC)
-	pipelineIdx map[string]*pipelinecleaners.PipelinePlugin
-	pipelineMu  sync.RWMutex
+	pluginDir      string
+	runDir         string // directory for runtime sockets (IPC)
+	reloadMu       sync.Mutex // serializes Reload/GenerateIndex to prevent concurrent file writes
+	enabledChecker EnabledChecker
+	pipelineIdx    map[string]*pipelinecleaners.PipelinePlugin
+	pipelineMu     sync.RWMutex
 
 	toolHandlerIdx map[string]*toolhandlers.JSPlugin // tool name -> plugin
 	toolHandlerMu  sync.RWMutex
@@ -50,6 +57,15 @@ func (s *Service) PluginDir() string {
 	return s.pluginDir
 }
 
+// SetEnabledChecker configures a function that determines whether a plugin
+// should be loaded during discovery. When set, only plugins for which the
+// checker returns true are loaded into pipeline cleaners and tool handlers.
+// Plugins not tracked in the database (checker returns true by default) are
+// loaded for backward compatibility with pre-marketplace plugins.
+func (s *Service) SetEnabledChecker(fn EnabledChecker) {
+	s.enabledChecker = fn
+}
+
 // LoadPipelinePlugins rebuilds the in-memory cleaner registry.
 func (s *Service) LoadPipelinePlugins() error {
 	manifests, warnings := manifest.DiscoverWithWarnings(s.pluginDir)
@@ -71,6 +87,12 @@ func (s *Service) loadPipelinePlugins(manifests []*manifest.Manifest) error {
 
 	for _, mf := range manifests {
 		if mf.Type != manifest.PluginTypePipelineCleaner {
+			continue
+		}
+
+		// Respect enabled/disabled state from database
+		if s.enabledChecker != nil && !s.enabledChecker(mf.Metadata.Namespace, mf.Metadata.Slug) {
+			log.Printf("[Plugins] skip disabled pipeline cleaner %s/%s", mf.Metadata.Namespace, mf.Metadata.Slug)
 			continue
 		}
 
@@ -98,7 +120,15 @@ func (s *Service) loadPipelinePlugins(manifests []*manifest.Manifest) error {
 
 		keys := []string{plugin.Name}
 		keys = append(keys, plugin.Commands...)
-		if len(keys) == 0 {
+
+		hasNonEmpty := false
+		for _, k := range keys {
+			if strings.TrimSpace(k) != "" {
+				hasNonEmpty = true
+				break
+			}
+		}
+		if !hasNonEmpty {
 			keys = append(keys, filepath.Base(mf.Dir))
 		}
 
@@ -157,6 +187,12 @@ func (s *Service) loadToolHandlerPlugins(manifests []*manifest.Manifest) error {
 			continue
 		}
 
+		// Respect enabled/disabled state from database
+		if s.enabledChecker != nil && !s.enabledChecker(mf.Metadata.Namespace, mf.Metadata.Slug) {
+			log.Printf("[Plugins] skip disabled tool handler %s/%s", mf.Metadata.Namespace, mf.Metadata.Slug)
+			continue
+		}
+
 		mainPath, err := mf.MainPath()
 		if err != nil {
 			log.Printf("[Plugins] skip tool handler %s: %v", mf.Dir, err)
@@ -181,7 +217,15 @@ func (s *Service) loadToolHandlerPlugins(manifests []*manifest.Manifest) error {
 		// Index by plugin name and commands
 		keys := []string{plugin.Name}
 		keys = append(keys, plugin.Commands...)
-		if len(keys) == 0 {
+
+		hasNonEmpty := false
+		for _, k := range keys {
+			if strings.TrimSpace(k) != "" {
+				hasNonEmpty = true
+				break
+			}
+		}
+		if !hasNonEmpty {
 			keys = append(keys, filepath.Base(mf.Dir))
 		}
 
@@ -224,6 +268,9 @@ func (s *Service) ToolHandlerPluginFor(name string) (*toolhandlers.JSPlugin, boo
 
 // GenerateIndex rebuilds the plugin detection index.
 func (s *Service) GenerateIndex() error {
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
+
 	manifests, warnings := manifest.DiscoverWithWarnings(s.pluginDir)
 	s.setWarnings(warnings)
 	if len(warnings) > 0 {
@@ -239,6 +286,47 @@ func (s *Service) GenerateIndex() error {
 		return err
 	}
 
+	return nil
+}
+
+// Reload re-discovers and reloads all plugins (pipeline cleaners, tool handlers, index).
+// This is the hot-reload entry point called by the gRPC ReloadPlugins handler.
+// Serialized by reloadMu to prevent concurrent file writes to handlers_index.json.
+func (s *Service) Reload() error {
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
+
+	manifests, warnings := manifest.DiscoverWithWarnings(s.pluginDir)
+	s.setWarnings(warnings)
+	if len(warnings) > 0 {
+		log.Printf("[Plugins] WARNING: %d plugin(s) skipped during reload:", len(warnings))
+		for _, w := range warnings {
+			log.Printf("[Plugins]   - %s: %v", w.Dir, w.Err)
+		}
+	}
+
+	var errs []string
+
+	if err := s.loadPipelinePlugins(manifests); err != nil {
+		log.Printf("[Plugins] pipeline reload error: %v", err)
+		errs = append(errs, fmt.Sprintf("pipeline cleaners: %v", err))
+	}
+
+	if err := s.loadToolHandlerPlugins(manifests); err != nil {
+		log.Printf("[Plugins] tool handler reload error: %v", err)
+		errs = append(errs, fmt.Sprintf("tool handlers: %v", err))
+	}
+
+	generator := toolhandlers.NewIndexGeneratorWithRuntime(s.pluginDir, manifests, s.runtime())
+	if err := generator.Generate(); err != nil {
+		errs = append(errs, fmt.Sprintf("index generation: %v", err))
+	}
+
+	log.Printf("[Plugins] Hot reload completed (%d valid, %d skipped)", len(manifests), len(warnings))
+
+	if len(errs) > 0 {
+		return fmt.Errorf("reload partially failed: %s", strings.Join(errs, "; "))
+	}
 	return nil
 }
 

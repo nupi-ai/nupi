@@ -1012,7 +1012,7 @@ type: adapter
 metadata:
   name: Whisper STT
   slug: stt-local-whisper
-  catalog: ai.nupi
+  namespace: ai.nupi
 spec:
   slot: stt
   mode: local
@@ -1077,7 +1077,7 @@ type: adapter
 metadata:
   name: Whisper STT
   slug: stt-local-whisper
-  catalog: ai.nupi
+  namespace: ai.nupi
 spec:
   slot: stt
   mode: local
@@ -2815,7 +2815,7 @@ kind: Plugin
 type: adapter
 metadata:
   name: Test Silero VAD
-  catalog: ai.nupi
+  namespace: ai.nupi
   slug: vad-local-silero
   version: 1.0.0
 spec:

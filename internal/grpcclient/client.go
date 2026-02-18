@@ -234,6 +234,11 @@ func (c *Client) GetPluginWarnings(ctx context.Context) (*apiv1.GetPluginWarning
 	return c.daemon.GetPluginWarnings(ctx, &apiv1.GetPluginWarningsRequest{})
 }
 
+func (c *Client) ReloadPlugins(ctx context.Context) (*apiv1.ReloadPluginsResponse, error) {
+	ctx = c.attachToken(ctx)
+	return c.daemon.ReloadPlugins(ctx, &apiv1.ReloadPluginsRequest{})
+}
+
 // ─── SessionsService ───
 
 func (c *Client) ListSessions(ctx context.Context) (*apiv1.ListSessionsResponse, error) {

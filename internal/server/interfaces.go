@@ -52,6 +52,11 @@ type PluginWarningsProvider interface {
 	GetDiscoveryWarnings() []PluginDiscoveryWarning
 }
 
+// PluginReloader reloads all plugin indices (pipeline cleaners, tool handlers, index).
+type PluginReloader interface {
+	Reload() error
+}
+
 // Compile-time interface satisfaction assertions.
 var (
 	_ SessionManager = (*session.Manager)(nil)
