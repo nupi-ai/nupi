@@ -477,6 +477,12 @@ func (s *Service) publishPrompt(sessionID string, ctxTurns []eventbus.Conversati
 			"buffer_truncated", "buffer_max_size",
 			"tool_changed":
 			metadata[key] = value
+		default:
+			// Language metadata (nupi.lang.*) is propagated unconditionally
+			// so that every adapter receives the client's language preference.
+			if strings.HasPrefix(key, "nupi.lang.") {
+				metadata[key] = value
+			}
 		}
 	}
 

@@ -174,3 +174,46 @@ const cursorPointer: CSSProperties = { cursor: "pointer" };
 export function busyCursor(isBusy: boolean): CSSProperties {
   return isBusy ? cursorWait : cursorPointer;
 }
+
+// Language selector styles
+
+export const currentLanguageRow: CSSProperties = {
+  marginTop: "12px",
+  marginBottom: "12px",
+};
+
+export const clearLanguageButton: CSSProperties = {
+  marginLeft: "12px",
+  padding: "2px 10px",
+  backgroundColor: "transparent",
+  color: "#f87171",
+  border: "1px solid #f87171",
+  borderRadius: "4px",
+  cursor: "pointer",
+  fontSize: "0.8rem",
+};
+
+export const languageListBox: CSSProperties = {
+  maxHeight: "200px",
+  overflowY: "auto",
+  border: "1px solid #333",
+  borderRadius: "6px",
+  backgroundColor: "#111",
+};
+
+export const languageOptionBase: CSSProperties = {
+  display: "block",
+  width: "100%",
+  textAlign: "left",
+  padding: "8px 12px",
+  border: "none",
+  borderBottom: "1px solid #222",
+  cursor: "pointer",
+  fontSize: "0.9rem",
+};
+
+export const languageIsoLabel: CSSProperties = {
+  float: "right",
+  color: "#6b7280",
+  fontSize: "0.8rem",
+};

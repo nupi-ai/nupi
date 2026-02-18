@@ -1,6 +1,7 @@
 import { useAudioFilePicker } from "../hooks/useAudioFilePicker";
 import { useVoiceSessionConfig } from "../hooks/useVoiceSessionConfig";
 import { useVoiceStream } from "../hooks/useVoiceStream";
+import { LanguageSelector } from "./LanguageSelector";
 import * as styles from "./voicePanelStyles";
 
 function stringify(value: unknown): string {
@@ -171,6 +172,8 @@ export function VoicePanel() {
 {stringify(result) || "No command executed yet. Run a voice action to see detailed JSON output."}
         </pre>
       </section>
+
+      <LanguageSelector />
     </div>
   );
 }

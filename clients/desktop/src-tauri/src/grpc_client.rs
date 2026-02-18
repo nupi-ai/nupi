@@ -199,6 +199,25 @@ impl From<nupi_api::TokenInfo> for TokenEntry {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct LanguageEntry {
+    pub iso1: String,
+    pub bcp47: String,
+    pub english_name: String,
+    pub native_name: String,
+}
+
+impl From<nupi_api::LanguageInfo> for LanguageEntry {
+    fn from(l: nupi_api::LanguageInfo) -> Self {
+        Self {
+            iso1: l.iso1,
+            bcp47: l.bcp47,
+            english_name: l.english_name,
+            native_name: l.native_name,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct CreatedToken {
     pub token: String,
     pub id: String,
@@ -657,6 +676,7 @@ struct BootstrapConfig {
 pub struct GrpcClient {
     channel: Channel,
     token: Option<String>,
+    language: Option<String>,
 }
 
 impl GrpcClient {
@@ -673,6 +693,16 @@ impl GrpcClient {
                 }
                 Err(_) => {
                     eprintln!("[nupi-desktop] WARNING: auth token contains invalid characters for gRPC metadata — request will be sent without authentication");
+                }
+            }
+        }
+        if let Some(lang) = &self.language {
+            match lang.parse() {
+                Ok(val) => {
+                    req.metadata_mut().insert("nupi-language", val);
+                }
+                Err(_) => {
+                    eprintln!("[nupi-desktop] WARNING: language preference contains invalid characters for gRPC metadata — request will be sent without language header");
                 }
             }
         }
@@ -708,17 +738,19 @@ impl GrpcClient {
     pub async fn discover() -> Result<Self, GrpcClientError> {
         let persisted = settings::load();
 
+        let language = persisted_language(&persisted);
+
         // 1. NUPI_BASE_URL env → explicit endpoint
         if let Ok(raw) = env::var("NUPI_BASE_URL") {
             if !raw.trim().is_empty() {
-                return Self::from_explicit(raw.trim(), persisted.api_token.clone(), None).await;
+                return Self::from_explicit(raw.trim(), persisted.api_token.clone(), None, language).await;
             }
         }
 
         // 2. Persisted settings
         if let Some(base) = persisted.base_url.as_ref() {
             if !base.trim().is_empty() {
-                return Self::from_explicit(base.trim(), persisted.api_token.clone(), None).await;
+                return Self::from_explicit(base.trim(), persisted.api_token.clone(), None, language).await;
             }
         }
 
@@ -736,7 +768,7 @@ impl GrpcClient {
                     .map(|v| v.trim().to_string())
                     .filter(|v| !v.is_empty());
 
-                return Self::from_explicit(base, fallback_token, bootstrap.tls.as_ref()).await;
+                return Self::from_explicit(base, fallback_token, bootstrap.tls.as_ref(), language.clone()).await;
             }
         }
 
@@ -787,13 +819,14 @@ impl GrpcClient {
                 .filter(|s| !s.is_empty());
         }
 
-        Ok(Self { channel, token })
+        Ok(Self { channel, token, language })
     }
 
     async fn from_explicit(
         raw: &str,
         default_token: Option<String>,
         tls_overrides: Option<&BootstrapTLS>,
+        language: Option<String>,
     ) -> Result<Self, GrpcClientError> {
         let mut url_str = raw.to_string();
         if !url_str.contains("://") {
@@ -846,7 +879,7 @@ impl GrpcClient {
             .filter(|v| !v.is_empty());
         let token = env_token.or(fallback_token);
 
-        Ok(Self { channel, token })
+        Ok(Self { channel, token, language })
     }
 
     // -----------------------------------------------------------------------
@@ -872,6 +905,20 @@ impl GrpcClient {
             }
             Err(_) => false,
         }
+    }
+
+    pub async fn list_languages(&self) -> Result<Vec<LanguageEntry>, GrpcClientError> {
+        let mut client =
+            nupi_api::daemon_service_client::DaemonServiceClient::new(self.channel.clone());
+        let response = client
+            .list_languages(self.auth_request(nupi_api::ListLanguagesRequest {}))
+            .await?;
+        Ok(response
+            .into_inner()
+            .languages
+            .into_iter()
+            .map(LanguageEntry::from)
+            .collect())
     }
 
     pub async fn shutdown_daemon(&self) -> Result<(), GrpcClientError> {
@@ -1978,6 +2025,14 @@ fn resolve_token(mut tokens: Vec<String>) -> Option<String> {
         tokens.sort();
         Some(tokens[0].clone())
     }
+}
+
+fn persisted_language(settings: &settings::ClientSettings) -> Option<String> {
+    settings
+        .language
+        .as_ref()
+        .map(|v| v.trim().to_lowercase())
+        .filter(|v| !v.is_empty())
 }
 
 fn load_bootstrap_config() -> Result<Option<BootstrapConfig>, GrpcClientError> {

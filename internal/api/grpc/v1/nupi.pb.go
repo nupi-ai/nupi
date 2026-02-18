@@ -5136,7 +5136,7 @@ func (x *ConfigMigrateResponse) GetAudioSettingsUpdated() bool {
 	return false
 }
 
-// TransportConfig represents daemon transport settings (HTTP + gRPC bindings, TLS, CORS).
+// TransportConfig represents daemon transport settings (gRPC bindings, TLS).
 type TransportConfig struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
@@ -5872,6 +5872,164 @@ func (x *UpdateQuickstartRequest) GetComplete() *wrapperspb.BoolValue {
 	return nil
 }
 
+// LanguageInfo describes a language in four standardised formats so that
+// each downstream plugin can pick the representation it needs.
+type LanguageInfo struct {
+	state         protoimpl.MessageState
+	sizeCache     protoimpl.SizeCache
+	unknownFields protoimpl.UnknownFields
+
+	Iso1        string `protobuf:"bytes,1,opt,name=iso1,proto3" json:"iso1,omitempty"`                                  // ISO 639-1 two-letter code, e.g. "pl"
+	Bcp47       string `protobuf:"bytes,2,opt,name=bcp47,proto3" json:"bcp47,omitempty"`                                // BCP 47 / IETF language tag, e.g. "pl-PL"
+	EnglishName string `protobuf:"bytes,3,opt,name=english_name,json=englishName,proto3" json:"english_name,omitempty"` // English name, e.g. "Polish"
+	NativeName  string `protobuf:"bytes,4,opt,name=native_name,json=nativeName,proto3" json:"native_name,omitempty"`    // Native name, e.g. "Polski"
+}
+
+func (x *LanguageInfo) Reset() {
+	*x = LanguageInfo{}
+	if protoimpl.UnsafeEnabled {
+		mi := &file_nupi_proto_msgTypes[89]
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		ms.StoreMessageInfo(mi)
+	}
+}
+
+func (x *LanguageInfo) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LanguageInfo) ProtoMessage() {}
+
+func (x *LanguageInfo) ProtoReflect() protoreflect.Message {
+	mi := &file_nupi_proto_msgTypes[89]
+	if protoimpl.UnsafeEnabled && x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LanguageInfo.ProtoReflect.Descriptor instead.
+func (*LanguageInfo) Descriptor() ([]byte, []int) {
+	return file_nupi_proto_rawDescGZIP(), []int{89}
+}
+
+func (x *LanguageInfo) GetIso1() string {
+	if x != nil {
+		return x.Iso1
+	}
+	return ""
+}
+
+func (x *LanguageInfo) GetBcp47() string {
+	if x != nil {
+		return x.Bcp47
+	}
+	return ""
+}
+
+func (x *LanguageInfo) GetEnglishName() string {
+	if x != nil {
+		return x.EnglishName
+	}
+	return ""
+}
+
+func (x *LanguageInfo) GetNativeName() string {
+	if x != nil {
+		return x.NativeName
+	}
+	return ""
+}
+
+type ListLanguagesRequest struct {
+	state         protoimpl.MessageState
+	sizeCache     protoimpl.SizeCache
+	unknownFields protoimpl.UnknownFields
+}
+
+func (x *ListLanguagesRequest) Reset() {
+	*x = ListLanguagesRequest{}
+	if protoimpl.UnsafeEnabled {
+		mi := &file_nupi_proto_msgTypes[90]
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		ms.StoreMessageInfo(mi)
+	}
+}
+
+func (x *ListLanguagesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListLanguagesRequest) ProtoMessage() {}
+
+func (x *ListLanguagesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_nupi_proto_msgTypes[90]
+	if protoimpl.UnsafeEnabled && x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListLanguagesRequest.ProtoReflect.Descriptor instead.
+func (*ListLanguagesRequest) Descriptor() ([]byte, []int) {
+	return file_nupi_proto_rawDescGZIP(), []int{90}
+}
+
+type ListLanguagesResponse struct {
+	state         protoimpl.MessageState
+	sizeCache     protoimpl.SizeCache
+	unknownFields protoimpl.UnknownFields
+
+	Languages []*LanguageInfo `protobuf:"bytes,1,rep,name=languages,proto3" json:"languages,omitempty"`
+}
+
+func (x *ListLanguagesResponse) Reset() {
+	*x = ListLanguagesResponse{}
+	if protoimpl.UnsafeEnabled {
+		mi := &file_nupi_proto_msgTypes[91]
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		ms.StoreMessageInfo(mi)
+	}
+}
+
+func (x *ListLanguagesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListLanguagesResponse) ProtoMessage() {}
+
+func (x *ListLanguagesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_nupi_proto_msgTypes[91]
+	if protoimpl.UnsafeEnabled && x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListLanguagesResponse.ProtoReflect.Descriptor instead.
+func (*ListLanguagesResponse) Descriptor() ([]byte, []int) {
+	return file_nupi_proto_rawDescGZIP(), []int{91}
+}
+
+func (x *ListLanguagesResponse) GetLanguages() []*LanguageInfo {
+	if x != nil {
+		return x.Languages
+	}
+	return nil
+}
+
 var File_nupi_proto protoreflect.FileDescriptor
 
 var file_nupi_proto_rawDesc = []byte{
@@ -6595,40 +6753,60 @@ var file_nupi_proto_rawDesc = []byte{
 	0x6f, 0x6d, 0x70, 0x6c, 0x65, 0x74, 0x65, 0x18, 0x02, 0x20, 0x01, 0x28, 0x0b, 0x32, 0x1a, 0x2e,
 	0x67, 0x6f, 0x6f, 0x67, 0x6c, 0x65, 0x2e, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x62, 0x75, 0x66, 0x2e,
 	0x42, 0x6f, 0x6f, 0x6c, 0x56, 0x61, 0x6c, 0x75, 0x65, 0x52, 0x08, 0x63, 0x6f, 0x6d, 0x70, 0x6c,
-	0x65, 0x74, 0x65, 0x2a, 0x92, 0x02, 0x0a, 0x10, 0x53, 0x65, 0x73, 0x73, 0x69, 0x6f, 0x6e, 0x45,
-	0x76, 0x65, 0x6e, 0x74, 0x54, 0x79, 0x70, 0x65, 0x12, 0x22, 0x0a, 0x1e, 0x53, 0x45, 0x53, 0x53,
-	0x49, 0x4f, 0x4e, 0x5f, 0x45, 0x56, 0x45, 0x4e, 0x54, 0x5f, 0x54, 0x59, 0x50, 0x45, 0x5f, 0x55,
-	0x4e, 0x53, 0x50, 0x45, 0x43, 0x49, 0x46, 0x49, 0x45, 0x44, 0x10, 0x00, 0x12, 0x1e, 0x0a, 0x1a,
-	0x53, 0x45, 0x53, 0x53, 0x49, 0x4f, 0x4e, 0x5f, 0x45, 0x56, 0x45, 0x4e, 0x54, 0x5f, 0x54, 0x59,
-	0x50, 0x45, 0x5f, 0x43, 0x52, 0x45, 0x41, 0x54, 0x45, 0x44, 0x10, 0x01, 0x12, 0x1d, 0x0a, 0x19,
-	0x53, 0x45, 0x53, 0x53, 0x49, 0x4f, 0x4e, 0x5f, 0x45, 0x56, 0x45, 0x4e, 0x54, 0x5f, 0x54, 0x59,
-	0x50, 0x45, 0x5f, 0x4b, 0x49, 0x4c, 0x4c, 0x45, 0x44, 0x10, 0x02, 0x12, 0x25, 0x0a, 0x21, 0x53,
-	0x45, 0x53, 0x53, 0x49, 0x4f, 0x4e, 0x5f, 0x45, 0x56, 0x45, 0x4e, 0x54, 0x5f, 0x54, 0x59, 0x50,
-	0x45, 0x5f, 0x53, 0x54, 0x41, 0x54, 0x55, 0x53, 0x5f, 0x43, 0x48, 0x41, 0x4e, 0x47, 0x45, 0x44,
-	0x10, 0x03, 0x12, 0x23, 0x0a, 0x1f, 0x53, 0x45, 0x53, 0x53, 0x49, 0x4f, 0x4e, 0x5f, 0x45, 0x56,
-	0x45, 0x4e, 0x54, 0x5f, 0x54, 0x59, 0x50, 0x45, 0x5f, 0x4d, 0x4f, 0x44, 0x45, 0x5f, 0x43, 0x48,
-	0x41, 0x4e, 0x47, 0x45, 0x44, 0x10, 0x04, 0x12, 0x24, 0x0a, 0x20, 0x53, 0x45, 0x53, 0x53, 0x49,
-	0x4f, 0x4e, 0x5f, 0x45, 0x56, 0x45, 0x4e, 0x54, 0x5f, 0x54, 0x59, 0x50, 0x45, 0x5f, 0x54, 0x4f,
-	0x4f, 0x4c, 0x5f, 0x44, 0x45, 0x54, 0x45, 0x43, 0x54, 0x45, 0x44, 0x10, 0x05, 0x12, 0x29, 0x0a,
-	0x25, 0x53, 0x45, 0x53, 0x53, 0x49, 0x4f, 0x4e, 0x5f, 0x45, 0x56, 0x45, 0x4e, 0x54, 0x5f, 0x54,
-	0x59, 0x50, 0x45, 0x5f, 0x52, 0x45, 0x53, 0x49, 0x5a, 0x45, 0x5f, 0x49, 0x4e, 0x53, 0x54, 0x52,
-	0x55, 0x43, 0x54, 0x49, 0x4f, 0x4e, 0x10, 0x06, 0x32, 0x8b, 0x02, 0x0a, 0x0d, 0x44, 0x61, 0x65,
-	0x6d, 0x6f, 0x6e, 0x53, 0x65, 0x72, 0x76, 0x69, 0x63, 0x65, 0x12, 0x4d, 0x0a, 0x06, 0x53, 0x74,
-	0x61, 0x74, 0x75, 0x73, 0x12, 0x20, 0x2e, 0x6e, 0x75, 0x70, 0x69, 0x2e, 0x61, 0x70, 0x69, 0x2e,
-	0x76, 0x31, 0x2e, 0x44, 0x61, 0x65, 0x6d, 0x6f, 0x6e, 0x53, 0x74, 0x61, 0x74, 0x75, 0x73, 0x52,
-	0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x1a, 0x21, 0x2e, 0x6e, 0x75, 0x70, 0x69, 0x2e, 0x61, 0x70,
-	0x69, 0x2e, 0x76, 0x31, 0x2e, 0x44, 0x61, 0x65, 0x6d, 0x6f, 0x6e, 0x53, 0x74, 0x61, 0x74, 0x75,
-	0x73, 0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x12, 0x47, 0x0a, 0x08, 0x53, 0x68, 0x75,
-	0x74, 0x64, 0x6f, 0x77, 0x6e, 0x12, 0x1c, 0x2e, 0x6e, 0x75, 0x70, 0x69, 0x2e, 0x61, 0x70, 0x69,
-	0x2e, 0x76, 0x31, 0x2e, 0x53, 0x68, 0x75, 0x74, 0x64, 0x6f, 0x77, 0x6e, 0x52, 0x65, 0x71, 0x75,
-	0x65, 0x73, 0x74, 0x1a, 0x1d, 0x2e, 0x6e, 0x75, 0x70, 0x69, 0x2e, 0x61, 0x70, 0x69, 0x2e, 0x76,
-	0x31, 0x2e, 0x53, 0x68, 0x75, 0x74, 0x64, 0x6f, 0x77, 0x6e, 0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e,
-	0x73, 0x65, 0x12, 0x62, 0x0a, 0x11, 0x47, 0x65, 0x74, 0x50, 0x6c, 0x75, 0x67, 0x69, 0x6e, 0x57,
-	0x61, 0x72, 0x6e, 0x69, 0x6e, 0x67, 0x73, 0x12, 0x25, 0x2e, 0x6e, 0x75, 0x70, 0x69, 0x2e, 0x61,
-	0x70, 0x69, 0x2e, 0x76, 0x31, 0x2e, 0x47, 0x65, 0x74, 0x50, 0x6c, 0x75, 0x67, 0x69, 0x6e, 0x57,
-	0x61, 0x72, 0x6e, 0x69, 0x6e, 0x67, 0x73, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x1a, 0x26,
-	0x2e, 0x6e, 0x75, 0x70, 0x69, 0x2e, 0x61, 0x70, 0x69, 0x2e, 0x76, 0x31, 0x2e, 0x47, 0x65, 0x74,
-	0x50, 0x6c, 0x75, 0x67, 0x69, 0x6e, 0x57, 0x61, 0x72, 0x6e, 0x69, 0x6e, 0x67, 0x73, 0x52, 0x65,
+	0x65, 0x74, 0x65, 0x22, 0x7c, 0x0a, 0x0c, 0x4c, 0x61, 0x6e, 0x67, 0x75, 0x61, 0x67, 0x65, 0x49,
+	0x6e, 0x66, 0x6f, 0x12, 0x12, 0x0a, 0x04, 0x69, 0x73, 0x6f, 0x31, 0x18, 0x01, 0x20, 0x01, 0x28,
+	0x09, 0x52, 0x04, 0x69, 0x73, 0x6f, 0x31, 0x12, 0x14, 0x0a, 0x05, 0x62, 0x63, 0x70, 0x34, 0x37,
+	0x18, 0x02, 0x20, 0x01, 0x28, 0x09, 0x52, 0x05, 0x62, 0x63, 0x70, 0x34, 0x37, 0x12, 0x21, 0x0a,
+	0x0c, 0x65, 0x6e, 0x67, 0x6c, 0x69, 0x73, 0x68, 0x5f, 0x6e, 0x61, 0x6d, 0x65, 0x18, 0x03, 0x20,
+	0x01, 0x28, 0x09, 0x52, 0x0b, 0x65, 0x6e, 0x67, 0x6c, 0x69, 0x73, 0x68, 0x4e, 0x61, 0x6d, 0x65,
+	0x12, 0x1f, 0x0a, 0x0b, 0x6e, 0x61, 0x74, 0x69, 0x76, 0x65, 0x5f, 0x6e, 0x61, 0x6d, 0x65, 0x18,
+	0x04, 0x20, 0x01, 0x28, 0x09, 0x52, 0x0a, 0x6e, 0x61, 0x74, 0x69, 0x76, 0x65, 0x4e, 0x61, 0x6d,
+	0x65, 0x22, 0x16, 0x0a, 0x14, 0x4c, 0x69, 0x73, 0x74, 0x4c, 0x61, 0x6e, 0x67, 0x75, 0x61, 0x67,
+	0x65, 0x73, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x22, 0x50, 0x0a, 0x15, 0x4c, 0x69, 0x73,
+	0x74, 0x4c, 0x61, 0x6e, 0x67, 0x75, 0x61, 0x67, 0x65, 0x73, 0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e,
+	0x73, 0x65, 0x12, 0x37, 0x0a, 0x09, 0x6c, 0x61, 0x6e, 0x67, 0x75, 0x61, 0x67, 0x65, 0x73, 0x18,
+	0x01, 0x20, 0x03, 0x28, 0x0b, 0x32, 0x19, 0x2e, 0x6e, 0x75, 0x70, 0x69, 0x2e, 0x61, 0x70, 0x69,
+	0x2e, 0x76, 0x31, 0x2e, 0x4c, 0x61, 0x6e, 0x67, 0x75, 0x61, 0x67, 0x65, 0x49, 0x6e, 0x66, 0x6f,
+	0x52, 0x09, 0x6c, 0x61, 0x6e, 0x67, 0x75, 0x61, 0x67, 0x65, 0x73, 0x2a, 0x92, 0x02, 0x0a, 0x10,
+	0x53, 0x65, 0x73, 0x73, 0x69, 0x6f, 0x6e, 0x45, 0x76, 0x65, 0x6e, 0x74, 0x54, 0x79, 0x70, 0x65,
+	0x12, 0x22, 0x0a, 0x1e, 0x53, 0x45, 0x53, 0x53, 0x49, 0x4f, 0x4e, 0x5f, 0x45, 0x56, 0x45, 0x4e,
+	0x54, 0x5f, 0x54, 0x59, 0x50, 0x45, 0x5f, 0x55, 0x4e, 0x53, 0x50, 0x45, 0x43, 0x49, 0x46, 0x49,
+	0x45, 0x44, 0x10, 0x00, 0x12, 0x1e, 0x0a, 0x1a, 0x53, 0x45, 0x53, 0x53, 0x49, 0x4f, 0x4e, 0x5f,
+	0x45, 0x56, 0x45, 0x4e, 0x54, 0x5f, 0x54, 0x59, 0x50, 0x45, 0x5f, 0x43, 0x52, 0x45, 0x41, 0x54,
+	0x45, 0x44, 0x10, 0x01, 0x12, 0x1d, 0x0a, 0x19, 0x53, 0x45, 0x53, 0x53, 0x49, 0x4f, 0x4e, 0x5f,
+	0x45, 0x56, 0x45, 0x4e, 0x54, 0x5f, 0x54, 0x59, 0x50, 0x45, 0x5f, 0x4b, 0x49, 0x4c, 0x4c, 0x45,
+	0x44, 0x10, 0x02, 0x12, 0x25, 0x0a, 0x21, 0x53, 0x45, 0x53, 0x53, 0x49, 0x4f, 0x4e, 0x5f, 0x45,
+	0x56, 0x45, 0x4e, 0x54, 0x5f, 0x54, 0x59, 0x50, 0x45, 0x5f, 0x53, 0x54, 0x41, 0x54, 0x55, 0x53,
+	0x5f, 0x43, 0x48, 0x41, 0x4e, 0x47, 0x45, 0x44, 0x10, 0x03, 0x12, 0x23, 0x0a, 0x1f, 0x53, 0x45,
+	0x53, 0x53, 0x49, 0x4f, 0x4e, 0x5f, 0x45, 0x56, 0x45, 0x4e, 0x54, 0x5f, 0x54, 0x59, 0x50, 0x45,
+	0x5f, 0x4d, 0x4f, 0x44, 0x45, 0x5f, 0x43, 0x48, 0x41, 0x4e, 0x47, 0x45, 0x44, 0x10, 0x04, 0x12,
+	0x24, 0x0a, 0x20, 0x53, 0x45, 0x53, 0x53, 0x49, 0x4f, 0x4e, 0x5f, 0x45, 0x56, 0x45, 0x4e, 0x54,
+	0x5f, 0x54, 0x59, 0x50, 0x45, 0x5f, 0x54, 0x4f, 0x4f, 0x4c, 0x5f, 0x44, 0x45, 0x54, 0x45, 0x43,
+	0x54, 0x45, 0x44, 0x10, 0x05, 0x12, 0x29, 0x0a, 0x25, 0x53, 0x45, 0x53, 0x53, 0x49, 0x4f, 0x4e,
+	0x5f, 0x45, 0x56, 0x45, 0x4e, 0x54, 0x5f, 0x54, 0x59, 0x50, 0x45, 0x5f, 0x52, 0x45, 0x53, 0x49,
+	0x5a, 0x45, 0x5f, 0x49, 0x4e, 0x53, 0x54, 0x52, 0x55, 0x43, 0x54, 0x49, 0x4f, 0x4e, 0x10, 0x06,
+	0x32, 0xe3, 0x02, 0x0a, 0x0d, 0x44, 0x61, 0x65, 0x6d, 0x6f, 0x6e, 0x53, 0x65, 0x72, 0x76, 0x69,
+	0x63, 0x65, 0x12, 0x4d, 0x0a, 0x06, 0x53, 0x74, 0x61, 0x74, 0x75, 0x73, 0x12, 0x20, 0x2e, 0x6e,
+	0x75, 0x70, 0x69, 0x2e, 0x61, 0x70, 0x69, 0x2e, 0x76, 0x31, 0x2e, 0x44, 0x61, 0x65, 0x6d, 0x6f,
+	0x6e, 0x53, 0x74, 0x61, 0x74, 0x75, 0x73, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x1a, 0x21,
+	0x2e, 0x6e, 0x75, 0x70, 0x69, 0x2e, 0x61, 0x70, 0x69, 0x2e, 0x76, 0x31, 0x2e, 0x44, 0x61, 0x65,
+	0x6d, 0x6f, 0x6e, 0x53, 0x74, 0x61, 0x74, 0x75, 0x73, 0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73,
+	0x65, 0x12, 0x47, 0x0a, 0x08, 0x53, 0x68, 0x75, 0x74, 0x64, 0x6f, 0x77, 0x6e, 0x12, 0x1c, 0x2e,
+	0x6e, 0x75, 0x70, 0x69, 0x2e, 0x61, 0x70, 0x69, 0x2e, 0x76, 0x31, 0x2e, 0x53, 0x68, 0x75, 0x74,
+	0x64, 0x6f, 0x77, 0x6e, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x1a, 0x1d, 0x2e, 0x6e, 0x75,
+	0x70, 0x69, 0x2e, 0x61, 0x70, 0x69, 0x2e, 0x76, 0x31, 0x2e, 0x53, 0x68, 0x75, 0x74, 0x64, 0x6f,
+	0x77, 0x6e, 0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x12, 0x62, 0x0a, 0x11, 0x47, 0x65,
+	0x74, 0x50, 0x6c, 0x75, 0x67, 0x69, 0x6e, 0x57, 0x61, 0x72, 0x6e, 0x69, 0x6e, 0x67, 0x73, 0x12,
+	0x25, 0x2e, 0x6e, 0x75, 0x70, 0x69, 0x2e, 0x61, 0x70, 0x69, 0x2e, 0x76, 0x31, 0x2e, 0x47, 0x65,
+	0x74, 0x50, 0x6c, 0x75, 0x67, 0x69, 0x6e, 0x57, 0x61, 0x72, 0x6e, 0x69, 0x6e, 0x67, 0x73, 0x52,
+	0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x1a, 0x26, 0x2e, 0x6e, 0x75, 0x70, 0x69, 0x2e, 0x61, 0x70,
+	0x69, 0x2e, 0x76, 0x31, 0x2e, 0x47, 0x65, 0x74, 0x50, 0x6c, 0x75, 0x67, 0x69, 0x6e, 0x57, 0x61,
+	0x72, 0x6e, 0x69, 0x6e, 0x67, 0x73, 0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x12, 0x56,
+	0x0a, 0x0d, 0x4c, 0x69, 0x73, 0x74, 0x4c, 0x61, 0x6e, 0x67, 0x75, 0x61, 0x67, 0x65, 0x73, 0x12,
+	0x21, 0x2e, 0x6e, 0x75, 0x70, 0x69, 0x2e, 0x61, 0x70, 0x69, 0x2e, 0x76, 0x31, 0x2e, 0x4c, 0x69,
+	0x73, 0x74, 0x4c, 0x61, 0x6e, 0x67, 0x75, 0x61, 0x67, 0x65, 0x73, 0x52, 0x65, 0x71, 0x75, 0x65,
+	0x73, 0x74, 0x1a, 0x22, 0x2e, 0x6e, 0x75, 0x70, 0x69, 0x2e, 0x61, 0x70, 0x69, 0x2e, 0x76, 0x31,
+	0x2e, 0x4c, 0x69, 0x73, 0x74, 0x4c, 0x61, 0x6e, 0x67, 0x75, 0x61, 0x67, 0x65, 0x73, 0x52, 0x65,
 	0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x32, 0x8b, 0x07, 0x0a, 0x0f, 0x53, 0x65, 0x73, 0x73, 0x69,
 	0x6f, 0x6e, 0x73, 0x53, 0x65, 0x72, 0x76, 0x69, 0x63, 0x65, 0x12, 0x53, 0x0a, 0x0c, 0x4c, 0x69,
 	0x73, 0x74, 0x53, 0x65, 0x73, 0x73, 0x69, 0x6f, 0x6e, 0x73, 0x12, 0x20, 0x2e, 0x6e, 0x75, 0x70,
@@ -6864,7 +7042,7 @@ func file_nupi_proto_rawDescGZIP() []byte {
 }
 
 var file_nupi_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_nupi_proto_msgTypes = make([]protoimpl.MessageInfo, 96)
+var file_nupi_proto_msgTypes = make([]protoimpl.MessageInfo, 99)
 var file_nupi_proto_goTypes = []interface{}{
 	(SessionEventType)(0),                 // 0: nupi.api.v1.SessionEventType
 	(*DaemonStatusRequest)(nil),           // 1: nupi.api.v1.DaemonStatusRequest
@@ -6956,166 +7134,172 @@ var file_nupi_proto_goTypes = []interface{}{
 	(*QuickstartStatusResponse)(nil),      // 87: nupi.api.v1.QuickstartStatusResponse
 	(*QuickstartBinding)(nil),             // 88: nupi.api.v1.QuickstartBinding
 	(*UpdateQuickstartRequest)(nil),       // 89: nupi.api.v1.UpdateQuickstartRequest
-	nil,                                   // 90: nupi.api.v1.AdapterRuntime.ExtraEntry
-	nil,                                   // 91: nupi.api.v1.AudioChunk.MetadataEntry
-	nil,                                   // 92: nupi.api.v1.AudioCapability.MetadataEntry
-	nil,                                   // 93: nupi.api.v1.ResizeRequest.MetadataEntry
-	nil,                                   // 94: nupi.api.v1.SessionEvent.DataEntry
-	nil,                                   // 95: nupi.api.v1.AdapterEndpointConfig.EnvEntry
-	nil,                                   // 96: nupi.api.v1.RecordingChunk.MetadataEntry
-	(*timestamppb.Timestamp)(nil),         // 97: google.protobuf.Timestamp
-	(*wrapperspb.Int32Value)(nil),         // 98: google.protobuf.Int32Value
-	(*wrapperspb.BoolValue)(nil),          // 99: google.protobuf.BoolValue
-	(*emptypb.Empty)(nil),                 // 100: google.protobuf.Empty
+	(*LanguageInfo)(nil),                  // 90: nupi.api.v1.LanguageInfo
+	(*ListLanguagesRequest)(nil),          // 91: nupi.api.v1.ListLanguagesRequest
+	(*ListLanguagesResponse)(nil),         // 92: nupi.api.v1.ListLanguagesResponse
+	nil,                                   // 93: nupi.api.v1.AdapterRuntime.ExtraEntry
+	nil,                                   // 94: nupi.api.v1.AudioChunk.MetadataEntry
+	nil,                                   // 95: nupi.api.v1.AudioCapability.MetadataEntry
+	nil,                                   // 96: nupi.api.v1.ResizeRequest.MetadataEntry
+	nil,                                   // 97: nupi.api.v1.SessionEvent.DataEntry
+	nil,                                   // 98: nupi.api.v1.AdapterEndpointConfig.EnvEntry
+	nil,                                   // 99: nupi.api.v1.RecordingChunk.MetadataEntry
+	(*timestamppb.Timestamp)(nil),         // 100: google.protobuf.Timestamp
+	(*wrapperspb.Int32Value)(nil),         // 101: google.protobuf.Int32Value
+	(*wrapperspb.BoolValue)(nil),          // 102: google.protobuf.BoolValue
+	(*emptypb.Empty)(nil),                 // 103: google.protobuf.Empty
 }
 var file_nupi_proto_depIdxs = []int32{
-	97,  // 0: nupi.api.v1.Session.start_time:type_name -> google.protobuf.Timestamp
-	98,  // 1: nupi.api.v1.Session.exit_code:type_name -> google.protobuf.Int32Value
+	100, // 0: nupi.api.v1.Session.start_time:type_name -> google.protobuf.Timestamp
+	101, // 1: nupi.api.v1.Session.exit_code:type_name -> google.protobuf.Int32Value
 	3,   // 2: nupi.api.v1.ListSessionsResponse.sessions:type_name -> nupi.api.v1.Session
 	3,   // 3: nupi.api.v1.CreateSessionResponse.session:type_name -> nupi.api.v1.Session
-	97,  // 4: nupi.api.v1.ConversationTurn.at:type_name -> google.protobuf.Timestamp
+	100, // 4: nupi.api.v1.ConversationTurn.at:type_name -> google.protobuf.Timestamp
 	10,  // 5: nupi.api.v1.ConversationTurn.metadata:type_name -> nupi.api.v1.ConversationMetadata
 	11,  // 6: nupi.api.v1.GetConversationResponse.turns:type_name -> nupi.api.v1.ConversationTurn
 	11,  // 7: nupi.api.v1.GetGlobalConversationResponse.turns:type_name -> nupi.api.v1.ConversationTurn
-	97,  // 8: nupi.api.v1.AdapterRuntime.started_at:type_name -> google.protobuf.Timestamp
-	97,  // 9: nupi.api.v1.AdapterRuntime.updated_at:type_name -> google.protobuf.Timestamp
-	90,  // 10: nupi.api.v1.AdapterRuntime.extra:type_name -> nupi.api.v1.AdapterRuntime.ExtraEntry
-	97,  // 11: nupi.api.v1.AdapterEntry.updated_at:type_name -> google.protobuf.Timestamp
+	100, // 8: nupi.api.v1.AdapterRuntime.started_at:type_name -> google.protobuf.Timestamp
+	100, // 9: nupi.api.v1.AdapterRuntime.updated_at:type_name -> google.protobuf.Timestamp
+	93,  // 10: nupi.api.v1.AdapterRuntime.extra:type_name -> nupi.api.v1.AdapterRuntime.ExtraEntry
+	100, // 11: nupi.api.v1.AdapterEntry.updated_at:type_name -> google.protobuf.Timestamp
 	16,  // 12: nupi.api.v1.AdapterEntry.runtime:type_name -> nupi.api.v1.AdapterRuntime
 	17,  // 13: nupi.api.v1.AdaptersOverviewResponse.adapters:type_name -> nupi.api.v1.AdapterEntry
 	17,  // 14: nupi.api.v1.AdapterActionResponse.adapter:type_name -> nupi.api.v1.AdapterEntry
-	91,  // 15: nupi.api.v1.AudioChunk.metadata:type_name -> nupi.api.v1.AudioChunk.MetadataEntry
+	94,  // 15: nupi.api.v1.AudioChunk.metadata:type_name -> nupi.api.v1.AudioChunk.MetadataEntry
 	22,  // 16: nupi.api.v1.StreamAudioInRequest.format:type_name -> nupi.api.v1.AudioFormat
 	23,  // 17: nupi.api.v1.StreamAudioInRequest.chunk:type_name -> nupi.api.v1.AudioChunk
 	22,  // 18: nupi.api.v1.StreamAudioOutResponse.format:type_name -> nupi.api.v1.AudioFormat
 	23,  // 19: nupi.api.v1.StreamAudioOutResponse.chunk:type_name -> nupi.api.v1.AudioChunk
 	22,  // 20: nupi.api.v1.AudioCapability.format:type_name -> nupi.api.v1.AudioFormat
-	92,  // 21: nupi.api.v1.AudioCapability.metadata:type_name -> nupi.api.v1.AudioCapability.MetadataEntry
+	95,  // 21: nupi.api.v1.AudioCapability.metadata:type_name -> nupi.api.v1.AudioCapability.MetadataEntry
 	30,  // 22: nupi.api.v1.GetAudioCapabilitiesResponse.capture:type_name -> nupi.api.v1.AudioCapability
 	30,  // 23: nupi.api.v1.GetAudioCapabilitiesResponse.playback:type_name -> nupi.api.v1.AudioCapability
-	93,  // 24: nupi.api.v1.ResizeRequest.metadata:type_name -> nupi.api.v1.ResizeRequest.MetadataEntry
+	96,  // 24: nupi.api.v1.ResizeRequest.metadata:type_name -> nupi.api.v1.ResizeRequest.MetadataEntry
 	0,   // 25: nupi.api.v1.SessionEvent.type:type_name -> nupi.api.v1.SessionEventType
-	94,  // 26: nupi.api.v1.SessionEvent.data:type_name -> nupi.api.v1.SessionEvent.DataEntry
+	97,  // 26: nupi.api.v1.SessionEvent.data:type_name -> nupi.api.v1.SessionEvent.DataEntry
 	32,  // 27: nupi.api.v1.AttachSessionRequest.init:type_name -> nupi.api.v1.AttachInit
 	33,  // 28: nupi.api.v1.AttachSessionRequest.resize:type_name -> nupi.api.v1.ResizeRequest
 	34,  // 29: nupi.api.v1.AttachSessionResponse.event:type_name -> nupi.api.v1.SessionEvent
 	3,   // 30: nupi.api.v1.GetSessionResponse.session:type_name -> nupi.api.v1.Session
 	48,  // 31: nupi.api.v1.GetPluginWarningsResponse.warnings:type_name -> nupi.api.v1.PluginWarning
-	97,  // 32: nupi.api.v1.TokenInfo.created_at:type_name -> google.protobuf.Timestamp
+	100, // 32: nupi.api.v1.TokenInfo.created_at:type_name -> google.protobuf.Timestamp
 	50,  // 33: nupi.api.v1.ListTokensResponse.tokens:type_name -> nupi.api.v1.TokenInfo
 	50,  // 34: nupi.api.v1.CreateTokenResponse.info:type_name -> nupi.api.v1.TokenInfo
-	97,  // 35: nupi.api.v1.PairingInfo.expires_at:type_name -> google.protobuf.Timestamp
-	97,  // 36: nupi.api.v1.PairingInfo.created_at:type_name -> google.protobuf.Timestamp
+	100, // 35: nupi.api.v1.PairingInfo.expires_at:type_name -> google.protobuf.Timestamp
+	100, // 36: nupi.api.v1.PairingInfo.created_at:type_name -> google.protobuf.Timestamp
 	56,  // 37: nupi.api.v1.ListPairingsResponse.pairings:type_name -> nupi.api.v1.PairingInfo
-	97,  // 38: nupi.api.v1.CreatePairingResponse.expires_at:type_name -> google.protobuf.Timestamp
-	97,  // 39: nupi.api.v1.ClaimPairingResponse.created_at:type_name -> google.protobuf.Timestamp
-	95,  // 40: nupi.api.v1.AdapterEndpointConfig.env:type_name -> nupi.api.v1.AdapterEndpointConfig.EnvEntry
+	100, // 38: nupi.api.v1.CreatePairingResponse.expires_at:type_name -> google.protobuf.Timestamp
+	100, // 39: nupi.api.v1.ClaimPairingResponse.created_at:type_name -> google.protobuf.Timestamp
+	98,  // 40: nupi.api.v1.AdapterEndpointConfig.env:type_name -> nupi.api.v1.AdapterEndpointConfig.EnvEntry
 	63,  // 41: nupi.api.v1.RegisterAdapterRequest.endpoint:type_name -> nupi.api.v1.AdapterEndpointConfig
-	97,  // 42: nupi.api.v1.AdapterLogEntry.timestamp:type_name -> google.protobuf.Timestamp
-	97,  // 43: nupi.api.v1.TranscriptEntry.timestamp:type_name -> google.protobuf.Timestamp
+	100, // 42: nupi.api.v1.AdapterLogEntry.timestamp:type_name -> google.protobuf.Timestamp
+	100, // 43: nupi.api.v1.TranscriptEntry.timestamp:type_name -> google.protobuf.Timestamp
 	67,  // 44: nupi.api.v1.AdapterLogStreamEntry.log:type_name -> nupi.api.v1.AdapterLogEntry
 	68,  // 45: nupi.api.v1.AdapterLogStreamEntry.transcript:type_name -> nupi.api.v1.TranscriptEntry
 	69,  // 46: nupi.api.v1.GetAdapterLogsResponse.entries:type_name -> nupi.api.v1.AdapterLogStreamEntry
-	97,  // 47: nupi.api.v1.Recording.start_time:type_name -> google.protobuf.Timestamp
+	100, // 47: nupi.api.v1.Recording.start_time:type_name -> google.protobuf.Timestamp
 	72,  // 48: nupi.api.v1.ListRecordingsResponse.recordings:type_name -> nupi.api.v1.Recording
-	96,  // 49: nupi.api.v1.RecordingChunk.metadata:type_name -> nupi.api.v1.RecordingChunk.MetadataEntry
+	99,  // 49: nupi.api.v1.RecordingChunk.metadata:type_name -> nupi.api.v1.RecordingChunk.MetadataEntry
 	79,  // 50: nupi.api.v1.UpdateTransportConfigRequest.config:type_name -> nupi.api.v1.TransportConfig
-	97,  // 51: nupi.api.v1.Adapter.created_at:type_name -> google.protobuf.Timestamp
-	97,  // 52: nupi.api.v1.Adapter.updated_at:type_name -> google.protobuf.Timestamp
+	100, // 51: nupi.api.v1.Adapter.created_at:type_name -> google.protobuf.Timestamp
+	100, // 52: nupi.api.v1.Adapter.updated_at:type_name -> google.protobuf.Timestamp
 	81,  // 53: nupi.api.v1.ListAdaptersResponse.adapters:type_name -> nupi.api.v1.Adapter
-	97,  // 54: nupi.api.v1.AdapterBinding.updated_at:type_name -> google.protobuf.Timestamp
+	100, // 54: nupi.api.v1.AdapterBinding.updated_at:type_name -> google.protobuf.Timestamp
 	83,  // 55: nupi.api.v1.ListAdapterBindingsResponse.bindings:type_name -> nupi.api.v1.AdapterBinding
-	97,  // 56: nupi.api.v1.QuickstartStatusResponse.completed_at:type_name -> google.protobuf.Timestamp
+	100, // 56: nupi.api.v1.QuickstartStatusResponse.completed_at:type_name -> google.protobuf.Timestamp
 	17,  // 57: nupi.api.v1.QuickstartStatusResponse.adapters:type_name -> nupi.api.v1.AdapterEntry
 	88,  // 58: nupi.api.v1.UpdateQuickstartRequest.bindings:type_name -> nupi.api.v1.QuickstartBinding
-	99,  // 59: nupi.api.v1.UpdateQuickstartRequest.complete:type_name -> google.protobuf.BoolValue
-	1,   // 60: nupi.api.v1.DaemonService.Status:input_type -> nupi.api.v1.DaemonStatusRequest
-	45,  // 61: nupi.api.v1.DaemonService.Shutdown:input_type -> nupi.api.v1.ShutdownRequest
-	47,  // 62: nupi.api.v1.DaemonService.GetPluginWarnings:input_type -> nupi.api.v1.GetPluginWarningsRequest
-	4,   // 63: nupi.api.v1.SessionsService.ListSessions:input_type -> nupi.api.v1.ListSessionsRequest
-	6,   // 64: nupi.api.v1.SessionsService.CreateSession:input_type -> nupi.api.v1.CreateSessionRequest
-	37,  // 65: nupi.api.v1.SessionsService.GetSession:input_type -> nupi.api.v1.GetSessionRequest
-	8,   // 66: nupi.api.v1.SessionsService.KillSession:input_type -> nupi.api.v1.KillSessionRequest
-	39,  // 67: nupi.api.v1.SessionsService.SendInput:input_type -> nupi.api.v1.SendInputRequest
-	35,  // 68: nupi.api.v1.SessionsService.AttachSession:input_type -> nupi.api.v1.AttachSessionRequest
-	41,  // 69: nupi.api.v1.SessionsService.GetSessionMode:input_type -> nupi.api.v1.GetSessionModeRequest
-	43,  // 70: nupi.api.v1.SessionsService.SetSessionMode:input_type -> nupi.api.v1.SetSessionModeRequest
-	12,  // 71: nupi.api.v1.SessionsService.GetConversation:input_type -> nupi.api.v1.GetConversationRequest
-	14,  // 72: nupi.api.v1.SessionsService.GetGlobalConversation:input_type -> nupi.api.v1.GetGlobalConversationRequest
-	100, // 73: nupi.api.v1.AdapterRuntimeService.Overview:input_type -> google.protobuf.Empty
-	19,  // 74: nupi.api.v1.AdapterRuntimeService.BindAdapter:input_type -> nupi.api.v1.BindAdapterRequest
-	20,  // 75: nupi.api.v1.AdapterRuntimeService.StartAdapter:input_type -> nupi.api.v1.AdapterSlotRequest
-	20,  // 76: nupi.api.v1.AdapterRuntimeService.StopAdapter:input_type -> nupi.api.v1.AdapterSlotRequest
-	64,  // 77: nupi.api.v1.AdapterRuntimeService.RegisterAdapter:input_type -> nupi.api.v1.RegisterAdapterRequest
-	66,  // 78: nupi.api.v1.AdapterRuntimeService.StreamAdapterLogs:input_type -> nupi.api.v1.StreamAdapterLogsRequest
-	70,  // 79: nupi.api.v1.AdapterRuntimeService.GetAdapterLogs:input_type -> nupi.api.v1.GetAdapterLogsRequest
-	24,  // 80: nupi.api.v1.AudioService.StreamAudioIn:input_type -> nupi.api.v1.StreamAudioInRequest
-	26,  // 81: nupi.api.v1.AudioService.StreamAudioOut:input_type -> nupi.api.v1.StreamAudioOutRequest
-	28,  // 82: nupi.api.v1.AudioService.InterruptTTS:input_type -> nupi.api.v1.InterruptTTSRequest
-	29,  // 83: nupi.api.v1.AudioService.GetAudioCapabilities:input_type -> nupi.api.v1.GetAudioCapabilitiesRequest
-	51,  // 84: nupi.api.v1.AuthService.ListTokens:input_type -> nupi.api.v1.ListTokensRequest
-	53,  // 85: nupi.api.v1.AuthService.CreateToken:input_type -> nupi.api.v1.CreateTokenRequest
-	55,  // 86: nupi.api.v1.AuthService.DeleteToken:input_type -> nupi.api.v1.DeleteTokenRequest
-	57,  // 87: nupi.api.v1.AuthService.ListPairings:input_type -> nupi.api.v1.ListPairingsRequest
-	59,  // 88: nupi.api.v1.AuthService.CreatePairing:input_type -> nupi.api.v1.CreatePairingRequest
-	61,  // 89: nupi.api.v1.AuthService.ClaimPairing:input_type -> nupi.api.v1.ClaimPairingRequest
-	73,  // 90: nupi.api.v1.RecordingsService.ListRecordings:input_type -> nupi.api.v1.ListRecordingsRequest
-	75,  // 91: nupi.api.v1.RecordingsService.GetRecording:input_type -> nupi.api.v1.GetRecordingRequest
-	100, // 92: nupi.api.v1.ConfigService.GetTransportConfig:input_type -> google.protobuf.Empty
-	80,  // 93: nupi.api.v1.ConfigService.UpdateTransportConfig:input_type -> nupi.api.v1.UpdateTransportConfigRequest
-	77,  // 94: nupi.api.v1.ConfigService.Migrate:input_type -> nupi.api.v1.ConfigMigrateRequest
-	100, // 95: nupi.api.v1.AdaptersService.ListAdapters:input_type -> google.protobuf.Empty
-	100, // 96: nupi.api.v1.AdaptersService.ListAdapterBindings:input_type -> google.protobuf.Empty
-	85,  // 97: nupi.api.v1.AdaptersService.SetAdapterBinding:input_type -> nupi.api.v1.SetAdapterBindingRequest
-	86,  // 98: nupi.api.v1.AdaptersService.ClearAdapterBinding:input_type -> nupi.api.v1.ClearAdapterBindingRequest
-	100, // 99: nupi.api.v1.QuickstartService.GetStatus:input_type -> google.protobuf.Empty
-	89,  // 100: nupi.api.v1.QuickstartService.Update:input_type -> nupi.api.v1.UpdateQuickstartRequest
-	2,   // 101: nupi.api.v1.DaemonService.Status:output_type -> nupi.api.v1.DaemonStatusResponse
-	46,  // 102: nupi.api.v1.DaemonService.Shutdown:output_type -> nupi.api.v1.ShutdownResponse
-	49,  // 103: nupi.api.v1.DaemonService.GetPluginWarnings:output_type -> nupi.api.v1.GetPluginWarningsResponse
-	5,   // 104: nupi.api.v1.SessionsService.ListSessions:output_type -> nupi.api.v1.ListSessionsResponse
-	7,   // 105: nupi.api.v1.SessionsService.CreateSession:output_type -> nupi.api.v1.CreateSessionResponse
-	38,  // 106: nupi.api.v1.SessionsService.GetSession:output_type -> nupi.api.v1.GetSessionResponse
-	9,   // 107: nupi.api.v1.SessionsService.KillSession:output_type -> nupi.api.v1.KillSessionResponse
-	40,  // 108: nupi.api.v1.SessionsService.SendInput:output_type -> nupi.api.v1.SendInputResponse
-	36,  // 109: nupi.api.v1.SessionsService.AttachSession:output_type -> nupi.api.v1.AttachSessionResponse
-	42,  // 110: nupi.api.v1.SessionsService.GetSessionMode:output_type -> nupi.api.v1.GetSessionModeResponse
-	44,  // 111: nupi.api.v1.SessionsService.SetSessionMode:output_type -> nupi.api.v1.SetSessionModeResponse
-	13,  // 112: nupi.api.v1.SessionsService.GetConversation:output_type -> nupi.api.v1.GetConversationResponse
-	15,  // 113: nupi.api.v1.SessionsService.GetGlobalConversation:output_type -> nupi.api.v1.GetGlobalConversationResponse
-	18,  // 114: nupi.api.v1.AdapterRuntimeService.Overview:output_type -> nupi.api.v1.AdaptersOverviewResponse
-	21,  // 115: nupi.api.v1.AdapterRuntimeService.BindAdapter:output_type -> nupi.api.v1.AdapterActionResponse
-	21,  // 116: nupi.api.v1.AdapterRuntimeService.StartAdapter:output_type -> nupi.api.v1.AdapterActionResponse
-	21,  // 117: nupi.api.v1.AdapterRuntimeService.StopAdapter:output_type -> nupi.api.v1.AdapterActionResponse
-	65,  // 118: nupi.api.v1.AdapterRuntimeService.RegisterAdapter:output_type -> nupi.api.v1.RegisterAdapterResponse
-	69,  // 119: nupi.api.v1.AdapterRuntimeService.StreamAdapterLogs:output_type -> nupi.api.v1.AdapterLogStreamEntry
-	71,  // 120: nupi.api.v1.AdapterRuntimeService.GetAdapterLogs:output_type -> nupi.api.v1.GetAdapterLogsResponse
-	25,  // 121: nupi.api.v1.AudioService.StreamAudioIn:output_type -> nupi.api.v1.StreamAudioInResponse
-	27,  // 122: nupi.api.v1.AudioService.StreamAudioOut:output_type -> nupi.api.v1.StreamAudioOutResponse
-	100, // 123: nupi.api.v1.AudioService.InterruptTTS:output_type -> google.protobuf.Empty
-	31,  // 124: nupi.api.v1.AudioService.GetAudioCapabilities:output_type -> nupi.api.v1.GetAudioCapabilitiesResponse
-	52,  // 125: nupi.api.v1.AuthService.ListTokens:output_type -> nupi.api.v1.ListTokensResponse
-	54,  // 126: nupi.api.v1.AuthService.CreateToken:output_type -> nupi.api.v1.CreateTokenResponse
-	100, // 127: nupi.api.v1.AuthService.DeleteToken:output_type -> google.protobuf.Empty
-	58,  // 128: nupi.api.v1.AuthService.ListPairings:output_type -> nupi.api.v1.ListPairingsResponse
-	60,  // 129: nupi.api.v1.AuthService.CreatePairing:output_type -> nupi.api.v1.CreatePairingResponse
-	62,  // 130: nupi.api.v1.AuthService.ClaimPairing:output_type -> nupi.api.v1.ClaimPairingResponse
-	74,  // 131: nupi.api.v1.RecordingsService.ListRecordings:output_type -> nupi.api.v1.ListRecordingsResponse
-	76,  // 132: nupi.api.v1.RecordingsService.GetRecording:output_type -> nupi.api.v1.RecordingChunk
-	79,  // 133: nupi.api.v1.ConfigService.GetTransportConfig:output_type -> nupi.api.v1.TransportConfig
-	79,  // 134: nupi.api.v1.ConfigService.UpdateTransportConfig:output_type -> nupi.api.v1.TransportConfig
-	78,  // 135: nupi.api.v1.ConfigService.Migrate:output_type -> nupi.api.v1.ConfigMigrateResponse
-	82,  // 136: nupi.api.v1.AdaptersService.ListAdapters:output_type -> nupi.api.v1.ListAdaptersResponse
-	84,  // 137: nupi.api.v1.AdaptersService.ListAdapterBindings:output_type -> nupi.api.v1.ListAdapterBindingsResponse
-	83,  // 138: nupi.api.v1.AdaptersService.SetAdapterBinding:output_type -> nupi.api.v1.AdapterBinding
-	100, // 139: nupi.api.v1.AdaptersService.ClearAdapterBinding:output_type -> google.protobuf.Empty
-	87,  // 140: nupi.api.v1.QuickstartService.GetStatus:output_type -> nupi.api.v1.QuickstartStatusResponse
-	87,  // 141: nupi.api.v1.QuickstartService.Update:output_type -> nupi.api.v1.QuickstartStatusResponse
-	101, // [101:142] is the sub-list for method output_type
-	60,  // [60:101] is the sub-list for method input_type
-	60,  // [60:60] is the sub-list for extension type_name
-	60,  // [60:60] is the sub-list for extension extendee
-	0,   // [0:60] is the sub-list for field type_name
+	102, // 59: nupi.api.v1.UpdateQuickstartRequest.complete:type_name -> google.protobuf.BoolValue
+	90,  // 60: nupi.api.v1.ListLanguagesResponse.languages:type_name -> nupi.api.v1.LanguageInfo
+	1,   // 61: nupi.api.v1.DaemonService.Status:input_type -> nupi.api.v1.DaemonStatusRequest
+	45,  // 62: nupi.api.v1.DaemonService.Shutdown:input_type -> nupi.api.v1.ShutdownRequest
+	47,  // 63: nupi.api.v1.DaemonService.GetPluginWarnings:input_type -> nupi.api.v1.GetPluginWarningsRequest
+	91,  // 64: nupi.api.v1.DaemonService.ListLanguages:input_type -> nupi.api.v1.ListLanguagesRequest
+	4,   // 65: nupi.api.v1.SessionsService.ListSessions:input_type -> nupi.api.v1.ListSessionsRequest
+	6,   // 66: nupi.api.v1.SessionsService.CreateSession:input_type -> nupi.api.v1.CreateSessionRequest
+	37,  // 67: nupi.api.v1.SessionsService.GetSession:input_type -> nupi.api.v1.GetSessionRequest
+	8,   // 68: nupi.api.v1.SessionsService.KillSession:input_type -> nupi.api.v1.KillSessionRequest
+	39,  // 69: nupi.api.v1.SessionsService.SendInput:input_type -> nupi.api.v1.SendInputRequest
+	35,  // 70: nupi.api.v1.SessionsService.AttachSession:input_type -> nupi.api.v1.AttachSessionRequest
+	41,  // 71: nupi.api.v1.SessionsService.GetSessionMode:input_type -> nupi.api.v1.GetSessionModeRequest
+	43,  // 72: nupi.api.v1.SessionsService.SetSessionMode:input_type -> nupi.api.v1.SetSessionModeRequest
+	12,  // 73: nupi.api.v1.SessionsService.GetConversation:input_type -> nupi.api.v1.GetConversationRequest
+	14,  // 74: nupi.api.v1.SessionsService.GetGlobalConversation:input_type -> nupi.api.v1.GetGlobalConversationRequest
+	103, // 75: nupi.api.v1.AdapterRuntimeService.Overview:input_type -> google.protobuf.Empty
+	19,  // 76: nupi.api.v1.AdapterRuntimeService.BindAdapter:input_type -> nupi.api.v1.BindAdapterRequest
+	20,  // 77: nupi.api.v1.AdapterRuntimeService.StartAdapter:input_type -> nupi.api.v1.AdapterSlotRequest
+	20,  // 78: nupi.api.v1.AdapterRuntimeService.StopAdapter:input_type -> nupi.api.v1.AdapterSlotRequest
+	64,  // 79: nupi.api.v1.AdapterRuntimeService.RegisterAdapter:input_type -> nupi.api.v1.RegisterAdapterRequest
+	66,  // 80: nupi.api.v1.AdapterRuntimeService.StreamAdapterLogs:input_type -> nupi.api.v1.StreamAdapterLogsRequest
+	70,  // 81: nupi.api.v1.AdapterRuntimeService.GetAdapterLogs:input_type -> nupi.api.v1.GetAdapterLogsRequest
+	24,  // 82: nupi.api.v1.AudioService.StreamAudioIn:input_type -> nupi.api.v1.StreamAudioInRequest
+	26,  // 83: nupi.api.v1.AudioService.StreamAudioOut:input_type -> nupi.api.v1.StreamAudioOutRequest
+	28,  // 84: nupi.api.v1.AudioService.InterruptTTS:input_type -> nupi.api.v1.InterruptTTSRequest
+	29,  // 85: nupi.api.v1.AudioService.GetAudioCapabilities:input_type -> nupi.api.v1.GetAudioCapabilitiesRequest
+	51,  // 86: nupi.api.v1.AuthService.ListTokens:input_type -> nupi.api.v1.ListTokensRequest
+	53,  // 87: nupi.api.v1.AuthService.CreateToken:input_type -> nupi.api.v1.CreateTokenRequest
+	55,  // 88: nupi.api.v1.AuthService.DeleteToken:input_type -> nupi.api.v1.DeleteTokenRequest
+	57,  // 89: nupi.api.v1.AuthService.ListPairings:input_type -> nupi.api.v1.ListPairingsRequest
+	59,  // 90: nupi.api.v1.AuthService.CreatePairing:input_type -> nupi.api.v1.CreatePairingRequest
+	61,  // 91: nupi.api.v1.AuthService.ClaimPairing:input_type -> nupi.api.v1.ClaimPairingRequest
+	73,  // 92: nupi.api.v1.RecordingsService.ListRecordings:input_type -> nupi.api.v1.ListRecordingsRequest
+	75,  // 93: nupi.api.v1.RecordingsService.GetRecording:input_type -> nupi.api.v1.GetRecordingRequest
+	103, // 94: nupi.api.v1.ConfigService.GetTransportConfig:input_type -> google.protobuf.Empty
+	80,  // 95: nupi.api.v1.ConfigService.UpdateTransportConfig:input_type -> nupi.api.v1.UpdateTransportConfigRequest
+	77,  // 96: nupi.api.v1.ConfigService.Migrate:input_type -> nupi.api.v1.ConfigMigrateRequest
+	103, // 97: nupi.api.v1.AdaptersService.ListAdapters:input_type -> google.protobuf.Empty
+	103, // 98: nupi.api.v1.AdaptersService.ListAdapterBindings:input_type -> google.protobuf.Empty
+	85,  // 99: nupi.api.v1.AdaptersService.SetAdapterBinding:input_type -> nupi.api.v1.SetAdapterBindingRequest
+	86,  // 100: nupi.api.v1.AdaptersService.ClearAdapterBinding:input_type -> nupi.api.v1.ClearAdapterBindingRequest
+	103, // 101: nupi.api.v1.QuickstartService.GetStatus:input_type -> google.protobuf.Empty
+	89,  // 102: nupi.api.v1.QuickstartService.Update:input_type -> nupi.api.v1.UpdateQuickstartRequest
+	2,   // 103: nupi.api.v1.DaemonService.Status:output_type -> nupi.api.v1.DaemonStatusResponse
+	46,  // 104: nupi.api.v1.DaemonService.Shutdown:output_type -> nupi.api.v1.ShutdownResponse
+	49,  // 105: nupi.api.v1.DaemonService.GetPluginWarnings:output_type -> nupi.api.v1.GetPluginWarningsResponse
+	92,  // 106: nupi.api.v1.DaemonService.ListLanguages:output_type -> nupi.api.v1.ListLanguagesResponse
+	5,   // 107: nupi.api.v1.SessionsService.ListSessions:output_type -> nupi.api.v1.ListSessionsResponse
+	7,   // 108: nupi.api.v1.SessionsService.CreateSession:output_type -> nupi.api.v1.CreateSessionResponse
+	38,  // 109: nupi.api.v1.SessionsService.GetSession:output_type -> nupi.api.v1.GetSessionResponse
+	9,   // 110: nupi.api.v1.SessionsService.KillSession:output_type -> nupi.api.v1.KillSessionResponse
+	40,  // 111: nupi.api.v1.SessionsService.SendInput:output_type -> nupi.api.v1.SendInputResponse
+	36,  // 112: nupi.api.v1.SessionsService.AttachSession:output_type -> nupi.api.v1.AttachSessionResponse
+	42,  // 113: nupi.api.v1.SessionsService.GetSessionMode:output_type -> nupi.api.v1.GetSessionModeResponse
+	44,  // 114: nupi.api.v1.SessionsService.SetSessionMode:output_type -> nupi.api.v1.SetSessionModeResponse
+	13,  // 115: nupi.api.v1.SessionsService.GetConversation:output_type -> nupi.api.v1.GetConversationResponse
+	15,  // 116: nupi.api.v1.SessionsService.GetGlobalConversation:output_type -> nupi.api.v1.GetGlobalConversationResponse
+	18,  // 117: nupi.api.v1.AdapterRuntimeService.Overview:output_type -> nupi.api.v1.AdaptersOverviewResponse
+	21,  // 118: nupi.api.v1.AdapterRuntimeService.BindAdapter:output_type -> nupi.api.v1.AdapterActionResponse
+	21,  // 119: nupi.api.v1.AdapterRuntimeService.StartAdapter:output_type -> nupi.api.v1.AdapterActionResponse
+	21,  // 120: nupi.api.v1.AdapterRuntimeService.StopAdapter:output_type -> nupi.api.v1.AdapterActionResponse
+	65,  // 121: nupi.api.v1.AdapterRuntimeService.RegisterAdapter:output_type -> nupi.api.v1.RegisterAdapterResponse
+	69,  // 122: nupi.api.v1.AdapterRuntimeService.StreamAdapterLogs:output_type -> nupi.api.v1.AdapterLogStreamEntry
+	71,  // 123: nupi.api.v1.AdapterRuntimeService.GetAdapterLogs:output_type -> nupi.api.v1.GetAdapterLogsResponse
+	25,  // 124: nupi.api.v1.AudioService.StreamAudioIn:output_type -> nupi.api.v1.StreamAudioInResponse
+	27,  // 125: nupi.api.v1.AudioService.StreamAudioOut:output_type -> nupi.api.v1.StreamAudioOutResponse
+	103, // 126: nupi.api.v1.AudioService.InterruptTTS:output_type -> google.protobuf.Empty
+	31,  // 127: nupi.api.v1.AudioService.GetAudioCapabilities:output_type -> nupi.api.v1.GetAudioCapabilitiesResponse
+	52,  // 128: nupi.api.v1.AuthService.ListTokens:output_type -> nupi.api.v1.ListTokensResponse
+	54,  // 129: nupi.api.v1.AuthService.CreateToken:output_type -> nupi.api.v1.CreateTokenResponse
+	103, // 130: nupi.api.v1.AuthService.DeleteToken:output_type -> google.protobuf.Empty
+	58,  // 131: nupi.api.v1.AuthService.ListPairings:output_type -> nupi.api.v1.ListPairingsResponse
+	60,  // 132: nupi.api.v1.AuthService.CreatePairing:output_type -> nupi.api.v1.CreatePairingResponse
+	62,  // 133: nupi.api.v1.AuthService.ClaimPairing:output_type -> nupi.api.v1.ClaimPairingResponse
+	74,  // 134: nupi.api.v1.RecordingsService.ListRecordings:output_type -> nupi.api.v1.ListRecordingsResponse
+	76,  // 135: nupi.api.v1.RecordingsService.GetRecording:output_type -> nupi.api.v1.RecordingChunk
+	79,  // 136: nupi.api.v1.ConfigService.GetTransportConfig:output_type -> nupi.api.v1.TransportConfig
+	79,  // 137: nupi.api.v1.ConfigService.UpdateTransportConfig:output_type -> nupi.api.v1.TransportConfig
+	78,  // 138: nupi.api.v1.ConfigService.Migrate:output_type -> nupi.api.v1.ConfigMigrateResponse
+	82,  // 139: nupi.api.v1.AdaptersService.ListAdapters:output_type -> nupi.api.v1.ListAdaptersResponse
+	84,  // 140: nupi.api.v1.AdaptersService.ListAdapterBindings:output_type -> nupi.api.v1.ListAdapterBindingsResponse
+	83,  // 141: nupi.api.v1.AdaptersService.SetAdapterBinding:output_type -> nupi.api.v1.AdapterBinding
+	103, // 142: nupi.api.v1.AdaptersService.ClearAdapterBinding:output_type -> google.protobuf.Empty
+	87,  // 143: nupi.api.v1.QuickstartService.GetStatus:output_type -> nupi.api.v1.QuickstartStatusResponse
+	87,  // 144: nupi.api.v1.QuickstartService.Update:output_type -> nupi.api.v1.QuickstartStatusResponse
+	103, // [103:145] is the sub-list for method output_type
+	61,  // [61:103] is the sub-list for method input_type
+	61,  // [61:61] is the sub-list for extension type_name
+	61,  // [61:61] is the sub-list for extension extendee
+	0,   // [0:61] is the sub-list for field type_name
 }
 
 func init() { file_nupi_proto_init() }
@@ -8192,6 +8376,42 @@ func file_nupi_proto_init() {
 				return nil
 			}
 		}
+		file_nupi_proto_msgTypes[89].Exporter = func(v interface{}, i int) interface{} {
+			switch v := v.(*LanguageInfo); i {
+			case 0:
+				return &v.state
+			case 1:
+				return &v.sizeCache
+			case 2:
+				return &v.unknownFields
+			default:
+				return nil
+			}
+		}
+		file_nupi_proto_msgTypes[90].Exporter = func(v interface{}, i int) interface{} {
+			switch v := v.(*ListLanguagesRequest); i {
+			case 0:
+				return &v.state
+			case 1:
+				return &v.sizeCache
+			case 2:
+				return &v.unknownFields
+			default:
+				return nil
+			}
+		}
+		file_nupi_proto_msgTypes[91].Exporter = func(v interface{}, i int) interface{} {
+			switch v := v.(*ListLanguagesResponse); i {
+			case 0:
+				return &v.state
+			case 1:
+				return &v.sizeCache
+			case 2:
+				return &v.unknownFields
+			default:
+				return nil
+			}
+		}
 	}
 	file_nupi_proto_msgTypes[16].OneofWrappers = []interface{}{}
 	file_nupi_proto_msgTypes[34].OneofWrappers = []interface{}{
@@ -8214,7 +8434,7 @@ func file_nupi_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: file_nupi_proto_rawDesc,
 			NumEnums:      1,
-			NumMessages:   96,
+			NumMessages:   99,
 			NumExtensions: 0,
 			NumServices:   9,
 		},

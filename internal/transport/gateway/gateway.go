@@ -2,10 +2,12 @@ package gateway
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -13,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nupi-ai/nupi/internal/language"
 	"github.com/nupi-ai/nupi/internal/server"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -31,6 +34,10 @@ type Options struct {
 	// will also listen. When set, the same gRPC server serves on both the TCP
 	// listener and this Unix socket.
 	GRPCUnixSocket string
+	// ConnectEnabled activates the Connect RPC (HTTP) transport alongside gRPC.
+	// When true, a separate HTTP listener is started that serves Connect
+	// protocol via a Vanguard transcoder wrapping the gRPC server.
+	ConnectEnabled bool
 }
 
 // ListenerInfo represents a single listener started by the gateway.
@@ -43,10 +50,11 @@ type ListenerInfo struct {
 
 // Info summarises the listeners exposed by the gateway.
 type Info struct {
-	GRPC ListenerInfo
+	GRPC    ListenerInfo
+	Connect ListenerInfo // Connect RPC (HTTP) transport; zero value if not enabled.
 }
 
-// Gateway orchestrates gRPC listeners exposed by the daemon.
+// Gateway orchestrates gRPC and Connect RPC listeners exposed by the daemon.
 type Gateway struct {
 	apiServer *server.APIServer
 	opts      Options
@@ -55,6 +63,9 @@ type Gateway struct {
 	grpcServer       *grpc.Server
 	grpcListener     net.Listener
 	grpcUnixListener net.Listener
+	connectServer    *http.Server
+	connectListener  net.Listener
+	cancelServe      context.CancelFunc
 	errCh            chan error
 	wg               sync.WaitGroup
 	info             Info
@@ -105,8 +116,8 @@ func (g *Gateway) Start(ctx context.Context) (*Info, error) {
 	grpcPort := listenerPort(grpcListener)
 
 	grpcOpts := []grpc.ServerOption{
-		grpc.ChainUnaryInterceptor(g.unaryAuthInterceptor),
-		grpc.ChainStreamInterceptor(g.streamAuthInterceptor),
+		grpc.ChainUnaryInterceptor(unaryLanguageInterceptor, g.unaryAuthInterceptor),
+		grpc.ChainStreamInterceptor(streamLanguageInterceptor, g.streamAuthInterceptor),
 	}
 	if prepared.UseTLS {
 		creds, err := credentials.NewServerTLSFromFile(prepared.CertPath, prepared.KeyPath)
@@ -153,9 +164,59 @@ func (g *Gateway) Start(ctx context.Context) (*Info, error) {
 		numListeners = 2
 	}
 
+	// Optionally start a Connect RPC (HTTP) transport using Vanguard transcoder.
+	var connectListener net.Listener
+	var connectServer *http.Server
+	connectUseTLS := false
+	if g.opts.ConnectEnabled {
+		transcoder, tErr := server.NewConnectTranscoder(grpcServer)
+		if tErr != nil {
+			_ = grpcListener.Close()
+			if grpcUnixListener != nil {
+				_ = grpcUnixListener.Close()
+			}
+			return nil, fmt.Errorf("gateway: create connect transcoder: %w", tErr)
+		}
+		connectAddr := net.JoinHostPort(grpcHost, "0")
+		connectListener, err = net.Listen("tcp", connectAddr)
+		if err != nil {
+			_ = grpcListener.Close()
+			if grpcUnixListener != nil {
+				_ = grpcUnixListener.Close()
+			}
+			return nil, fmt.Errorf("gateway: listen connect: %w", err)
+		}
+		if prepared.UseTLS {
+			cert, certErr := tls.LoadX509KeyPair(prepared.CertPath, prepared.KeyPath)
+			if certErr != nil {
+				_ = grpcListener.Close()
+				_ = connectListener.Close()
+				if grpcUnixListener != nil {
+					_ = grpcUnixListener.Close()
+				}
+				return nil, fmt.Errorf("gateway: load connect tls: %w", certErr)
+			}
+			connectListener = tls.NewListener(connectListener, &tls.Config{
+				Certificates: []tls.Certificate{cert},
+				MinVersion:   tls.VersionTLS12,
+			})
+			connectUseTLS = true
+		}
+		connectServer = &http.Server{
+			Handler:        transcoder,
+			ReadTimeout:    30 * time.Second,
+			WriteTimeout:   30 * time.Second,
+			IdleTimeout:    120 * time.Second,
+			MaxHeaderBytes: 1 << 20, // 1 MB
+		}
+		numListeners++
+	}
+
 	g.grpcServer = grpcServer
 	g.grpcListener = grpcListener
 	g.grpcUnixListener = grpcUnixListener
+	g.connectServer = connectServer
+	g.connectListener = connectListener
 	g.errCh = make(chan error, numListeners)
 	g.info = Info{
 		GRPC: ListenerInfo{
@@ -165,13 +226,34 @@ func (g *Gateway) Start(ctx context.Context) (*Info, error) {
 			Binding: grpcBinding,
 		},
 	}
+	if connectListener != nil {
+		connectScheme := "http"
+		if connectUseTLS {
+			connectScheme = "https"
+		}
+		g.info.Connect = ListenerInfo{
+			Scheme:  connectScheme,
+			Address: connectListener.Addr().String(),
+			Port:    listenerPort(connectListener),
+			Binding: grpcBinding,
+		}
+	}
 	errCh := g.errCh
 
+	// Create a child context so Shutdown can cancel serve goroutines
+	// without relying on the caller's context lifecycle.
+	serveCtx, cancelServe := context.WithCancel(ctx)
+	g.cancelServe = cancelServe
+
 	g.wg.Add(numListeners)
-	go g.serveGRPC(ctx, grpcServer, grpcListener)
+	go g.serveGRPC(serveCtx, grpcServer, grpcListener)
 	if grpcUnixListener != nil {
-		go g.serveGRPC(ctx, grpcServer, grpcUnixListener)
+		go g.serveGRPC(serveCtx, grpcServer, grpcUnixListener)
 		log.Printf("Transport gateway gRPC Unix socket listening on %s", g.opts.GRPCUnixSocket)
+	}
+	if connectListener != nil {
+		go g.serveConnect(serveCtx, connectServer, connectListener)
+		log.Printf("Transport gateway Connect RPC (HTTP) listening on %s", connectListener.Addr().String())
 	}
 
 	go func(ch chan error) {
@@ -210,6 +292,21 @@ func (g *Gateway) serveGRPC(ctx context.Context, grpcServer *grpc.Server, listen
 	}
 }
 
+func (g *Gateway) serveConnect(ctx context.Context, srv *http.Server, listener net.Listener) {
+	defer g.wg.Done()
+
+	go func() {
+		<-ctx.Done()
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutCtx)
+	}()
+
+	if err := srv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
+		g.pushError(err)
+	}
+}
+
 func (g *Gateway) pushError(err error) {
 	if err == nil {
 		return
@@ -232,10 +329,16 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 	grpcListener := g.grpcListener
 	grpcUnixListener := g.grpcUnixListener
 	grpcServer := g.grpcServer
+	connectServer := g.connectServer
+	connectListener := g.connectListener
+	cancelServe := g.cancelServe
 	errCh := g.errCh
 	g.grpcListener = nil
 	g.grpcUnixListener = nil
 	g.grpcServer = nil
+	g.connectServer = nil
+	g.connectListener = nil
+	g.cancelServe = nil
 	g.errCh = nil
 	g.mu.Unlock()
 
@@ -243,11 +346,25 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 		return nil
 	}
 
+	// Cancel the serve context to unblock goroutines waiting on ctx.Done().
+	if cancelServe != nil {
+		cancelServe()
+	}
+
 	if grpcListener != nil {
 		_ = grpcListener.Close()
 	}
 	if grpcUnixListener != nil {
 		_ = grpcUnixListener.Close()
+	}
+	if connectListener != nil {
+		_ = connectListener.Close()
+	}
+
+	if connectServer != nil {
+		shutCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		_ = connectServer.Shutdown(shutCtx)
 	}
 
 	if grpcServer != nil {
@@ -367,6 +484,55 @@ func parseBearer(header string) string {
 	}
 	return ""
 }
+
+// unaryLanguageInterceptor reads the nupi-language gRPC metadata header,
+// validates it against the language registry, and stores the expanded
+// Language record in the request context. If no header is present the
+// request passes through unchanged. An invalid code is rejected.
+func unaryLanguageInterceptor(ctx context.Context, req interface{}, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+	ctx, err := extractLanguageToContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return handler(ctx, req)
+}
+
+// streamLanguageInterceptor is the streaming counterpart.
+func streamLanguageInterceptor(srv interface{}, ss grpc.ServerStream, _ *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+	ctx, err := extractLanguageToContext(ss.Context())
+	if err != nil {
+		return err
+	}
+	return handler(srv, &languageStream{ServerStream: ss, ctx: ctx})
+}
+
+// extractLanguageToContext reads nupi-language from gRPC metadata, validates,
+// expands, and returns a context with the language attached. If no header is
+// present the original context is returned. An invalid code returns an error.
+func extractLanguageToContext(ctx context.Context) (context.Context, error) {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return ctx, nil
+	}
+	values := md.Get(language.GRPCHeader)
+	if len(values) == 0 || strings.TrimSpace(values[0]) == "" {
+		return ctx, nil
+	}
+	code := strings.TrimSpace(values[0])
+	lang, ok := language.Lookup(code)
+	if !ok {
+		return ctx, status.Errorf(codes.InvalidArgument, "invalid language code: %q", code)
+	}
+	return language.WithLanguage(ctx, lang), nil
+}
+
+// languageStream wraps a grpc.ServerStream with an enriched context.
+type languageStream struct {
+	grpc.ServerStream
+	ctx context.Context
+}
+
+func (s *languageStream) Context() context.Context { return s.ctx }
 
 func listenerPort(l net.Listener) int {
 	if tcp, ok := l.Addr().(*net.TCPAddr); ok {
