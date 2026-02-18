@@ -22,6 +22,7 @@ func newGatewayService(api *server.APIServer, info *RuntimeInfo, grpcUnixSocket 
 				server.RegisterGRPCServices(api, srv)
 			},
 			GRPCUnixSocket: grpcUnixSocket,
+			ConnectEnabled: true,
 		}),
 		info: info,
 	}
@@ -37,6 +38,10 @@ func (s *gatewayService) Start(ctx context.Context) error {
 		if info.GRPC.Port > 0 {
 			s.info.SetGRPCPort(info.GRPC.Port)
 			log.Printf("Transport gateway gRPC listening on %s://%s", info.GRPC.Scheme, info.GRPC.Address)
+		}
+		if info.Connect.Port > 0 {
+			s.info.SetConnectPort(info.Connect.Port)
+			log.Printf("Transport gateway Connect RPC (HTTP) listening on %s://%s", info.Connect.Scheme, info.Connect.Address)
 		}
 	}
 

@@ -7,9 +7,10 @@ import (
 
 // RuntimeInfo stores runtime metadata exposed to clients.
 type RuntimeInfo struct {
-	mu        sync.RWMutex
-	grpcPort  int
-	startTime time.Time
+	mu          sync.RWMutex
+	grpcPort    int
+	connectPort int
+	startTime   time.Time
 }
 
 // SetGRPCPort updates the active gRPC port.
@@ -24,6 +25,20 @@ func (r *RuntimeInfo) GRPCPort() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.grpcPort
+}
+
+// SetConnectPort updates the active Connect RPC (HTTP) port.
+func (r *RuntimeInfo) SetConnectPort(port int) {
+	r.mu.Lock()
+	r.connectPort = port
+	r.mu.Unlock()
+}
+
+// ConnectPort returns the current Connect RPC (HTTP) port.
+func (r *RuntimeInfo) ConnectPort() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.connectPort
 }
 
 // SetStartTime records the daemon start time.
