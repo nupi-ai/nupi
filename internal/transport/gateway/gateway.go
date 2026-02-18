@@ -164,6 +164,11 @@ func (g *Gateway) Start(ctx context.Context) (*Info, error) {
 		numListeners = 2
 	}
 
+	// Create a child context so Shutdown can cancel serve goroutines and
+	// WebSocket connections without relying on the caller's context lifecycle.
+	serveCtx, cancelServe := context.WithCancel(ctx)
+	g.cancelServe = cancelServe
+
 	// Optionally start a Connect RPC (HTTP) transport using Vanguard transcoder.
 	var connectListener net.Listener
 	var connectServer *http.Server
@@ -171,6 +176,7 @@ func (g *Gateway) Start(ctx context.Context) (*Info, error) {
 	if g.opts.ConnectEnabled {
 		transcoder, tErr := server.NewConnectTranscoder(grpcServer)
 		if tErr != nil {
+			cancelServe()
 			_ = grpcListener.Close()
 			if grpcUnixListener != nil {
 				_ = grpcUnixListener.Close()
@@ -180,6 +186,7 @@ func (g *Gateway) Start(ctx context.Context) (*Info, error) {
 		connectAddr := net.JoinHostPort(grpcHost, "0")
 		connectListener, err = net.Listen("tcp", connectAddr)
 		if err != nil {
+			cancelServe()
 			_ = grpcListener.Close()
 			if grpcUnixListener != nil {
 				_ = grpcUnixListener.Close()
@@ -191,6 +198,7 @@ func (g *Gateway) Start(ctx context.Context) (*Info, error) {
 			// simplicity over sharing a single tls.Certificate across transports.
 			cert, certErr := tls.LoadX509KeyPair(prepared.CertPath, prepared.KeyPath)
 			if certErr != nil {
+				cancelServe()
 				_ = grpcListener.Close()
 				_ = connectListener.Close()
 				if grpcUnixListener != nil {
@@ -204,11 +212,16 @@ func (g *Gateway) Start(ctx context.Context) (*Info, error) {
 			})
 			connectUseTLS = true
 		}
-		// Note: MaxBytesHandler returns plain-text HTTP 413 when exceeded,
-		// which bypasses Connect protocol error framing. This is acceptable
-		// because legitimate Connect requests are small proto/JSON payloads.
+		// Route WebSocket paths to the session bridge handler, all other
+		// paths to the Vanguard transcoder with a body-size limit.
+		// WebSocket must NOT be wrapped in MaxBytesHandler (streaming has
+		// no fixed body size) and WriteTimeout does not affect hijacked
+		// connections.
+		mux := http.NewServeMux()
+		mux.Handle("/ws/session/", newWSSessionHandler(g.apiServer, serveCtx))
+		mux.Handle("/", http.MaxBytesHandler(transcoder, 4<<20)) // 4 MB body limit
 		connectServer = &http.Server{
-			Handler:        http.MaxBytesHandler(transcoder, 4<<20), // 4 MB body limit
+			Handler:        mux,
 			ReadTimeout:    30 * time.Second,
 			WriteTimeout:   30 * time.Second,
 			IdleTimeout:    120 * time.Second,
@@ -245,11 +258,6 @@ func (g *Gateway) Start(ctx context.Context) (*Info, error) {
 		}
 	}
 	errCh := g.errCh
-
-	// Create a child context so Shutdown can cancel serve goroutines
-	// without relying on the caller's context lifecycle.
-	serveCtx, cancelServe := context.WithCancel(ctx)
-	g.cancelServe = cancelServe
 
 	g.wg.Add(numListeners)
 	go g.serveGRPC(serveCtx, grpcServer, grpcListener)
