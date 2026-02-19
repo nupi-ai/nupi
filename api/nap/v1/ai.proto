@@ -23,6 +23,10 @@ enum EventType {
   EVENT_TYPE_SESSION_OUTPUT = 2;   // Analyze notable terminal output
   EVENT_TYPE_HISTORY_SUMMARY = 3;  // Summarize conversation history
   EVENT_TYPE_CLARIFICATION = 4;    // Handle user response to clarification
+  EVENT_TYPE_MEMORY_FLUSH = 5;     // Save memories before conversation compaction
+  EVENT_TYPE_SCHEDULED_TASK = 6;   // Periodic background tasks
+  EVENT_TYPE_SESSION_SLUG = 7;     // Generate session file names
+  EVENT_TYPE_ONBOARDING = 8;       // First-time user setup
 }
 
 // ContentOrigin identifies who produced a conversation turn.
