@@ -19,6 +19,8 @@ const (
 	ActionClarify ActionType = "clarify"
 	// ActionNoop indicates no action is needed.
 	ActionNoop ActionType = "noop"
+	// ActionToolUse indicates the AI wants to invoke one or more tools.
+	ActionToolUse ActionType = "tool_use"
 )
 
 // SessionInfo provides context about an available session.
@@ -31,6 +33,33 @@ type SessionInfo struct {
 	Status     string            `json:"status"`
 	StartTime  time.Time         `json:"start_time"`
 	Metadata   map[string]string `json:"metadata,omitempty"`
+}
+
+// ToolDefinition describes a tool available to the AI for invocation.
+type ToolDefinition struct {
+	Name           string `json:"name"`
+	Description    string `json:"description"`
+	ParametersJSON string `json:"parameters_json"`
+}
+
+// ToolCall represents the AI's request to invoke a specific tool.
+type ToolCall struct {
+	CallID        string `json:"call_id"`
+	ToolName      string `json:"tool_name"`
+	ArgumentsJSON string `json:"arguments_json"`
+}
+
+// ToolResult contains the outcome of a tool invocation.
+type ToolResult struct {
+	CallID     string `json:"call_id"`
+	ResultJSON string `json:"result_json"`
+	IsError    bool   `json:"is_error"`
+}
+
+// ToolInteraction pairs a tool call with its result for history tracking.
+type ToolInteraction struct {
+	Call   ToolCall   `json:"call"`
+	Result ToolResult `json:"result"`
 }
 
 // EventType categorizes the type of prompt being sent to the AI.
@@ -84,11 +113,18 @@ type IntentRequest struct {
 
 	// Metadata contains additional context (e.g., detected tool, confidence).
 	Metadata map[string]string `json:"metadata,omitempty"`
+
+	// AvailableTools lists tool definitions the AI may invoke during this request.
+	AvailableTools []ToolDefinition `json:"available_tools,omitempty"`
+
+	// ToolHistory contains prior tool call/result pairs from earlier iterations
+	// of the same prompt resolution.
+	ToolHistory []ToolInteraction `json:"tool_history,omitempty"`
 }
 
 // IntentAction represents a single action the AI wants to perform.
 type IntentAction struct {
-	// Type is the action type (command, speak, clarify, noop).
+	// Type is the action type (command, speak, clarify, noop, tool_use).
 	Type ActionType `json:"type"`
 
 	// SessionRef identifies the target session for command actions.
@@ -120,6 +156,10 @@ type IntentResponse struct {
 
 	// Metadata contains additional response data.
 	Metadata map[string]string `json:"metadata,omitempty"`
+
+	// ToolCalls contains tool invocations requested by the AI.
+	// Non-empty when an action has type ActionToolUse.
+	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 }
 
 // IntentAdapter defines the interface for AI adapters that resolve user intents.

@@ -13,6 +13,7 @@ enum ActionType {
   ACTION_TYPE_SPEAK = 2;     // Speak a response via TTS
   ACTION_TYPE_CLARIFY = 3;   // Request additional information from user
   ACTION_TYPE_NOOP = 4;      // No action needed
+  ACTION_TYPE_TOOL_USE = 5;  // AI requests tool execution
 }
 
 // EventType categorizes the type of AI request.
@@ -51,6 +52,33 @@ message ConversationTurn {
   string text = 2;
   google.protobuf.Timestamp at = 3;
   map<string, string> metadata = 4;
+}
+
+// ToolDefinition describes a tool available to the AI for invocation.
+message ToolDefinition {
+  string name = 1;             // Tool identifier (e.g., "memory_search")
+  string description = 2;     // Human-readable description for the AI
+  string parameters_json = 3; // JSON Schema describing the tool's parameters
+}
+
+// ToolCall represents the AI's request to invoke a specific tool.
+message ToolCall {
+  string call_id = 1;         // Unique identifier for this invocation
+  string tool_name = 2;       // Name of the tool to invoke
+  string arguments_json = 3;  // Tool arguments as JSON
+}
+
+// ToolResult contains the outcome of a tool invocation.
+message ToolResult {
+  string call_id = 1;         // Matches the ToolCall.call_id
+  string result_json = 2;     // Result data as JSON
+  bool is_error = 3;          // True if the tool invocation failed
+}
+
+// ToolInteraction pairs a tool call with its result for history tracking.
+message ToolInteraction {
+  ToolCall call = 1;
+  ToolResult result = 2;
 }
 
 // ResolveIntentRequest contains context for AI intent resolution.
@@ -99,11 +127,20 @@ message ResolveIntentRequest {
   // user_prompt is the pre-built user prompt from Nupi's Prompts Engine.
   // Adapters may use this directly or modify it based on their capabilities.
   string user_prompt = 13;
+
+  // available_tools lists tool definitions the AI may invoke during this request.
+  // Filtered per event_type by the intent router before sending.
+  repeated ToolDefinition available_tools = 14;
+
+  // tool_history contains prior tool call/result pairs from earlier iterations
+  // of the same prompt resolution. Empty on the first call; populated on
+  // continuation calls so the adapter can reconstruct the full message sequence.
+  repeated ToolInteraction tool_history = 15;
 }
 
 // IntentAction represents a single action the AI wants to perform.
 message IntentAction {
-  // type is the action type (command, speak, clarify, noop).
+  // type is the action type (command, speak, clarify, noop, tool_use).
   ActionType type = 1;
 
   // session_ref identifies the target session for command actions.
@@ -138,6 +175,10 @@ message ResolveIntentResponse {
 
   // error_message is set if the adapter encountered an error.
   string error_message = 6;
+
+  // tool_calls contains tool invocations requested by the AI.
+  // Non-empty when an action has type ACTION_TYPE_TOOL_USE.
+  repeated ToolCall tool_calls = 7;
 }
 
 // Capability describes a single feature or protocol supported by the adapter.
@@ -170,6 +211,26 @@ message GetCapabilitiesResponse {
   map<string, string> metadata = 4;
 }
 
+// EmbeddingVector holds a single embedding vector.
+message EmbeddingVector {
+  repeated float values = 1;
+}
+
+// EmbeddingRequest asks the adapter to generate embeddings for one or more texts.
+message EmbeddingRequest {
+  repeated string texts = 1;           // Texts to embed
+  string model = 2;                    // Optional model override
+  map<string, string> metadata = 3;    // Optional request metadata
+}
+
+// EmbeddingResponse returns the generated embeddings.
+message EmbeddingResponse {
+  repeated EmbeddingVector embeddings = 1; // One vector per input text
+  string model_used = 2;                   // Actual model that produced the vectors
+  int32 dimensions = 3;                    // Dimensionality of each vector
+  string error_message = 4;               // Non-empty on failure
+}
+
 // IntentResolutionService exposes the NAP contract for AI adapters.
 // AI adapters implement this service to receive user intents and return actions.
 //
@@ -189,4 +250,8 @@ service IntentResolutionService {
   // Adapters that do not implement this RPC will return UNIMPLEMENTED, which
   // callers should treat as "capabilities unknown" and proceed normally.
   rpc GetCapabilities(GetCapabilitiesRequest) returns (GetCapabilitiesResponse);
+
+  // GenerateEmbeddings produces vector embeddings for the given texts.
+  // Used by the awareness system for semantic search indexing and queries.
+  rpc GenerateEmbeddings(EmbeddingRequest) returns (EmbeddingResponse);
 }

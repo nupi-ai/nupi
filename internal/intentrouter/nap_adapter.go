@@ -178,6 +178,31 @@ func (a *NAPAdapter) ResolveIntent(ctx context.Context, req IntentRequest) (*Int
 		})
 	}
 
+	// Convert available tools
+	for _, td := range req.AvailableTools {
+		grpcReq.AvailableTools = append(grpcReq.AvailableTools, &napv1.ToolDefinition{
+			Name:           td.Name,
+			Description:    td.Description,
+			ParametersJson: td.ParametersJSON,
+		})
+	}
+
+	// Convert tool history
+	for _, ti := range req.ToolHistory {
+		grpcReq.ToolHistory = append(grpcReq.ToolHistory, &napv1.ToolInteraction{
+			Call: &napv1.ToolCall{
+				CallId:        ti.Call.CallID,
+				ToolName:      ti.Call.ToolName,
+				ArgumentsJson: ti.Call.ArgumentsJSON,
+			},
+			Result: &napv1.ToolResult{
+				CallId:     ti.Result.CallID,
+				ResultJson: ti.Result.ResultJSON,
+				IsError:    ti.Result.IsError,
+			},
+		})
+	}
+
 	// Convert available sessions
 	for _, session := range req.AvailableSessions {
 		grpcReq.AvailableSessions = append(grpcReq.AvailableSessions, &napv1.SessionInfo{
@@ -222,6 +247,15 @@ func (a *NAPAdapter) ResolveIntent(ctx context.Context, req IntentRequest) (*Int
 			Command:    action.Command,
 			Text:       action.Text,
 			Metadata:   copyStringMap(action.Metadata),
+		})
+	}
+
+	// Convert tool calls
+	for _, tc := range grpcResp.ToolCalls {
+		resp.ToolCalls = append(resp.ToolCalls, ToolCall{
+			CallID:        tc.CallId,
+			ToolName:      tc.ToolName,
+			ArgumentsJSON: tc.ArgumentsJson,
 		})
 	}
 
@@ -290,6 +324,8 @@ func actionTypeFromProto(t napv1.ActionType) ActionType {
 		return ActionClarify
 	case napv1.ActionType_ACTION_TYPE_NOOP:
 		return ActionNoop
+	case napv1.ActionType_ACTION_TYPE_TOOL_USE:
+		return ActionToolUse
 	default:
 		return ActionNoop
 	}

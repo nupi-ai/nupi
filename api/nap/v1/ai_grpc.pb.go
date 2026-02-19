@@ -19,8 +19,9 @@ import (
 const _ = grpc.SupportPackageIsVersion7
 
 const (
-	IntentResolutionService_ResolveIntent_FullMethodName   = "/nupi.nap.v1.IntentResolutionService/ResolveIntent"
-	IntentResolutionService_GetCapabilities_FullMethodName = "/nupi.nap.v1.IntentResolutionService/GetCapabilities"
+	IntentResolutionService_ResolveIntent_FullMethodName      = "/nupi.nap.v1.IntentResolutionService/ResolveIntent"
+	IntentResolutionService_GetCapabilities_FullMethodName    = "/nupi.nap.v1.IntentResolutionService/GetCapabilities"
+	IntentResolutionService_GenerateEmbeddings_FullMethodName = "/nupi.nap.v1.IntentResolutionService/GenerateEmbeddings"
 )
 
 // IntentResolutionServiceClient is the client API for IntentResolutionService service.
@@ -33,6 +34,9 @@ type IntentResolutionServiceClient interface {
 	// Adapters that do not implement this RPC will return UNIMPLEMENTED, which
 	// callers should treat as "capabilities unknown" and proceed normally.
 	GetCapabilities(ctx context.Context, in *GetCapabilitiesRequest, opts ...grpc.CallOption) (*GetCapabilitiesResponse, error)
+	// GenerateEmbeddings produces vector embeddings for the given texts.
+	// Used by the awareness system for semantic search indexing and queries.
+	GenerateEmbeddings(ctx context.Context, in *EmbeddingRequest, opts ...grpc.CallOption) (*EmbeddingResponse, error)
 }
 
 type intentResolutionServiceClient struct {
@@ -61,6 +65,15 @@ func (c *intentResolutionServiceClient) GetCapabilities(ctx context.Context, in 
 	return out, nil
 }
 
+func (c *intentResolutionServiceClient) GenerateEmbeddings(ctx context.Context, in *EmbeddingRequest, opts ...grpc.CallOption) (*EmbeddingResponse, error) {
+	out := new(EmbeddingResponse)
+	err := c.cc.Invoke(ctx, IntentResolutionService_GenerateEmbeddings_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // IntentResolutionServiceServer is the server API for IntentResolutionService service.
 // All implementations must embed UnimplementedIntentResolutionServiceServer
 // for forward compatibility
@@ -71,6 +84,9 @@ type IntentResolutionServiceServer interface {
 	// Adapters that do not implement this RPC will return UNIMPLEMENTED, which
 	// callers should treat as "capabilities unknown" and proceed normally.
 	GetCapabilities(context.Context, *GetCapabilitiesRequest) (*GetCapabilitiesResponse, error)
+	// GenerateEmbeddings produces vector embeddings for the given texts.
+	// Used by the awareness system for semantic search indexing and queries.
+	GenerateEmbeddings(context.Context, *EmbeddingRequest) (*EmbeddingResponse, error)
 	mustEmbedUnimplementedIntentResolutionServiceServer()
 }
 
@@ -83,6 +99,9 @@ func (UnimplementedIntentResolutionServiceServer) ResolveIntent(context.Context,
 }
 func (UnimplementedIntentResolutionServiceServer) GetCapabilities(context.Context, *GetCapabilitiesRequest) (*GetCapabilitiesResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetCapabilities not implemented")
+}
+func (UnimplementedIntentResolutionServiceServer) GenerateEmbeddings(context.Context, *EmbeddingRequest) (*EmbeddingResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GenerateEmbeddings not implemented")
 }
 func (UnimplementedIntentResolutionServiceServer) mustEmbedUnimplementedIntentResolutionServiceServer() {
 }
@@ -134,6 +153,24 @@ func _IntentResolutionService_GetCapabilities_Handler(srv interface{}, ctx conte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _IntentResolutionService_GenerateEmbeddings_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(EmbeddingRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(IntentResolutionServiceServer).GenerateEmbeddings(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: IntentResolutionService_GenerateEmbeddings_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(IntentResolutionServiceServer).GenerateEmbeddings(ctx, req.(*EmbeddingRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // IntentResolutionService_ServiceDesc is the grpc.ServiceDesc for IntentResolutionService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -148,6 +185,10 @@ var IntentResolutionService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetCapabilities",
 			Handler:    _IntentResolutionService_GetCapabilities_Handler,
+		},
+		{
+			MethodName: "GenerateEmbeddings",
+			Handler:    _IntentResolutionService_GenerateEmbeddings_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
