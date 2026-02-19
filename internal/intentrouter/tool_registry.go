@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"sync"
 )
 
@@ -47,15 +48,24 @@ func NewToolRegistry() ToolRegistry {
 
 // Register adds a tool handler to the registry, keyed by Definition().Name.
 // If a handler with the same name is already registered, it is replaced.
-// Nil handlers are silently ignored.
+// Nil handlers and handlers with empty names are silently ignored.
 func (r *toolRegistryImpl) Register(handler ToolHandler) {
 	if handler == nil {
 		return
 	}
 	name := handler.Definition().Name
+	if name == "" {
+		return
+	}
 	r.mu.Lock()
+	_, replaced := r.handlers[name]
 	r.handlers[name] = handler
 	r.mu.Unlock()
+	if replaced {
+		log.Printf("[ToolRegistry] Replaced handler for tool %q", name)
+	} else {
+		log.Printf("[ToolRegistry] Registered tool %q", name)
+	}
 }
 
 // GetToolsForEventType returns definitions for tools that are both mapped to the given
@@ -69,7 +79,7 @@ func (r *toolRegistryImpl) GetToolsForEventType(eventType EventType) []ToolDefin
 		return nil
 	}
 
-	var defs []ToolDefinition
+	defs := make([]ToolDefinition, 0, len(allowed))
 	for _, name := range allowed {
 		if handler, exists := r.handlers[name]; exists {
 			defs = append(defs, handler.Definition())
