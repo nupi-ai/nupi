@@ -71,6 +71,9 @@ type AdapterBridge struct {
 	lastFailedAddress   string    // address that triggered the errors (for reset detection)
 	lastConfigVersion   string    // config version from last failed attempt (UpdatedAt or hash fallback)
 
+	// Embedding bridge for awareness system vector search
+	embeddingBridge *EmbeddingBridge
+
 	// Manifest options cache to reduce I/O on repeated READY events
 	manifestCache    map[string]*manifestCacheEntry
 	manifestCacheTTL time.Duration
@@ -93,6 +96,7 @@ func NewAdapterBridge(bus *eventbus.Bus, service *Service, controller AdaptersCo
 		bus:              bus,
 		service:          service,
 		controller:       controller,
+		embeddingBridge:  NewEmbeddingBridge(),
 		manifestCache:    make(map[string]*manifestCacheEntry),
 		manifestCacheTTL: defaultManifestCacheTTL,
 	}
@@ -454,9 +458,16 @@ func (b *AdapterBridge) configureAdapter(ctx context.Context, adapterID string, 
 		b.napAdapter = nil
 	}
 
-	// Track NAP adapter reference for cleanup (if it's a NAP adapter)
+	// Track NAP adapter reference for cleanup and embedding bridge (if it's a NAP adapter)
 	if nap, ok := newAdapter.(*NAPAdapter); ok {
 		b.napAdapter = nap
+		if b.embeddingBridge != nil {
+			b.embeddingBridge.SetClient(nap.client)
+		}
+	} else {
+		if b.embeddingBridge != nil {
+			b.embeddingBridge.SetClient(nil)
+		}
 	}
 
 	// Extract and store current address for endpoint change detection
@@ -493,6 +504,9 @@ func (b *AdapterBridge) clearAdapter() {
 	b.currentAddress = ""
 	b.adapter = nil
 	b.service.SetAdapter(nil)
+	if b.embeddingBridge != nil {
+		b.embeddingBridge.SetClient(nil)
+	}
 
 	log.Printf("[IntentRouter/Bridge] Intent router adapter cleared")
 }
@@ -723,4 +737,10 @@ func (b *AdapterBridge) ResetCircuitBreaker() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.consecutiveErrors = 0
+}
+
+// EmbeddingBridge returns the embedding provider backed by the current NAP adapter.
+// Returns nil if no embedding bridge is available.
+func (b *AdapterBridge) EmbeddingBridge() *EmbeddingBridge {
+	return b.embeddingBridge
 }

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func setupSearchIndex(t *testing.T) (*Indexer, context.Context) {
@@ -372,6 +373,189 @@ func TestSearchFTSPerformance(t *testing.T) {
 
 	if len(results) == 0 {
 		t.Error("expected at least 1 result from performance test")
+	}
+}
+
+// setupSearchIndexWithEmbeddings creates an index with both FTS5 and vector embeddings.
+func setupSearchIndexWithEmbeddings(t *testing.T) (*Indexer, context.Context) {
+	t.Helper()
+	dir := t.TempDir()
+
+	for _, sub := range []string{"daily", "topics", "projects/nupi/sessions"} {
+		if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	files := map[string]string{
+		"daily/2026-02-19.md":                  "## Morning\n\nReviewed database migration plan.\n\n## Afternoon\n\nImplemented FTS5 indexer for memory search.",
+		"topics/golang.md":                     "## Go Tips\n\nUse context for cancellation. Use t.TempDir for tests.",
+		"topics/databases.md":                  "## SQLite\n\nFTS5 provides full-text search. Use WAL mode for concurrency.",
+		"projects/nupi/sessions/2026-02-19.md": "## Session\n\nDiscussed architecture for the awareness memory system.",
+	}
+
+	for relPath, content := range files {
+		absPath := filepath.Join(dir, relPath)
+		if err := os.WriteFile(absPath, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	mock := &mockEmbeddingProvider{dims: 3}
+	ix := NewIndexer(dir)
+	ix.SetEmbeddingProvider(mock)
+	ctx := context.Background()
+
+	if err := ix.Open(ctx); err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	if err := ix.Sync(ctx); err != nil {
+		t.Fatalf("Sync failed: %v", err)
+	}
+
+	t.Cleanup(func() { ix.Close() })
+	return ix, ctx
+}
+
+func TestSearchVectorBasic(t *testing.T) {
+	ix, ctx := setupSearchIndexWithEmbeddings(t)
+
+	// Use a query vector that should match something.
+	queryVec := []float32{0.2, 0.1, 0.5}
+	results, err := ix.SearchVector(ctx, queryVec, SearchOptions{})
+	if err != nil {
+		t.Fatalf("SearchVector: %v", err)
+	}
+
+	if len(results) == 0 {
+		t.Fatal("expected at least 1 vector search result")
+	}
+
+	// All results should have non-zero scores.
+	for i, r := range results {
+		if r.Score == 0 {
+			t.Errorf("result %d has zero score", i)
+		}
+	}
+}
+
+func TestSearchVectorScoreOrdering(t *testing.T) {
+	ix, ctx := setupSearchIndexWithEmbeddings(t)
+
+	queryVec := []float32{0.3, 0.1, 0.5}
+	results, err := ix.SearchVector(ctx, queryVec, SearchOptions{})
+	if err != nil {
+		t.Fatalf("SearchVector: %v", err)
+	}
+
+	if len(results) < 2 {
+		t.Fatalf("expected at least 2 results, got %d", len(results))
+	}
+
+	// Results should be in descending score order.
+	for i := 1; i < len(results); i++ {
+		if results[i].Score > results[i-1].Score {
+			t.Errorf("results not in descending score order: [%d]=%f > [%d]=%f",
+				i, results[i].Score, i-1, results[i-1].Score)
+		}
+	}
+}
+
+func TestSearchVectorMaxResults(t *testing.T) {
+	ix, ctx := setupSearchIndexWithEmbeddings(t)
+
+	queryVec := []float32{0.2, 0.1, 0.5}
+	results, err := ix.SearchVector(ctx, queryVec, SearchOptions{MaxResults: 2})
+	if err != nil {
+		t.Fatalf("SearchVector: %v", err)
+	}
+
+	if len(results) > 2 {
+		t.Errorf("expected at most 2 results with MaxResults=2, got %d", len(results))
+	}
+}
+
+func TestSearchVectorScopeProject(t *testing.T) {
+	ix, ctx := setupSearchIndexWithEmbeddings(t)
+
+	queryVec := []float32{0.2, 0.1, 0.5}
+	results, err := ix.SearchVector(ctx, queryVec, SearchOptions{
+		Scope:       "project",
+		ProjectSlug: "nupi",
+	})
+	if err != nil {
+		t.Fatalf("SearchVector: %v", err)
+	}
+
+	for _, r := range results {
+		if r.ProjectSlug != "nupi" {
+			t.Errorf("expected project_slug 'nupi', got %q in %s", r.ProjectSlug, r.Path)
+		}
+	}
+}
+
+func TestSearchVectorScopeGlobal(t *testing.T) {
+	ix, ctx := setupSearchIndexWithEmbeddings(t)
+
+	queryVec := []float32{0.2, 0.1, 0.5}
+	results, err := ix.SearchVector(ctx, queryVec, SearchOptions{Scope: "global"})
+	if err != nil {
+		t.Fatalf("SearchVector: %v", err)
+	}
+
+	for _, r := range results {
+		if r.ProjectSlug != "" {
+			t.Errorf("expected empty project_slug for global scope, got %q in %s", r.ProjectSlug, r.Path)
+		}
+	}
+}
+
+func TestSearchVectorEmptyQueryVec(t *testing.T) {
+	ix, ctx := setupSearchIndexWithEmbeddings(t)
+
+	results, err := ix.SearchVector(ctx, nil, SearchOptions{})
+	if err != nil {
+		t.Fatalf("SearchVector with nil vec: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results for nil query vector, got %d", len(results))
+	}
+
+	results, err = ix.SearchVector(ctx, []float32{}, SearchOptions{})
+	if err != nil {
+		t.Fatalf("SearchVector with empty vec: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results for empty query vector, got %d", len(results))
+	}
+}
+
+func TestSearchVectorSnippetTruncation(t *testing.T) {
+	ix, ctx := setupSearchIndexWithEmbeddings(t)
+
+	queryVec := []float32{0.2, 0.1, 0.5}
+	results, err := ix.SearchVector(ctx, queryVec, SearchOptions{})
+	if err != nil {
+		t.Fatalf("SearchVector: %v", err)
+	}
+
+	for _, r := range results {
+		if r.Snippet == "" {
+			t.Errorf("expected non-empty snippet for %s", r.Path)
+		}
+		// Snippets should be truncated at 256 runes + "..." suffix.
+		runeCount := utf8.RuneCountInString(r.Snippet)
+		if runeCount > 259 {
+			t.Errorf("snippet too long (%d runes) for %s", runeCount, r.Path)
+		}
+	}
+}
+
+func TestSearchVectorClosedDB(t *testing.T) {
+	ix := &Indexer{} // No DB opened.
+	_, err := ix.SearchVector(context.Background(), []float32{1.0}, SearchOptions{})
+	if err == nil {
+		t.Error("expected error for SearchVector on closed indexer")
 	}
 }
 
