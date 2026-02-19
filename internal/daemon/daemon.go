@@ -19,6 +19,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/audio/ingress"
 	"github.com/nupi-ai/nupi/internal/audio/stt"
 	"github.com/nupi-ai/nupi/internal/audio/vad"
+	"github.com/nupi-ai/nupi/internal/awareness"
 	"github.com/nupi-ai/nupi/internal/config"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/contentpipeline"
@@ -191,6 +192,17 @@ func New(opts Options) (*Daemon, error) {
 		return nil, err
 	}
 
+	// Awareness service - loads core memory (SOUL.md, IDENTITY.md, etc.)
+	// and provides it for system prompt injection.
+	awarenessService := awareness.NewService(paths.Home)
+	awarenessService.SetEventBus(bus)
+
+	if err := host.Register("awareness", func(ctx context.Context) (daemonruntime.Service, error) {
+		return awarenessService, nil
+	}); err != nil {
+		return nil, err
+	}
+
 	// Prompts engine for building AI prompts - loads from SQLite store
 	// Default templates are seeded in store.Open, so they're already available
 	promptsEngine := prompts.New(opts.Store)
@@ -209,6 +221,7 @@ func New(opts Options) (*Daemon, error) {
 		intentrouter.WithSessionProvider(runtimebridge.SessionProvider(sessionManager)),
 		intentrouter.WithCommandExecutor(commandExecutor),
 		intentrouter.WithPromptEngine(promptEngineAdapter),
+		intentrouter.WithCoreMemoryProvider(awarenessService),
 	)
 
 	if err := host.Register("intent_router", func(ctx context.Context) (daemonruntime.Service, error) {

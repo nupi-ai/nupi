@@ -97,6 +97,14 @@ const (
 	EventTypeHistorySummary EventType = "history_summary"
 	// EventTypeClarification follows a previous clarification request.
 	EventTypeClarification EventType = "clarification"
+	// EventTypeMemoryFlush saves memories before conversation compaction.
+	EventTypeMemoryFlush EventType = "memory_flush"
+	// EventTypeScheduledTask is for periodic background tasks.
+	EventTypeScheduledTask EventType = "scheduled_task"
+	// EventTypeSessionSlug generates session file names.
+	EventTypeSessionSlug EventType = "session_slug"
+	// EventTypeOnboarding is for first-time user setup.
+	EventTypeOnboarding EventType = "onboarding"
 )
 
 // IntentRequest contains the context sent to the AI adapter for intent resolution.
@@ -275,6 +283,20 @@ type PromptBuildResponse struct {
 func WithPromptEngine(engine PromptEngine) Option {
 	return func(s *Service) {
 		s.promptEngine = engine
+	}
+}
+
+// CoreMemoryProvider supplies core memory content for system prompt injection.
+type CoreMemoryProvider interface {
+	// CoreMemory returns the combined content of all core memory files.
+	// Returns empty string if no core memory is available.
+	CoreMemory() string
+}
+
+// WithCoreMemoryProvider sets the core memory provider for awareness injection.
+func WithCoreMemoryProvider(provider CoreMemoryProvider) Option {
+	return func(s *Service) {
+		s.coreMemoryProvider = provider
 	}
 }
 

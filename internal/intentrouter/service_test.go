@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -2431,6 +2432,217 @@ func TestToolLoopDefensiveToolUseInExecuteActions(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Timeout waiting for error reply")
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	svc.Shutdown(shutdownCtx)
+}
+
+// ---- Core Memory Injection Tests ----
+
+// mockCoreMemoryProvider implements CoreMemoryProvider for testing.
+type mockCoreMemoryProvider struct {
+	memory string
+}
+
+func (m *mockCoreMemoryProvider) CoreMemory() string {
+	return m.memory
+}
+
+func TestServiceCoreMemoryPrependedToSystemPrompt(t *testing.T) {
+	bus := eventbus.New()
+	defer bus.Shutdown()
+
+	var capturedSystemPrompt string
+	adapter := NewMockAdapter(
+		WithMockCustomHandler(func(ctx context.Context, req IntentRequest) (*IntentResponse, error) {
+			capturedSystemPrompt = req.SystemPrompt
+			return &IntentResponse{
+				PromptID: req.PromptID,
+				Actions:  []IntentAction{{Type: ActionNoop}},
+			}, nil
+		}),
+	)
+
+	mockEngine := &MockPromptEngine{
+		systemPrompt: "You are a helpful assistant",
+		userPrompt:   "User says: hello",
+	}
+
+	coreMemory := &mockCoreMemoryProvider{memory: "## SOUL\nI am helpful.\n\n## IDENTITY\nName: Nupi"}
+
+	svc := NewService(bus,
+		WithAdapter(adapter),
+		WithPromptEngine(mockEngine),
+		WithCoreMemoryProvider(coreMemory),
+	)
+
+	replySub := eventbus.SubscribeTo(bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("test_reply"))
+	defer replySub.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+		SessionID: "session-1",
+		PromptID:  "prompt-1",
+		NewMessage: eventbus.ConversationMessage{
+			Text: "hello",
+		},
+		Metadata: map[string]string{
+			"event_type": "user_intent",
+		},
+	})
+
+	select {
+	case <-replySub.C():
+	case <-time.After(1 * time.Second):
+		t.Fatal("Timeout waiting for reply")
+	}
+
+	expectedPrefix := coreMemory.memory + "\n\n"
+	if !strings.HasPrefix(capturedSystemPrompt, expectedPrefix) {
+		t.Errorf("Expected SystemPrompt to start with core memory, got %q", capturedSystemPrompt)
+	}
+
+	expectedFull := coreMemory.memory + "\n\n" + "You are a helpful assistant"
+	if capturedSystemPrompt != expectedFull {
+		t.Errorf("Expected SystemPrompt=%q, got %q", expectedFull, capturedSystemPrompt)
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	svc.Shutdown(shutdownCtx)
+}
+
+func TestServiceEmptyCoreMemoryLeavesPromptUnchanged(t *testing.T) {
+	bus := eventbus.New()
+	defer bus.Shutdown()
+
+	var capturedSystemPrompt string
+	adapter := NewMockAdapter(
+		WithMockCustomHandler(func(ctx context.Context, req IntentRequest) (*IntentResponse, error) {
+			capturedSystemPrompt = req.SystemPrompt
+			return &IntentResponse{
+				PromptID: req.PromptID,
+				Actions:  []IntentAction{{Type: ActionNoop}},
+			}, nil
+		}),
+	)
+
+	mockEngine := &MockPromptEngine{
+		systemPrompt: "You are a helpful assistant",
+		userPrompt:   "User says: hello",
+	}
+
+	// CoreMemoryProvider returns empty string
+	emptyMemory := &mockCoreMemoryProvider{memory: ""}
+
+	svc := NewService(bus,
+		WithAdapter(adapter),
+		WithPromptEngine(mockEngine),
+		WithCoreMemoryProvider(emptyMemory),
+	)
+
+	replySub := eventbus.SubscribeTo(bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("test_reply"))
+	defer replySub.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+		SessionID: "session-1",
+		PromptID:  "prompt-1",
+		NewMessage: eventbus.ConversationMessage{
+			Text: "hello",
+		},
+		Metadata: map[string]string{
+			"event_type": "user_intent",
+		},
+	})
+
+	select {
+	case <-replySub.C():
+	case <-time.After(1 * time.Second):
+		t.Fatal("Timeout waiting for reply")
+	}
+
+	if capturedSystemPrompt != "You are a helpful assistant" {
+		t.Errorf("Expected SystemPrompt unchanged when core memory is empty, got %q", capturedSystemPrompt)
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	svc.Shutdown(shutdownCtx)
+}
+
+func TestServiceNoCoreMemoryProviderLeavesPromptUnchanged(t *testing.T) {
+	bus := eventbus.New()
+	defer bus.Shutdown()
+
+	var capturedSystemPrompt string
+	adapter := NewMockAdapter(
+		WithMockCustomHandler(func(ctx context.Context, req IntentRequest) (*IntentResponse, error) {
+			capturedSystemPrompt = req.SystemPrompt
+			return &IntentResponse{
+				PromptID: req.PromptID,
+				Actions:  []IntentAction{{Type: ActionNoop}},
+			}, nil
+		}),
+	)
+
+	mockEngine := &MockPromptEngine{
+		systemPrompt: "You are a helpful assistant",
+		userPrompt:   "User says: hello",
+	}
+
+	// No CoreMemoryProvider set
+	svc := NewService(bus, WithAdapter(adapter), WithPromptEngine(mockEngine))
+
+	replySub := eventbus.SubscribeTo(bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("test_reply"))
+	defer replySub.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+		SessionID: "session-1",
+		PromptID:  "prompt-1",
+		NewMessage: eventbus.ConversationMessage{
+			Text: "hello",
+		},
+		Metadata: map[string]string{
+			"event_type": "user_intent",
+		},
+	})
+
+	select {
+	case <-replySub.C():
+	case <-time.After(1 * time.Second):
+		t.Fatal("Timeout waiting for reply")
+	}
+
+	if capturedSystemPrompt != "You are a helpful assistant" {
+		t.Errorf("Expected SystemPrompt unchanged, got %q", capturedSystemPrompt)
 	}
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)

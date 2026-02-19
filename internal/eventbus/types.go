@@ -31,6 +31,9 @@ const (
 	TopicIntentRouterDiagnostics Topic = "intentrouter.diagnostics"
 	TopicPairingCreated          Topic = "pairing.created"
 	TopicPairingClaimed          Topic = "pairing.claimed"
+	TopicMemoryFlushRequest      Topic = "memory.flush.request"
+	TopicMemoryFlushResponse     Topic = "memory.flush.response"
+	TopicAwarenessSync           Topic = "awareness.sync"
 )
 
 // Source describes which component produced an event.
@@ -52,6 +55,7 @@ const (
 	SourceSpeechVAD          Source = "speech_vad"
 	SourceClient             Source = "client"
 	SourcePairing            Source = "pairing"
+	SourceAwareness          Source = "awareness"
 	SourceUnknown            Source = "unknown"
 )
 
@@ -480,4 +484,35 @@ type BridgeDiagnosticEvent struct {
 
 	// Extra contains additional diagnostic data (e.g., field that failed validation).
 	Extra map[string]string
+}
+
+// MemoryFlushRequestEvent asks the awareness service to save important context
+// before conversation compaction discards old turns.
+type MemoryFlushRequestEvent struct {
+	SessionID string
+	Turns     []ConversationTurn
+}
+
+// MemoryFlushResponseEvent signals that the memory flush is complete
+// and conversation compaction may proceed.
+type MemoryFlushResponseEvent struct {
+	SessionID string
+	Saved     bool
+}
+
+// AwarenessSyncEvent notifies that an awareness file was created or updated.
+type AwarenessSyncEvent struct {
+	FilePath string
+	SyncType string // "created", "updated", "deleted"
+}
+
+// Memory groups awareness/memory topic descriptors.
+var Memory = struct {
+	FlushRequest  TopicDef[MemoryFlushRequestEvent]
+	FlushResponse TopicDef[MemoryFlushResponseEvent]
+	Sync          TopicDef[AwarenessSyncEvent]
+}{
+	FlushRequest:  NewTopicDef[MemoryFlushRequestEvent](TopicMemoryFlushRequest),
+	FlushResponse: NewTopicDef[MemoryFlushResponseEvent](TopicMemoryFlushResponse),
+	Sync:          NewTopicDef[AwarenessSyncEvent](TopicAwarenessSync),
 }
