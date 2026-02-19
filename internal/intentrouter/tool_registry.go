@@ -35,12 +35,10 @@ func NewToolRegistry() ToolRegistry {
 			EventTypeHistorySummary: {},
 			EventTypeClarification:  {},
 
-			// Future event types — mapping defined now so the registry is ready
-			// when these EventType constants are added in later stories.
-			"memory_flush":  {"memory_write"},
-			"scheduled_task": {"memory_search", "memory_write"},
-			"onboarding":    {"core_memory_update", "onboarding_complete"},
-			"session_slug":  {},
+			EventTypeMemoryFlush:   {"memory_write"},
+			EventTypeScheduledTask: {"memory_search", "memory_write"},
+			EventTypeOnboarding:    {"core_memory_update", "onboarding_complete"},
+			EventTypeSessionSlug:   {},
 		},
 	}
 	return r

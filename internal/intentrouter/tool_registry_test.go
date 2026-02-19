@@ -113,7 +113,7 @@ func TestGetToolsForEventTypeEmptyMapping(t *testing.T) {
 	}
 
 	// session_slug also has empty mapping
-	defs = reg.GetToolsForEventType("session_slug")
+	defs = reg.GetToolsForEventType(EventTypeSessionSlug)
 	if len(defs) != 0 {
 		t.Fatalf("Expected 0 tools for session_slug, got %d", len(defs))
 	}
@@ -153,7 +153,7 @@ func TestGetToolsFutureEventTypes(t *testing.T) {
 	reg.Register(newMockHandler("onboarding_complete", "Complete onboarding"))
 
 	// memory_flush should return only memory_write
-	defs := reg.GetToolsForEventType("memory_flush")
+	defs := reg.GetToolsForEventType(EventTypeMemoryFlush)
 	if len(defs) != 1 {
 		t.Fatalf("Expected 1 tool for memory_flush, got %d", len(defs))
 	}
@@ -163,7 +163,7 @@ func TestGetToolsFutureEventTypes(t *testing.T) {
 
 	// scheduled_task should return memory_search and memory_write
 	reg.Register(newMockHandler("memory_search", "Search memory"))
-	defs = reg.GetToolsForEventType("scheduled_task")
+	defs = reg.GetToolsForEventType(EventTypeScheduledTask)
 	if len(defs) != 2 {
 		t.Fatalf("Expected 2 tools for scheduled_task, got %d", len(defs))
 	}
@@ -179,7 +179,7 @@ func TestGetToolsFutureEventTypes(t *testing.T) {
 	}
 
 	// onboarding should return core_memory_update and onboarding_complete
-	defs = reg.GetToolsForEventType("onboarding")
+	defs = reg.GetToolsForEventType(EventTypeOnboarding)
 	if len(defs) != 2 {
 		t.Fatalf("Expected 2 tools for onboarding, got %d", len(defs))
 	}
@@ -299,7 +299,7 @@ func TestConcurrentRegisterAndGet(t *testing.T) {
 	}
 
 	// Concurrent reads across different event types
-	eventTypes := []EventType{EventTypeUserIntent, EventTypeSessionOutput, EventTypeHistorySummary, "memory_flush"}
+	eventTypes := []EventType{EventTypeUserIntent, EventTypeSessionOutput, EventTypeHistorySummary, EventTypeMemoryFlush}
 	for i := 0; i < 10; i++ {
 		wg.Add(1)
 		go func(idx int) {

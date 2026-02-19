@@ -308,6 +308,14 @@ func eventTypeToProto(et EventType) napv1.EventType {
 		return napv1.EventType_EVENT_TYPE_HISTORY_SUMMARY
 	case EventTypeClarification:
 		return napv1.EventType_EVENT_TYPE_CLARIFICATION
+	case EventTypeMemoryFlush:
+		return napv1.EventType_EVENT_TYPE_MEMORY_FLUSH
+	case EventTypeScheduledTask:
+		return napv1.EventType_EVENT_TYPE_SCHEDULED_TASK
+	case EventTypeSessionSlug:
+		return napv1.EventType_EVENT_TYPE_SESSION_SLUG
+	case EventTypeOnboarding:
+		return napv1.EventType_EVENT_TYPE_ONBOARDING
 	default:
 		return napv1.EventType_EVENT_TYPE_UNSPECIFIED
 	}
