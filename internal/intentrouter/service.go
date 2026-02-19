@@ -34,6 +34,7 @@ type Service struct {
 	sessionProvider SessionProvider
 	commandExecutor CommandExecutor
 	promptEngine    PromptEngine
+	toolRegistry    ToolRegistry
 
 	mu     sync.RWMutex
 	cancel context.CancelFunc
@@ -170,6 +171,16 @@ func (s *Service) SetPromptEngine(engine PromptEngine) {
 	s.mu.Unlock()
 	if engine != nil {
 		log.Printf("[IntentRouter] Prompt engine configured")
+	}
+}
+
+// SetToolRegistry sets the tool registry at runtime.
+func (s *Service) SetToolRegistry(registry ToolRegistry) {
+	s.mu.Lock()
+	s.toolRegistry = registry
+	s.mu.Unlock()
+	if registry != nil {
+		log.Printf("[IntentRouter] Tool registry configured")
 	}
 }
 

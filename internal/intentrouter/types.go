@@ -2,6 +2,7 @@ package intentrouter
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/nupi-ai/nupi/internal/eventbus"
@@ -60,6 +61,28 @@ type ToolResult struct {
 type ToolInteraction struct {
 	Call   ToolCall   `json:"call"`
 	Result ToolResult `json:"result"`
+}
+
+// ToolHandler executes a tool call and returns the result.
+type ToolHandler interface {
+	// Execute runs the tool with the given arguments and returns a JSON result.
+	Execute(ctx context.Context, args json.RawMessage) (json.RawMessage, error)
+
+	// Definition returns the tool's metadata (name, description, parameters schema).
+	Definition() ToolDefinition
+}
+
+// ToolRegistry manages available tools and controls which tools are offered per event type.
+type ToolRegistry interface {
+	// Register adds a tool handler to the registry, keyed by its Definition().Name.
+	Register(handler ToolHandler)
+
+	// GetToolsForEventType returns definitions for tools allowed for the given event type,
+	// filtered to only include tools that have been registered.
+	GetToolsForEventType(eventType EventType) []ToolDefinition
+
+	// Execute looks up a tool by name and calls its handler with the given arguments.
+	Execute(ctx context.Context, name string, args json.RawMessage) (json.RawMessage, error)
 }
 
 // EventType categorizes the type of prompt being sent to the AI.
@@ -252,5 +275,12 @@ type PromptBuildResponse struct {
 func WithPromptEngine(engine PromptEngine) Option {
 	return func(s *Service) {
 		s.promptEngine = engine
+	}
+}
+
+// WithToolRegistry sets the tool registry for tool-use support.
+func WithToolRegistry(registry ToolRegistry) Option {
+	return func(s *Service) {
+		s.toolRegistry = registry
 	}
 }
