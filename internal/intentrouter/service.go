@@ -43,12 +43,13 @@ const maxToolIterations = 10
 
 // Service routes user intents to appropriate sessions via AI adapter.
 type Service struct {
-	bus             *eventbus.Bus
-	adapter         IntentAdapter
-	sessionProvider SessionProvider
-	commandExecutor CommandExecutor
-	promptEngine    PromptEngine
-	toolRegistry    ToolRegistry
+	bus                *eventbus.Bus
+	adapter            IntentAdapter
+	sessionProvider    SessionProvider
+	commandExecutor    CommandExecutor
+	promptEngine       PromptEngine
+	toolRegistry       ToolRegistry
+	coreMemoryProvider CoreMemoryProvider
 
 	mu     sync.RWMutex
 	cancel context.CancelFunc
@@ -195,6 +196,16 @@ func (s *Service) SetToolRegistry(registry ToolRegistry) {
 	s.mu.Unlock()
 	if registry != nil {
 		log.Printf("[IntentRouter] Tool registry configured")
+	}
+}
+
+// SetCoreMemoryProvider sets the core memory provider at runtime.
+func (s *Service) SetCoreMemoryProvider(provider CoreMemoryProvider) {
+	s.mu.Lock()
+	s.coreMemoryProvider = provider
+	s.mu.Unlock()
+	if provider != nil {
+		log.Printf("[IntentRouter] Core memory provider configured")
 	}
 }
 
@@ -381,6 +392,7 @@ func (s *Service) handlePrompt(ctx context.Context, prompt eventbus.Conversation
 	commandExecutor := s.commandExecutor
 	promptEngine := s.promptEngine
 	toolRegistry := s.toolRegistry
+	coreMemoryProvider := s.coreMemoryProvider
 	s.mu.RUnlock()
 
 	atomic.AddUint64(&s.requestsTotal, 1)
@@ -402,6 +414,13 @@ func (s *Service) handlePrompt(ctx context.Context, prompt eventbus.Conversation
 
 	// Build the intent request
 	req := s.buildIntentRequest(prompt, sessionProvider, promptEngine)
+
+	// Prepend core memory to system prompt (awareness injection)
+	if coreMemoryProvider != nil {
+		if cm := coreMemoryProvider.CoreMemory(); cm != "" {
+			req.SystemPrompt = cm + "\n\n" + req.SystemPrompt
+		}
+	}
 
 	// Inject available tools filtered by event type
 	if toolRegistry != nil {
@@ -501,6 +520,14 @@ func (s *Service) buildIntentRequest(prompt eventbus.ConversationPromptEvent, pr
 			eventType = EventTypeHistorySummary
 		case "clarification":
 			eventType = EventTypeClarification
+		case "memory_flush":
+			eventType = EventTypeMemoryFlush
+		case "scheduled_task":
+			eventType = EventTypeScheduledTask
+		case "session_slug":
+			eventType = EventTypeSessionSlug
+		case "onboarding":
+			eventType = EventTypeOnboarding
 		}
 	}
 
@@ -917,8 +944,9 @@ func hasToolUseAction(response *IntentResponse) bool {
 }
 
 func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
 		return s
 	}
-	return s[:maxLen] + "..."
+	return string(runes[:maxLen]) + "..."
 }

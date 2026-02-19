@@ -69,6 +69,9 @@ func New(opts ...BusOption) *Bus {
 		TopicSpeechBargeIn:           64,
 		TopicConversationSpeak:       128,
 		TopicIntentRouterDiagnostics: 64,
+		TopicMemoryFlushRequest:      64,
+		TopicMemoryFlushResponse:     64,
+		TopicAwarenessSync:           64,
 	}
 
 	bus := &Bus{
