@@ -323,6 +323,141 @@ func TestServiceSearchVectorProviderError(t *testing.T) {
 	}
 }
 
+// --- Service SearchHybrid tests (Tasks 6.11-6.14) ---
+
+func TestServiceSearchHybrid(t *testing.T) {
+	dir := t.TempDir()
+
+	dailyDir := filepath.Join(dir, "awareness", "memory", "daily")
+	if err := os.MkdirAll(dailyDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dailyDir, "2026-02-19.md"), []byte("## Test\n\nHybrid searchable content about databases."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mock := &mockEmbeddingProvider{dims: 3}
+	svc := NewService(dir)
+	svc.SetEmbeddingProvider(mock)
+	ctx := context.Background()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(ctx)
+
+	results, err := svc.SearchHybrid(ctx, "databases", SearchOptions{Query: "databases"})
+	if err != nil {
+		t.Fatalf("SearchHybrid: %v", err)
+	}
+	if len(results) == 0 {
+		t.Error("expected at least 1 result from Service.SearchHybrid()")
+	}
+	for i, r := range results {
+		if r.Score < 0 || r.Score > 1.0 {
+			t.Errorf("result %d score %f not in [0, 1]", i, r.Score)
+		}
+	}
+}
+
+func TestServiceSearchHybridFTSFallback(t *testing.T) {
+	dir := t.TempDir()
+
+	dailyDir := filepath.Join(dir, "awareness", "memory", "daily")
+	if err := os.MkdirAll(dailyDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dailyDir, "2026-02-19.md"), []byte("## Test\n\nFTS fallback content."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// No embedding provider → FTS-only fallback (NFR33).
+	svc := NewService(dir)
+	ctx := context.Background()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(ctx)
+
+	results, err := svc.SearchHybrid(ctx, "fallback", SearchOptions{Query: "fallback"})
+	if err != nil {
+		t.Fatalf("SearchHybrid FTS fallback: %v", err)
+	}
+	if len(results) == 0 {
+		t.Error("expected at least 1 FTS-only result from SearchHybrid")
+	}
+}
+
+func TestServiceSearchHybridProviderError(t *testing.T) {
+	dir := t.TempDir()
+
+	dailyDir := filepath.Join(dir, "awareness", "memory", "daily")
+	if err := os.MkdirAll(dailyDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dailyDir, "2026-02-19.md"), []byte("## Test\n\nProvider error content."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mock := &mockEmbeddingProvider{err: fmt.Errorf("provider unavailable")}
+	svc := NewService(dir)
+	svc.SetEmbeddingProvider(mock)
+	ctx := context.Background()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(ctx)
+
+	// Should gracefully fall back to FTS-only (NFR33).
+	results, err := svc.SearchHybrid(ctx, "provider error", SearchOptions{Query: "provider error"})
+	if err != nil {
+		t.Fatalf("SearchHybrid with failing provider should not error: %v", err)
+	}
+	// Should still return FTS results even though embedding failed.
+	if len(results) == 0 {
+		t.Error("expected FTS fallback results when provider fails")
+	}
+}
+
+func TestServiceSearchHybridBeforeStart(t *testing.T) {
+	svc := NewService(t.TempDir())
+	_, err := svc.SearchHybrid(context.Background(), "test", SearchOptions{Query: "test"})
+	if err == nil {
+		t.Error("expected error when calling SearchHybrid before Start()")
+	}
+}
+
+func TestServiceSearchHybridQueryDefaulting(t *testing.T) {
+	dir := t.TempDir()
+
+	dailyDir := filepath.Join(dir, "awareness", "memory", "daily")
+	if err := os.MkdirAll(dailyDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dailyDir, "2026-02-19.md"), []byte("## Test\n\nSearchable query defaulting content."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewService(dir)
+	ctx := context.Background()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(ctx)
+
+	// Call without opts.Query — should default to the query parameter for FTS.
+	results, err := svc.SearchHybrid(ctx, "searchable", SearchOptions{})
+	if err != nil {
+		t.Fatalf("SearchHybrid without opts.Query: %v", err)
+	}
+	if len(results) == 0 {
+		t.Error("expected results when opts.Query is empty but query param is set")
+	}
+}
+
 func TestServiceStartShutdownRestart(t *testing.T) {
 	dir := t.TempDir()
 	svc := NewService(dir)

@@ -147,6 +147,37 @@ func (s *Service) SearchVector(ctx context.Context, query string, opts SearchOpt
 	return s.indexer.SearchVector(ctx, result.Vectors[0], opts)
 }
 
+// SearchHybrid performs a combined FTS5 + vector search with score normalization,
+// temporal decay, and MMR diversity reranking. Falls back to FTS-only when the
+// embedding provider is unavailable (NFR33 graceful degradation).
+func (s *Service) SearchHybrid(ctx context.Context, query string, opts SearchOptions) ([]SearchResult, error) {
+	if s.indexer == nil {
+		return nil, fmt.Errorf("awareness: indexer not initialized")
+	}
+
+	if opts.MaxResults <= 0 {
+		opts.MaxResults = 5
+	}
+
+	// Default opts.Query to the query parameter so FTS doesn't silently return nothing.
+	if opts.Query == "" {
+		opts.Query = query
+	}
+
+	// Attempt to generate query embedding for vector component.
+	var queryVec []float32
+	if s.embeddingProvider != nil {
+		result, err := s.embeddingProvider.GenerateEmbeddings(ctx, []string{query})
+		if err != nil {
+			log.Printf("[Awareness] WARNING: hybrid search embedding failed, using FTS-only: %v", err)
+		} else if len(result.Vectors) > 0 && len(result.Vectors[0]) > 0 {
+			queryVec = result.Vectors[0]
+		}
+	}
+
+	return s.indexer.SearchHybrid(ctx, queryVec, opts)
+}
+
 // HasEmbeddings returns true if the embedding provider is set and embeddings exist in the database.
 func (s *Service) HasEmbeddings() bool {
 	if s.embeddingProvider == nil || s.indexer == nil || s.indexer.db == nil {

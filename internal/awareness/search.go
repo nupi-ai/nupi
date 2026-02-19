@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -218,6 +219,124 @@ func (ix *Indexer) SearchVector(ctx context.Context, queryVec []float32, opts Se
 	}
 
 	return results, nil
+}
+
+// hybridCandidateKey identifies a unique chunk for merging FTS and vector results.
+type hybridCandidateKey struct {
+	path     string
+	chunkIdx int
+}
+
+// hybridCandidate holds merged scores from FTS and vector searches.
+type hybridCandidate struct {
+	result   SearchResult
+	ftsScore float64
+	vecScore float64
+	hasFTS   bool
+	hasVec   bool
+}
+
+// SearchHybrid combines FTS5 keyword search and vector semantic search into
+// a unified ranking pipeline with score normalization, temporal decay, and
+// MMR diversity reranking. If queryVec is nil, operates in FTS-only mode (NFR33).
+func (ix *Indexer) SearchHybrid(ctx context.Context, queryVec []float32, opts SearchOptions) ([]SearchResult, error) {
+	if ix.db == nil {
+		return nil, fmt.Errorf("awareness: indexer not open")
+	}
+
+	maxResults := opts.MaxResults
+	if maxResults <= 0 {
+		maxResults = 5
+	}
+
+	// Over-fetch for merging and MMR diversity.
+	overMax := maxResults * 5
+	if overMax < 50 {
+		overMax = 50
+	}
+	if overMax > 100 {
+		overMax = 100
+	}
+	overOpts := opts
+	overOpts.MaxResults = overMax
+
+	// Run FTS search.
+	ftsResults, err := ix.SearchFTS(ctx, overOpts)
+	if err != nil {
+		return nil, fmt.Errorf("awareness: hybrid FTS: %w", err)
+	}
+
+	// Run vector search (skip if FTS-only mode).
+	var vecResults []SearchResult
+	if len(queryVec) > 0 {
+		vecResults, err = ix.SearchVector(ctx, queryVec, overOpts)
+		if err != nil {
+			return nil, fmt.Errorf("awareness: hybrid vector: %w", err)
+		}
+	}
+
+	// Normalize scores to [0, 1].
+	ftsResults = normalizeScores(ftsResults, false)
+	vecResults = normalizeScores(vecResults, true)
+
+	// Merge by (path, chunkIdx).
+	candidates := make(map[hybridCandidateKey]*hybridCandidate)
+
+	for _, r := range ftsResults {
+		key := hybridCandidateKey{path: r.Path, chunkIdx: r.ChunkIndex}
+		c, ok := candidates[key]
+		if !ok {
+			c = &hybridCandidate{result: r}
+			candidates[key] = c
+		}
+		c.ftsScore = r.Score
+		c.hasFTS = true
+	}
+
+	for _, r := range vecResults {
+		key := hybridCandidateKey{path: r.Path, chunkIdx: r.ChunkIndex}
+		c, ok := candidates[key]
+		if !ok {
+			c = &hybridCandidate{result: r}
+			candidates[key] = c
+		} else {
+			// Prefer vector snippet (full content, up to 256 chars) over FTS snippet.
+			c.result.Snippet = r.Snippet
+		}
+		c.vecScore = r.Score
+		c.hasVec = true
+	}
+
+	// Compute combined scores and apply temporal decay.
+	now := time.Now()
+	results := make([]SearchResult, 0, len(candidates))
+
+	for _, c := range candidates {
+		var combined float64
+		switch {
+		case c.hasFTS && c.hasVec:
+			combined = 0.7*c.vecScore + 0.3*c.ftsScore
+		case c.hasFTS:
+			combined = 0.3 * c.ftsScore
+		case c.hasVec:
+			combined = 0.7 * c.vecScore
+		}
+
+		if !isEvergreenFile(c.result.Path) {
+			combined = temporalDecay(combined, c.result.Mtime, now)
+		}
+
+		c.result.Score = combined
+		results = append(results, c.result)
+	}
+
+	// Sort by score descending.
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Score > results[j].Score
+	})
+
+	// MMR reranking for diversity.
+	return mmrRerank(results, 0.7, maxResults), nil
 }
 
 // sanitizeFTSQuery wraps each search term in double quotes to prevent
