@@ -7,8 +7,7 @@ import {
   SessionsService,
   AuthService,
 } from "@/lib/gen/nupi_pb";
-
-const TOKEN_KEY = "nupi_auth_token";
+import { TOKEN_KEY } from "./storage";
 
 export interface ConnectionConfig {
   host: string;

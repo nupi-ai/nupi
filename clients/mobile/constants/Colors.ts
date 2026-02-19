@@ -7,6 +7,8 @@ export default {
     background: "#fff",
     tint: tintColorLight,
     danger: "#ff4444",
+    success: "#22c55e",
+    warning: "#eab308",
     surface: "#f0f0f0",
   },
   dark: {
@@ -14,6 +16,8 @@ export default {
     background: "#000",
     tint: tintColorDark,
     danger: "#ff4444",
+    success: "#22c55e",
+    warning: "#eab308",
     surface: "#1c1c1e",
   },
 };
