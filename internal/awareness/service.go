@@ -64,6 +64,7 @@ func (s *Service) Start(ctx context.Context) error {
 	s.indexer.SetEventBus(s.bus)
 
 	if err := s.indexer.Open(ctx); err != nil {
+		s.indexer = nil
 		return fmt.Errorf("awareness: open indexer: %w", err)
 	}
 

@@ -85,7 +85,7 @@ Third paragraph ends here.`
 }
 
 func TestChunkMarkdownLargeChunkSubSplit(t *testing.T) {
-	// Create a single section larger than maxChunkChars with no sub-headers.
+	// Create a single section larger than maxChunkBytes with no sub-headers.
 	para := strings.Repeat("word ", 100) // ~500 chars per paragraph
 	content := "## Big Section\n\n"
 	for i := 0; i < 6; i++ {
@@ -93,13 +93,13 @@ func TestChunkMarkdownLargeChunkSubSplit(t *testing.T) {
 	}
 
 	chunks := ChunkMarkdown(content)
-	// With ~3000 chars total and maxChunkChars=2000, it should be sub-split.
+	// With ~3000 chars total and maxChunkBytes=2000, it should be sub-split.
 	if len(chunks) < 2 {
 		t.Fatalf("expected large chunk to be sub-split, got %d chunk(s)", len(chunks))
 	}
 
 	for _, ch := range chunks {
-		if len(ch.Content) > maxChunkChars+200 { // Allow some margin for merging.
+		if len(ch.Content) > maxChunkBytes+200 { // Allow some margin for merging.
 			t.Errorf("chunk exceeds max size: %d chars", len(ch.Content))
 		}
 	}
