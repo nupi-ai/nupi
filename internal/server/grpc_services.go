@@ -412,7 +412,7 @@ func (a *audioService) GetAudioCapabilities(ctx context.Context, req *apiv1.GetA
 			meta["diagnostics"] = voiceIssueSummary(diags, "voice capture unavailable")
 		}
 		resp.Capture = append(resp.Capture, &apiv1.AudioCapability{
-			StreamId: defaultCaptureStreamID,
+			StreamId: DefaultCaptureStreamID,
 			Format:   audioFormatToProto(defaultCaptureFormat),
 			Metadata: meta,
 		})
@@ -807,7 +807,8 @@ func RegisterGRPCServices(api *APIServer, registrar grpc.ServiceRegistrar) {
 	}
 }
 
-const defaultCaptureStreamID = "mic"
+// DefaultCaptureStreamID is the default stream identifier for audio capture.
+const DefaultCaptureStreamID = "mic"
 
 var defaultCaptureFormat = eventbus.AudioFormat{
 	Encoding:      eventbus.AudioEncodingPCM16,
@@ -816,6 +817,9 @@ var defaultCaptureFormat = eventbus.AudioFormat{
 	BitDepth:      16,
 	FrameDuration: 20 * time.Millisecond,
 }
+
+// DefaultCaptureFormat returns a copy of the default audio capture format.
+func DefaultCaptureFormat() eventbus.AudioFormat { return defaultCaptureFormat }
 
 func audioFormatFromProto(pb *apiv1.AudioFormat) (eventbus.AudioFormat, error) {
 	if pb == nil {

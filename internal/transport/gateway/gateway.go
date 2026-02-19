@@ -219,6 +219,7 @@ func (g *Gateway) Start(ctx context.Context) (*Info, error) {
 		// connections.
 		mux := http.NewServeMux()
 		mux.Handle("/ws/session/", newWSSessionHandler(g.apiServer, serveCtx))
+		mux.Handle("/ws/audio/", newWSAudioHandler(g.apiServer, serveCtx))
 		mux.Handle("/", http.MaxBytesHandler(transcoder, 4<<20)) // 4 MB body limit
 		connectServer = &http.Server{
 			Handler:        mux,
