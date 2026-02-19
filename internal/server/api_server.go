@@ -329,6 +329,21 @@ func (s *APIServer) EventBus() *eventbus.Bus {
 	return s.eventBus
 }
 
+// AudioIngress exposes the audio ingress provider for components outside the server package.
+func (s *APIServer) AudioIngress() AudioCaptureProvider {
+	return s.audioIngress
+}
+
+// AudioEgress exposes the audio egress controller for components outside the server package.
+func (s *APIServer) AudioEgress() AudioPlaybackController {
+	return s.audioEgress
+}
+
+// PublishAudioInterrupt publishes an audio interrupt event on the event bus.
+func (s *APIServer) PublishAudioInterrupt(sessionID, streamID, reason string, metadata map[string]string) {
+	s.publishAudioInterrupt(sessionID, streamID, reason, metadata)
+}
+
 // ---------------------------------------------------------------------------
 // Auth: token management
 // ---------------------------------------------------------------------------
