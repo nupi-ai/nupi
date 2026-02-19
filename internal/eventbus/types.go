@@ -29,6 +29,8 @@ const (
 	TopicSpeechBargeIn           Topic = "speech.barge_in"
 	TopicConversationSpeak       Topic = "conversation.speak"
 	TopicIntentRouterDiagnostics Topic = "intentrouter.diagnostics"
+	TopicPairingCreated          Topic = "pairing.created"
+	TopicPairingClaimed          Topic = "pairing.claimed"
 )
 
 // Source describes which component produced an event.
@@ -49,6 +51,7 @@ const (
 	SourceSpeechBarge        Source = "speech_barge"
 	SourceSpeechVAD          Source = "speech_vad"
 	SourceClient             Source = "client"
+	SourcePairing            Source = "pairing"
 	SourceUnknown            Source = "unknown"
 )
 
@@ -277,6 +280,23 @@ type ConversationSpeakEvent struct {
 	Metadata  map[string]string
 }
 
+// PairingCreatedEvent is published when a new pairing code is generated via CreatePairing RPC.
+type PairingCreatedEvent struct {
+	Code       string
+	DeviceName string
+	Role       string
+	ConnectURL string
+	ExpiresAt  time.Time
+}
+
+// PairingClaimedEvent is published when a pairing code is claimed via ClaimPairing RPC.
+type PairingClaimedEvent struct {
+	Code       string
+	DeviceName string
+	Role       string
+	ClaimedAt  time.Time
+}
+
 // AdapterHealth indicates current adapter state.
 type AdapterHealth string
 
@@ -424,6 +444,15 @@ var IntentRouter = struct {
 	Diagnostics TopicDef[BridgeDiagnosticEvent]
 }{
 	Diagnostics: NewTopicDef[BridgeDiagnosticEvent](TopicIntentRouterDiagnostics),
+}
+
+// Pairing groups pairing topic descriptors.
+var Pairing = struct {
+	Created TopicDef[PairingCreatedEvent]
+	Claimed TopicDef[PairingClaimedEvent]
+}{
+	Created: NewTopicDef[PairingCreatedEvent](TopicPairingCreated),
+	Claimed: NewTopicDef[PairingClaimedEvent](TopicPairingClaimed),
 }
 
 // BridgeDiagnosticEvent reports intent router bridge state changes.

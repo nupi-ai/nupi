@@ -449,6 +449,7 @@ message CreatePairingResponse {
   google.protobuf.Timestamp expires_at = 2;
   string name = 3;
   string role = 4;
+  string connect_url = 5;
 }
 
 // ClaimPairingRequest exchanges a pairing code for an auth token (no auth required).

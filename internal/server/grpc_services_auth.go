@@ -2,11 +2,14 @@ package server
 
 import (
 	"context"
+	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	apiv1 "github.com/nupi-ai/nupi/internal/api/grpc/v1"
+	"github.com/nupi-ai/nupi/internal/eventbus"
 	emptypb "google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -210,11 +213,24 @@ func (a *authService) CreatePairing(ctx context.Context, req *apiv1.CreatePairin
 		return nil, status.Errorf(codes.Internal, "persist pairing: %v", err)
 	}
 
+	connectURL := buildPairingConnectURL(ctx, entry.Code, a.api)
+
+	if a.api.eventBus != nil {
+		eventbus.Publish(ctx, a.api.eventBus, eventbus.Pairing.Created, eventbus.SourcePairing, eventbus.PairingCreatedEvent{
+			Code:       entry.Code,
+			DeviceName: entry.Name,
+			Role:       entry.Role,
+			ConnectURL: connectURL,
+			ExpiresAt:  entry.ExpiresAt,
+		})
+	}
+
 	return &apiv1.CreatePairingResponse{
-		Code:      entry.Code,
-		Name:      entry.Name,
-		Role:      entry.Role,
-		ExpiresAt: timestamppb.New(entry.ExpiresAt),
+		Code:       entry.Code,
+		Name:       entry.Name,
+		Role:       entry.Role,
+		ExpiresAt:  timestamppb.New(entry.ExpiresAt),
+		ConnectUrl: connectURL,
 	}, nil
 }
 
@@ -287,6 +303,15 @@ func (a *authService) ClaimPairing(ctx context.Context, req *apiv1.ClaimPairingR
 
 	a.api.setAuthTokens(tokens, a.api.AuthRequired())
 
+	if a.api.eventBus != nil {
+		eventbus.Publish(ctx, a.api.eventBus, eventbus.Pairing.Claimed, eventbus.SourcePairing, eventbus.PairingClaimedEvent{
+			Code:       code,
+			DeviceName: name,
+			Role:       newEntry.Role,
+			ClaimedAt:  time.Now().UTC(),
+		})
+	}
+
 	// Populate daemon connection info.
 	var daemonHost string
 	var daemonPort int32
@@ -323,6 +348,44 @@ func (a *authService) ClaimPairing(ctx context.Context, req *apiv1.ClaimPairingR
 		Role:       newEntry.Role,
 		CreatedAt:  timestamppb.New(newEntry.CreatedAt.UTC()),
 	}, nil
+}
+
+// buildPairingConnectURL constructs a nupi://pair?... URL containing the
+// pairing code and daemon connection details needed by mobile clients.
+func buildPairingConnectURL(ctx context.Context, code string, api *APIServer) string {
+	host := ""
+	port := 0
+	tlsEnabled := false
+
+	if api.runtime != nil {
+		port = api.runtime.ConnectPort()
+	}
+	if api.configStore != nil {
+		cfg, err := api.configStore.GetTransportConfig(ctx)
+		if err == nil {
+			cert := strings.TrimSpace(cfg.TLSCertPath)
+			key := strings.TrimSpace(cfg.TLSKeyPath)
+			if cert != "" && key != "" {
+				tlsEnabled = true
+			}
+			rawBinding := strings.TrimSpace(cfg.Binding)
+			if rawBinding == "" {
+				rawBinding = cfg.GRPCBinding
+			}
+			if tlsEnabled {
+				host = "localhost"
+			} else if h, err := resolveBindingHost(normalizeBinding(rawBinding)); err == nil {
+				host = h
+			}
+		}
+	}
+
+	v := url.Values{}
+	v.Set("code", code)
+	v.Set("host", host)
+	v.Set("port", strconv.Itoa(port))
+	v.Set("tls", strconv.FormatBool(tlsEnabled))
+	return "nupi://pair?" + v.Encode()
 }
 
 func pairingToProto(p pairingEntry) *apiv1.PairingInfo {

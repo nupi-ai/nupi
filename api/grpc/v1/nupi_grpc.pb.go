@@ -23,6 +23,8 @@ const (
 	DaemonService_Status_FullMethodName            = "/nupi.api.v1.DaemonService/Status"
 	DaemonService_Shutdown_FullMethodName          = "/nupi.api.v1.DaemonService/Shutdown"
 	DaemonService_GetPluginWarnings_FullMethodName = "/nupi.api.v1.DaemonService/GetPluginWarnings"
+	DaemonService_ListLanguages_FullMethodName     = "/nupi.api.v1.DaemonService/ListLanguages"
+	DaemonService_ReloadPlugins_FullMethodName     = "/nupi.api.v1.DaemonService/ReloadPlugins"
 )
 
 // DaemonServiceClient is the client API for DaemonService service.
@@ -32,6 +34,8 @@ type DaemonServiceClient interface {
 	Status(ctx context.Context, in *DaemonStatusRequest, opts ...grpc.CallOption) (*DaemonStatusResponse, error)
 	Shutdown(ctx context.Context, in *ShutdownRequest, opts ...grpc.CallOption) (*ShutdownResponse, error)
 	GetPluginWarnings(ctx context.Context, in *GetPluginWarningsRequest, opts ...grpc.CallOption) (*GetPluginWarningsResponse, error)
+	ListLanguages(ctx context.Context, in *ListLanguagesRequest, opts ...grpc.CallOption) (*ListLanguagesResponse, error)
+	ReloadPlugins(ctx context.Context, in *ReloadPluginsRequest, opts ...grpc.CallOption) (*ReloadPluginsResponse, error)
 }
 
 type daemonServiceClient struct {
@@ -69,6 +73,24 @@ func (c *daemonServiceClient) GetPluginWarnings(ctx context.Context, in *GetPlug
 	return out, nil
 }
 
+func (c *daemonServiceClient) ListLanguages(ctx context.Context, in *ListLanguagesRequest, opts ...grpc.CallOption) (*ListLanguagesResponse, error) {
+	out := new(ListLanguagesResponse)
+	err := c.cc.Invoke(ctx, DaemonService_ListLanguages_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *daemonServiceClient) ReloadPlugins(ctx context.Context, in *ReloadPluginsRequest, opts ...grpc.CallOption) (*ReloadPluginsResponse, error) {
+	out := new(ReloadPluginsResponse)
+	err := c.cc.Invoke(ctx, DaemonService_ReloadPlugins_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // DaemonServiceServer is the server API for DaemonService service.
 // All implementations must embed UnimplementedDaemonServiceServer
 // for forward compatibility
@@ -76,6 +98,8 @@ type DaemonServiceServer interface {
 	Status(context.Context, *DaemonStatusRequest) (*DaemonStatusResponse, error)
 	Shutdown(context.Context, *ShutdownRequest) (*ShutdownResponse, error)
 	GetPluginWarnings(context.Context, *GetPluginWarningsRequest) (*GetPluginWarningsResponse, error)
+	ListLanguages(context.Context, *ListLanguagesRequest) (*ListLanguagesResponse, error)
+	ReloadPlugins(context.Context, *ReloadPluginsRequest) (*ReloadPluginsResponse, error)
 	mustEmbedUnimplementedDaemonServiceServer()
 }
 
@@ -91,6 +115,12 @@ func (UnimplementedDaemonServiceServer) Shutdown(context.Context, *ShutdownReque
 }
 func (UnimplementedDaemonServiceServer) GetPluginWarnings(context.Context, *GetPluginWarningsRequest) (*GetPluginWarningsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetPluginWarnings not implemented")
+}
+func (UnimplementedDaemonServiceServer) ListLanguages(context.Context, *ListLanguagesRequest) (*ListLanguagesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListLanguages not implemented")
+}
+func (UnimplementedDaemonServiceServer) ReloadPlugins(context.Context, *ReloadPluginsRequest) (*ReloadPluginsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ReloadPlugins not implemented")
 }
 func (UnimplementedDaemonServiceServer) mustEmbedUnimplementedDaemonServiceServer() {}
 
@@ -159,6 +189,42 @@ func _DaemonService_GetPluginWarnings_Handler(srv interface{}, ctx context.Conte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _DaemonService_ListLanguages_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListLanguagesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).ListLanguages(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_ListLanguages_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).ListLanguages(ctx, req.(*ListLanguagesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _DaemonService_ReloadPlugins_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReloadPluginsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(DaemonServiceServer).ReloadPlugins(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: DaemonService_ReloadPlugins_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(DaemonServiceServer).ReloadPlugins(ctx, req.(*ReloadPluginsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // DaemonService_ServiceDesc is the grpc.ServiceDesc for DaemonService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -177,6 +243,14 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetPluginWarnings",
 			Handler:    _DaemonService_GetPluginWarnings_Handler,
+		},
+		{
+			MethodName: "ListLanguages",
+			Handler:    _DaemonService_ListLanguages_Handler,
+		},
+		{
+			MethodName: "ReloadPlugins",
+			Handler:    _DaemonService_ReloadPlugins_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
