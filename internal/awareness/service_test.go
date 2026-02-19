@@ -89,3 +89,55 @@ func TestShutdownWithoutStart(t *testing.T) {
 		t.Errorf("Shutdown() without Start error = %v", err)
 	}
 }
+
+func TestServiceSearch(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a file in the expected memory directory structure.
+	dailyDir := filepath.Join(dir, "awareness", "memory", "daily")
+	if err := os.MkdirAll(dailyDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dailyDir, "2026-02-19.md"), []byte("## Test\n\nSearchable content here."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewService(dir)
+	ctx := context.Background()
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(ctx)
+
+	results, err := svc.Search(ctx, SearchOptions{Query: "searchable"})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) == 0 {
+		t.Error("expected at least 1 result from Service.Search()")
+	}
+}
+
+func TestServiceDoubleStart(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+	ctx := context.Background()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("first Start: %v", err)
+	}
+	defer svc.Shutdown(ctx)
+
+	// Second Start should return an error, not leak resources.
+	if err := svc.Start(ctx); err == nil {
+		t.Fatal("expected error on double Start, got nil")
+	}
+}
+
+func TestServiceSearchBeforeStart(t *testing.T) {
+	svc := NewService(t.TempDir())
+	_, err := svc.Search(context.Background(), SearchOptions{Query: "test"})
+	if err == nil {
+		t.Error("expected error when searching before Start()")
+	}
+}
