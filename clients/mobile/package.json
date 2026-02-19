@@ -7,7 +7,8 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "generate": "buf generate"
+    "generate": "buf generate",
+    "bundle-xterm": "node scripts/bundle-xterm.mjs"
   },
   "dependencies": {
     "@bufbuild/protobuf": "^2.11.0",
@@ -15,6 +16,8 @@
     "@connectrpc/connect-web": "^2.1.1",
     "@expo/vector-icons": "^15.0.3",
     "@react-navigation/native": "^7.1.8",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "expo": "~54.0.33",
     "expo-camera": "~17.0.10",
     "expo-constants": "~18.0.13",

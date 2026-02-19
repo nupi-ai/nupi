@@ -56,6 +56,10 @@ function RootLayoutNav() {
             name="scan"
             options={{ presentation: "modal", title: "Scan QR Code" }}
           />
+          <Stack.Screen
+            name="session/[id]"
+            options={{ title: "Terminal", headerBackTitle: "Sessions" }}
+          />
         </Stack>
       </ThemeProvider>
     </ConnectionProvider>
