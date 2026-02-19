@@ -36,6 +36,9 @@ npm-debug.*
 # generated protobuf stubs (regenerate via: npm run generate)
 lib/gen/
 
+# generated xterm.js bundle (regenerate via: npm run bundle-xterm)
+lib/terminal-html.ts
+
 # generated native folders
 /ios
 /android

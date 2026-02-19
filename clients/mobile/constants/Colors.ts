@@ -10,6 +10,7 @@ export default {
     success: "#22c55e",
     warning: "#eab308",
     surface: "#f0f0f0",
+    terminalBackground: "#262626",
   },
   dark: {
     text: "#fff",
@@ -19,5 +20,6 @@ export default {
     success: "#22c55e",
     warning: "#eab308",
     surface: "#1c1c1e",
+    terminalBackground: "#262626",
   },
 };
