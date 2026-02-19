@@ -559,6 +559,131 @@ func TestSearchVectorClosedDB(t *testing.T) {
 	}
 }
 
+// --- SearchHybrid integration tests (Tasks 6.7-6.10) ---
+
+func TestSearchHybridFTSAndVector(t *testing.T) {
+	ix, ctx := setupSearchIndexWithEmbeddings(t)
+
+	// Use a query vector that produces results.
+	queryVec := []float32{0.2, 0.1, 0.5}
+	results, err := ix.SearchHybrid(ctx, queryVec, SearchOptions{
+		Query:      "database migration",
+		MaxResults: 5,
+	})
+	if err != nil {
+		t.Fatalf("SearchHybrid: %v", err)
+	}
+
+	if len(results) == 0 {
+		t.Fatal("expected at least 1 hybrid result")
+	}
+
+	// All combined scores should be in [0, 1] (before MMR reranking, max possible is 1.0).
+	for i, r := range results {
+		if r.Score < 0 || r.Score > 1.0 {
+			t.Errorf("result %d score %f not in [0, 1]", i, r.Score)
+		}
+	}
+
+	// Note: MMR reranking intentionally reorders results for diversity,
+	// so strict descending score order is NOT guaranteed after reranking.
+}
+
+func TestSearchHybridFTSOnly(t *testing.T) {
+	ix, ctx := setupSearchIndex(t) // No embeddings.
+
+	// nil queryVec → FTS-only mode.
+	results, err := ix.SearchHybrid(ctx, nil, SearchOptions{
+		Query:      "database migration",
+		MaxResults: 5,
+	})
+	if err != nil {
+		t.Fatalf("SearchHybrid FTS-only: %v", err)
+	}
+
+	if len(results) == 0 {
+		t.Fatal("expected at least 1 FTS-only result")
+	}
+
+	// FTS-only scores should be ≤ 0.3 (max possible: 0.3 × 1.0).
+	for i, r := range results {
+		if r.Score > 0.31 { // small epsilon for floating point
+			t.Errorf("FTS-only result %d score %f exceeds 0.3 max", i, r.Score)
+		}
+	}
+}
+
+func TestSearchHybridEmptyResults(t *testing.T) {
+	ix, ctx := setupSearchIndex(t)
+
+	// Query that matches nothing.
+	results, err := ix.SearchHybrid(ctx, nil, SearchOptions{
+		Query:      "xyznonexistent",
+		MaxResults: 5,
+	})
+	if err != nil {
+		t.Fatalf("SearchHybrid: %v", err)
+	}
+	if results != nil && len(results) != 0 {
+		t.Errorf("expected 0 results for non-matching query, got %d", len(results))
+	}
+
+	// Empty query.
+	results, err = ix.SearchHybrid(ctx, nil, SearchOptions{
+		Query: "",
+	})
+	if err != nil {
+		t.Fatalf("SearchHybrid empty query: %v", err)
+	}
+	if results != nil && len(results) != 0 {
+		t.Errorf("expected 0 results for empty query, got %d", len(results))
+	}
+}
+
+func TestSearchHybridScopeFiltering(t *testing.T) {
+	ix, ctx := setupSearchIndexWithEmbeddings(t)
+	queryVec := []float32{0.2, 0.1, 0.5}
+
+	// Project scope.
+	results, err := ix.SearchHybrid(ctx, queryVec, SearchOptions{
+		Query:       "architecture memory",
+		Scope:       "project",
+		ProjectSlug: "nupi",
+		MaxResults:  10,
+	})
+	if err != nil {
+		t.Fatalf("SearchHybrid project scope: %v", err)
+	}
+	for _, r := range results {
+		if r.ProjectSlug != "nupi" {
+			t.Errorf("project scope: expected slug 'nupi', got %q in %s", r.ProjectSlug, r.Path)
+		}
+	}
+
+	// Global scope.
+	results, err = ix.SearchHybrid(ctx, queryVec, SearchOptions{
+		Query:      "database",
+		Scope:      "global",
+		MaxResults: 10,
+	})
+	if err != nil {
+		t.Fatalf("SearchHybrid global scope: %v", err)
+	}
+	for _, r := range results {
+		if r.ProjectSlug != "" {
+			t.Errorf("global scope: expected empty slug, got %q in %s", r.ProjectSlug, r.Path)
+		}
+	}
+}
+
+func TestSearchHybridClosedDB(t *testing.T) {
+	ix := &Indexer{}
+	_, err := ix.SearchHybrid(context.Background(), nil, SearchOptions{Query: "test"})
+	if err == nil {
+		t.Error("expected error for SearchHybrid on closed indexer")
+	}
+}
+
 func TestSanitizeFTSQuery(t *testing.T) {
 	tests := []struct {
 		input string
