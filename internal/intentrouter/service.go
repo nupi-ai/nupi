@@ -29,6 +29,13 @@ var (
 
 	// ErrMaxToolIterations is returned when the tool-use loop exceeds the safety cap.
 	ErrMaxToolIterations = errors.New("intentrouter: max tool iterations reached")
+
+	// ErrUnexpectedToolUse is returned when a tool_use action reaches executeActions
+	// instead of being handled in the tool loop.
+	ErrUnexpectedToolUse = errors.New("intentrouter: unexpected tool_use action in final response")
+
+	// ErrNoToolRegistry is returned when the adapter requests tool_use but no tool registry is configured.
+	ErrNoToolRegistry = errors.New("intentrouter: no tool registry configured")
 )
 
 // maxToolIterations is the safety cap for the multi-turn tool-use loop (NFR32).
@@ -446,7 +453,7 @@ func (s *Service) handlePrompt(ctx context.Context, prompt eventbus.Conversation
 		if toolRegistry == nil {
 			log.Printf("[IntentRouter] Adapter returned tool_use but no tool registry configured for prompt %s", prompt.PromptID)
 			atomic.AddUint64(&s.requestsFailed, 1)
-			s.publishError(prompt.SessionID, prompt.PromptID, fmt.Errorf("intentrouter: adapter returned tool_use but no tool registry configured"))
+			s.publishError(prompt.SessionID, prompt.PromptID, ErrNoToolRegistry)
 			return
 		}
 
@@ -609,7 +616,7 @@ func (s *Service) executeActions(ctx context.Context, prompt eventbus.Conversati
 			// If we reach this point, the adapter returned tool_use as a final action.
 			log.Printf("[IntentRouter] Unexpected tool_use action in executeActions at index %d for prompt %s (should be handled in tool loop)",
 				i, prompt.PromptID)
-			s.publishError(prompt.SessionID, prompt.PromptID, fmt.Errorf("intentrouter: unexpected tool_use action in final response"))
+			s.publishError(prompt.SessionID, prompt.PromptID, ErrUnexpectedToolUse)
 
 		default:
 			log.Printf("[IntentRouter] Unknown action type %q at index %d for prompt %s",
@@ -818,6 +825,10 @@ func errorType(err error) string {
 		return "session_not_found"
 	case errors.Is(err, ErrMaxToolIterations):
 		return "max_tool_iterations"
+	case errors.Is(err, ErrUnexpectedToolUse):
+		return "unexpected_tool_use"
+	case errors.Is(err, ErrNoToolRegistry):
+		return "no_tool_registry"
 	default:
 		return "unknown"
 	}
@@ -828,8 +839,10 @@ func recoverableError(err error) string {
 	case errors.Is(err, ErrNoAdapter), errors.Is(err, ErrNoCommandExecutor), errors.Is(err, ErrAdapterNotReady):
 		// Configuration issues that can be fixed by user action
 		return "true"
-	case errors.Is(err, ErrSessionNotFound), errors.Is(err, ErrMaxToolIterations):
+	case errors.Is(err, ErrSessionNotFound), errors.Is(err, ErrMaxToolIterations), errors.Is(err, ErrUnexpectedToolUse):
 		return "false"
+	case errors.Is(err, ErrNoToolRegistry):
+		return "true"
 	default:
 		return "unknown"
 	}
@@ -847,6 +860,10 @@ func userFriendlyError(err error) string {
 		return "The requested session was not found."
 	case errors.Is(err, ErrMaxToolIterations):
 		return "The AI tool-use loop exceeded the maximum number of iterations. Please try again."
+	case errors.Is(err, ErrUnexpectedToolUse):
+		return "An unexpected tool request was received. Please try again."
+	case errors.Is(err, ErrNoToolRegistry):
+		return "Tool use was requested but no tool registry is configured."
 	default:
 		return "An error occurred while processing your request."
 	}

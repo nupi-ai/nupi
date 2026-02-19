@@ -2165,14 +2165,15 @@ func TestToolLoopMaxIterationsCap(t *testing.T) {
 	}))
 
 	reg := NewToolRegistry()
-	reg.Register(&mockToolHandler{
+	toolHandler := &mockToolHandler{
 		def: ToolDefinition{
 			Name:           "memory_search",
 			Description:    "Search memory",
 			ParametersJSON: `{"type":"object","properties":{}}`,
 		},
 		result: json.RawMessage(`{"ok":true}`),
-	})
+	}
+	reg.Register(toolHandler)
 
 	svc := NewService(bus, WithAdapter(adapter), WithToolRegistry(reg))
 
@@ -2217,6 +2218,11 @@ func TestToolLoopMaxIterationsCap(t *testing.T) {
 	mu.Unlock()
 	if finalCallNum != maxToolIterations {
 		t.Fatalf("Expected %d adapter calls, got %d", maxToolIterations, finalCallNum)
+	}
+
+	// Tool handler should have been called exactly maxToolIterations times (once per iteration)
+	if toolHandler.getCalled() != maxToolIterations {
+		t.Fatalf("Expected tool handler called %d times, got %d", maxToolIterations, toolHandler.getCalled())
 	}
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -2304,6 +2310,14 @@ func TestToolLoopToolExecutionError(t *testing.T) {
 	if capturedHistory[0].Result.CallID != "call-1" {
 		t.Fatalf("Expected CallID=call-1, got %s", capturedHistory[0].Result.CallID)
 	}
+	// Verify error ResultJSON is valid JSON with expected error message
+	var errJSON map[string]interface{}
+	if err := json.Unmarshal([]byte(capturedHistory[0].Result.ResultJSON), &errJSON); err != nil {
+		t.Fatalf("Expected valid JSON in error ResultJSON, got parse error: %v", err)
+	}
+	if errMsg, ok := errJSON["error"]; !ok || errMsg != "database connection lost" {
+		t.Fatalf("Expected error message 'database connection lost' in ResultJSON, got %v", errJSON)
+	}
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
@@ -2352,6 +2366,12 @@ func TestToolLoopNoRegistryWithToolUseResponse(t *testing.T) {
 		reply := env.Payload
 		if reply.Metadata["error"] != "true" {
 			t.Fatalf("Expected error metadata for tool_use without registry")
+		}
+		if reply.Metadata["error_type"] != "no_tool_registry" {
+			t.Fatalf("Expected error_type=no_tool_registry, got %s", reply.Metadata["error_type"])
+		}
+		if reply.Metadata["recoverable"] != "true" {
+			t.Fatalf("Expected recoverable=true, got %s", reply.Metadata["recoverable"])
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Timeout waiting for error reply")
@@ -2405,6 +2425,9 @@ func TestToolLoopDefensiveToolUseInExecuteActions(t *testing.T) {
 		reply := env.Payload
 		if reply.Metadata["error"] != "true" {
 			t.Fatalf("Expected error metadata from defensive tool_use case")
+		}
+		if reply.Metadata["error_type"] != "unexpected_tool_use" {
+			t.Fatalf("Expected error_type=unexpected_tool_use, got %s", reply.Metadata["error_type"])
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Timeout waiting for error reply")
