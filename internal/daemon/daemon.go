@@ -248,6 +248,10 @@ func New(opts Options) (*Daemon, error) {
 	// and updates the intent router with the appropriate adapter.
 	// Uses adaptersService for initial sync with current binding state.
 	intentRouterBridge := intentrouter.NewAdapterBridge(bus, intentRouterService, adaptersService)
+
+	// Wire embedding provider from adapter bridge to awareness service.
+	// The embedding bridge tracks the NAP adapter lifecycle automatically.
+	awarenessService.SetEmbeddingProvider(intentRouterBridge.EmbeddingBridge())
 	if err := host.Register("intent_router_bridge", func(ctx context.Context) (daemonruntime.Service, error) {
 		return intentRouterBridge, nil
 	}); err != nil {

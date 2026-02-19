@@ -3,7 +3,9 @@ package awareness
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 // SearchOptions controls the FTS5 search query.
@@ -21,7 +23,7 @@ type SearchResult struct {
 	Path        string  // File path relative to awareness/memory/.
 	ChunkIndex  int     // Chunk index within the file.
 	Snippet     string  // FTS5-generated snippet with highlighted matches.
-	Score       float64 // BM25 score (higher = more relevant).
+	Score       float64 // Relevance score (higher = more relevant). BM25 for FTS, cosine similarity for vector search.
 	FileType    string  // "daily", "topic", "session".
 	ProjectSlug string  // Project slug (empty for global).
 	Mtime       string  // File modification time (RFC 3339).
@@ -107,6 +109,115 @@ func (ix *Indexer) SearchFTS(ctx context.Context, opts SearchOptions) ([]SearchR
 	}
 
 	return results, rows.Err()
+}
+
+// SearchVector performs a vector similarity search using cosine similarity.
+// Returns results ranked by similarity score (descending).
+func (ix *Indexer) SearchVector(ctx context.Context, queryVec []float32, opts SearchOptions) ([]SearchResult, error) {
+	if ix.db == nil {
+		return nil, fmt.Errorf("awareness: indexer not open")
+	}
+	if len(queryVec) == 0 {
+		return nil, nil
+	}
+
+	maxResults := opts.MaxResults
+	if maxResults <= 0 {
+		maxResults = 10
+	}
+	if maxResults > 100 {
+		maxResults = 100
+	}
+
+	// Build query to load candidate embeddings with scope/date filtering via JOIN.
+	var conditions []string
+	var args []any
+
+	conditions = append(conditions, "1=1") // base condition
+
+	switch opts.Scope {
+	case "project":
+		if opts.ProjectSlug == "" {
+			return nil, nil
+		}
+		conditions = append(conditions, "mc.project_slug = ?")
+		args = append(args, opts.ProjectSlug)
+	case "global":
+		conditions = append(conditions, "mc.project_slug = ?")
+		args = append(args, "")
+	}
+
+	if opts.DateFrom != "" {
+		conditions = append(conditions, "mc.mtime >= ?")
+		args = append(args, opts.DateFrom)
+	}
+	if opts.DateTo != "" {
+		conditions = append(conditions, "mc.mtime <= ?")
+		args = append(args, opts.DateTo)
+	}
+
+	where := strings.Join(conditions, " AND ")
+
+	query := fmt.Sprintf(`SELECT me.path, me.chunk_idx, me.embedding, me.norm,
+		mc.content, mc.file_type, mc.project_slug, mc.mtime
+		FROM memory_embeddings me
+		JOIN memory_chunks mc ON me.path = mc.path AND me.chunk_idx = mc.chunk_idx
+		WHERE %s`, where)
+
+	rows, err := ix.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("awareness: vector search: %w", err)
+	}
+	defer rows.Close()
+
+	var results []SearchResult
+
+	for rows.Next() {
+		var (
+			path, content, fileType, projectSlug, mtime string
+			chunkIdx                                    int
+			embBlob                                     []byte
+			norm                                        float64
+		)
+		if err := rows.Scan(&path, &chunkIdx, &embBlob, &norm, &content, &fileType, &projectSlug, &mtime); err != nil {
+			return nil, err
+		}
+
+		vec := deserializeEmbedding(embBlob)
+		score := cosineSimilarityWithNorm(queryVec, vec, norm)
+
+		// Use content as snippet (truncate at rune boundary for valid UTF-8).
+		snippet := content
+		if utf8.RuneCountInString(snippet) > 256 {
+			runes := []rune(snippet)
+			snippet = string(runes[:256]) + "..."
+		}
+
+		results = append(results, SearchResult{
+			Path:        path,
+			ChunkIndex:  chunkIdx,
+			Snippet:     snippet,
+			Score:       score,
+			FileType:    fileType,
+			ProjectSlug: projectSlug,
+			Mtime:       mtime,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Sort by score descending.
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Score > results[j].Score
+	})
+
+	// Apply MaxResults limit.
+	if len(results) > maxResults {
+		results = results[:maxResults]
+	}
+
+	return results, nil
 }
 
 // sanitizeFTSQuery wraps each search term in double quotes to prevent

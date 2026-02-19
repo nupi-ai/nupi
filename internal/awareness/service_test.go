@@ -2,6 +2,7 @@ package awareness
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -173,6 +174,152 @@ func TestServiceStartFailureRecovery(t *testing.T) {
 	} else {
 		// Open succeeded (driver tolerated corrupt data, schema recreated).
 		svc.Shutdown(ctx)
+	}
+}
+
+func TestServiceSearchVectorWithProvider(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create a file in the expected memory directory structure.
+	dailyDir := filepath.Join(dir, "awareness", "memory", "daily")
+	if err := os.MkdirAll(dailyDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dailyDir, "2026-02-19.md"), []byte("## Test\n\nVector searchable content here."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mock := &mockEmbeddingProvider{dims: 3}
+	svc := NewService(dir)
+	svc.SetEmbeddingProvider(mock)
+	ctx := context.Background()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(ctx)
+
+	results, err := svc.SearchVector(ctx, "vector searchable", SearchOptions{})
+	if err != nil {
+		t.Fatalf("SearchVector: %v", err)
+	}
+	if len(results) == 0 {
+		t.Error("expected at least 1 result from Service.SearchVector()")
+	}
+}
+
+func TestServiceSearchVectorWithoutProvider(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+	ctx := context.Background()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(ctx)
+
+	// Without embedding provider, should return nil, nil (graceful degradation).
+	results, err := svc.SearchVector(ctx, "test query", SearchOptions{})
+	if err != nil {
+		t.Fatalf("SearchVector without provider should not error: %v", err)
+	}
+	if results != nil {
+		t.Errorf("expected nil results without provider, got %d results", len(results))
+	}
+}
+
+func TestServiceSearchVectorBeforeStart(t *testing.T) {
+	svc := NewService(t.TempDir())
+	mock := &mockEmbeddingProvider{dims: 3}
+	svc.SetEmbeddingProvider(mock)
+
+	// Without Start, indexer is nil — should return nil, nil.
+	results, err := svc.SearchVector(context.Background(), "test", SearchOptions{})
+	if err != nil {
+		t.Fatalf("SearchVector before Start should not error: %v", err)
+	}
+	if results != nil {
+		t.Errorf("expected nil results before Start, got %d results", len(results))
+	}
+}
+
+func TestServiceHasEmbeddingsWithProvider(t *testing.T) {
+	dir := t.TempDir()
+
+	dailyDir := filepath.Join(dir, "awareness", "memory", "daily")
+	if err := os.MkdirAll(dailyDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dailyDir, "test.md"), []byte("## Test\n\nContent."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mock := &mockEmbeddingProvider{dims: 3}
+	svc := NewService(dir)
+	svc.SetEmbeddingProvider(mock)
+	ctx := context.Background()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(ctx)
+
+	if !svc.HasEmbeddings() {
+		t.Error("expected HasEmbeddings() to return true after Sync with provider")
+	}
+}
+
+func TestServiceHasEmbeddingsWithoutProvider(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+	ctx := context.Background()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(ctx)
+
+	if svc.HasEmbeddings() {
+		t.Error("expected HasEmbeddings() to return false without provider")
+	}
+}
+
+func TestServiceHasEmbeddingsBeforeStart(t *testing.T) {
+	svc := NewService(t.TempDir())
+	if svc.HasEmbeddings() {
+		t.Error("expected HasEmbeddings() to return false before Start")
+	}
+}
+
+func TestServiceSearchVectorProviderError(t *testing.T) {
+	dir := t.TempDir()
+
+	dailyDir := filepath.Join(dir, "awareness", "memory", "daily")
+	if err := os.MkdirAll(dailyDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dailyDir, "test.md"), []byte("## Test\n\nContent."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Provider that fails on GenerateEmbeddings calls.
+	mock := &mockEmbeddingProvider{err: fmt.Errorf("provider unavailable")}
+	svc := NewService(dir)
+	svc.SetEmbeddingProvider(mock)
+	ctx := context.Background()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(ctx)
+
+	// SearchVector should gracefully degrade: nil results, no error (NFR33).
+	results, err := svc.SearchVector(ctx, "test query", SearchOptions{})
+	if err != nil {
+		t.Fatalf("SearchVector with failing provider should not error: %v", err)
+	}
+	if results != nil {
+		t.Errorf("expected nil results when provider fails, got %d results", len(results))
 	}
 }
 

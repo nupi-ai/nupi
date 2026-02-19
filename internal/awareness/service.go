@@ -26,7 +26,8 @@ type Service struct {
 	mu         sync.RWMutex
 	coreMemory string
 
-	indexer *Indexer
+	indexer            *Indexer
+	embeddingProvider  EmbeddingProvider
 
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -43,6 +44,11 @@ func NewService(instanceDir string) *Service {
 // SetEventBus wires the event bus for publish/subscribe.
 func (s *Service) SetEventBus(bus *eventbus.Bus) {
 	s.bus = bus
+}
+
+// SetEmbeddingProvider wires the embedding provider for vector search.
+func (s *Service) SetEmbeddingProvider(provider EmbeddingProvider) {
+	s.embeddingProvider = provider
 }
 
 // Start initializes the awareness service: ensures directory structure exists,
@@ -62,6 +68,7 @@ func (s *Service) Start(ctx context.Context) error {
 	memoryDir := filepath.Join(s.awarenessDir, "memory")
 	s.indexer = NewIndexer(memoryDir)
 	s.indexer.SetEventBus(s.bus)
+	s.indexer.SetEmbeddingProvider(s.embeddingProvider)
 
 	if err := s.indexer.Open(ctx); err != nil {
 		s.indexer = nil
@@ -113,6 +120,44 @@ func (s *Service) Search(ctx context.Context, opts SearchOptions) ([]SearchResul
 		return nil, fmt.Errorf("awareness: indexer not initialized")
 	}
 	return s.indexer.SearchFTS(ctx, opts)
+}
+
+// SearchVector performs a semantic vector similarity search.
+// If the embedding provider is nil or unavailable, returns nil, nil (graceful degradation).
+// The caller should fall back to FTS-only search.
+func (s *Service) SearchVector(ctx context.Context, query string, opts SearchOptions) ([]SearchResult, error) {
+	if s.embeddingProvider == nil {
+		return nil, nil
+	}
+	if s.indexer == nil {
+		return nil, nil
+	}
+
+	// Generate query embedding.
+	result, err := s.embeddingProvider.GenerateEmbeddings(ctx, []string{query})
+	if err != nil {
+		// Graceful degradation (NFR33): embedding failure is not a search error.
+		log.Printf("[Awareness] WARNING: vector search embedding failed, falling back to FTS-only: %v", err)
+		return nil, nil
+	}
+	if len(result.Vectors) == 0 || len(result.Vectors[0]) == 0 {
+		return nil, nil
+	}
+
+	return s.indexer.SearchVector(ctx, result.Vectors[0], opts)
+}
+
+// HasEmbeddings returns true if the embedding provider is set and embeddings exist in the database.
+func (s *Service) HasEmbeddings() bool {
+	if s.embeddingProvider == nil || s.indexer == nil || s.indexer.db == nil {
+		return false
+	}
+	var exists int
+	row := s.indexer.db.QueryRow("SELECT 1 FROM memory_embeddings LIMIT 1")
+	if err := row.Scan(&exists); err != nil {
+		return false
+	}
+	return true
 }
 
 // CoreMemory returns the current combined core memory content.

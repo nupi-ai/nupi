@@ -3,6 +3,7 @@ package awareness
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log"
@@ -19,9 +20,10 @@ import (
 // Indexer manages the FTS5 archival memory index stored in index.db.
 // It is a sub-component of the awareness Service, NOT a standalone daemon service.
 type Indexer struct {
-	db        *sql.DB
-	memoryDir string // Path to awareness/memory/ directory.
-	bus       *eventbus.Bus
+	db                *sql.DB
+	memoryDir         string // Path to awareness/memory/ directory.
+	bus               *eventbus.Bus
+	embeddingProvider EmbeddingProvider
 }
 
 // NewIndexer creates a new archival memory indexer.
@@ -33,6 +35,11 @@ func NewIndexer(memoryDir string) *Indexer {
 // SetEventBus wires the event bus for publishing AwarenessSyncEvent notifications.
 func (ix *Indexer) SetEventBus(bus *eventbus.Bus) {
 	ix.bus = bus
+}
+
+// SetEmbeddingProvider wires the embedding provider for vector operations during sync.
+func (ix *Indexer) SetEmbeddingProvider(provider EmbeddingProvider) {
+	ix.embeddingProvider = provider
 }
 
 // Open creates or opens the index.db database and applies the FTS5 schema.
@@ -94,11 +101,15 @@ func (ix *Indexer) applyPragmas(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
-// ensureSchema creates FTS5 and metadata tables.
+// ensureSchema creates FTS5, metadata, and embeddings tables.
 // If the FTS5 table is corrupt or missing, it drops and recreates everything.
+// If only the embeddings table is missing (upgrade from pre-vector schema),
+// it creates just the embeddings table additively.
 func (ix *Indexer) ensureSchema(ctx context.Context) error {
 	// Verify FTS5 table health with a lightweight query.
 	if ix.schemaHealthy(ctx) {
+		// FTS5 and metadata healthy — ensure embeddings table exists (additive migration).
+		ix.ensureEmbeddingsTable(ctx)
 		return nil
 	}
 
@@ -108,6 +119,7 @@ func (ix *Indexer) ensureSchema(ctx context.Context) error {
 	stmts := []string{
 		"DROP TABLE IF EXISTS memory_chunks",
 		"DROP TABLE IF EXISTS memory_files",
+		"DROP TABLE IF EXISTS memory_embeddings",
 	}
 	for _, s := range stmts {
 		if _, err := ix.db.ExecContext(ctx, s); err != nil {
@@ -118,23 +130,53 @@ func (ix *Indexer) ensureSchema(ctx context.Context) error {
 	return ix.createTables(ctx)
 }
 
+// ensureEmbeddingsTable creates the memory_embeddings table if it doesn't exist.
+// This is an additive migration for existing index.db files that were created
+// before vector embeddings support was added.
+func (ix *Indexer) ensureEmbeddingsTable(ctx context.Context) {
+	// Check if table exists via sqlite_master (explicit check avoids misinterpreting DB errors).
+	var name string
+	row := ix.db.QueryRowContext(ctx, "SELECT name FROM sqlite_master WHERE type='table' AND name='memory_embeddings'")
+	if err := row.Scan(&name); err == nil {
+		return // Table already exists.
+	}
+
+	log.Printf("[Awareness] Adding memory_embeddings table (schema upgrade)")
+	embeddings := `CREATE TABLE IF NOT EXISTS memory_embeddings (
+		path TEXT NOT NULL,
+		chunk_idx INTEGER NOT NULL,
+		embedding BLOB NOT NULL,
+		model TEXT NOT NULL,
+		dimensions INTEGER NOT NULL,
+		norm REAL NOT NULL,
+		created_at TEXT NOT NULL,
+		PRIMARY KEY (path, chunk_idx)
+	)`
+	if _, err := ix.db.ExecContext(ctx, embeddings); err != nil {
+		log.Printf("[Awareness] WARNING: create memory_embeddings table: %v", err)
+		return
+	}
+	embIdx := `CREATE INDEX IF NOT EXISTS idx_embeddings_model ON memory_embeddings(model)`
+	if _, err := ix.db.ExecContext(ctx, embIdx); err != nil {
+		log.Printf("[Awareness] WARNING: create embeddings model index: %v", err)
+	}
+}
+
 // schemaHealthy returns true when both tables exist and are queryable.
 func (ix *Indexer) schemaHealthy(ctx context.Context) bool {
-	// Check FTS5 table.
-	row := ix.db.QueryRowContext(ctx, "SELECT count(*) FROM memory_chunks LIMIT 1")
+	// SELECT 1 LIMIT 1 avoids full table scan (unlike count(*)).
+	// sql.ErrNoRows means table exists but is empty — still healthy.
 	var n int
-	if err := row.Scan(&n); err != nil {
+	if err := ix.db.QueryRowContext(ctx, "SELECT 1 FROM memory_chunks LIMIT 1").Scan(&n); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return false
 	}
-	// Check metadata table.
-	row = ix.db.QueryRowContext(ctx, "SELECT count(*) FROM memory_files LIMIT 1")
-	if err := row.Scan(&n); err != nil {
+	if err := ix.db.QueryRowContext(ctx, "SELECT 1 FROM memory_files LIMIT 1").Scan(&n); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return false
 	}
 	return true
 }
 
-// createTables creates the FTS5 virtual table and the metadata table.
+// createTables creates the FTS5 virtual table, metadata table, and embeddings table.
 func (ix *Indexer) createTables(ctx context.Context) error {
 	fts := `CREATE VIRTUAL TABLE IF NOT EXISTS memory_chunks USING fts5(
 		content,
@@ -159,11 +201,40 @@ func (ix *Indexer) createTables(ctx context.Context) error {
 		return fmt.Errorf("awareness: create memory_files table: %w", err)
 	}
 
+	embeddings := `CREATE TABLE IF NOT EXISTS memory_embeddings (
+		path TEXT NOT NULL,
+		chunk_idx INTEGER NOT NULL,
+		embedding BLOB NOT NULL,
+		model TEXT NOT NULL,
+		dimensions INTEGER NOT NULL,
+		norm REAL NOT NULL,
+		created_at TEXT NOT NULL,
+		PRIMARY KEY (path, chunk_idx)
+	)`
+	if _, err := ix.db.ExecContext(ctx, embeddings); err != nil {
+		return fmt.Errorf("awareness: create memory_embeddings table: %w", err)
+	}
+
+	embIdx := `CREATE INDEX IF NOT EXISTS idx_embeddings_model ON memory_embeddings(model)`
+	if _, err := ix.db.ExecContext(ctx, embIdx); err != nil {
+		return fmt.Errorf("awareness: create embeddings model index: %w", err)
+	}
+
 	return nil
 }
 
+// embeddingBatchSize is the maximum number of texts per GenerateEmbeddings call.
+const embeddingBatchSize = 100
+
+// chunkForEmbedding tracks a chunk that needs embedding generation.
+type chunkForEmbedding struct {
+	path     string
+	chunkIdx int
+	content  string
+}
+
 // Sync walks the memory directory, indexes new/modified markdown files,
-// and removes index entries for deleted files. This is the incremental sync.
+// removes index entries for deleted files, and generates vector embeddings.
 func (ix *Indexer) Sync(ctx context.Context) error {
 	start := time.Now()
 
@@ -204,6 +275,7 @@ func (ix *Indexer) Sync(ctx context.Context) error {
 	}
 
 	var statsNew, statsUpdated, statsDeleted, statsChunks int
+	var chunksToEmbed []chunkForEmbedding
 
 	// Index new/modified files.
 	for relPath, info := range onDisk {
@@ -221,9 +293,19 @@ func (ix *Indexer) Sync(ctx context.Context) error {
 			isUpdate = true
 		}
 
-		if err := ix.indexFile(ctx, relPath, mtime); err != nil {
-			log.Printf("[Awareness] WARNING: index file %s: %v", relPath, err)
+		chunks, idxErr := ix.indexFile(ctx, relPath, mtime)
+		if idxErr != nil {
+			log.Printf("[Awareness] WARNING: index file %s: %v", relPath, idxErr)
 			continue
+		}
+
+		// Collect chunks for embedding generation.
+		for _, ch := range chunks {
+			chunksToEmbed = append(chunksToEmbed, chunkForEmbedding{
+				path:     relPath,
+				chunkIdx: ch.Index,
+				content:  ch.Content,
+			})
 		}
 
 		if isUpdate {
@@ -249,6 +331,14 @@ func (ix *Indexer) Sync(ctx context.Context) error {
 		}
 	}
 
+	// Generate and store embeddings for new/modified chunks.
+	embeddingDegraded := ix.embedChunks(ctx, chunksToEmbed)
+
+	// Backfill missing embeddings if provider is healthy.
+	if !embeddingDegraded && ix.embeddingProvider != nil {
+		ix.backfillEmbeddings(ctx)
+	}
+
 	// Count total chunks.
 	row := ix.db.QueryRowContext(ctx, "SELECT count(*) FROM memory_chunks")
 	_ = row.Scan(&statsChunks)
@@ -272,16 +362,20 @@ func (ix *Indexer) RebuildIndex(ctx context.Context) error {
 	if _, err := ix.db.ExecContext(ctx, "DELETE FROM memory_files"); err != nil {
 		return fmt.Errorf("awareness: clear memory_files table: %w", err)
 	}
+	if _, err := ix.db.ExecContext(ctx, "DELETE FROM memory_embeddings"); err != nil {
+		return fmt.Errorf("awareness: clear memory_embeddings table: %w", err)
+	}
 
 	return ix.Sync(ctx)
 }
 
 // indexFile reads a markdown file, chunks it, and upserts into the index.
-func (ix *Indexer) indexFile(ctx context.Context, relPath, mtime string) error {
+// Returns the chunks for embedding generation.
+func (ix *Indexer) indexFile(ctx context.Context, relPath, mtime string) ([]Chunk, error) {
 	absPath := filepath.Join(ix.memoryDir, filepath.FromSlash(relPath))
 	data, err := os.ReadFile(absPath)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	content := string(data)
@@ -291,25 +385,30 @@ func (ix *Indexer) indexFile(ctx context.Context, relPath, mtime string) error {
 
 	tx, err := ix.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer tx.Rollback()
 
 	// Delete old chunks for this file.
 	if _, err := tx.ExecContext(ctx, "DELETE FROM memory_chunks WHERE path = ?", relPath); err != nil {
-		return err
+		return nil, err
+	}
+
+	// Delete old embeddings for this file (chunk_idx may change on update).
+	if _, err := tx.ExecContext(ctx, "DELETE FROM memory_embeddings WHERE path = ?", relPath); err != nil {
+		return nil, err
 	}
 
 	// Insert new chunks.
 	stmt, err := tx.PrepareContext(ctx, "INSERT INTO memory_chunks(content, path, chunk_idx, file_type, project_slug, mtime) VALUES(?, ?, ?, ?, ?, ?)")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer stmt.Close()
 
 	for _, ch := range chunks {
 		if _, err := stmt.ExecContext(ctx, ch.Content, relPath, ch.Index, fileType, projectSlug, mtime); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
@@ -318,17 +417,17 @@ func (ix *Indexer) indexFile(ctx context.Context, relPath, mtime string) error {
 		`INSERT INTO memory_files(path, mtime, chunk_count, size_bytes) VALUES(?, ?, ?, ?)
 		 ON CONFLICT(path) DO UPDATE SET mtime=excluded.mtime, chunk_count=excluded.chunk_count, size_bytes=excluded.size_bytes`,
 		relPath, mtime, len(chunks), len(data)); err != nil {
-		return err
+		return nil, err
 	}
 
 	if err := tx.Commit(); err != nil {
-		return err
+		return nil, err
 	}
 
-	return nil
+	return chunks, nil
 }
 
-// removeFile deletes all chunks and metadata for a file.
+// removeFile deletes all chunks, embeddings, and metadata for a file.
 func (ix *Indexer) removeFile(ctx context.Context, relPath string) error {
 	tx, err := ix.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -337,6 +436,9 @@ func (ix *Indexer) removeFile(ctx context.Context, relPath string) error {
 	defer tx.Rollback()
 
 	if _, err := tx.ExecContext(ctx, "DELETE FROM memory_chunks WHERE path = ?", relPath); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM memory_embeddings WHERE path = ?", relPath); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, "DELETE FROM memory_files WHERE path = ?", relPath); err != nil {
