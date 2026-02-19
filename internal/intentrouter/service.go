@@ -2,6 +2,7 @@ package intentrouter
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -25,7 +26,13 @@ var (
 
 	// ErrNoCommandExecutor is returned when no command executor is configured.
 	ErrNoCommandExecutor = errors.New("intentrouter: no command executor configured")
+
+	// ErrMaxToolIterations is returned when the tool-use loop exceeds the safety cap.
+	ErrMaxToolIterations = errors.New("intentrouter: max tool iterations reached")
 )
+
+// maxToolIterations is the safety cap for the multi-turn tool-use loop (NFR32).
+const maxToolIterations = 10
 
 // Service routes user intents to appropriate sessions via AI adapter.
 type Service struct {
@@ -366,6 +373,7 @@ func (s *Service) handlePrompt(ctx context.Context, prompt eventbus.Conversation
 	sessionProvider := s.sessionProvider
 	commandExecutor := s.commandExecutor
 	promptEngine := s.promptEngine
+	toolRegistry := s.toolRegistry
 	s.mu.RUnlock()
 
 	atomic.AddUint64(&s.requestsTotal, 1)
@@ -388,21 +396,91 @@ func (s *Service) handlePrompt(ctx context.Context, prompt eventbus.Conversation
 	// Build the intent request
 	req := s.buildIntentRequest(prompt, sessionProvider, promptEngine)
 
-	// Call the AI adapter
-	resolveCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	response, err := adapter.ResolveIntent(resolveCtx, req)
-	if err != nil {
-		log.Printf("[IntentRouter] Adapter %s failed to resolve intent for prompt %s: %v",
-			adapter.Name(), prompt.PromptID, err)
-		atomic.AddUint64(&s.requestsFailed, 1)
-		s.publishError(prompt.SessionID, prompt.PromptID, err)
-		return
+	// Inject available tools filtered by event type
+	if toolRegistry != nil {
+		req.AvailableTools = toolRegistry.GetToolsForEventType(req.EventType)
 	}
 
-	// Execute the actions (pass targetSession from req for speak/clarify routing)
-	s.executeActions(ctx, prompt, response, sessionProvider, commandExecutor, req.SessionID)
+	// Multi-turn tool-use loop (AD-13, NFR32)
+	var toolHistory []ToolInteraction
+
+	for iteration := 0; iteration < maxToolIterations; iteration++ {
+		req.ToolHistory = toolHistory
+
+		// Per-iteration timeout for adapter call
+		resolveCtx, cancel := context.WithTimeout(ctx, requestTimeout)
+		response, err := adapter.ResolveIntent(resolveCtx, req)
+		cancel()
+
+		if err != nil {
+			log.Printf("[IntentRouter] Adapter %s failed to resolve intent for prompt %s (iteration %d): %v",
+				adapter.Name(), prompt.PromptID, iteration, err)
+			atomic.AddUint64(&s.requestsFailed, 1)
+			s.publishError(prompt.SessionID, prompt.PromptID, err)
+			return
+		}
+
+		// Check if AI wants to use tools
+		if !hasToolUseAction(response) {
+			// Warn about malformed tool-use response (one condition present but not both)
+			if response != nil {
+				hasToolAction := false
+				for _, a := range response.Actions {
+					if a.Type == ActionToolUse {
+						hasToolAction = true
+						break
+					}
+				}
+				hasToolCalls := len(response.ToolCalls) > 0
+				if hasToolAction != hasToolCalls {
+					log.Printf("[IntentRouter] Malformed tool-use response for prompt %s: ActionToolUse=%v, ToolCalls=%d (both required for tool loop)",
+						prompt.PromptID, hasToolAction, len(response.ToolCalls))
+				}
+			}
+			// Final response — execute actions normally
+			s.executeActions(ctx, prompt, response, sessionProvider, commandExecutor, req.SessionID)
+			return
+		}
+
+		// Tool-use requires a registry
+		if toolRegistry == nil {
+			log.Printf("[IntentRouter] Adapter returned tool_use but no tool registry configured for prompt %s", prompt.PromptID)
+			atomic.AddUint64(&s.requestsFailed, 1)
+			s.publishError(prompt.SessionID, prompt.PromptID, fmt.Errorf("intentrouter: adapter returned tool_use but no tool registry configured"))
+			return
+		}
+
+		log.Printf("[IntentRouter] Tool iteration %d: %d calls for prompt %s", iteration, len(response.ToolCalls), prompt.PromptID)
+
+		// Execute each tool call via the registry
+		for _, tc := range response.ToolCalls {
+			toolCtx, toolCancel := context.WithTimeout(ctx, requestTimeout)
+			resultJSON, execErr := toolRegistry.Execute(toolCtx, tc.ToolName, json.RawMessage(tc.ArgumentsJSON))
+			toolCancel()
+
+			tr := ToolResult{
+				CallID: tc.CallID,
+			}
+			if execErr != nil {
+				errBytes, _ := json.Marshal(execErr.Error())
+				tr.ResultJSON = fmt.Sprintf(`{"error":%s}`, errBytes)
+				tr.IsError = true
+				log.Printf("[IntentRouter] Tool %s failed for prompt %s: %v", tc.ToolName, prompt.PromptID, execErr)
+			} else {
+				tr.ResultJSON = string(resultJSON)
+			}
+
+			toolHistory = append(toolHistory, ToolInteraction{
+				Call:   tc,
+				Result: tr,
+			})
+		}
+	}
+
+	// Safety cap reached — publish error
+	log.Printf("[IntentRouter] Max tool iterations (%d) reached for prompt %s", maxToolIterations, prompt.PromptID)
+	atomic.AddUint64(&s.requestsFailed, 1)
+	s.publishError(prompt.SessionID, prompt.PromptID, ErrMaxToolIterations)
 }
 
 func (s *Service) buildIntentRequest(prompt eventbus.ConversationPromptEvent, provider SessionProvider, engine PromptEngine) IntentRequest {
@@ -525,6 +603,13 @@ func (s *Service) executeActions(ctx context.Context, prompt eventbus.Conversati
 				"status": "noop",
 			})
 			s.publishReply(prompt.SessionID, prompt.PromptID, "", nil, replyMeta)
+
+		case ActionToolUse:
+			// Tool-use actions should be handled in the tool loop, not here.
+			// If we reach this point, the adapter returned tool_use as a final action.
+			log.Printf("[IntentRouter] Unexpected tool_use action in executeActions at index %d for prompt %s (should be handled in tool loop)",
+				i, prompt.PromptID)
+			s.publishError(prompt.SessionID, prompt.PromptID, fmt.Errorf("intentrouter: unexpected tool_use action in final response"))
 
 		default:
 			log.Printf("[IntentRouter] Unknown action type %q at index %d for prompt %s",
@@ -731,6 +816,8 @@ func errorType(err error) string {
 		return "no_executor"
 	case errors.Is(err, ErrSessionNotFound):
 		return "session_not_found"
+	case errors.Is(err, ErrMaxToolIterations):
+		return "max_tool_iterations"
 	default:
 		return "unknown"
 	}
@@ -741,7 +828,7 @@ func recoverableError(err error) string {
 	case errors.Is(err, ErrNoAdapter), errors.Is(err, ErrNoCommandExecutor), errors.Is(err, ErrAdapterNotReady):
 		// Configuration issues that can be fixed by user action
 		return "true"
-	case errors.Is(err, ErrSessionNotFound):
+	case errors.Is(err, ErrSessionNotFound), errors.Is(err, ErrMaxToolIterations):
 		return "false"
 	default:
 		return "unknown"
@@ -758,6 +845,8 @@ func userFriendlyError(err error) string {
 		return "Cannot execute commands at this time."
 	case errors.Is(err, ErrSessionNotFound):
 		return "The requested session was not found."
+	case errors.Is(err, ErrMaxToolIterations):
+		return "The AI tool-use loop exceeded the maximum number of iterations. Please try again."
 	default:
 		return "An error occurred while processing your request."
 	}
@@ -794,6 +883,20 @@ type ServiceMetrics struct {
 	SpeakEvents    uint64
 	AdapterName    string
 	AdapterReady   bool
+}
+
+// hasToolUseAction returns true if the response indicates the AI wants to use tools.
+// Both conditions must be true: at least one action with type ActionToolUse AND non-empty ToolCalls.
+func hasToolUseAction(response *IntentResponse) bool {
+	if response == nil || len(response.ToolCalls) == 0 {
+		return false
+	}
+	for _, action := range response.Actions {
+		if action.Type == ActionToolUse {
+			return true
+		}
+	}
+	return false
 }
 
 func truncate(s string, maxLen int) string {

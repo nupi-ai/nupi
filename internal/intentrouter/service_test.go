@@ -2,6 +2,7 @@ package intentrouter
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
@@ -1696,6 +1697,717 @@ func TestServiceExtendedMetadataPropagation(t *testing.T) {
 	}
 	if capturedMetadata["confidence"] != "0.95" {
 		t.Errorf("Expected confidence=0.95, got %q", capturedMetadata["confidence"])
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	svc.Shutdown(shutdownCtx)
+}
+
+// ---- Multi-Turn Tool Loop Tests ----
+
+func TestHasToolUseAction(t *testing.T) {
+	tests := []struct {
+		name     string
+		response *IntentResponse
+		want     bool
+	}{
+		{
+			name:     "nil response",
+			response: nil,
+			want:     false,
+		},
+		{
+			name: "no tool calls",
+			response: &IntentResponse{
+				Actions: []IntentAction{{Type: ActionSpeak, Text: "hello"}},
+			},
+			want: false,
+		},
+		{
+			name: "tool_use action with tool calls",
+			response: &IntentResponse{
+				Actions:   []IntentAction{{Type: ActionToolUse}},
+				ToolCalls: []ToolCall{{CallID: "1", ToolName: "memory_search", ArgumentsJSON: `{}`}},
+			},
+			want: true,
+		},
+		{
+			name: "tool_use action but empty tool calls",
+			response: &IntentResponse{
+				Actions: []IntentAction{{Type: ActionToolUse}},
+			},
+			want: false,
+		},
+		{
+			name: "tool calls but no tool_use action",
+			response: &IntentResponse{
+				Actions:   []IntentAction{{Type: ActionSpeak, Text: "hello"}},
+				ToolCalls: []ToolCall{{CallID: "1", ToolName: "memory_search", ArgumentsJSON: `{}`}},
+			},
+			want: false,
+		},
+		{
+			name: "noop action with no tool calls",
+			response: &IntentResponse{
+				Actions: []IntentAction{{Type: ActionNoop}},
+			},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := hasToolUseAction(tt.response)
+			if got != tt.want {
+				t.Fatalf("hasToolUseAction() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestToolLoopInjectsAvailableTools(t *testing.T) {
+	bus := eventbus.New()
+	defer bus.Shutdown()
+
+	var capturedReq IntentRequest
+	adapter := NewMockAdapter(WithMockCustomHandler(func(ctx context.Context, req IntentRequest) (*IntentResponse, error) {
+		capturedReq = req
+		return &IntentResponse{
+			PromptID: req.PromptID,
+			Actions:  []IntentAction{{Type: ActionNoop}},
+		}, nil
+	}))
+
+	reg := NewToolRegistry()
+	reg.Register(&mockToolHandler{
+		def: ToolDefinition{
+			Name:           "memory_search",
+			Description:    "Search memory",
+			ParametersJSON: `{"type":"object","properties":{}}`,
+		},
+		result: json.RawMessage(`{"ok":true}`),
+	})
+
+	svc := NewService(bus, WithAdapter(adapter), WithToolRegistry(reg))
+
+	replySub := eventbus.SubscribeTo(bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("test_reply"))
+	defer replySub.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	// user_intent should get available tools
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+		SessionID: "session-1",
+		PromptID:  "prompt-1",
+		NewMessage: eventbus.ConversationMessage{
+			Text: "search my memory",
+		},
+		Metadata: map[string]string{"event_type": "user_intent"},
+	})
+
+	select {
+	case <-replySub.C():
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for reply")
+	}
+
+	if len(capturedReq.AvailableTools) != 1 {
+		t.Fatalf("Expected 1 available tool for user_intent, got %d", len(capturedReq.AvailableTools))
+	}
+	if capturedReq.AvailableTools[0].Name != "memory_search" {
+		t.Fatalf("Expected memory_search tool, got %s", capturedReq.AvailableTools[0].Name)
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	svc.Shutdown(shutdownCtx)
+}
+
+func TestToolLoopNoToolsForHistorySummary(t *testing.T) {
+	bus := eventbus.New()
+	defer bus.Shutdown()
+
+	var capturedReq IntentRequest
+	adapter := NewMockAdapter(WithMockCustomHandler(func(ctx context.Context, req IntentRequest) (*IntentResponse, error) {
+		capturedReq = req
+		return &IntentResponse{
+			PromptID: req.PromptID,
+			Actions:  []IntentAction{{Type: ActionNoop}},
+		}, nil
+	}))
+
+	reg := NewToolRegistry()
+	reg.Register(&mockToolHandler{
+		def: ToolDefinition{
+			Name:           "memory_search",
+			Description:    "Search memory",
+			ParametersJSON: `{"type":"object","properties":{}}`,
+		},
+		result: json.RawMessage(`{"ok":true}`),
+	})
+
+	svc := NewService(bus, WithAdapter(adapter), WithToolRegistry(reg))
+
+	replySub := eventbus.SubscribeTo(bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("test_reply"))
+	defer replySub.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	// history_summary should get NO tools
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+		SessionID: "session-1",
+		PromptID:  "prompt-1",
+		NewMessage: eventbus.ConversationMessage{
+			Text: "summarize",
+		},
+		Metadata: map[string]string{"event_type": "history_summary"},
+	})
+
+	select {
+	case <-replySub.C():
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for reply")
+	}
+
+	if len(capturedReq.AvailableTools) != 0 {
+		t.Fatalf("Expected 0 available tools for history_summary, got %d", len(capturedReq.AvailableTools))
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	svc.Shutdown(shutdownCtx)
+}
+
+func TestToolLoopNoRegistryBackwardCompatible(t *testing.T) {
+	bus := eventbus.New()
+	defer bus.Shutdown()
+
+	var capturedReq IntentRequest
+	adapter := NewMockAdapter(WithMockCustomHandler(func(ctx context.Context, req IntentRequest) (*IntentResponse, error) {
+		capturedReq = req
+		return &IntentResponse{
+			PromptID: req.PromptID,
+			Actions:  []IntentAction{{Type: ActionNoop}},
+		}, nil
+	}))
+
+	// No tool registry set
+	svc := NewService(bus, WithAdapter(adapter))
+
+	replySub := eventbus.SubscribeTo(bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("test_reply"))
+	defer replySub.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+		SessionID: "session-1",
+		PromptID:  "prompt-1",
+		NewMessage: eventbus.ConversationMessage{
+			Text: "hello",
+		},
+	})
+
+	select {
+	case <-replySub.C():
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for reply")
+	}
+
+	if capturedReq.AvailableTools != nil {
+		t.Fatalf("Expected nil AvailableTools without registry, got %d tools", len(capturedReq.AvailableTools))
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	svc.Shutdown(shutdownCtx)
+}
+
+func TestToolLoopSingleTurnToolUse(t *testing.T) {
+	bus := eventbus.New()
+	defer bus.Shutdown()
+
+	var mu sync.Mutex
+	callNum := 0
+	adapter := NewMockAdapter(WithMockCustomHandler(func(ctx context.Context, req IntentRequest) (*IntentResponse, error) {
+		mu.Lock()
+		callNum++
+		n := callNum
+		mu.Unlock()
+
+		if n == 1 {
+			// First call: request tool use
+			return &IntentResponse{
+				PromptID:  req.PromptID,
+				Actions:   []IntentAction{{Type: ActionToolUse}},
+				ToolCalls: []ToolCall{{CallID: "call-1", ToolName: "memory_search", ArgumentsJSON: `{"query":"test"}`}},
+			}, nil
+		}
+		// Second call: verify tool_history and return final response
+		if len(req.ToolHistory) != 1 {
+			return nil, errors.New("expected 1 tool history entry on second call")
+		}
+		return &IntentResponse{
+			PromptID: req.PromptID,
+			Actions:  []IntentAction{{Type: ActionSpeak, Text: "Found results"}},
+		}, nil
+	}))
+
+	reg := NewToolRegistry()
+	handler := &mockToolHandler{
+		def: ToolDefinition{
+			Name:           "memory_search",
+			Description:    "Search memory",
+			ParametersJSON: `{"type":"object","properties":{"query":{"type":"string"}}}`,
+		},
+		result: json.RawMessage(`{"results":["item1","item2"]}`),
+	}
+	reg.Register(handler)
+
+	svc := NewService(bus, WithAdapter(adapter), WithToolRegistry(reg))
+
+	speakSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Speak, eventbus.WithSubscriptionName("test_speak"))
+	defer speakSub.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+		SessionID: "session-1",
+		PromptID:  "prompt-1",
+		NewMessage: eventbus.ConversationMessage{
+			Text: "search my memory",
+		},
+		Metadata: map[string]string{"event_type": "user_intent"},
+	})
+
+	// Should receive speak event from final response
+	select {
+	case env := <-speakSub.C():
+		if env.Payload.Text != "Found results" {
+			t.Fatalf("Expected 'Found results', got %q", env.Payload.Text)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for speak event")
+	}
+
+	// Verify adapter was called twice
+	mu.Lock()
+	finalCallNum := callNum
+	mu.Unlock()
+	if finalCallNum != 2 {
+		t.Fatalf("Expected 2 adapter calls, got %d", finalCallNum)
+	}
+
+	// Verify tool handler was called once
+	if handler.getCalled() != 1 {
+		t.Fatalf("Expected tool handler called 1 time, got %d", handler.getCalled())
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	svc.Shutdown(shutdownCtx)
+}
+
+func TestToolLoopMultiTurnToolUse(t *testing.T) {
+	bus := eventbus.New()
+	defer bus.Shutdown()
+
+	var mu sync.Mutex
+	callNum := 0
+	adapter := NewMockAdapter(WithMockCustomHandler(func(ctx context.Context, req IntentRequest) (*IntentResponse, error) {
+		mu.Lock()
+		callNum++
+		n := callNum
+		mu.Unlock()
+
+		switch n {
+		case 1:
+			return &IntentResponse{
+				PromptID:  req.PromptID,
+				Actions:   []IntentAction{{Type: ActionToolUse}},
+				ToolCalls: []ToolCall{{CallID: "call-1", ToolName: "memory_search", ArgumentsJSON: `{"query":"test"}`}},
+			}, nil
+		case 2:
+			if len(req.ToolHistory) != 1 {
+				return nil, errors.New("expected 1 tool history on call 2")
+			}
+			return &IntentResponse{
+				PromptID:  req.PromptID,
+				Actions:   []IntentAction{{Type: ActionToolUse}},
+				ToolCalls: []ToolCall{{CallID: "call-2", ToolName: "memory_write", ArgumentsJSON: `{"content":"note"}`}},
+			}, nil
+		default:
+			if len(req.ToolHistory) != 2 {
+				return nil, errors.New("expected 2 tool history entries on call 3")
+			}
+			return &IntentResponse{
+				PromptID: req.PromptID,
+				Actions:  []IntentAction{{Type: ActionSpeak, Text: "Done"}},
+			}, nil
+		}
+	}))
+
+	reg := NewToolRegistry()
+	searchHandler := &mockToolHandler{
+		def: ToolDefinition{
+			Name:           "memory_search",
+			Description:    "Search memory",
+			ParametersJSON: `{"type":"object","properties":{"query":{"type":"string"}}}`,
+		},
+		result: json.RawMessage(`{"results":["found"]}`),
+	}
+	writeHandler := &mockToolHandler{
+		def: ToolDefinition{
+			Name:           "memory_write",
+			Description:    "Write memory",
+			ParametersJSON: `{"type":"object","properties":{"content":{"type":"string"}}}`,
+		},
+		result: json.RawMessage(`{"written":true}`),
+	}
+	reg.Register(searchHandler)
+	reg.Register(writeHandler)
+
+	svc := NewService(bus, WithAdapter(adapter), WithToolRegistry(reg))
+
+	speakSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Speak, eventbus.WithSubscriptionName("test_speak"))
+	defer speakSub.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+		SessionID: "session-1",
+		PromptID:  "prompt-1",
+		NewMessage: eventbus.ConversationMessage{
+			Text: "search and write",
+		},
+		Metadata: map[string]string{"event_type": "user_intent"},
+	})
+
+	select {
+	case env := <-speakSub.C():
+		if env.Payload.Text != "Done" {
+			t.Fatalf("Expected 'Done', got %q", env.Payload.Text)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Timeout waiting for speak event")
+	}
+
+	mu.Lock()
+	finalCallNum := callNum
+	mu.Unlock()
+	if finalCallNum != 3 {
+		t.Fatalf("Expected 3 adapter calls, got %d", finalCallNum)
+	}
+
+	if searchHandler.getCalled() != 1 {
+		t.Fatalf("Expected memory_search called 1 time, got %d", searchHandler.getCalled())
+	}
+	if writeHandler.getCalled() != 1 {
+		t.Fatalf("Expected memory_write called 1 time, got %d", writeHandler.getCalled())
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	svc.Shutdown(shutdownCtx)
+}
+
+func TestToolLoopMaxIterationsCap(t *testing.T) {
+	bus := eventbus.New()
+	defer bus.Shutdown()
+
+	var mu sync.Mutex
+	callNum := 0
+	// Adapter always returns tool_use — never exits
+	adapter := NewMockAdapter(WithMockCustomHandler(func(ctx context.Context, req IntentRequest) (*IntentResponse, error) {
+		mu.Lock()
+		callNum++
+		mu.Unlock()
+		return &IntentResponse{
+			PromptID:  req.PromptID,
+			Actions:   []IntentAction{{Type: ActionToolUse}},
+			ToolCalls: []ToolCall{{CallID: "call-loop", ToolName: "memory_search", ArgumentsJSON: `{}`}},
+		}, nil
+	}))
+
+	reg := NewToolRegistry()
+	reg.Register(&mockToolHandler{
+		def: ToolDefinition{
+			Name:           "memory_search",
+			Description:    "Search memory",
+			ParametersJSON: `{"type":"object","properties":{}}`,
+		},
+		result: json.RawMessage(`{"ok":true}`),
+	})
+
+	svc := NewService(bus, WithAdapter(adapter), WithToolRegistry(reg))
+
+	replySub := eventbus.SubscribeTo(bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("test_reply"))
+	defer replySub.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+		SessionID: "session-1",
+		PromptID:  "prompt-1",
+		NewMessage: eventbus.ConversationMessage{
+			Text: "infinite loop",
+		},
+		Metadata: map[string]string{"event_type": "user_intent"},
+	})
+
+	// Should receive error reply after max iterations
+	select {
+	case env := <-replySub.C():
+		reply := env.Payload
+		if reply.Metadata["error"] != "true" {
+			t.Fatalf("Expected error metadata")
+		}
+		if reply.Metadata["error_type"] != "max_tool_iterations" {
+			t.Fatalf("Expected error_type=max_tool_iterations, got %s", reply.Metadata["error_type"])
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Timeout — possible hang in tool loop")
+	}
+
+	// Adapter should have been called exactly maxToolIterations times
+	mu.Lock()
+	finalCallNum := callNum
+	mu.Unlock()
+	if finalCallNum != maxToolIterations {
+		t.Fatalf("Expected %d adapter calls, got %d", maxToolIterations, finalCallNum)
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	svc.Shutdown(shutdownCtx)
+}
+
+func TestToolLoopToolExecutionError(t *testing.T) {
+	bus := eventbus.New()
+	defer bus.Shutdown()
+
+	var mu sync.Mutex
+	callNum := 0
+	var capturedHistory []ToolInteraction
+	adapter := NewMockAdapter(WithMockCustomHandler(func(ctx context.Context, req IntentRequest) (*IntentResponse, error) {
+		mu.Lock()
+		callNum++
+		n := callNum
+		mu.Unlock()
+
+		if n == 1 {
+			return &IntentResponse{
+				PromptID:  req.PromptID,
+				Actions:   []IntentAction{{Type: ActionToolUse}},
+				ToolCalls: []ToolCall{{CallID: "call-1", ToolName: "memory_search", ArgumentsJSON: `{"query":"fail"}`}},
+			}, nil
+		}
+		// Second call: capture tool_history with error
+		capturedHistory = req.ToolHistory
+		return &IntentResponse{
+			PromptID: req.PromptID,
+			Actions:  []IntentAction{{Type: ActionSpeak, Text: "Search failed, sorry"}},
+		}, nil
+	}))
+
+	reg := NewToolRegistry()
+	reg.Register(&mockToolHandler{
+		def: ToolDefinition{
+			Name:           "memory_search",
+			Description:    "Search memory",
+			ParametersJSON: `{"type":"object","properties":{}}`,
+		},
+		err: errors.New("database connection lost"),
+	})
+
+	svc := NewService(bus, WithAdapter(adapter), WithToolRegistry(reg))
+
+	speakSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Speak, eventbus.WithSubscriptionName("test_speak"))
+	defer speakSub.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+		SessionID: "session-1",
+		PromptID:  "prompt-1",
+		NewMessage: eventbus.ConversationMessage{
+			Text: "search",
+		},
+		Metadata: map[string]string{"event_type": "user_intent"},
+	})
+
+	select {
+	case env := <-speakSub.C():
+		if env.Payload.Text != "Search failed, sorry" {
+			t.Fatalf("Expected error-aware response, got %q", env.Payload.Text)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for speak event")
+	}
+
+	// Verify tool_history has error result
+	if len(capturedHistory) != 1 {
+		t.Fatalf("Expected 1 tool history entry, got %d", len(capturedHistory))
+	}
+	if !capturedHistory[0].Result.IsError {
+		t.Fatal("Expected IsError=true in tool result")
+	}
+	if capturedHistory[0].Result.CallID != "call-1" {
+		t.Fatalf("Expected CallID=call-1, got %s", capturedHistory[0].Result.CallID)
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	svc.Shutdown(shutdownCtx)
+}
+
+func TestToolLoopNoRegistryWithToolUseResponse(t *testing.T) {
+	bus := eventbus.New()
+	defer bus.Shutdown()
+
+	// Adapter returns tool_use but no registry configured
+	adapter := NewMockAdapter(WithMockCustomHandler(func(ctx context.Context, req IntentRequest) (*IntentResponse, error) {
+		return &IntentResponse{
+			PromptID:  req.PromptID,
+			Actions:   []IntentAction{{Type: ActionToolUse}},
+			ToolCalls: []ToolCall{{CallID: "call-1", ToolName: "memory_search", ArgumentsJSON: `{}`}},
+		}, nil
+	}))
+
+	// No tool registry
+	svc := NewService(bus, WithAdapter(adapter))
+
+	replySub := eventbus.SubscribeTo(bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("test_reply"))
+	defer replySub.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+		SessionID: "session-1",
+		PromptID:  "prompt-1",
+		NewMessage: eventbus.ConversationMessage{
+			Text: "search",
+		},
+	})
+
+	// Should receive error — tool_use without registry
+	select {
+	case env := <-replySub.C():
+		reply := env.Payload
+		if reply.Metadata["error"] != "true" {
+			t.Fatalf("Expected error metadata for tool_use without registry")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for error reply")
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	svc.Shutdown(shutdownCtx)
+}
+
+func TestToolLoopDefensiveToolUseInExecuteActions(t *testing.T) {
+	bus := eventbus.New()
+	defer bus.Shutdown()
+
+	// Adapter returns ActionToolUse but no ToolCalls.
+	// hasToolUseAction returns false (ToolCalls empty), so executeActions is called
+	// with ActionToolUse in the actions list — exercising the defensive case.
+	adapter := NewMockAdapter(WithMockCustomHandler(func(ctx context.Context, req IntentRequest) (*IntentResponse, error) {
+		return &IntentResponse{
+			PromptID: req.PromptID,
+			Actions:  []IntentAction{{Type: ActionToolUse}},
+			// No ToolCalls — hasToolUseAction returns false, falls through to executeActions
+		}, nil
+	}))
+
+	svc := NewService(bus, WithAdapter(adapter))
+
+	replySub := eventbus.SubscribeTo(bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("test_reply"))
+	defer replySub.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+		SessionID: "session-1",
+		PromptID:  "prompt-1",
+		NewMessage: eventbus.ConversationMessage{
+			Text: "trigger defensive case",
+		},
+	})
+
+	// Should receive error from the defensive ActionToolUse case in executeActions
+	select {
+	case env := <-replySub.C():
+		reply := env.Payload
+		if reply.Metadata["error"] != "true" {
+			t.Fatalf("Expected error metadata from defensive tool_use case")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for error reply")
 	}
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
