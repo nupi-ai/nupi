@@ -11,8 +11,8 @@ type Chunk struct {
 }
 
 const (
-	maxChunkChars = 2000 // Sub-split threshold.
-	minChunkChars = 20   // Merge threshold.
+	maxChunkBytes = 2000 // Sub-split threshold (bytes, not runes).
+	minChunkBytes = 20   // Merge threshold (bytes, not runes).
 )
 
 // ChunkMarkdown splits a markdown document into indexable chunks.
@@ -34,7 +34,7 @@ func ChunkMarkdown(content string) []Chunk {
 	// Sub-split large sections on paragraph boundaries.
 	var expanded []string
 	for _, s := range sections {
-		if len(s) > maxChunkChars {
+		if len(s) > maxChunkBytes {
 			expanded = append(expanded, splitByParagraphs(s)...)
 		} else {
 			expanded = append(expanded, s)
@@ -48,7 +48,7 @@ func ChunkMarkdown(content string) []Chunk {
 		if text == "" {
 			continue
 		}
-		if len(text) < minChunkChars && len(chunks) > 0 {
+		if len(text) < minChunkBytes && len(chunks) > 0 {
 			// Merge into previous chunk.
 			chunks[len(chunks)-1].Content += "\n\n" + text
 			continue

@@ -141,3 +141,63 @@ func TestServiceSearchBeforeStart(t *testing.T) {
 		t.Error("expected error when searching before Start()")
 	}
 }
+
+func TestServiceStartFailureRecovery(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+	ctx := context.Background()
+
+	// Create the awareness/memory directory so ensureDirectories passes,
+	// then place a corrupt index.db to force Open to fail.
+	memDir := filepath.Join(dir, "awareness", "memory")
+	if err := os.MkdirAll(memDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Write a non-empty file that is not a valid SQLite DB. The driver
+	// may succeed in sql.Open but fail during schema health check or
+	// pragma application; either way, Start should clean up s.indexer.
+	dbPath := filepath.Join(memDir, "index.db")
+	if err := os.WriteFile(dbPath, []byte("corrupt data here"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// First Start may or may not fail (depends on driver behavior with corrupt DB).
+	err := svc.Start(ctx)
+	if err != nil {
+		// Open failed — verify we can retry Start after removing corrupt file.
+		os.Remove(dbPath)
+		if err := svc.Start(ctx); err != nil {
+			t.Fatalf("second Start after removing corrupt DB failed: %v", err)
+		}
+		svc.Shutdown(ctx)
+	} else {
+		// Open succeeded (driver tolerated corrupt data, schema recreated).
+		svc.Shutdown(ctx)
+	}
+}
+
+func TestServiceStartShutdownRestart(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+	ctx := context.Background()
+
+	// First lifecycle: Start → Shutdown.
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("first Start: %v", err)
+	}
+	if err := svc.Shutdown(ctx); err != nil {
+		t.Fatalf("first Shutdown: %v", err)
+	}
+
+	// Second lifecycle: Start should succeed after Shutdown cleaned up.
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("second Start after Shutdown: %v", err)
+	}
+	defer svc.Shutdown(ctx)
+
+	// Verify the service is functional after restart.
+	_, err := svc.Search(ctx, SearchOptions{Query: "test"})
+	if err != nil {
+		t.Fatalf("Search after restart: %v", err)
+	}
+}
