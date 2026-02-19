@@ -5,6 +5,7 @@ package awareness
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -14,8 +15,8 @@ import (
 	"github.com/nupi-ai/nupi/internal/eventbus"
 )
 
-// Service manages the awareness system: core memory loading, directory structure,
-// and event bus integration. Implements runtime.Service.
+// Service manages the awareness system: core memory loading, archival memory
+// indexing, directory structure, and event bus integration. Implements runtime.Service.
 type Service struct {
 	instanceDir  string
 	awarenessDir string
@@ -24,6 +25,8 @@ type Service struct {
 
 	mu         sync.RWMutex
 	coreMemory string
+
+	indexer *Indexer
 
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -42,14 +45,31 @@ func (s *Service) SetEventBus(bus *eventbus.Bus) {
 	s.bus = bus
 }
 
-// Start initializes the awareness service: ensures directory structure exists
-// and loads core memory files.
+// Start initializes the awareness service: ensures directory structure exists,
+// loads core memory files, and opens the archival memory indexer.
 func (s *Service) Start(ctx context.Context) error {
+	if s.indexer != nil {
+		return fmt.Errorf("awareness: service already started")
+	}
+
 	if err := s.ensureDirectories(); err != nil {
 		return err
 	}
 
 	s.loadCoreMemory("")
+
+	// Open archival memory indexer and sync files.
+	memoryDir := filepath.Join(s.awarenessDir, "memory")
+	s.indexer = NewIndexer(memoryDir)
+	s.indexer.SetEventBus(s.bus)
+
+	if err := s.indexer.Open(ctx); err != nil {
+		return fmt.Errorf("awareness: open indexer: %w", err)
+	}
+
+	if err := s.indexer.Sync(ctx); err != nil {
+		log.Printf("[Awareness] WARNING: initial index sync failed: %v", err)
+	}
 
 	log.Printf("[Awareness] Service started (core memory: %d chars)", utf8.RuneCountInString(s.CoreMemory()))
 	return nil
@@ -57,6 +77,14 @@ func (s *Service) Start(ctx context.Context) error {
 
 // Shutdown gracefully stops the awareness service.
 func (s *Service) Shutdown(ctx context.Context) error {
+	// Close the indexer before cancelling context / waiting on goroutines.
+	if s.indexer != nil {
+		if err := s.indexer.Close(); err != nil {
+			log.Printf("[Awareness] WARNING: close indexer: %v", err)
+		}
+		s.indexer = nil
+	}
+
 	if s.cancel != nil {
 		s.cancel()
 	}
@@ -75,6 +103,15 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// Search performs a keyword search across the archival memory index.
+// Delegates to the indexer's FTS5 search.
+func (s *Service) Search(ctx context.Context, opts SearchOptions) ([]SearchResult, error) {
+	if s.indexer == nil {
+		return nil, fmt.Errorf("awareness: indexer not initialized")
+	}
+	return s.indexer.SearchFTS(ctx, opts)
 }
 
 // CoreMemory returns the current combined core memory content.
