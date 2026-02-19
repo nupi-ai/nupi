@@ -91,7 +91,7 @@ func TestRegisterAndGetToolsForEventType(t *testing.T) {
 		t.Fatalf("Expected 1 tool for session_output, got %d", len(defs))
 	}
 	if defs[0].Name != "memory_search" {
-		t.Errorf("Expected memory_search for session_output, got %s", defs[0].Name)
+		t.Fatalf("Expected memory_search for session_output, got %s", defs[0].Name)
 	}
 }
 
@@ -101,7 +101,7 @@ func TestGetToolsForEventTypeEmptyMapping(t *testing.T) {
 	// Register a tool
 	reg.Register(newMockHandler("memory_search", "Search memory"))
 
-	// history_summary and clarification have empty mappings — should return nil/empty
+	// history_summary and clarification have empty mappings — should return empty (non-nil) slice
 	defs := reg.GetToolsForEventType(EventTypeHistorySummary)
 	if len(defs) != 0 {
 		t.Fatalf("Expected 0 tools for history_summary, got %d", len(defs))
@@ -141,7 +141,7 @@ func TestGetToolsReturnsOnlyRegistered(t *testing.T) {
 		t.Fatalf("Expected 1 tool (only registered one), got %d", len(defs))
 	}
 	if defs[0].Name != "memory_search" {
-		t.Errorf("Expected memory_search, got %s", defs[0].Name)
+		t.Fatalf("Expected memory_search, got %s", defs[0].Name)
 	}
 }
 
@@ -158,7 +158,7 @@ func TestGetToolsFutureEventTypes(t *testing.T) {
 		t.Fatalf("Expected 1 tool for memory_flush, got %d", len(defs))
 	}
 	if defs[0].Name != "memory_write" {
-		t.Errorf("Expected memory_write for memory_flush, got %s", defs[0].Name)
+		t.Fatalf("Expected memory_write for memory_flush, got %s", defs[0].Name)
 	}
 
 	// scheduled_task should return memory_search and memory_write
@@ -188,10 +188,10 @@ func TestGetToolsFutureEventTypes(t *testing.T) {
 		names[d.Name] = true
 	}
 	if !names["core_memory_update"] {
-		t.Error("Expected core_memory_update in onboarding results")
+		t.Fatal("Expected core_memory_update in onboarding results")
 	}
 	if !names["onboarding_complete"] {
-		t.Error("Expected onboarding_complete in onboarding results")
+		t.Fatal("Expected onboarding_complete in onboarding results")
 	}
 }
 
@@ -233,7 +233,7 @@ func TestExecuteToolNotFound(t *testing.T) {
 		t.Fatal("Expected error for nonexistent tool")
 	}
 	if !errors.Is(err, ErrToolNotFound) {
-		t.Errorf("Expected ErrToolNotFound, got: %v", err)
+		t.Fatalf("Expected ErrToolNotFound, got: %v", err)
 	}
 }
 
@@ -250,7 +250,7 @@ func TestExecuteHandlerError(t *testing.T) {
 		t.Fatal("Expected error from handler")
 	}
 	if !errors.Is(err, handlerErr) {
-		t.Errorf("Expected handler error, got: %v", err)
+		t.Fatalf("Expected handler error, got: %v", err)
 	}
 }
 
@@ -274,7 +274,7 @@ func TestRegisterReplacesExisting(t *testing.T) {
 		t.Fatalf("Failed to unmarshal: %v", err)
 	}
 	if v, ok := parsed["version"]; !ok || v != float64(2) {
-		t.Errorf("Expected version 2 from replaced handler, got %v", parsed)
+		t.Fatalf("Expected version 2 from replaced handler, got %v", parsed)
 	}
 }
 
@@ -365,6 +365,100 @@ func TestSetToolRegistryRuntime(t *testing.T) {
 	if got == nil {
 		t.Fatal("Expected toolRegistry to be set after SetToolRegistry")
 	}
+}
+
+func TestRegisterEmptyNameHandler(t *testing.T) {
+	reg := NewToolRegistry()
+
+	// Handler with empty name should be silently ignored
+	emptyHandler := &mockToolHandler{
+		def: ToolDefinition{
+			Name:           "",
+			Description:    "Ghost handler",
+			ParametersJSON: `{}`,
+		},
+		result: json.RawMessage(`{"ghost":true}`),
+	}
+	reg.Register(emptyHandler)
+
+	// Should not be executable via empty string
+	_, err := reg.Execute(context.Background(), "", nil)
+	if err == nil {
+		t.Fatal("Expected error when executing empty-name tool")
+	}
+	if !errors.Is(err, ErrToolNotFound) {
+		t.Fatalf("Expected ErrToolNotFound, got: %v", err)
+	}
+
+	// Should not appear in any event type results
+	defs := reg.GetToolsForEventType(EventTypeUserIntent)
+	if len(defs) != 0 {
+		t.Fatalf("Expected 0 tools after empty-name registration, got %d", len(defs))
+	}
+}
+
+func TestExecutePassesArgsToHandler(t *testing.T) {
+	reg := NewToolRegistry()
+
+	captureHandler := &argCapturingHandler{
+		def: ToolDefinition{
+			Name:           "memory_search",
+			Description:    "Search memory",
+			ParametersJSON: `{"type":"object","properties":{"query":{"type":"string"}}}`,
+		},
+		result: json.RawMessage(`{"results":[]}`),
+	}
+	reg.Register(captureHandler)
+
+	inputArgs := json.RawMessage(`{"query":"hello world"}`)
+	_, err := reg.Execute(context.Background(), "memory_search", inputArgs)
+	if err != nil {
+		t.Fatalf("Execute returned unexpected error: %v", err)
+	}
+
+	capturedArgs := captureHandler.lastArgs
+	if string(capturedArgs) != `{"query":"hello world"}` {
+		t.Fatalf("Expected args %q, got %q", `{"query":"hello world"}`, string(capturedArgs))
+	}
+}
+
+func TestGetToolsForEventTypeDistinguishesUnknownFromEmpty(t *testing.T) {
+	reg := NewToolRegistry()
+	reg.Register(newMockHandler("memory_search", "Search memory"))
+
+	// Known event type with empty mapping (history_summary) returns empty slice
+	defs := reg.GetToolsForEventType(EventTypeHistorySummary)
+	if defs == nil {
+		t.Fatal("Expected non-nil empty slice for known event type with empty mapping")
+	}
+	if len(defs) != 0 {
+		t.Fatalf("Expected 0 tools for history_summary, got %d", len(defs))
+	}
+
+	// Unknown event type returns nil
+	defs = reg.GetToolsForEventType("totally_unknown_type")
+	if defs != nil {
+		t.Fatalf("Expected nil for unknown event type, got %v", defs)
+	}
+}
+
+// argCapturingHandler captures the args passed to Execute for verification.
+type argCapturingHandler struct {
+	def      ToolDefinition
+	result   json.RawMessage
+	lastArgs json.RawMessage
+	mu       sync.Mutex
+}
+
+func (h *argCapturingHandler) Execute(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.lastArgs = args
+	return h.result, nil
+}
+
+func (h *argCapturingHandler) Definition() ToolDefinition {
+	return h.def
 }
 
 // newTestBus creates an event bus for testing.
