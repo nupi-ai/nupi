@@ -28,6 +28,9 @@ const (
 
 	// EventTypeClarification is for handling user responses to clarification requests.
 	EventTypeClarification EventType = "clarification"
+
+	// EventTypeMemoryFlush is for extracting important context before conversation compaction.
+	EventTypeMemoryFlush EventType = "memory_flush"
 )
 
 // SessionInfo provides context about an available session.

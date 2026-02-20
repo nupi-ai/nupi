@@ -18,6 +18,7 @@ func init() {
 		"session_output":  mustReadPrompt("prompts/session_output.txt"),
 		"history_summary": mustReadPrompt("prompts/history_summary.txt"),
 		"clarification":   mustReadPrompt("prompts/clarification.txt"),
+		"memory_flush":    mustReadPrompt("prompts/memory_flush.txt"),
 	}
 }
 
@@ -54,6 +55,7 @@ var promptEventDescriptions = map[string]string{
 	"session_output":  "Analyzes terminal output for notifications",
 	"history_summary": "Summarizes conversation history",
 	"clarification":   "Handles follow-up responses",
+	"memory_flush":    "Saves important context before conversation compaction",
 }
 
 // PromptEventDescriptions returns a copy of the event type descriptions.

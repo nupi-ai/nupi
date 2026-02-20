@@ -9,7 +9,10 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 	"unicode/utf8"
 
 	"github.com/nupi-ai/nupi/internal/eventbus"
@@ -26,8 +29,15 @@ type Service struct {
 	mu         sync.RWMutex
 	coreMemory string
 
-	indexer            *Indexer
-	embeddingProvider  EmbeddingProvider
+	indexer           *Indexer
+	embeddingProvider EmbeddingProvider
+
+	flushSub      *eventbus.TypedSubscription[eventbus.MemoryFlushRequestEvent]
+	flushReplySub *eventbus.TypedSubscription[eventbus.ConversationReplyEvent]
+	pendingFlush  sync.Map // promptID → *flushState
+	flushTimeout  time.Duration
+	flushWriteMu  sync.Mutex // serializes daily file writes in writeFlushContent
+	shuttingDown  atomic.Bool
 
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -51,12 +61,24 @@ func (s *Service) SetEmbeddingProvider(provider EmbeddingProvider) {
 	s.embeddingProvider = provider
 }
 
+// SetFlushTimeout overrides the default timeout for memory flush operations.
+// Must be called before Start.
+func (s *Service) SetFlushTimeout(timeout time.Duration) {
+	if timeout > 0 {
+		s.flushTimeout = timeout
+	}
+}
+
 // Start initializes the awareness service: ensures directory structure exists,
 // loads core memory files, and opens the archival memory indexer.
 func (s *Service) Start(ctx context.Context) error {
 	if s.indexer != nil {
 		return fmt.Errorf("awareness: service already started")
 	}
+
+	// Reset shutdown flag so timer callbacks work correctly after a
+	// Shutdown → Start restart cycle.
+	s.shuttingDown.Store(false)
 
 	if err := s.ensureDirectories(); err != nil {
 		return err
@@ -79,19 +101,52 @@ func (s *Service) Start(ctx context.Context) error {
 		log.Printf("[Awareness] WARNING: initial index sync failed: %v", err)
 	}
 
+	// Start flush consumer goroutines if event bus is available.
+	if s.bus != nil {
+		if s.flushTimeout == 0 {
+			s.flushTimeout = eventbus.DefaultFlushTimeout
+		}
+
+		s.flushSub = eventbus.Subscribe[eventbus.MemoryFlushRequestEvent](s.bus, eventbus.TopicMemoryFlushRequest, eventbus.WithSubscriptionName("awareness_flush_request"))
+		s.flushReplySub = eventbus.Subscribe[eventbus.ConversationReplyEvent](s.bus, eventbus.TopicConversationReply, eventbus.WithSubscriptionName("awareness_flush_reply"))
+
+		var derivedCtx context.Context
+		derivedCtx, s.cancel = context.WithCancel(ctx)
+
+		s.wg.Add(2)
+		go s.consumeFlushRequests(derivedCtx)
+		go s.consumeFlushReplies(derivedCtx)
+	}
+
 	log.Printf("[Awareness] Service started (core memory: %d chars)", utf8.RuneCountInString(s.CoreMemory()))
 	return nil
 }
 
 // Shutdown gracefully stops the awareness service.
 func (s *Service) Shutdown(ctx context.Context) error {
-	// Close the indexer before cancelling context / waiting on goroutines.
-	if s.indexer != nil {
-		if err := s.indexer.Close(); err != nil {
-			log.Printf("[Awareness] WARNING: close indexer: %v", err)
-		}
-		s.indexer = nil
+	// Signal timer callbacks to bail out early, preventing log noise
+	// and publishes to a draining bus after Shutdown returns.
+	s.shuttingDown.Store(true)
+
+	// Close flush subscriptions first to unblock consumer goroutines.
+	// This must happen BEFORE closing the indexer so that in-flight
+	// handleFlushReply calls (which may call writeFlushContent → indexer.Sync)
+	// finish before the indexer is closed.
+	if s.flushSub != nil {
+		s.flushSub.Close()
 	}
+	if s.flushReplySub != nil {
+		s.flushReplySub.Close()
+	}
+
+	// Cancel pending flush timers.
+	s.pendingFlush.Range(func(key, val any) bool {
+		if state, ok := val.(*flushState); ok && state.timer != nil {
+			state.timer.Stop()
+		}
+		s.pendingFlush.Delete(key)
+		return true
+	})
 
 	if s.cancel != nil {
 		s.cancel()
@@ -105,11 +160,20 @@ func (s *Service) Shutdown(ctx context.Context) error {
 
 	select {
 	case <-done:
-		log.Printf("[Awareness] Service shutdown complete")
 	case <-ctx.Done():
 		return ctx.Err()
 	}
 
+	// Close the indexer after goroutines have stopped to prevent
+	// data races on s.indexer between writeFlushContent and Shutdown.
+	if s.indexer != nil {
+		if err := s.indexer.Close(); err != nil {
+			log.Printf("[Awareness] WARNING: close indexer: %v", err)
+		}
+		s.indexer = nil
+	}
+
+	log.Printf("[Awareness] Service shutdown complete")
 	return nil
 }
 
@@ -199,7 +263,8 @@ func (s *Service) CoreMemory() string {
 	return s.coreMemory
 }
 
-// ensureDirectories creates the awareness directory structure if it doesn't exist.
+// ensureDirectories creates the awareness directory structure if it doesn't exist,
+// and cleans up stale .tmp files left behind by incomplete atomic writes.
 func (s *Service) ensureDirectories() error {
 	dirs := []string{
 		s.awarenessDir,
@@ -212,6 +277,23 @@ func (s *Service) ensureDirectories() error {
 	for _, dir := range dirs {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
+		}
+	}
+
+	// Clean up stale .tmp files from interrupted atomic writes in writeFlushContent.
+	// These can remain if the process crashes between os.WriteFile and os.Rename.
+	dailyDir := filepath.Join(s.awarenessDir, "memory", "daily")
+	entries, err := os.ReadDir(dailyDir)
+	if err == nil {
+		for _, e := range entries {
+			if !e.IsDir() && strings.HasSuffix(e.Name(), ".tmp") {
+				tmpPath := filepath.Join(dailyDir, e.Name())
+				if err := os.Remove(tmpPath); err != nil {
+					log.Printf("[Awareness] WARNING: failed to clean up stale tmp file %s: %v", tmpPath, err)
+				} else {
+					log.Printf("[Awareness] Cleaned up stale tmp file: %s", e.Name())
+				}
+			}
 		}
 	}
 

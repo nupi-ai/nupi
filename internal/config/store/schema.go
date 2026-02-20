@@ -97,7 +97,7 @@ var schemaStatements = []string{
 	`CREATE TABLE IF NOT EXISTS prompt_templates (
 		instance_name TEXT NOT NULL,
 		profile_name TEXT NOT NULL,
-		event_type TEXT NOT NULL CHECK (event_type IN ('user_intent', 'session_output', 'history_summary', 'clarification')),
+		event_type TEXT NOT NULL CHECK (event_type IN ('user_intent', 'session_output', 'history_summary', 'clarification', 'memory_flush')),
 		content TEXT NOT NULL,
 		is_custom INTEGER NOT NULL DEFAULT 0,
 		updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
