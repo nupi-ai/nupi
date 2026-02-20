@@ -33,16 +33,18 @@ const (
 
 // Installer handles downloading, validating, and installing plugins.
 type Installer struct {
-	store     *configstore.Store
-	pluginDir string
-	http      *http.Client
+	store            *configstore.Store
+	pluginDir        string
+	http             *http.Client
+	computeChecksums func(ctx context.Context, dir string) (map[string]string, error)
 }
 
 // NewInstaller creates a new plugin installer.
 func NewInstaller(store *configstore.Store, pluginDir string) *Installer {
 	return &Installer{
-		store:     store,
-		pluginDir: pluginDir,
+		store:            store,
+		pluginDir:        pluginDir,
+		computeChecksums: computeChecksums,
 		http: &http.Client{
 			Timeout: 5 * time.Minute,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -93,6 +95,9 @@ func (inst *Installer) InstallFromMarketplace(ctx context.Context, mClient *mark
 	_, err = inst.store.GetInstalledPlugin(ctx, namespace, slug)
 	if err == nil {
 		return nil, fmt.Errorf("plugin %s/%s is already installed", namespace, slug)
+	}
+	if !configstore.IsNotFound(err) {
+		return nil, fmt.Errorf("check plugin %s/%s: %w", namespace, slug, err)
 	}
 
 	// Download archive to temp
@@ -231,6 +236,9 @@ func (inst *Installer) installFromDir(ctx context.Context, dir, namespace, expec
 	if err == nil {
 		return nil, fmt.Errorf("plugin %s/%s is already installed", namespace, slug)
 	}
+	if !configstore.IsNotFound(err) {
+		return nil, fmt.Errorf("check plugin %s/%s: %w", namespace, slug, err)
+	}
 
 	// Get marketplace ID for the namespace
 	mp, err := inst.store.GetMarketplaceByNamespace(ctx, namespace)
@@ -244,14 +252,53 @@ func (inst *Installer) installFromDir(ctx context.Context, dir, namespace, expec
 	}
 
 	if err := copyDir(manifestDir, destDir); err != nil {
-		os.RemoveAll(destDir)
+		if rmErr := os.RemoveAll(destDir); rmErr != nil {
+			log.Printf("[Installer] WARNING: cleanup failed: remove %s: %v", destDir, rmErr)
+		}
 		return nil, fmt.Errorf("install plugin files: %w", err)
 	}
 
 	// Record in database (enabled = false)
-	if _, err := inst.store.InsertInstalledPlugin(ctx, mp.ID, slug, sourceURL); err != nil {
-		os.RemoveAll(destDir)
+	pluginID, err := inst.store.InsertInstalledPlugin(ctx, mp.ID, slug, sourceURL)
+	if err != nil {
+		if rmErr := os.RemoveAll(destDir); rmErr != nil {
+			log.Printf("[Installer] WARNING: cleanup failed: remove %s: %v", destDir, rmErr)
+		}
 		return nil, fmt.Errorf("record installation: %w", err)
+	}
+
+	// cleanupInstall removes the plugin directory and database record.
+	// Used when post-insert steps (checksums) fail.
+	// Uses context.Background() so cleanup succeeds even if the parent
+	// context was cancelled (e.g. computeChecksums aborted via ctx.Err()).
+	// Returns a non-nil error if any cleanup step fails, so callers can
+	// surface it alongside the original failure.
+	cleanupInstall := func() error {
+		var errs []error
+		if rmErr := os.RemoveAll(destDir); rmErr != nil {
+			log.Printf("[Installer] WARNING: cleanup failed: remove %s: %v", destDir, rmErr)
+			errs = append(errs, fmt.Errorf("remove dir: %w", rmErr))
+		}
+		if delErr := inst.store.DeleteInstalledPlugin(context.Background(), namespace, slug); delErr != nil {
+			log.Printf("[Installer] WARNING: cleanup failed: delete DB record %s/%s: %v", namespace, slug, delErr)
+			errs = append(errs, fmt.Errorf("delete record: %w", delErr))
+		}
+		return errors.Join(errs...)
+	}
+
+	// Compute and store per-file checksums for integrity verification
+	checksums, err := inst.computeChecksums(ctx, destDir)
+	if err != nil {
+		if cleanupErr := cleanupInstall(); cleanupErr != nil {
+			return nil, fmt.Errorf("compute checksums: %w (cleanup also failed: %v)", err, cleanupErr)
+		}
+		return nil, fmt.Errorf("compute checksums: %w", err)
+	}
+	if err := inst.store.SetPluginChecksums(ctx, pluginID, checksums); err != nil {
+		if cleanupErr := cleanupInstall(); cleanupErr != nil {
+			return nil, fmt.Errorf("store checksums: %w (cleanup also failed: %v)", err, cleanupErr)
+		}
+		return nil, fmt.Errorf("store checksums: %w", err)
 	}
 
 	return &InstallResult{
@@ -648,6 +695,56 @@ func copyDir(src, dst string) error {
 		}
 		return err
 	})
+}
+
+// ctxReader wraps an io.Reader with context cancellation checks on every Read.
+type ctxReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (cr *ctxReader) Read(p []byte) (int, error) {
+	if err := cr.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return cr.r.Read(p)
+}
+
+// computeChecksums walks dir and computes SHA-256 for every regular file.
+// Keys are forward-slash relative paths (e.g. "main.js", "lib/util.js").
+// Values are lowercase hex-encoded SHA-256 hashes.
+func computeChecksums(ctx context.Context, dir string) (map[string]string, error) {
+	checksums := make(map[string]string)
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return fmt.Errorf("relative path for %s: %w", path, err)
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return fmt.Errorf("open %s: %w", rel, err)
+		}
+		defer f.Close()
+		h := sha256.New()
+		if _, err := io.Copy(h, &ctxReader{ctx: ctx, r: f}); err != nil {
+			return fmt.Errorf("hash %s: %w", rel, err)
+		}
+		checksums[filepath.ToSlash(rel)] = hex.EncodeToString(h.Sum(nil))
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return checksums, nil
 }
 
 func isValidSlug(s string) bool {
