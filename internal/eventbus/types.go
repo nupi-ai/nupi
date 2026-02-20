@@ -36,6 +36,7 @@ const (
 	TopicMemoryFlushRequest      Topic = "memory.flush.request"
 	TopicMemoryFlushResponse     Topic = "memory.flush.response"
 	TopicAwarenessSync           Topic = "awareness.sync"
+	TopicSessionExportRequest    Topic = "session.export.request"
 )
 
 // Source describes which component produced an event.
@@ -79,6 +80,21 @@ const (
 	OriginTool   ContentOrigin = "tool"
 	OriginSystem ContentOrigin = "system"
 )
+
+// Label returns the human-readable label for a ContentOrigin.
+// Used for formatting conversation turns in exports, prompts, and serialization.
+func (o ContentOrigin) Label() string {
+	switch o {
+	case OriginAI:
+		return "assistant"
+	case OriginTool:
+		return "tool"
+	case OriginSystem:
+		return "system"
+	default:
+		return "user"
+	}
+}
 
 // SessionState summarises lifecycle changes.
 type SessionState string
@@ -154,16 +170,7 @@ type ConversationTurn struct {
 func SerializeTurns(turns []ConversationTurn) string {
 	var sb strings.Builder
 	for _, t := range turns {
-		origin := "user"
-		switch t.Origin {
-		case OriginAI:
-			origin = "assistant"
-		case OriginTool:
-			origin = "tool"
-		case OriginSystem:
-			origin = "system"
-		}
-		fmt.Fprintf(&sb, "[%s] %s\n", origin, t.Text)
+		fmt.Fprintf(&sb, "[%s] %s\n", t.Origin.Label(), t.Text)
 	}
 	return strings.TrimRight(sb.String(), "\n")
 }
@@ -525,6 +532,13 @@ type MemoryFlushResponseEvent struct {
 	Saved     bool
 }
 
+// SessionExportRequestEvent asks the awareness service to export a completed
+// session to a markdown file in the archival memory directory.
+type SessionExportRequestEvent struct {
+	SessionID string
+	Turns     []ConversationTurn
+}
+
 // AwarenessSyncEvent notifies that an awareness file was created or updated.
 type AwarenessSyncEvent struct {
 	FilePath string
@@ -536,8 +550,10 @@ var Memory = struct {
 	FlushRequest  TopicDef[MemoryFlushRequestEvent]
 	FlushResponse TopicDef[MemoryFlushResponseEvent]
 	Sync          TopicDef[AwarenessSyncEvent]
+	ExportRequest TopicDef[SessionExportRequestEvent]
 }{
 	FlushRequest:  NewTopicDef[MemoryFlushRequestEvent](TopicMemoryFlushRequest),
 	FlushResponse: NewTopicDef[MemoryFlushResponseEvent](TopicMemoryFlushResponse),
 	Sync:          NewTopicDef[AwarenessSyncEvent](TopicAwarenessSync),
+	ExportRequest: NewTopicDef[SessionExportRequestEvent](TopicSessionExportRequest),
 }

@@ -31,6 +31,9 @@ const (
 
 	// EventTypeMemoryFlush is for extracting important context before conversation compaction.
 	EventTypeMemoryFlush EventType = "memory_flush"
+
+	// EventTypeSessionSlug is for generating a session slug and summary on session close.
+	EventTypeSessionSlug EventType = "session_slug"
 )
 
 // SessionInfo provides context about an available session.
@@ -237,15 +240,7 @@ func (e *Engine) buildTemplateData(req BuildRequest) map[string]any {
 	// Format history
 	var historyLines []string
 	for _, turn := range req.History {
-		origin := "user"
-		if turn.Origin == eventbus.OriginTool {
-			origin = "tool"
-		} else if turn.Origin == eventbus.OriginAI {
-			origin = "assistant"
-		} else if turn.Origin == eventbus.OriginSystem {
-			origin = "system"
-		}
-		historyLines = append(historyLines, fmt.Sprintf("[%s] %s", origin, turn.Text))
+		historyLines = append(historyLines, fmt.Sprintf("[%s] %s", turn.Origin.Label(), turn.Text))
 	}
 	data["history"] = strings.Join(historyLines, "\n")
 	data["history_count"] = len(req.History)

@@ -72,6 +72,7 @@ func New(opts ...BusOption) *Bus {
 		TopicMemoryFlushRequest:      64,
 		TopicMemoryFlushResponse:     64,
 		TopicAwarenessSync:           64,
+		TopicSessionExportRequest:    64,
 	}
 
 	bus := &Bus{

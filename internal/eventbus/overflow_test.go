@@ -102,7 +102,10 @@ func TestOverflowDrainCancellation(t *testing.T) {
 
 func TestOverflowConcurrency(t *testing.T) {
 	ovf := newOverflowBuffer(256)
-	ch := make(chan Envelope, 64)
+	// Use a large channel so the drain loop never blocks on send.
+	// Previously ch had capacity 64, which caused the drain loop to stall
+	// under backpressure — leading to flaky failures under the race detector.
+	ch := make(chan Envelope, 1024)
 	ctx, cancel := context.WithCancel(context.Background())
 
 	go ovf.drainLoop(ctx, ch)
@@ -124,8 +127,20 @@ func TestOverflowConcurrency(t *testing.T) {
 	// Wait for all pushers to finish.
 	wg.Wait()
 
-	// Cancel the drain goroutine so no more sends to ch, then count what arrived.
+	// Wait for the drain loop to empty the overflow buffer before cancelling.
+	// With a large ch the drain loop never blocks on send, so this is fast.
+	deadline := time.After(5 * time.Second)
+	for ovf.len() > 0 {
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for overflow to drain, %d items remaining", ovf.len())
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+
 	cancel()
+	<-ovf.done
 
 	received := 0
 drain:
@@ -138,9 +153,9 @@ drain:
 		}
 	}
 
-	// With concurrent pushers and a 256-slot buffer, some pushes may be rejected when the
-	// buffer is full and the drain goroutine hasn't caught up. Under race detector the
-	// timing changes significantly. We verify a meaningful number made it through.
+	// 4 goroutines × 200 pushes = 800 attempts. Some are rejected when the
+	// overflow buffer is momentarily full, but with a large channel the drain
+	// loop processes items quickly. We expect well over 50.
 	if received < 50 {
 		t.Fatalf("expected at least 50 events to be drained, got %d", received)
 	}

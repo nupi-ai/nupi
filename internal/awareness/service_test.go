@@ -40,6 +40,7 @@ func TestStartCreatesDirectories(t *testing.T) {
 		filepath.Join(dir, "awareness", "memory", "daily"),
 		filepath.Join(dir, "awareness", "memory", "topics"),
 		filepath.Join(dir, "awareness", "memory", "projects"),
+		filepath.Join(dir, "awareness", "memory", "sessions"),
 	}
 
 	for _, d := range expected {
@@ -562,7 +563,6 @@ func TestHandleFlushReplyWithContent(t *testing.T) {
 	state := &flushState{
 		sessionID: "content-session",
 		promptID:  promptID,
-		timer:     time.AfterFunc(30*time.Second, func() {}),
 	}
 	svc.pendingFlush.Store(promptID, state)
 
@@ -628,7 +628,6 @@ func TestHandleFlushReplyNoReply(t *testing.T) {
 	state := &flushState{
 		sessionID: "noreply-session",
 		promptID:  promptID,
-		timer:     time.AfterFunc(30*time.Second, func() {}),
 	}
 	svc.pendingFlush.Store(promptID, state)
 
@@ -837,7 +836,6 @@ func TestHandleFlushReplyWriteError(t *testing.T) {
 	state := &flushState{
 		sessionID: "write-error-session",
 		promptID:  promptID,
-		timer:     time.AfterFunc(30*time.Second, func() {}),
 	}
 	svc.pendingFlush.Store(promptID, state)
 
@@ -1021,7 +1019,6 @@ func TestFlushReplySubscriptionFiltersNonFlush(t *testing.T) {
 	state := &flushState{
 		sessionID: "filter-test",
 		promptID:  fakePromptID,
-		timer:     time.AfterFunc(30*time.Second, func() {}),
 	}
 	svc.pendingFlush.Store(fakePromptID, state)
 
@@ -1047,8 +1044,7 @@ func TestFlushReplySubscriptionFiltersNonFlush(t *testing.T) {
 		t.Fatal("expected pendingFlush entry to still exist (non-flush reply should be ignored)")
 	}
 
-	// Clean up
-	state.timer.Stop()
+	// Clean up — timer is fire-and-forget, just remove the map entry.
 	svc.pendingFlush.Delete(fakePromptID)
 }
 
@@ -1127,7 +1123,6 @@ func TestHandleFlushReplyNoReplySubstring(t *testing.T) {
 	state := &flushState{
 		sessionID: "substring-session",
 		promptID:  promptID,
-		timer:     time.AfterFunc(30*time.Second, func() {}),
 	}
 	svc.pendingFlush.Store(promptID, state)
 
@@ -1252,7 +1247,6 @@ func TestFlushReplyWriteEndToEnd(t *testing.T) {
 	state := &flushState{
 		sessionID: "e2e-reply-session",
 		promptID:  promptID,
-		timer:     time.AfterFunc(30*time.Second, func() {}),
 	}
 	svc.pendingFlush.Store(promptID, state)
 
@@ -1401,6 +1395,736 @@ func TestEnsureDirectoriesCleansStaleTemp(t *testing.T) {
 	}
 }
 
+// --- Session Export Tests ---
+
+func TestParseSlugResponse(t *testing.T) {
+	tests := []struct {
+		name        string
+		input       string
+		wantSlug    string
+		wantSummary string
+	}{
+		{
+			name:        "structured format",
+			input:       "SLUG: docker-setup\n\nSUMMARY:\nUser configured Docker for the project.",
+			wantSlug:    "docker-setup",
+			wantSummary: "User configured Docker for the project.",
+		},
+		{
+			name:        "slug only no summary",
+			input:       "SLUG: quick-fix",
+			wantSlug:    "quick-fix",
+			wantSummary: "",
+		},
+		{
+			name:        "multiline summary",
+			input:       "SLUG: big-refactor\n\nSUMMARY:\nRefactored the auth module.\nAdded JWT support.\nRemoved legacy sessions.",
+			wantSlug:    "big-refactor",
+			wantSummary: "Refactored the auth module.\nAdded JWT support.\nRemoved legacy sessions.",
+		},
+		{
+			name:        "inline summary",
+			input:       "SLUG: inline-test\n\nSUMMARY: Short inline summary.",
+			wantSlug:    "inline-test",
+			wantSummary: "Short inline summary.",
+		},
+		{
+			name:        "fallback first 3 words",
+			input:       "some random response without structure",
+			wantSlug:    "some-random-response",
+			wantSummary: "",
+		},
+		{
+			name:        "fallback fewer than 3 words",
+			input:       "hello",
+			wantSlug:    "hello",
+			wantSummary: "",
+		},
+		{
+			name:        "case insensitive slug prefix",
+			input:       "slug: my-session\n\nsummary:\nDone.",
+			wantSlug:    "my-session",
+			wantSummary: "Done.",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			slug, summary := parseSlugResponse(tt.input)
+			if slug != tt.wantSlug {
+				t.Errorf("slug = %q, want %q", slug, tt.wantSlug)
+			}
+			if summary != tt.wantSummary {
+				t.Errorf("summary = %q, want %q", summary, tt.wantSummary)
+			}
+		})
+	}
+}
+
+func TestSanitizeSlug(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"lowercase", "Docker-Setup", "docker-setup"},
+		{"spaces to hyphens", "hello world foo", "hello-world-foo"},
+		{"underscores to hyphens", "foo_bar_baz", "foo-bar-baz"},
+		{"special chars removed", "hello!@#$world", "helloworld"},
+		{"multiple hyphens collapsed", "a---b--c", "a-b-c"},
+		{"trim hyphens", "-leading-trailing-", "leading-trailing"},
+		{"max length 50", strings.Repeat("a", 60), strings.Repeat("a", 50)},
+		{"max length trims trailing hyphen", strings.Repeat("a", 49) + "-b", strings.Repeat("a", 49)},
+		{"empty input", "", ""},
+		{"only special chars", "!!!@@@", ""},
+		{"unicode removed", "héllo-wörld", "hllo-wrld"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeSlug(tt.raw)
+			if got != tt.want {
+				t.Errorf("sanitizeSlug(%q) = %q, want %q", tt.raw, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHandleExportRequest(t *testing.T) {
+	dir := t.TempDir()
+	bus := eventbus.New()
+	svc := NewService(dir)
+	svc.SetEventBus(bus)
+
+	ctx := context.Background()
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(ctx)
+
+	promptSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Prompt)
+	defer promptSub.Close()
+
+	turns := []eventbus.ConversationTurn{
+		{Origin: eventbus.OriginUser, Text: "Set up Docker", At: time.Now().UTC()},
+		{Origin: eventbus.OriginAI, Text: "Done, Docker is configured.", At: time.Now().UTC()},
+	}
+
+	svc.handleExportRequest(ctx, eventbus.SessionExportRequestEvent{
+		SessionID: "export-test",
+		Turns:     turns,
+	})
+
+	select {
+	case env := <-promptSub.C():
+		prompt := env.Payload
+		if prompt.SessionID != "export-test" {
+			t.Fatalf("expected session export-test, got %s", prompt.SessionID)
+		}
+		if prompt.Metadata["event_type"] != "session_slug" {
+			t.Fatalf("expected event_type=session_slug, got %s", prompt.Metadata["event_type"])
+		}
+		if prompt.PromptID == "" {
+			t.Fatal("expected non-empty PromptID")
+		}
+		if len(prompt.Context) != 2 {
+			t.Fatalf("expected 2 turns in Context, got %d", len(prompt.Context))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for conversation prompt")
+	}
+}
+
+func TestHandleExportRequestEmptySessionID(t *testing.T) {
+	dir := t.TempDir()
+	bus := eventbus.New()
+	svc := NewService(dir)
+	svc.SetEventBus(bus)
+
+	ctx := context.Background()
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(ctx)
+
+	promptSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Prompt)
+	defer promptSub.Close()
+
+	svc.handleExportRequest(ctx, eventbus.SessionExportRequestEvent{
+		SessionID: "",
+		Turns: []eventbus.ConversationTurn{
+			{Origin: eventbus.OriginUser, Text: "test", At: time.Now().UTC()},
+		},
+	})
+
+	select {
+	case <-promptSub.C():
+		t.Fatal("expected no prompt for empty SessionID")
+	case <-time.After(100 * time.Millisecond):
+		// Expected: no prompt
+	}
+}
+
+func TestHandleExportRequestEmptyTurns(t *testing.T) {
+	dir := t.TempDir()
+	bus := eventbus.New()
+	svc := NewService(dir)
+	svc.SetEventBus(bus)
+
+	ctx := context.Background()
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(ctx)
+
+	promptSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Prompt)
+	defer promptSub.Close()
+
+	svc.handleExportRequest(ctx, eventbus.SessionExportRequestEvent{
+		SessionID: "empty-turns",
+		Turns:     nil,
+	})
+
+	select {
+	case <-promptSub.C():
+		t.Fatal("expected no prompt for empty turns")
+	case <-time.After(100 * time.Millisecond):
+		// Expected: no prompt
+	}
+}
+
+func TestHandleExportReplyWithContent(t *testing.T) {
+	dir := t.TempDir()
+	bus := eventbus.New()
+	svc := NewService(dir)
+	svc.SetEventBus(bus)
+
+	ctx := context.Background()
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(ctx)
+
+	promptID := "export-reply-prompt"
+	state := &exportState{
+		sessionID: "reply-session",
+		promptID:  promptID,
+		turns: []eventbus.ConversationTurn{
+			{Origin: eventbus.OriginUser, Text: "Set up Docker", At: time.Now().UTC()},
+			{Origin: eventbus.OriginAI, Text: "Docker configured.", At: time.Now().UTC()},
+		},
+	}
+	svc.pendingExport.Store(promptID, state)
+
+	svc.handleExportReply(ctx, eventbus.ConversationReplyEvent{
+		SessionID: "reply-session",
+		PromptID:  promptID,
+		Text:      "SLUG: docker-setup\n\nSUMMARY:\nUser configured Docker for local development.",
+		Metadata:  map[string]string{"event_type": "session_slug"},
+	})
+
+	// Verify file was written in sessions/ directory.
+	sessionsDir := filepath.Join(dir, "awareness", "memory", "sessions")
+	entries, err := os.ReadDir(sessionsDir)
+	if err != nil {
+		t.Fatalf("read sessions dir: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("expected session export file to be created")
+	}
+
+	// Verify file content.
+	content, err := os.ReadFile(filepath.Join(sessionsDir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("read session file: %v", err)
+	}
+	contentStr := string(content)
+	if !strings.Contains(contentStr, "docker-setup") {
+		t.Errorf("expected slug in content, got: %s", contentStr)
+	}
+	if !strings.Contains(contentStr, "Docker for local development") {
+		t.Errorf("expected summary in content, got: %s", contentStr)
+	}
+	if !strings.Contains(contentStr, "reply-session") {
+		t.Errorf("expected session ID in content, got: %s", contentStr)
+	}
+	if !strings.Contains(contentStr, "Set up Docker") {
+		t.Errorf("expected conversation log in content, got: %s", contentStr)
+	}
+
+	// Verify pendingExport was cleaned up.
+	if _, ok := svc.pendingExport.Load(promptID); ok {
+		t.Fatal("expected pendingExport to be cleaned up")
+	}
+}
+
+func TestHandleExportReplyNoReply(t *testing.T) {
+	dir := t.TempDir()
+	bus := eventbus.New()
+	svc := NewService(dir)
+	svc.SetEventBus(bus)
+
+	ctx := context.Background()
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(ctx)
+
+	promptID := "noreply-export"
+	state := &exportState{
+		sessionID: "trivial-session",
+		promptID:  promptID,
+		turns: []eventbus.ConversationTurn{
+			{Origin: eventbus.OriginUser, Text: "hi", At: time.Now().UTC()},
+		},
+	}
+	svc.pendingExport.Store(promptID, state)
+
+	svc.handleExportReply(ctx, eventbus.ConversationReplyEvent{
+		SessionID: "trivial-session",
+		PromptID:  promptID,
+		Text:      "NO_REPLY",
+		Metadata:  map[string]string{"event_type": "session_slug"},
+	})
+
+	// Verify NO file was written.
+	sessionsDir := filepath.Join(dir, "awareness", "memory", "sessions")
+	entries, err := os.ReadDir(sessionsDir)
+	if err != nil {
+		// Directory might not even be created by writeSessionExport since NO_REPLY skips it.
+		return
+	}
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".md") {
+			t.Fatalf("expected no export file for NO_REPLY, found: %s", e.Name())
+		}
+	}
+}
+
+func TestHandleExportReplyEmptySlugFallback(t *testing.T) {
+	dir := t.TempDir()
+	bus := eventbus.New()
+	svc := NewService(dir)
+	svc.SetEventBus(bus)
+
+	ctx := context.Background()
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(ctx)
+
+	promptID := "empty-slug-prompt"
+	state := &exportState{
+		sessionID: "empty-slug-session",
+		promptID:  promptID,
+		turns: []eventbus.ConversationTurn{
+			{Origin: eventbus.OriginUser, Text: "hello", At: time.Now().UTC()},
+		},
+	}
+	svc.pendingExport.Store(promptID, state)
+
+	// Reply with a slug that becomes empty after sanitization.
+	svc.handleExportReply(ctx, eventbus.ConversationReplyEvent{
+		SessionID: "empty-slug-session",
+		PromptID:  promptID,
+		Text:      "SLUG: !!!@@@\n\nSUMMARY:\nSome summary.",
+		Metadata:  map[string]string{"event_type": "session_slug"},
+	})
+
+	// Verify a file was still written using fallback timestamp slug.
+	sessionsDir := filepath.Join(dir, "awareness", "memory", "sessions")
+	entries, err := os.ReadDir(sessionsDir)
+	if err != nil {
+		t.Fatalf("read sessions dir: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("expected session export file with fallback slug")
+	}
+}
+
+func TestWriteSessionExportCollision(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+	ctx := context.Background()
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(ctx)
+
+	turns := []eventbus.ConversationTurn{
+		{Origin: eventbus.OriginUser, Text: "test", At: time.Now().UTC()},
+	}
+
+	// Write first file.
+	if err := svc.writeSessionExport(ctx, "sess-1", "same-slug", "", turns); err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+
+	// Write second file with the same slug.
+	if err := svc.writeSessionExport(ctx, "sess-2", "same-slug", "", turns); err != nil {
+		t.Fatalf("second write: %v", err)
+	}
+
+	// Verify two distinct files exist.
+	sessionsDir := filepath.Join(dir, "awareness", "memory", "sessions")
+	entries, err := os.ReadDir(sessionsDir)
+	if err != nil {
+		t.Fatalf("read sessions dir: %v", err)
+	}
+
+	mdCount := 0
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".md") {
+			mdCount++
+		}
+	}
+	if mdCount != 2 {
+		t.Fatalf("expected 2 .md files, got %d", mdCount)
+	}
+}
+
+func TestWriteSessionExportTruncation(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+	ctx := context.Background()
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(ctx)
+
+	// Create a turn with content larger than maxExportContentBytes.
+	bigText := strings.Repeat("x", maxExportContentBytes+1000)
+	turns := []eventbus.ConversationTurn{
+		{Origin: eventbus.OriginUser, Text: bigText, At: time.Now().UTC()},
+	}
+
+	if err := svc.writeSessionExport(ctx, "sess-big", "big-session", "", turns); err != nil {
+		t.Fatalf("writeSessionExport: %v", err)
+	}
+
+	sessionsDir := filepath.Join(dir, "awareness", "memory", "sessions")
+	entries, err := os.ReadDir(sessionsDir)
+	if err != nil {
+		t.Fatalf("read sessions dir: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("expected session file")
+	}
+
+	content, err := os.ReadFile(filepath.Join(sessionsDir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+
+	if !strings.Contains(string(content), "[truncated") {
+		t.Fatal("expected truncation notice")
+	}
+
+	if len(content) > maxExportContentBytes {
+		t.Fatalf("expected file size <= %d bytes, got %d", maxExportContentBytes, len(content))
+	}
+
+	if !utf8.ValidString(string(content)) {
+		t.Fatal("file contains invalid UTF-8")
+	}
+}
+
+func TestWriteSessionExportNoTempFileLeak(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+	ctx := context.Background()
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(ctx)
+
+	turns := []eventbus.ConversationTurn{
+		{Origin: eventbus.OriginUser, Text: "hello", At: time.Now().UTC()},
+	}
+
+	if err := svc.writeSessionExport(ctx, "sess-1", "no-leak", "", turns); err != nil {
+		t.Fatalf("writeSessionExport: %v", err)
+	}
+
+	sessionsDir := filepath.Join(dir, "awareness", "memory", "sessions")
+	entries, err := os.ReadDir(sessionsDir)
+	if err != nil {
+		t.Fatalf("read sessions dir: %v", err)
+	}
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".tmp") {
+			t.Fatalf("temp file leaked: %s", e.Name())
+		}
+	}
+}
+
+func TestExportTimeout(t *testing.T) {
+	dir := t.TempDir()
+	bus := eventbus.New()
+	svc := NewService(dir)
+	svc.SetEventBus(bus)
+	svc.SetSlugTimeout(100 * time.Millisecond) // Short timeout for testing
+
+	ctx := context.Background()
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(ctx)
+
+	turns := []eventbus.ConversationTurn{
+		{Origin: eventbus.OriginUser, Text: "test content", At: time.Now().UTC()},
+	}
+
+	svc.handleExportRequest(ctx, eventbus.SessionExportRequestEvent{
+		SessionID: "timeout-export",
+		Turns:     turns,
+	})
+
+	// Do NOT send a reply — poll until timeout writes fallback file.
+	sessionsDir := filepath.Join(dir, "awareness", "memory", "sessions")
+	deadline := time.After(2 * time.Second)
+	for {
+		entries, err := os.ReadDir(sessionsDir)
+		if err == nil {
+			for _, e := range entries {
+				if strings.HasSuffix(e.Name(), ".md") {
+					return // success — fallback file written
+				}
+			}
+		}
+		select {
+		case <-deadline:
+			t.Fatal("expected fallback export file after timeout")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+func TestExportSubscriptionEndToEnd(t *testing.T) {
+	dir := t.TempDir()
+	bus := eventbus.New()
+	svc := NewService(dir)
+	svc.SetEventBus(bus)
+
+	ctx := context.Background()
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(ctx)
+
+	promptSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Prompt)
+	defer promptSub.Close()
+
+	// Publish a session export request through the bus.
+	eventbus.Publish(ctx, bus, eventbus.Memory.ExportRequest, eventbus.SourceConversation, eventbus.SessionExportRequestEvent{
+		SessionID: "e2e-export",
+		Turns: []eventbus.ConversationTurn{
+			{Origin: eventbus.OriginUser, Text: "important discussion", At: time.Now().UTC()},
+		},
+	})
+
+	// Verify the awareness service processed it and published a ConversationPromptEvent.
+	select {
+	case env := <-promptSub.C():
+		if env.Payload.Metadata["event_type"] != "session_slug" {
+			t.Fatalf("expected event_type=session_slug, got %s", env.Payload.Metadata["event_type"])
+		}
+		if env.Payload.SessionID != "e2e-export" {
+			t.Fatalf("expected session e2e-export, got %s", env.Payload.SessionID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for prompt from subscription path")
+	}
+}
+
+func TestExportReplySubscriptionFiltersNonExport(t *testing.T) {
+	dir := t.TempDir()
+	bus := eventbus.New()
+	svc := NewService(dir)
+	svc.SetEventBus(bus)
+
+	ctx := context.Background()
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(ctx)
+
+	// Seed a fake pendingExport so that IF the filter fails,
+	// handleExportReply would find the entry (making the bug visible).
+	fakePromptID := "filter-export-test"
+	state := &exportState{
+		sessionID: "filter-export",
+		promptID:  fakePromptID,
+		turns: []eventbus.ConversationTurn{
+			{Origin: eventbus.OriginUser, Text: "test", At: time.Now().UTC()},
+		},
+	}
+	svc.pendingExport.Store(fakePromptID, state)
+
+	// Publish a NON-export reply (user_intent) through the bus.
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Reply, eventbus.SourceConversation, eventbus.ConversationReplyEvent{
+		SessionID: "filter-export",
+		PromptID:  fakePromptID,
+		Text:      "This should be ignored by export consumer",
+		Metadata:  map[string]string{"event_type": "user_intent"},
+	})
+
+	// Wait long enough for the consumer goroutine to process (and ignore) the message.
+	// The entry must NOT be consumed because the event_type doesn't match.
+	select {
+	case <-time.After(200 * time.Millisecond):
+		// Expected: timeout means the entry was not consumed.
+	}
+
+	if _, ok := svc.pendingExport.Load(fakePromptID); !ok {
+		t.Fatal("expected pendingExport entry to still exist (non-export reply should be ignored)")
+	}
+
+	// Clean up — timer is fire-and-forget, just remove the map entry.
+	svc.pendingExport.Delete(fakePromptID)
+}
+
+// TestExportReplyWriteEndToEnd exercises the full event bus path for session export replies:
+// publish ConversationReplyEvent with event_type=session_slug → consumeExportReplies subscription
+// → filter → handleExportReply → writeSessionExport → file written.
+// This is the export equivalent of TestFlushReplyWriteEndToEnd.
+func TestExportReplyWriteEndToEnd(t *testing.T) {
+	dir := t.TempDir()
+	bus := eventbus.New()
+	svc := NewService(dir)
+	svc.SetEventBus(bus)
+
+	ctx := context.Background()
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(ctx)
+
+	// Seed a pendingExport entry so handleExportReply has something to match.
+	promptID := "e2e-export-reply"
+	state := &exportState{
+		sessionID: "e2e-export-session",
+		promptID:  promptID,
+		turns: []eventbus.ConversationTurn{
+			{Origin: eventbus.OriginUser, Text: "Deploy to staging", At: time.Now().UTC()},
+			{Origin: eventbus.OriginAI, Text: "Deployed successfully.", At: time.Now().UTC()},
+		},
+	}
+	svc.pendingExport.Store(promptID, state)
+
+	// Publish a ConversationReplyEvent with event_type=session_slug through the bus.
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Reply, eventbus.SourceConversation, eventbus.ConversationReplyEvent{
+		SessionID: "e2e-export-session",
+		PromptID:  promptID,
+		Text:      "SLUG: staging-deploy\n\nSUMMARY:\nDeployed application to staging environment.",
+		Metadata:  map[string]string{"event_type": "session_slug"},
+	})
+
+	// Poll until the consumer goroutine processes the event and writes the file.
+	sessionsDir := filepath.Join(dir, "awareness", "memory", "sessions")
+	deadline := time.After(2 * time.Second)
+	for {
+		entries, err := os.ReadDir(sessionsDir)
+		if err == nil {
+			for _, e := range entries {
+				if strings.HasSuffix(e.Name(), ".md") {
+					// Verify file content.
+					content, readErr := os.ReadFile(filepath.Join(sessionsDir, e.Name()))
+					if readErr != nil {
+						t.Fatalf("read session file: %v", readErr)
+					}
+					contentStr := string(content)
+					if !strings.Contains(contentStr, "staging-deploy") {
+						t.Errorf("expected slug in content, got: %s", contentStr)
+					}
+					if !strings.Contains(contentStr, "staging environment") {
+						t.Errorf("expected summary in content, got: %s", contentStr)
+					}
+
+					// Verify pendingExport was cleaned up.
+					if _, ok := svc.pendingExport.Load(promptID); ok {
+						t.Fatal("expected pendingExport to be cleaned up")
+					}
+					return
+				}
+			}
+		}
+		select {
+		case <-deadline:
+			t.Fatal("expected session export file written via subscription path")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+func TestStartCreatesSessionsDirectory(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+
+	if err := svc.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer svc.Shutdown(context.Background())
+
+	sessionsDir := filepath.Join(dir, "awareness", "memory", "sessions")
+	info, err := os.Stat(sessionsDir)
+	if err != nil {
+		t.Fatalf("sessions directory not created: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("%s is not a directory", sessionsDir)
+	}
+}
+
+func TestEnsureDirectoriesCleansStaleSessionsTemp(t *testing.T) {
+	dir := t.TempDir()
+
+	// Pre-create sessions directory with a stale .tmp file.
+	sessionsDir := filepath.Join(dir, "awareness", "memory", "sessions")
+	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	staleTmp := filepath.Join(sessionsDir, "2026-02-20-test.md.tmp")
+	if err := os.WriteFile(staleTmp, []byte("partial write"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	svc := NewService(dir)
+	ctx := context.Background()
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(ctx)
+
+	if _, err := os.Stat(staleTmp); !os.IsNotExist(err) {
+		t.Fatalf("expected stale .tmp file in sessions/ to be removed, got err: %v", err)
+	}
+}
+
+func TestSetSlugTimeout(t *testing.T) {
+	svc := NewService(t.TempDir())
+
+	// Default should be zero (gets defaultSlugTimeout on Start).
+	if svc.slugTimeout != 0 {
+		t.Fatalf("expected default slugTimeout=0, got %v", svc.slugTimeout)
+	}
+
+	svc.SetSlugTimeout(5 * time.Second)
+	if svc.slugTimeout != 5*time.Second {
+		t.Fatalf("expected slugTimeout=5s, got %v", svc.slugTimeout)
+	}
+
+	// Negative/zero should not change value.
+	svc.SetSlugTimeout(0)
+	if svc.slugTimeout != 5*time.Second {
+		t.Fatalf("expected slugTimeout unchanged at 5s, got %v", svc.slugTimeout)
+	}
+	svc.SetSlugTimeout(-1)
+	if svc.slugTimeout != 5*time.Second {
+		t.Fatalf("expected slugTimeout unchanged at 5s, got %v", svc.slugTimeout)
+	}
+}
+
 func TestHandleFlushReplyNoReply_CaseInsensitive(t *testing.T) {
 	dir := t.TempDir()
 	bus := eventbus.New()
@@ -1422,7 +2146,6 @@ func TestHandleFlushReplyNoReply_CaseInsensitive(t *testing.T) {
 		state := &flushState{
 			sessionID: "noreply-ci",
 			promptID:  promptID,
-			timer:     time.AfterFunc(30*time.Second, func() {}),
 		}
 		svc.pendingFlush.Store(promptID, state)
 
@@ -1441,5 +2164,284 @@ func TestHandleFlushReplyNoReply_CaseInsensitive(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			t.Fatalf("timeout for %q", text)
 		}
+	}
+}
+
+func TestHandleExportReplyNoReply_CaseInsensitive(t *testing.T) {
+	dir := t.TempDir()
+	bus := eventbus.New()
+	svc := NewService(dir)
+	svc.SetEventBus(bus)
+
+	ctx := context.Background()
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(ctx)
+
+	sessionsDir := filepath.Join(dir, "awareness", "memory", "sessions")
+
+	for _, text := range []string{"no_reply", "No_Reply", " NO_REPLY "} {
+		promptID := fmt.Sprintf("export-noreply-%s", text)
+		state := &exportState{
+			sessionID: "noreply-export-ci",
+			promptID:  promptID,
+			turns: []eventbus.ConversationTurn{
+				{Origin: eventbus.OriginUser, Text: "hello", At: time.Now().UTC()},
+			},
+		}
+		svc.pendingExport.Store(promptID, state)
+
+		svc.handleExportReply(ctx, eventbus.ConversationReplyEvent{
+			SessionID: "noreply-export-ci",
+			PromptID:  promptID,
+			Text:      text,
+			Metadata:  map[string]string{"event_type": "session_slug"},
+		})
+
+		// Verify no file was written (trivial session — no export).
+		entries, err := os.ReadDir(sessionsDir)
+		if err == nil {
+			for _, e := range entries {
+				if strings.HasSuffix(e.Name(), ".md") {
+					t.Fatalf("expected no export file for NO_REPLY variant %q, found %s", text, e.Name())
+				}
+			}
+		}
+
+		// Verify pendingExport was cleaned up.
+		if _, ok := svc.pendingExport.Load(promptID); ok {
+			t.Fatalf("expected pendingExport cleaned up for %q", text)
+		}
+	}
+}
+
+func TestHandleExportReplyEmptyReplySessionID(t *testing.T) {
+	dir := t.TempDir()
+	bus := eventbus.New()
+	svc := NewService(dir)
+	svc.SetEventBus(bus)
+
+	ctx := context.Background()
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(ctx)
+
+	promptID := "empty-sid-reply"
+	state := &exportState{
+		sessionID: "original-session",
+		promptID:  promptID,
+		turns: []eventbus.ConversationTurn{
+			{Origin: eventbus.OriginUser, Text: "test content", At: time.Now().UTC()},
+		},
+	}
+	svc.pendingExport.Store(promptID, state)
+
+	// Reply has empty SessionID — should log warning but still write file
+	// using the original state.sessionID.
+	svc.handleExportReply(ctx, eventbus.ConversationReplyEvent{
+		SessionID: "", // empty
+		PromptID:  promptID,
+		Text:      "SLUG: empty-sid-test\n\nSUMMARY:\nTest summary.",
+		Metadata:  map[string]string{"event_type": "session_slug"},
+	})
+
+	sessionsDir := filepath.Join(dir, "awareness", "memory", "sessions")
+	entries, err := os.ReadDir(sessionsDir)
+	if err != nil {
+		t.Fatalf("read sessions dir: %v", err)
+	}
+
+	found := false
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".md") {
+			content, readErr := os.ReadFile(filepath.Join(sessionsDir, e.Name()))
+			if readErr != nil {
+				t.Fatalf("read file: %v", readErr)
+			}
+			// File should reference the original session ID, not the empty one.
+			if !strings.Contains(string(content), "original-session") {
+				t.Errorf("expected original-session in content, got: %s", string(content))
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected export file to be written despite empty reply SessionID")
+	}
+}
+
+func TestHandleExportReplySessionIDMismatch(t *testing.T) {
+	dir := t.TempDir()
+	bus := eventbus.New()
+	svc := NewService(dir)
+	svc.SetEventBus(bus)
+
+	ctx := context.Background()
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(ctx)
+
+	promptID := "mismatch-sid-reply"
+	state := &exportState{
+		sessionID: "correct-session",
+		promptID:  promptID,
+		turns: []eventbus.ConversationTurn{
+			{Origin: eventbus.OriginUser, Text: "test content", At: time.Now().UTC()},
+		},
+	}
+	svc.pendingExport.Store(promptID, state)
+
+	// Reply has a different SessionID — should log warning but still write file
+	// using the original state.sessionID.
+	svc.handleExportReply(ctx, eventbus.ConversationReplyEvent{
+		SessionID: "wrong-session",
+		PromptID:  promptID,
+		Text:      "SLUG: mismatch-test\n\nSUMMARY:\nMismatch summary.",
+		Metadata:  map[string]string{"event_type": "session_slug"},
+	})
+
+	sessionsDir := filepath.Join(dir, "awareness", "memory", "sessions")
+	entries, err := os.ReadDir(sessionsDir)
+	if err != nil {
+		t.Fatalf("read sessions dir: %v", err)
+	}
+
+	found := false
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".md") {
+			content, readErr := os.ReadFile(filepath.Join(sessionsDir, e.Name()))
+			if readErr != nil {
+				t.Fatalf("read file: %v", readErr)
+			}
+			contentStr := string(content)
+			// File should use the original state.sessionID, not the reply's.
+			if !strings.Contains(contentStr, "correct-session") {
+				t.Errorf("expected correct-session in content, got: %s", contentStr)
+			}
+			if strings.Contains(contentStr, "wrong-session") {
+				t.Errorf("file should not contain wrong-session")
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected export file to be written despite SessionID mismatch")
+	}
+}
+
+func TestConcurrentWriteSessionExport(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+	ctx := context.Background()
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(ctx)
+
+	turns := []eventbus.ConversationTurn{
+		{Origin: eventbus.OriginUser, Text: "concurrent test", At: time.Now().UTC()},
+	}
+
+	const n = 10
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		go func(idx int) {
+			slug := fmt.Sprintf("concurrent-%d", idx)
+			errs <- svc.writeSessionExport(ctx, fmt.Sprintf("sess-%d", idx), slug, "", turns)
+		}(i)
+	}
+
+	for i := 0; i < n; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("concurrent writeSessionExport failed: %v", err)
+		}
+	}
+
+	sessionsDir := filepath.Join(dir, "awareness", "memory", "sessions")
+	entries, err := os.ReadDir(sessionsDir)
+	if err != nil {
+		t.Fatalf("read sessions dir: %v", err)
+	}
+
+	mdCount := 0
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".md") {
+			mdCount++
+		}
+	}
+	if mdCount != n {
+		t.Fatalf("expected %d .md files from concurrent writes, got %d", n, mdCount)
+	}
+}
+
+func TestHandleExportReplyDuplicate(t *testing.T) {
+	dir := t.TempDir()
+	bus := eventbus.New()
+	svc := NewService(dir)
+	svc.SetEventBus(bus)
+
+	ctx := context.Background()
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(ctx)
+
+	promptID := "dup-export-reply"
+	state := &exportState{
+		sessionID: "dup-session",
+		promptID:  promptID,
+		turns: []eventbus.ConversationTurn{
+			{Origin: eventbus.OriginUser, Text: "test dup", At: time.Now().UTC()},
+		},
+	}
+	svc.pendingExport.Store(promptID, state)
+
+	reply := eventbus.ConversationReplyEvent{
+		SessionID: "dup-session",
+		PromptID:  promptID,
+		Text:      "SLUG: dup-test\n\nSUMMARY:\nDuplicate test.",
+		Metadata:  map[string]string{"event_type": "session_slug"},
+	}
+
+	// First reply — should write file and clean up pendingExport.
+	svc.handleExportReply(ctx, reply)
+
+	if _, ok := svc.pendingExport.Load(promptID); ok {
+		t.Fatal("expected pendingExport cleaned up after first reply")
+	}
+
+	sessionsDir := filepath.Join(dir, "awareness", "memory", "sessions")
+	entries, err := os.ReadDir(sessionsDir)
+	if err != nil {
+		t.Fatalf("read sessions dir: %v", err)
+	}
+	firstCount := 0
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".md") {
+			firstCount++
+		}
+	}
+	if firstCount != 1 {
+		t.Fatalf("expected 1 file after first reply, got %d", firstCount)
+	}
+
+	// Second reply with the same PromptID — should be silently ignored (no-op).
+	svc.handleExportReply(ctx, reply)
+
+	entries2, err := os.ReadDir(sessionsDir)
+	if err != nil {
+		t.Fatalf("read sessions dir: %v", err)
+	}
+	secondCount := 0
+	for _, e := range entries2 {
+		if strings.HasSuffix(e.Name(), ".md") {
+			secondCount++
+		}
+	}
+	if secondCount != firstCount {
+		t.Fatalf("expected duplicate reply to be ignored (still %d files), got %d", firstCount, secondCount)
 	}
 }

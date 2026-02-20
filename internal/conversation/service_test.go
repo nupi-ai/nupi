@@ -1760,6 +1760,253 @@ func TestShutdownStartResetsShuttingDown(t *testing.T) {
 	}
 }
 
+func TestClearSessionPublishesExportRequest(t *testing.T) {
+	bus := eventbus.New()
+	svc := NewService(bus)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer svc.Shutdown(context.Background())
+
+	// Add turns to establish a session
+	now := time.Now().UTC()
+	svc.handlePipelineMessage(now, eventbus.PipelineMessageEvent{
+		SessionID: "export-session",
+		Origin:    eventbus.OriginUser,
+		Text:      "set up docker",
+	})
+	svc.handleReplyMessage(now.Add(10*time.Millisecond), eventbus.ConversationReplyEvent{
+		SessionID: "export-session",
+		PromptID:  "p1",
+		Text:      "Docker configured.",
+	})
+
+	// No sleep needed: handlePipelineMessage and handleReplyMessage are
+	// called directly (synchronous), so turns are already in s.sessions.
+
+	// Subscribe to export request topic
+	exportSub := eventbus.SubscribeTo(bus, eventbus.Memory.ExportRequest)
+	defer exportSub.Close()
+
+	// Trigger session close via lifecycle event
+	eventbus.Publish(ctx, bus, eventbus.Sessions.Lifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{
+		SessionID: "export-session",
+		State:     eventbus.SessionStateStopped,
+	})
+
+	// Verify SessionExportRequestEvent published
+	select {
+	case env := <-exportSub.C():
+		if env.Payload.SessionID != "export-session" {
+			t.Fatalf("expected session export-session, got %s", env.Payload.SessionID)
+		}
+		if len(env.Payload.Turns) == 0 {
+			t.Fatal("expected non-empty turns in export request")
+		}
+		if len(env.Payload.Turns) > 30 {
+			t.Fatalf("expected at most 30 turns, got %d", len(env.Payload.Turns))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for export request")
+	}
+}
+
+func TestClearSessionNoTurnsNoExport(t *testing.T) {
+	bus := eventbus.New()
+	svc := NewService(bus)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer svc.Shutdown(context.Background())
+
+	// Subscribe to export request topic
+	exportSub := eventbus.SubscribeTo(bus, eventbus.Memory.ExportRequest)
+	defer exportSub.Close()
+
+	// Trigger session close for a session that has NO turns (never interacted)
+	eventbus.Publish(ctx, bus, eventbus.Sessions.Lifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{
+		SessionID: "empty-session",
+		State:     eventbus.SessionStateStopped,
+	})
+
+	// Verify NO export request published
+	select {
+	case env := <-exportSub.C():
+		t.Fatalf("expected no export request for empty session, got: %+v", env.Payload)
+	case <-time.After(200 * time.Millisecond):
+		// Expected: no export request
+	}
+}
+
+func TestClearSessionNoAITurnsNoExport(t *testing.T) {
+	bus := eventbus.New()
+	svc := NewService(bus)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer svc.Shutdown(context.Background())
+
+	// Add only non-AI turns (user + tool output, no AI reply).
+	// AC#4: sessions without AI interaction should NOT be exported.
+	now := time.Now().UTC()
+	svc.handlePipelineMessage(now, eventbus.PipelineMessageEvent{
+		SessionID:   "no-ai-session",
+		Origin:      eventbus.OriginUser,
+		Text:        "hello",
+		Annotations: map[string]string{"event_type": "user_intent"},
+	})
+	svc.handlePipelineMessage(now.Add(time.Second), eventbus.PipelineMessageEvent{
+		SessionID:   "no-ai-session",
+		Origin:      eventbus.OriginTool,
+		Text:        "tool output",
+		Annotations: map[string]string{"notable": "true"},
+	})
+
+	// Subscribe to export request topic
+	exportSub := eventbus.SubscribeTo(bus, eventbus.Memory.ExportRequest)
+	defer exportSub.Close()
+
+	// Trigger session close — session has turns but NO AI turn
+	eventbus.Publish(ctx, bus, eventbus.Sessions.Lifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{
+		SessionID: "no-ai-session",
+		State:     eventbus.SessionStateStopped,
+	})
+
+	// Verify NO export request published (no AI interaction)
+	select {
+	case env := <-exportSub.C():
+		t.Fatalf("expected no export request for session without AI turns, got: %+v", env.Payload)
+	case <-time.After(200 * time.Millisecond):
+		// Expected: no export request
+	}
+}
+
+// TestExportSurvivesFIFOTrim verifies that session export still triggers even when
+// FIFO history trimming has evicted all AI turns from the buffer. The sessionAI
+// flag (set once when an AI turn is added) survives trimming, unlike scanning the buffer.
+func TestExportSurvivesFIFOTrim(t *testing.T) {
+	bus := eventbus.New()
+	// maxHistory=5: small buffer to make AI turns easy to evict.
+	svc := NewService(bus, WithHistoryLimit(5))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer svc.Shutdown(context.Background())
+
+	sid := "fifo-trim-session"
+	now := time.Now().UTC()
+
+	// 1. Add one AI turn (this sets the sessionAI flag).
+	svc.handleReplyMessage(now, eventbus.ConversationReplyEvent{
+		SessionID: sid,
+		PromptID:  "p1",
+		Text:      "AI response",
+	})
+
+	// 2. Add enough non-AI turns to evict the AI turn from the buffer.
+	for i := 0; i < 6; i++ {
+		svc.handlePipelineMessage(now.Add(time.Duration(i+1)*time.Second), eventbus.PipelineMessageEvent{
+			SessionID:   sid,
+			Origin:      eventbus.OriginUser,
+			Text:        "user msg " + strconv.Itoa(i),
+			Annotations: map[string]string{"event_type": "session_output"},
+		})
+	}
+
+	// Verify: buffer should have no AI turns left.
+	svc.mu.RLock()
+	turns := svc.sessions[sid]
+	hasAI := false
+	for _, t2 := range turns {
+		if t2.Origin == eventbus.OriginAI {
+			hasAI = true
+		}
+	}
+	svc.mu.RUnlock()
+	if hasAI {
+		t.Fatal("expected AI turn to be evicted from buffer by FIFO trim")
+	}
+
+	// Subscribe to export request topic.
+	exportSub := eventbus.SubscribeTo(bus, eventbus.Memory.ExportRequest)
+	defer exportSub.Close()
+
+	// Trigger session close — buffer has no AI turns, but sessionAI flag is set.
+	eventbus.Publish(ctx, bus, eventbus.Sessions.Lifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{
+		SessionID: sid,
+		State:     eventbus.SessionStateStopped,
+	})
+
+	// Verify export request IS published (sessionAI flag survives trim).
+	select {
+	case env := <-exportSub.C():
+		if env.Payload.SessionID != sid {
+			t.Fatalf("expected sessionID %q, got %q", sid, env.Payload.SessionID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout: expected export request after FIFO trim (sessionAI flag should survive)")
+	}
+}
+
+func TestSessionSlugReplyNotStoredInHistory(t *testing.T) {
+	bus := eventbus.New()
+	svc := NewService(bus)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer svc.Shutdown(context.Background())
+
+	// Add one turn to establish a session
+	now := time.Now().UTC()
+	svc.handlePipelineMessage(now, eventbus.PipelineMessageEvent{
+		SessionID: "slug-reply-session",
+		Origin:    eventbus.OriginUser,
+		Text:      "hello",
+	})
+
+	// No sleep needed: handlePipelineMessage is called directly (synchronous).
+
+	// Verify 1 turn in history
+	history := svc.Context("slug-reply-session")
+	if len(history) != 1 {
+		t.Fatalf("expected 1 turn, got %d", len(history))
+	}
+
+	// Send a session_slug reply through handleReplyMessage
+	svc.handleReplyMessage(now.Add(time.Second), eventbus.ConversationReplyEvent{
+		SessionID: "slug-reply-session",
+		PromptID:  "slug-prompt-1",
+		Text:      "SLUG: docker-setup\n\nSUMMARY:\nConfigured Docker.",
+		Metadata:  map[string]string{"event_type": "session_slug"},
+	})
+
+	// Verify history still has only 1 turn (session_slug reply was NOT stored)
+	history = svc.Context("slug-reply-session")
+	if len(history) != 1 {
+		t.Fatalf("expected 1 turn (session_slug reply should not be stored), got %d", len(history))
+	}
+}
+
 func TestValidEventTypesSyncWithPromptTemplates(t *testing.T) {
 	templates := store.DefaultPromptTemplates()
 
