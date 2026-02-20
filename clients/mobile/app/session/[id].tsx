@@ -111,10 +111,29 @@ export default function SessionTerminalScreen() {
     [sendToWebView]
   );
 
-  const { status: streamStatus, error: streamError, send } = useSessionStream(
+  const handleReconnected = useCallback(() => {
+    // Clear terminal before history replay to prevent duplicate output
+    sendToWebView({ type: "clear" });
+  }, [sendToWebView]);
+
+  const {
+    status: streamStatus,
+    error: streamError,
+    reconnectAttempts: wsReconnectAttempts,
+    send,
+    reconnect: wsReconnect,
+  } = useSessionStream(
     id ?? "",
-    { onOutput: handleOutput, onEvent: handleEvent }
+    { onOutput: handleOutput, onEvent: handleEvent, onReconnected: handleReconnected }
   );
+
+  // Ref for stable access in callbacks without triggering recreations.
+  const streamStatusRef = useRef(streamStatus);
+  streamStatusRef.current = streamStatus;
+
+  const handleRetryStream = useCallback(() => {
+    wsReconnect();
+  }, [wsReconnect]);
 
   const handleWebViewMessage = useCallback(
     (event: WebViewMessageEvent) => {
@@ -134,13 +153,13 @@ export default function SessionTerminalScreen() {
             break;
           case "tap":
             // User tapped terminal area — focus to show keyboard.
-            if (!sessionStoppedRef.current) {
+            if (!sessionStoppedRef.current && streamStatusRef.current === "connected") {
               sendToWebView({ type: "focus_keyboard" });
             }
             break;
           case "input":
             // Forward terminal keystrokes as binary WS frame.
-            if (msg.data && !sessionStoppedRef.current) {
+            if (msg.data && !sessionStoppedRef.current && streamStatusRef.current === "connected") {
               let inputData = msg.data;
               // Apply Ctrl modifier from toolbar toggle.
               if (ctrlActiveRef.current && inputData.length === 1) {
@@ -237,6 +256,19 @@ export default function SessionTerminalScreen() {
     webViewRef.current?.reload();
   }, []);
 
+  // Dismiss keyboard when stream disconnects (reconnecting/error).
+  // Also reset WebView ready state when WebView will be unmounted (error/connecting
+  // early returns) so that output arriving before the new WebView initializes gets
+  // queued in pendingOutputRef instead of being sent to a stale/loading WebView.
+  useEffect(() => {
+    if (streamStatus === "reconnecting" || streamStatus === "error") {
+      Keyboard.dismiss();
+    }
+    if (streamStatus === "error" || streamStatus === "connecting") {
+      webViewReadyRef.current = false;
+    }
+  }, [streamStatus]);
+
   // Auto-dismiss recovery notice after 4 seconds.
   useEffect(() => {
     if (recoveryCrashCount > 0) {
@@ -286,7 +318,7 @@ export default function SessionTerminalScreen() {
               accessibilityState={{ expanded: keyboardVisible }}
             >
               <Text style={[styles.headerButtonText, { color: Colors[colorScheme].tint }]}>
-                {keyboardVisible ? "⌨\uFE0F\u2713" : "⌨\uFE0F"}
+                {keyboardVisible ? "\u2328\uFE0F\u2713" : "\u2328\uFE0F"}
               </Text>
             </Pressable>
           )
@@ -326,16 +358,41 @@ export default function SessionTerminalScreen() {
           {streamError ?? "Connection failed"}
         </Text>
         <Pressable
-          onPress={handleGoBack}
+          onPress={handleRetryStream}
           style={[
             styles.button,
             { backgroundColor: Colors[colorScheme].tint },
           ]}
           accessibilityRole="button"
+          accessibilityLabel="Retry connection"
+          testID="retry-stream-button"
+        >
+          <Text style={[styles.buttonText, { color: Colors[colorScheme].background }]}>Retry</Text>
+        </Pressable>
+        <Pressable
+          onPress={() => router.push("/scan")}
+          style={[
+            styles.goBackButton,
+            { borderColor: Colors[colorScheme].tint },
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel="Re-pair by scanning QR code"
+          accessibilityHint="Opens camera to scan a new QR code for pairing with nupid"
+          testID="re-pair-stream-button"
+        >
+          <Text style={[styles.buttonText, { color: Colors[colorScheme].tint }]}>Re-pair (scan QR)</Text>
+        </Pressable>
+        <Pressable
+          onPress={handleGoBack}
+          style={[
+            styles.goBackButton,
+            { borderColor: Colors[colorScheme].tint },
+          ]}
+          accessibilityRole="button"
           accessibilityLabel="Go back to session list"
           testID="go-back-button"
         >
-          <Text style={[styles.buttonText, { color: Colors[colorScheme].background }]}>Go Back</Text>
+          <Text style={[styles.buttonText, { color: Colors[colorScheme].tint }]}>Go Back</Text>
         </Pressable>
       </RNView>
     );
@@ -367,12 +424,32 @@ export default function SessionTerminalScreen() {
         onRenderProcessGone={handleWebViewCrash}
       />
 
-      {keyboardVisible && !sessionStopped && (
+      {keyboardVisible && !sessionStopped && streamStatus === "connected" && (
         <SpecialKeysToolbar
           onSendInput={handleSendInput}
           ctrlActive={ctrlActive}
           onCtrlToggle={handleCtrlToggle}
         />
+      )}
+
+      {streamStatus === "reconnecting" && (
+        <RNView
+          style={[styles.reconnectOverlay, { backgroundColor: Colors[colorScheme].overlay }]}
+          pointerEvents="box-only"
+          accessibilityRole="alert"
+          accessibilityLabel="Reconnecting to session"
+        >
+          <ActivityIndicator
+            size="large"
+            color={Colors[colorScheme].tint}
+            accessibilityLabel="Reconnecting to session"
+          />
+          <Text style={[styles.reconnectText, { color: Colors[colorScheme].onOverlay }]}>
+            {wsReconnectAttempts > 0
+              ? `Reconnecting\u2026 (attempt ${wsReconnectAttempts}/3)`
+              : "Reconnecting\u2026"}
+          </Text>
+        </RNView>
       )}
 
       {recoveryCrashCount > 0 && (
@@ -453,9 +530,31 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     borderRadius: 8,
   },
+  goBackButton: {
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    marginTop: 12,
+  },
   buttonText: {
     fontSize: 16,
     fontWeight: "600",
+  },
+  reconnectOverlay: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    justifyContent: "center",
+    alignItems: "center",
+    zIndex: 2,
+  },
+  reconnectText: {
+    fontSize: 16,
+    fontWeight: "600",
+    marginTop: 12,
   },
   recoveryBanner: {
     position: "absolute",

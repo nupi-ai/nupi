@@ -11,26 +11,38 @@ export default function HomeScreen() {
   const colors = Colors[colorScheme];
   const connection = useConnection();
 
+  const isReconnecting = connection.reconnecting;
+
   const statusColor =
     connection.status === "connected"
       ? colors.success
-      : connection.status === "connecting"
+      : isReconnecting
         ? colors.warning
-        : colors.danger;
+        : connection.status === "connecting"
+          ? colors.warning
+          : colors.danger;
 
   const statusLabel =
     connection.status === "connected"
       ? `Connected to ${connection.hostInfo}`
-      : connection.status === "connecting"
-        ? "Connecting\u2026"
-        : "Not connected";
+      : isReconnecting
+        ? connection.reconnectAttempts > 0
+          ? `Reconnecting\u2026 (attempt ${connection.reconnectAttempts}/3)`
+          : "Reconnecting\u2026"
+        : connection.status === "connecting"
+          ? "Connecting\u2026"
+          : "Not connected";
 
-  const buttonLabel =
-    connection.error || connection.status === "disconnected"
-      ? connection.error
-        ? "Re-scan QR Code"
-        : "Scan QR to Connect"
-      : null;
+  const showScanButton =
+    !isReconnecting &&
+    (connection.error || connection.status === "disconnected") &&
+    connection.status !== "connected";
+
+  const showRetryButton =
+    !isReconnecting &&
+    connection.error &&
+    connection.errorCanRetry &&
+    connection.status === "disconnected";
 
   return (
     <View style={styles.container}>
@@ -41,29 +53,58 @@ export default function HomeScreen() {
         style={styles.statusContainer}
         lightColor={Colors.light.surface}
         darkColor={Colors.dark.surface}
+        accessible={true}
+        accessibilityLabel={statusLabel}
+        accessibilityLiveRegion="polite"
       >
         <RNView style={[styles.statusDot, { backgroundColor: statusColor }]} />
         <Text style={styles.statusText}>{statusLabel}</Text>
       </View>
 
-      {connection.error && (
+      {connection.error && !isReconnecting && (
         <Text style={[styles.errorText, { color: colors.danger }]}>
           {connection.error}
         </Text>
       )}
 
-      {buttonLabel && (
+      {showRetryButton && (
         <Pressable
           style={({ pressed }) => [
-            styles.scanButton,
+            styles.retryButton,
             { backgroundColor: colors.tint, opacity: pressed ? 0.7 : 1 },
+          ]}
+          onPress={connection.retryConnection}
+          accessibilityRole="button"
+          accessibilityLabel="Retry connection"
+          accessibilityHint="Attempts to reconnect to nupid"
+          testID="retry-connection-button"
+        >
+          <Text style={[styles.buttonText, { color: colors.background }]}>Retry</Text>
+        </Pressable>
+      )}
+
+      {showScanButton && (
+        <Pressable
+          style={({ pressed }) => [
+            showRetryButton ? styles.scanButtonOutline : styles.scanButton,
+            showRetryButton
+              ? { borderColor: colors.tint, opacity: pressed ? 0.7 : 1 }
+              : { backgroundColor: colors.tint, opacity: pressed ? 0.7 : 1 },
           ]}
           onPress={() => router.push("/scan")}
           accessibilityRole="button"
-          accessibilityLabel={buttonLabel}
+          accessibilityLabel={connection.error ? "Re-scan QR Code" : "Scan QR to Connect"}
           accessibilityHint="Opens camera to scan a QR code for pairing with nupid"
+          testID="scan-qr-button"
         >
-          <Text style={styles.scanButtonText}>{buttonLabel}</Text>
+          <Text
+            style={[
+              styles.buttonText,
+              { color: showRetryButton ? colors.tint : colors.background },
+            ]}
+          >
+            {connection.error ? "Re-scan QR Code" : "Scan QR to Connect"}
+          </Text>
         </Pressable>
       )}
 
@@ -77,6 +118,7 @@ export default function HomeScreen() {
           accessibilityRole="button"
           accessibilityLabel="Disconnect"
           accessibilityHint="Disconnects from the paired nupid daemon"
+          testID="disconnect-button"
         >
           <Text style={[styles.disconnectText, { color: colors.danger }]}>
             Disconnect
@@ -128,13 +170,24 @@ const styles = StyleSheet.create({
     textAlign: "center",
     marginBottom: 16,
   },
+  retryButton: {
+    paddingHorizontal: 24,
+    paddingVertical: 14,
+    borderRadius: 12,
+    marginBottom: 12,
+  },
   scanButton: {
     paddingHorizontal: 24,
     paddingVertical: 14,
     borderRadius: 12,
   },
-  scanButtonText: {
-    color: "#fff",
+  scanButtonOutline: {
+    paddingHorizontal: 24,
+    paddingVertical: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  buttonText: {
     fontSize: 16,
     fontWeight: "600",
   },
