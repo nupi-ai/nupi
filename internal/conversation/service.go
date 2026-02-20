@@ -93,6 +93,7 @@ type Service struct {
 
 	mu        sync.RWMutex
 	sessions  map[string][]eventbus.ConversationTurn
+	sessionAI map[string]bool   // tracks whether session ever had an AI turn (survives FIFO trim)
 	detach    map[string]*time.Timer
 	toolCache map[string]string // sessionID -> current tool name
 
@@ -147,6 +148,7 @@ func NewService(bus *eventbus.Bus, opts ...Option) *Service {
 		summaryBatchSize: defaultSummaryBatchSize,
 		flushTimeout:     eventbus.DefaultFlushTimeout,
 		sessions:         make(map[string][]eventbus.ConversationTurn),
+		sessionAI:        make(map[string]bool),
 		detach:           make(map[string]*time.Timer),
 		toolCache:        make(map[string]string),
 	}
@@ -500,6 +502,7 @@ var validEventTypes = map[string]bool{
 	"history_summary": true,
 	"clarification":   true,
 	"memory_flush":    true,
+	"session_slug":    true,
 }
 
 func (s *Service) publishPrompt(sessionID string, ctxTurns []eventbus.ConversationTurn, newTurn eventbus.ConversationTurn) {
@@ -586,14 +589,56 @@ func (s *Service) clearSession(sessionID string) {
 	if sessionID == "" {
 		return
 	}
+
+	// Collect export data under lock, then publish outside the lock
+	// to avoid holding s.mu during event bus dispatch.
+	var exportEvent *eventbus.SessionExportRequestEvent
+
 	s.mu.Lock()
+
+	// Capture session export request before clearing turns so the
+	// awareness service can generate a session summary markdown file.
+	// Guard with shuttingDown to avoid publishing to a draining bus
+	// when detach cleanup timers fire after Shutdown.
+	// Only export sessions with actual AI interaction (AC#4): sessionAI
+	// flag survives FIFO history trimming (unlike scanning the buffer).
+	if turns := s.sessions[sessionID]; s.bus != nil && !s.shuttingDown.Load() && s.sessionAI[sessionID] && len(turns) > 0 {
+		exportTurns := turns
+		if len(exportTurns) > 30 {
+			exportTurns = exportTurns[len(exportTurns)-30:]
+		}
+		// Deep copy turns including Meta maps to prevent shared references
+		// after the session entry is deleted from s.sessions.
+		copied := make([]eventbus.ConversationTurn, len(exportTurns))
+		for i, turn := range exportTurns {
+			copied[i] = turn
+			if turn.Meta != nil {
+				meta := make(map[string]string, len(turn.Meta))
+				for k, v := range turn.Meta {
+					meta[k] = v
+				}
+				copied[i].Meta = meta
+			}
+		}
+		exportEvent = &eventbus.SessionExportRequestEvent{
+			SessionID: sessionID,
+			Turns:     copied,
+		}
+	}
+
 	delete(s.sessions, sessionID)
+	delete(s.sessionAI, sessionID)
 	delete(s.toolCache, sessionID)
 	if timer, ok := s.detach[sessionID]; ok {
 		timer.Stop()
 		delete(s.detach, sessionID)
 	}
 	s.mu.Unlock()
+
+	// Publish synchronously outside the lock (no untracked goroutine).
+	if exportEvent != nil {
+		eventbus.Publish(context.Background(), s.bus, eventbus.Memory.ExportRequest, eventbus.SourceConversation, *exportEvent)
+	}
 
 	// Clean up rate limiting entry to prevent memory leaks
 	s.lastSessionOutput.Delete(sessionID)
@@ -942,6 +987,11 @@ func (s *Service) handleReplyMessage(ts time.Time, msg eventbus.ConversationRepl
 		return
 	}
 
+	// Intercept session_slug replies — awareness service handles these.
+	if msg.Metadata["event_type"] == "session_slug" {
+		return
+	}
+
 	meta := newMetadataAccumulator(msg.Metadata)
 
 	turn := eventbus.ConversationTurn{
@@ -986,6 +1036,7 @@ func (s *Service) handleReplyMessage(ts time.Time, msg eventbus.ConversationRepl
 		history = history[len(history)-s.maxHistory:]
 	}
 	s.sessions[msg.SessionID] = history
+	s.sessionAI[msg.SessionID] = true
 	s.mu.Unlock()
 }
 

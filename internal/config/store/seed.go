@@ -19,6 +19,7 @@ func init() {
 		"history_summary": mustReadPrompt("prompts/history_summary.txt"),
 		"clarification":   mustReadPrompt("prompts/clarification.txt"),
 		"memory_flush":    mustReadPrompt("prompts/memory_flush.txt"),
+		"session_slug":    mustReadPrompt("prompts/session_slug.txt"),
 	}
 }
 
@@ -56,6 +57,7 @@ var promptEventDescriptions = map[string]string{
 	"history_summary": "Summarizes conversation history",
 	"clarification":   "Handles follow-up responses",
 	"memory_flush":    "Saves important context before conversation compaction",
+	"session_slug":    "Generates a session slug and summary on session close",
 }
 
 // PromptEventDescriptions returns a copy of the event type descriptions.

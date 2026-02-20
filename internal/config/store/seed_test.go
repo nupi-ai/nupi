@@ -68,6 +68,23 @@ func TestPromptEventDescriptionsSyncWithTemplates(t *testing.T) {
 	}
 }
 
+func TestDefaultPromptTemplatesIncludesSessionSlug(t *testing.T) {
+	templates := DefaultPromptTemplates()
+	content, ok := templates["session_slug"]
+	if !ok {
+		t.Fatal("expected session_slug key in DefaultPromptTemplates")
+	}
+	if !strings.Contains(content, "NO_REPLY") {
+		t.Error("session_slug template should mention NO_REPLY instruction")
+	}
+	if !strings.Contains(content, "SLUG:") {
+		t.Error("session_slug template should mention SLUG: format")
+	}
+	if !strings.Contains(content, "{{.history}}") {
+		t.Error("session_slug template should use {{.history}} placeholder")
+	}
+}
+
 func TestDefaultPromptTemplatesIncludesMemoryFlush(t *testing.T) {
 	templates := DefaultPromptTemplates()
 	content, ok := templates["memory_flush"]

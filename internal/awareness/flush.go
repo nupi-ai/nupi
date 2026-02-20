@@ -23,7 +23,6 @@ const maxFlushContentBytes = 10 * 1024 // 10 KB
 type flushState struct {
 	sessionID string
 	promptID  string
-	timer     *time.Timer
 }
 
 func (s *Service) consumeFlushRequests(ctx context.Context) {
@@ -76,13 +75,13 @@ func (s *Service) handleFlushRequest(ctx context.Context, event eventbus.MemoryF
 		promptID:  promptID,
 	}
 
-	// Set timer before storing so the struct is fully initialized before
-	// being exposed to other goroutines via the map (prevents data race
-	// on state.timer field detected by Go race detector). The theoretical
-	// risk of the timer firing before Store is negligible with 30s timeouts
-	// and handled gracefully: LoadAndDelete returns false (no-op), and the
-	// conversation service's own timeout serves as the safety net.
-	state.timer = time.AfterFunc(timeout, func() {
+	// Store before starting the timer so the timeout callback always finds
+	// the entry via LoadAndDelete. The timer is fire-and-forget: if a reply
+	// arrives first, LoadAndDelete succeeds there and the timer callback
+	// harmlessly gets loaded=false.
+	s.pendingFlush.Store(promptID, state)
+
+	time.AfterFunc(timeout, func() {
 		// Guard: skip if the service is shutting down to prevent log noise
 		// and publishing to a draining bus after Shutdown returns.
 		if s.shuttingDown.Load() {
@@ -99,8 +98,6 @@ func (s *Service) handleFlushRequest(ctx context.Context, event eventbus.MemoryF
 			})
 		}
 	})
-
-	s.pendingFlush.Store(promptID, state)
 
 	now := time.Now().UTC()
 	prompt := eventbus.ConversationPromptEvent{
@@ -159,9 +156,8 @@ func (s *Service) handleFlushReply(ctx context.Context, reply eventbus.Conversat
 		return
 	}
 
-	if state.timer != nil {
-		state.timer.Stop()
-	}
+	// No need to stop the timer — if it fires after this point,
+	// LoadAndDelete will return loaded=false (harmless no-op).
 
 	// Defense-in-depth: log if the adapter returned a different or empty
 	// SessionID compared to what the original flush request carried.

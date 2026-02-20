@@ -37,7 +37,14 @@ type Service struct {
 	pendingFlush  sync.Map // promptID → *flushState
 	flushTimeout  time.Duration
 	flushWriteMu  sync.Mutex // serializes daily file writes in writeFlushContent
-	shuttingDown  atomic.Bool
+
+	exportSub      *eventbus.TypedSubscription[eventbus.SessionExportRequestEvent]
+	exportReplySub *eventbus.TypedSubscription[eventbus.ConversationReplyEvent]
+	pendingExport  sync.Map // promptID → *exportState
+	slugTimeout    time.Duration
+	exportWriteMu  sync.Mutex // serializes session export file writes
+
+	shuttingDown atomic.Bool
 
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -66,6 +73,14 @@ func (s *Service) SetEmbeddingProvider(provider EmbeddingProvider) {
 func (s *Service) SetFlushTimeout(timeout time.Duration) {
 	if timeout > 0 {
 		s.flushTimeout = timeout
+	}
+}
+
+// SetSlugTimeout overrides the default timeout for session slug generation.
+// Must be called before Start.
+func (s *Service) SetSlugTimeout(timeout time.Duration) {
+	if timeout > 0 {
+		s.slugTimeout = timeout
 	}
 }
 
@@ -109,13 +124,21 @@ func (s *Service) Start(ctx context.Context) error {
 
 		s.flushSub = eventbus.Subscribe[eventbus.MemoryFlushRequestEvent](s.bus, eventbus.TopicMemoryFlushRequest, eventbus.WithSubscriptionName("awareness_flush_request"))
 		s.flushReplySub = eventbus.Subscribe[eventbus.ConversationReplyEvent](s.bus, eventbus.TopicConversationReply, eventbus.WithSubscriptionName("awareness_flush_reply"))
+		s.exportSub = eventbus.Subscribe[eventbus.SessionExportRequestEvent](s.bus, eventbus.TopicSessionExportRequest, eventbus.WithSubscriptionName("awareness_export_request"))
+		s.exportReplySub = eventbus.Subscribe[eventbus.ConversationReplyEvent](s.bus, eventbus.TopicConversationReply, eventbus.WithSubscriptionName("awareness_export_reply"))
+
+		if s.slugTimeout == 0 {
+			s.slugTimeout = defaultSlugTimeout
+		}
 
 		var derivedCtx context.Context
 		derivedCtx, s.cancel = context.WithCancel(ctx)
 
-		s.wg.Add(2)
+		s.wg.Add(4)
 		go s.consumeFlushRequests(derivedCtx)
 		go s.consumeFlushReplies(derivedCtx)
+		go s.consumeExportRequests(derivedCtx)
+		go s.consumeExportReplies(derivedCtx)
 	}
 
 	log.Printf("[Awareness] Service started (core memory: %d chars)", utf8.RuneCountInString(s.CoreMemory()))
@@ -139,12 +162,25 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		s.flushReplySub.Close()
 	}
 
-	// Cancel pending flush timers.
-	s.pendingFlush.Range(func(key, val any) bool {
-		if state, ok := val.(*flushState); ok && state.timer != nil {
-			state.timer.Stop()
-		}
+	// Clear pending flush entries. Timers are fire-and-forget: the
+	// shuttingDown flag (set above) makes callbacks no-op.
+	s.pendingFlush.Range(func(key, _ any) bool {
 		s.pendingFlush.Delete(key)
+		return true
+	})
+
+	// Close export subscriptions.
+	if s.exportSub != nil {
+		s.exportSub.Close()
+	}
+	if s.exportReplySub != nil {
+		s.exportReplySub.Close()
+	}
+
+	// Clear pending export entries. Timers are fire-and-forget: the
+	// shuttingDown flag (set above) makes callbacks no-op.
+	s.pendingExport.Range(func(key, _ any) bool {
+		s.pendingExport.Delete(key)
 		return true
 	})
 
@@ -272,6 +308,7 @@ func (s *Service) ensureDirectories() error {
 		filepath.Join(s.awarenessDir, "memory", "daily"),
 		filepath.Join(s.awarenessDir, "memory", "topics"),
 		filepath.Join(s.awarenessDir, "memory", "projects"),
+		filepath.Join(s.awarenessDir, "memory", "sessions"),
 	}
 
 	for _, dir := range dirs {
@@ -280,14 +317,17 @@ func (s *Service) ensureDirectories() error {
 		}
 	}
 
-	// Clean up stale .tmp files from interrupted atomic writes in writeFlushContent.
+	// Clean up stale .tmp files from interrupted atomic writes.
 	// These can remain if the process crashes between os.WriteFile and os.Rename.
-	dailyDir := filepath.Join(s.awarenessDir, "memory", "daily")
-	entries, err := os.ReadDir(dailyDir)
-	if err == nil {
+	for _, subdir := range []string{"daily", "sessions"} {
+		dir := filepath.Join(s.awarenessDir, "memory", subdir)
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
 		for _, e := range entries {
 			if !e.IsDir() && strings.HasSuffix(e.Name(), ".tmp") {
-				tmpPath := filepath.Join(dailyDir, e.Name())
+				tmpPath := filepath.Join(dir, e.Name())
 				if err := os.Remove(tmpPath); err != nil {
 					log.Printf("[Awareness] WARNING: failed to clean up stale tmp file %s: %v", tmpPath, err)
 				} else {
