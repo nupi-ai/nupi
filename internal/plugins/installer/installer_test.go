@@ -8,8 +8,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -1547,5 +1550,520 @@ func TestInstallFromPath_FilePermissions(t *testing.T) {
 	perm := info.Mode().Perm()
 	if perm&0o400 == 0 {
 		t.Errorf("main.js should be owner-readable, got permissions %o", perm)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// computeChecksums — unit tests
+// ---------------------------------------------------------------------------
+
+func TestComputeChecksums_RegularFiles(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	files := map[string]string{
+		"main.js":     "console.log('hello')",
+		"lib/util.js": "module.exports = {}",
+	}
+	for name, content := range files {
+		path := filepath.Join(dir, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	checksums, err := computeChecksums(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("computeChecksums: %v", err)
+	}
+
+	if len(checksums) != 2 {
+		t.Fatalf("expected 2 checksums, got %d", len(checksums))
+	}
+
+	// Verify each hash matches
+	for name, content := range files {
+		h := sha256.Sum256([]byte(content))
+		want := hex.EncodeToString(h[:])
+		got, ok := checksums[name]
+		if !ok {
+			t.Errorf("missing checksum for %s", name)
+			continue
+		}
+		if got != want {
+			t.Errorf("checksum mismatch for %s: got %s, want %s", name, got, want)
+		}
+	}
+}
+
+func TestComputeChecksums_EmptyDir(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	checksums, err := computeChecksums(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("computeChecksums: %v", err)
+	}
+	if len(checksums) != 0 {
+		t.Fatalf("expected 0 checksums for empty dir, got %d", len(checksums))
+	}
+}
+
+func TestComputeChecksums_SkipsDirectoriesAndSymlinks(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "subdir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Create a symlink (should be skipped); track whether it was created for assertion
+	symlinkCreated := true
+	if err := os.Symlink(filepath.Join(dir, "file.txt"), filepath.Join(dir, "link.txt")); err != nil {
+		t.Logf("symlink creation skipped (platform does not support symlinks): %v", err)
+		symlinkCreated = false
+	}
+
+	checksums, err := computeChecksums(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("computeChecksums: %v", err)
+	}
+	if len(checksums) != 1 {
+		t.Fatalf("expected 1 checksum (regular file only), got %d: %v", len(checksums), checksums)
+	}
+	if _, ok := checksums["file.txt"]; !ok {
+		t.Error("expected checksum for file.txt")
+	}
+	if symlinkCreated {
+		if _, ok := checksums["link.txt"]; ok {
+			t.Error("symlink link.txt should not have been checksummed")
+		}
+	}
+}
+
+func TestComputeChecksums_ForwardSlashPaths(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	nested := filepath.Join(dir, "a", "b", "c")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "deep.js"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	checksums, err := computeChecksums(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("computeChecksums: %v", err)
+	}
+	if _, ok := checksums["a/b/c/deep.js"]; !ok {
+		t.Errorf("expected forward-slash path a/b/c/deep.js, got keys: %v", checksums)
+	}
+}
+
+func TestComputeChecksums_UnreadableFile(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("file permission test not reliable on Windows")
+	}
+	if os.Getuid() == 0 {
+		t.Skip("file permission test not reliable when running as root")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "readable.txt"), []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "secret.txt"), []byte("hidden"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := computeChecksums(context.Background(), dir)
+	if err == nil {
+		t.Fatal("expected error for unreadable file, got nil")
+	}
+	if !strings.Contains(err.Error(), "open") {
+		t.Errorf("expected open error, got: %v", err)
+	}
+}
+
+func TestComputeChecksums_ZeroByteFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "empty.txt"), []byte{}, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	checksums, err := computeChecksums(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("computeChecksums: %v", err)
+	}
+	if len(checksums) != 1 {
+		t.Fatalf("expected 1 checksum, got %d", len(checksums))
+	}
+	got, ok := checksums["empty.txt"]
+	if !ok {
+		t.Fatal("missing checksum for empty.txt")
+	}
+	// SHA-256 of empty content
+	h := sha256.Sum256([]byte{})
+	want := hex.EncodeToString(h[:])
+	if got != want {
+		t.Errorf("checksum for empty file: got %s, want %s", got, want)
+	}
+}
+
+func TestComputeChecksums_CancelledContext(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "file.txt"), []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	_, err := computeChecksums(ctx, dir)
+	if err == nil {
+		t.Fatal("expected error for cancelled context, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled error, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Installer checksum integration tests
+// ---------------------------------------------------------------------------
+
+func TestInstallFromPath_StoresChecksums(t *testing.T) {
+	inst, store, ctx, _ := newTestInstaller(t)
+
+	manifest := toolHandlerManifest("checksum-plugin", "1.0.0")
+	dir := createPluginDir(t, manifest, map[string]string{
+		"main.js":     "console.log('hello')",
+		"lib/util.js": "module.exports = {}",
+	})
+
+	result, err := inst.InstallFromPath(ctx, dir)
+	if err != nil {
+		t.Fatalf("InstallFromPath: %v", err)
+	}
+
+	checksums, err := store.GetPluginChecksumsByPlugin(ctx, result.Namespace, result.Slug)
+	if err != nil {
+		t.Fatalf("GetPluginChecksumsByPlugin: %v", err)
+	}
+
+	// Should have exactly 3 checksums: plugin.yaml, main.js, lib/util.js
+	if len(checksums) != 3 {
+		paths := make([]string, 0, len(checksums))
+		for _, c := range checksums {
+			paths = append(paths, c.FilePath)
+		}
+		t.Fatalf("expected 3 checksums, got %d: %v", len(checksums), paths)
+	}
+
+	pathSet := make(map[string]bool)
+	for _, c := range checksums {
+		pathSet[c.FilePath] = true
+	}
+	for _, expected := range []string{"plugin.yaml", "main.js", "lib/util.js"} {
+		if !pathSet[expected] {
+			t.Errorf("missing checksum for %s; stored paths: %v", expected, pathSet)
+		}
+	}
+}
+
+func TestUninstall_CleansUpChecksums(t *testing.T) {
+	inst, store, ctx, _ := newTestInstaller(t)
+
+	manifest := toolHandlerManifest("uninstall-chk", "1.0.0")
+	dir := createPluginDir(t, manifest, map[string]string{
+		"main.js": "console.log('test')",
+	})
+
+	result, err := inst.InstallFromPath(ctx, dir)
+	if err != nil {
+		t.Fatalf("InstallFromPath: %v", err)
+	}
+
+	// Verify checksums exist
+	checksums, err := store.GetPluginChecksumsByPlugin(ctx, result.Namespace, result.Slug)
+	if err != nil {
+		t.Fatalf("GetPluginChecksumsByPlugin: %v", err)
+	}
+	if len(checksums) == 0 {
+		t.Fatal("expected checksums after install")
+	}
+
+	// Uninstall
+	if err := inst.Uninstall(ctx, result.Namespace, result.Slug); err != nil {
+		t.Fatalf("Uninstall: %v", err)
+	}
+
+	// Verify checksums are gone (CASCADE delete)
+	checksums, err = store.GetPluginChecksumsByPlugin(ctx, result.Namespace, result.Slug)
+	if err != nil {
+		t.Fatalf("GetPluginChecksumsByPlugin after uninstall: %v", err)
+	}
+	if len(checksums) != 0 {
+		t.Fatalf("expected 0 checksums after uninstall, got %d", len(checksums))
+	}
+}
+
+func TestInstallFromPath_ChecksumsMatchDisk(t *testing.T) {
+	inst, store, ctx, pluginDir := newTestInstaller(t)
+
+	manifest := toolHandlerManifest("disk-match", "1.0.0")
+	extraFiles := map[string]string{
+		"main.js":     "console.log('disk-match')",
+		"lib/util.js": "module.exports = { v: 1 }",
+	}
+	dir := createPluginDir(t, manifest, extraFiles)
+
+	result, err := inst.InstallFromPath(ctx, dir)
+	if err != nil {
+		t.Fatalf("InstallFromPath: %v", err)
+	}
+
+	checksums, err := store.GetPluginChecksumsByPlugin(ctx, result.Namespace, result.Slug)
+	if err != nil {
+		t.Fatalf("GetPluginChecksumsByPlugin: %v", err)
+	}
+
+	installedDir := filepath.Join(pluginDir, result.Namespace, result.Slug)
+
+	checksumSet := make(map[string]string, len(checksums))
+	for _, c := range checksums {
+		checksumSet[c.FilePath] = c.SHA256
+		diskPath := filepath.Join(installedDir, filepath.FromSlash(c.FilePath))
+		data, err := os.ReadFile(diskPath)
+		if err != nil {
+			t.Fatalf("read installed file %s: %v", c.FilePath, err)
+		}
+		h := sha256.Sum256(data)
+		diskHash := hex.EncodeToString(h[:])
+		if diskHash != c.SHA256 {
+			t.Errorf("checksum mismatch for %s: DB=%s, disk=%s", c.FilePath, c.SHA256, diskHash)
+		}
+	}
+
+	// Reverse check: verify all disk files are represented in DB checksums
+	diskChecksums, err := computeChecksums(context.Background(), installedDir)
+	if err != nil {
+		t.Fatalf("computeChecksums on installed dir: %v", err)
+	}
+	if len(diskChecksums) != len(checksums) {
+		t.Errorf("disk has %d files but DB has %d checksums", len(diskChecksums), len(checksums))
+	}
+	for path := range diskChecksums {
+		if _, ok := checksumSet[path]; !ok {
+			t.Errorf("file %s exists on disk but has no checksum in DB", path)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Installer checksum rollback tests
+// ---------------------------------------------------------------------------
+
+func TestInstallFromPath_ComputeChecksumsError_CleansUp(t *testing.T) {
+	inst, store, ctx, pluginDir := newTestInstaller(t)
+
+	// Override computeChecksums to simulate failure after copyDir + InsertInstalledPlugin succeed
+	inst.computeChecksums = func(_ context.Context, _ string) (map[string]string, error) {
+		return nil, fmt.Errorf("simulated checksum failure")
+	}
+
+	manifest := toolHandlerManifest("cleanup-chk-err", "1.0.0")
+	dir := createPluginDir(t, manifest, map[string]string{
+		"main.js": "console.log('test')",
+	})
+
+	_, err := inst.InstallFromPath(ctx, dir)
+	if err == nil {
+		t.Fatal("expected error from computeChecksums failure")
+	}
+	if !strings.Contains(err.Error(), "simulated checksum failure") {
+		t.Errorf("expected simulated error in message, got: %v", err)
+	}
+
+	// Verify cleanup: plugin directory removed
+	destDir := filepath.Join(pluginDir, "others", "cleanup-chk-err")
+	if _, statErr := os.Stat(destDir); !os.IsNotExist(statErr) {
+		t.Errorf("plugin directory should be cleaned up after failed install, stat err: %v", statErr)
+	}
+
+	// Verify cleanup: DB record removed
+	_, dbErr := store.GetInstalledPlugin(ctx, "others", "cleanup-chk-err")
+	if dbErr == nil {
+		t.Error("DB record should be cleaned up after failed install")
+	}
+	if !configstore.IsNotFound(dbErr) {
+		t.Errorf("expected NotFoundError, got: %v", dbErr)
+	}
+}
+
+func TestInstallFromPath_SetChecksumsError_CleansUp(t *testing.T) {
+	inst, store, ctx, pluginDir := newTestInstaller(t)
+
+	// Override computeChecksums to return invalid data that SetPluginChecksums rejects
+	// (hash is not 64-char hex, so store validation fails)
+	inst.computeChecksums = func(_ context.Context, _ string) (map[string]string, error) {
+		return map[string]string{"file.txt": "not-valid-hex"}, nil
+	}
+
+	manifest := toolHandlerManifest("cleanup-set-err", "1.0.0")
+	dir := createPluginDir(t, manifest, map[string]string{
+		"main.js": "console.log('test')",
+	})
+
+	_, err := inst.InstallFromPath(ctx, dir)
+	if err == nil {
+		t.Fatal("expected error from SetPluginChecksums failure")
+	}
+	if !strings.Contains(err.Error(), "store checksums") {
+		t.Errorf("expected 'store checksums' in error, got: %v", err)
+	}
+
+	// Verify cleanup: plugin directory removed
+	destDir := filepath.Join(pluginDir, "others", "cleanup-set-err")
+	if _, statErr := os.Stat(destDir); !os.IsNotExist(statErr) {
+		t.Errorf("plugin directory should be cleaned up after failed install, stat err: %v", statErr)
+	}
+
+	// Verify cleanup: DB record removed
+	_, dbErr := store.GetInstalledPlugin(ctx, "others", "cleanup-set-err")
+	if dbErr == nil {
+		t.Error("DB record should be cleaned up after failed install")
+	}
+	if !configstore.IsNotFound(dbErr) {
+		t.Errorf("expected NotFoundError, got: %v", dbErr)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DB-error guard on pre-install check
+// ---------------------------------------------------------------------------
+
+func TestInstallFromPath_DBErrorOnPrecheck_ReturnsError(t *testing.T) {
+	inst, store, ctx, _ := newTestInstaller(t)
+
+	manifest := toolHandlerManifest("db-err-test", "1.0.0")
+	dir := createPluginDir(t, manifest, nil)
+
+	// Close DB so GetInstalledPlugin returns a real DB error (not NotFound)
+	store.Close()
+
+	_, err := inst.InstallFromPath(ctx, dir)
+	if err == nil {
+		t.Fatal("expected error when DB is closed")
+	}
+	if !strings.Contains(err.Error(), "check plugin") {
+		t.Errorf("expected 'check plugin' error from DB guard, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Cleanup-also-failed error composition
+// ---------------------------------------------------------------------------
+
+func TestInstallFromPath_CleanupAlsoFailed_SurfacesError(t *testing.T) {
+	inst, store, ctx, _ := newTestInstaller(t)
+
+	// Override computeChecksums: close DB (so DeleteInstalledPlugin fails
+	// during cleanup) then return an error to trigger the rollback path.
+	inst.computeChecksums = func(_ context.Context, _ string) (map[string]string, error) {
+		store.Close()
+		return nil, fmt.Errorf("simulated failure")
+	}
+
+	manifest := toolHandlerManifest("cleanup-fail", "1.0.0")
+	dir := createPluginDir(t, manifest, map[string]string{
+		"main.js": "console.log('test')",
+	})
+
+	_, err := inst.InstallFromPath(ctx, dir)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "simulated failure") {
+		t.Errorf("expected original error in message, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "cleanup also failed") {
+		t.Errorf("expected 'cleanup also failed' in message, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Cleanup-also-failed: filesystem removal failure
+// ---------------------------------------------------------------------------
+
+func TestInstallFromPath_CleanupFSFailed_SurfacesError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod-based test not reliable on Windows")
+	}
+	if os.Getuid() == 0 {
+		t.Skip("chmod-based test not reliable when running as root")
+	}
+
+	inst, _, ctx, _ := newTestInstaller(t)
+
+	// Override computeChecksums: make destDir non-writable so os.RemoveAll
+	// fails during cleanup, then return an error to trigger the rollback path.
+	inst.computeChecksums = func(_ context.Context, dir string) (map[string]string, error) {
+		os.Chmod(dir, 0o555)
+		t.Cleanup(func() { os.Chmod(dir, 0o755) })
+		return nil, fmt.Errorf("simulated failure")
+	}
+
+	manifest := toolHandlerManifest("cleanup-fs-fail", "1.0.0")
+	dir := createPluginDir(t, manifest, map[string]string{
+		"main.js": "console.log('test')",
+	})
+
+	_, err := inst.InstallFromPath(ctx, dir)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "simulated failure") {
+		t.Errorf("expected original error in message, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "cleanup also failed") {
+		t.Errorf("expected 'cleanup also failed' in message, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "remove dir") {
+		t.Errorf("expected 'remove dir' in cleanup error, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ctxReader — mid-stream cancellation
+// ---------------------------------------------------------------------------
+
+func TestCtxReader_CancelledDuringRead(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	r := &ctxReader{ctx: ctx, r: strings.NewReader("hello world")}
+
+	// First read succeeds (context still active)
+	buf := make([]byte, 5)
+	n, err := r.Read(buf)
+	if err != nil {
+		t.Fatalf("first read should succeed, got: %v", err)
+	}
+	if n != 5 || string(buf) != "hello" {
+		t.Fatalf("first read: got %d bytes %q, want 5 bytes \"hello\"", n, buf[:n])
+	}
+
+	// Cancel context
+	cancel()
+
+	// Next read returns context error without reading underlying reader
+	_, err = r.Read(buf)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled after cancel, got: %v", err)
 	}
 }
