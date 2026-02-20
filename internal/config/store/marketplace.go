@@ -270,44 +270,48 @@ func (s *Store) GetInstalledPlugin(ctx context.Context, namespace, slug string) 
 	return p, nil
 }
 
-// InsertInstalledPlugin records a newly installed plugin.
-func (s *Store) InsertInstalledPlugin(ctx context.Context, marketplaceID int64, slug, sourceURL string) error {
+// InsertInstalledPlugin records a newly installed plugin and returns its ID.
+func (s *Store) InsertInstalledPlugin(ctx context.Context, marketplaceID int64, slug, sourceURL string) (int64, error) {
 	if s.readOnly {
-		return fmt.Errorf("config: insert installed plugin: store opened read-only")
+		return 0, fmt.Errorf("config: insert installed plugin: store opened read-only")
 	}
 	slug = strings.TrimSpace(slug)
 	if slug == "" {
-		return fmt.Errorf("config: slug is required")
+		return 0, fmt.Errorf("config: slug is required")
 	}
 	if marketplaceID <= 0 {
-		return fmt.Errorf("config: invalid marketplace ID")
+		return 0, fmt.Errorf("config: invalid marketplace ID")
 	}
 
 	// Verify the marketplace belongs to this instance
 	var instanceOwner string
 	err := s.db.QueryRowContext(ctx, `SELECT instance_name FROM marketplaces WHERE id = ?`, marketplaceID).Scan(&instanceOwner)
 	if err != nil {
-		return fmt.Errorf("config: marketplace ID %d not found", marketplaceID)
+		return 0, fmt.Errorf("config: marketplace ID %d not found", marketplaceID)
 	}
 	if instanceOwner != s.instanceName {
-		return fmt.Errorf("config: marketplace ID %d does not belong to instance %q", marketplaceID, s.instanceName)
+		return 0, fmt.Errorf("config: marketplace ID %d does not belong to instance %q", marketplaceID, s.instanceName)
 	}
 
 	var src *string
 	if sourceURL != "" {
 		src = &sourceURL
 	}
-	_, err = s.db.ExecContext(ctx, `
+	result, err := s.db.ExecContext(ctx, `
 		INSERT INTO installed_plugins (marketplace_id, slug, source_url, installed_at, enabled)
 		VALUES (?, ?, ?, CURRENT_TIMESTAMP, 0)
 	`, marketplaceID, slug, src)
 	if err != nil {
 		if isSQLiteUniqueViolation(err) {
-			return fmt.Errorf("plugin %q already installed in this marketplace", slug)
+			return 0, fmt.Errorf("plugin %q already installed in this marketplace", slug)
 		}
-		return fmt.Errorf("config: insert installed plugin: %w", err)
+		return 0, fmt.Errorf("config: insert installed plugin: %w", err)
 	}
-	return nil
+	id, err := result.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("config: insert installed plugin: last insert id: %w", err)
+	}
+	return id, nil
 }
 
 // DeleteInstalledPlugin removes the tracking record for an installed plugin.

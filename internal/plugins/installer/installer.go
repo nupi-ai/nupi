@@ -249,7 +249,7 @@ func (inst *Installer) installFromDir(ctx context.Context, dir, namespace, expec
 	}
 
 	// Record in database (enabled = false)
-	if err := inst.store.InsertInstalledPlugin(ctx, mp.ID, slug, sourceURL); err != nil {
+	if _, err := inst.store.InsertInstalledPlugin(ctx, mp.ID, slug, sourceURL); err != nil {
 		os.RemoveAll(destDir)
 		return nil, fmt.Errorf("record installation: %w", err)
 	}

@@ -126,6 +126,14 @@ var schemaStatements = []string{
 		UNIQUE (marketplace_id, slug),
 		FOREIGN KEY (marketplace_id) REFERENCES marketplaces(id) ON DELETE CASCADE
 	)`,
+	`CREATE TABLE IF NOT EXISTS plugin_checksums (
+		plugin_id INTEGER NOT NULL,
+		file_path TEXT NOT NULL,
+		sha256 TEXT NOT NULL,
+		created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (plugin_id, file_path),
+		FOREIGN KEY (plugin_id) REFERENCES installed_plugins(id) ON DELETE CASCADE
+	)`,
 }
 
 // migrationStatements are ALTER TABLE statements applied after the initial schema.
