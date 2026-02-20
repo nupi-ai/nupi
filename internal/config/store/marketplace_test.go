@@ -443,7 +443,7 @@ func TestRemoveMarketplace_BlockedByInstalledPlugins(t *testing.T) {
 	}
 
 	// Install a plugin into this marketplace
-	if err := store.InsertInstalledPlugin(ctx, m.ID, "my-plugin", "https://example.com/plugin.tar.gz"); err != nil {
+	if _, err := store.InsertInstalledPlugin(ctx, m.ID, "my-plugin", "https://example.com/plugin.tar.gz"); err != nil {
 		t.Fatalf("install plugin: %v", err)
 	}
 
@@ -469,10 +469,10 @@ func TestRemoveMarketplace_BlockedByMultiplePlugins(t *testing.T) {
 	}
 
 	// Install two plugins
-	if err := store.InsertInstalledPlugin(ctx, m.ID, "plugin-a", ""); err != nil {
+	if _, err := store.InsertInstalledPlugin(ctx, m.ID, "plugin-a", ""); err != nil {
 		t.Fatalf("install plugin-a: %v", err)
 	}
-	if err := store.InsertInstalledPlugin(ctx, m.ID, "plugin-b", ""); err != nil {
+	if _, err := store.InsertInstalledPlugin(ctx, m.ID, "plugin-b", ""); err != nil {
 		t.Fatalf("install plugin-b: %v", err)
 	}
 
@@ -500,7 +500,7 @@ func TestRemoveMarketplace_SucceedsAfterPluginUninstall(t *testing.T) {
 		t.Fatalf("add marketplace: %v", err)
 	}
 
-	if err := store.InsertInstalledPlugin(ctx, m.ID, "blocker", ""); err != nil {
+	if _, err := store.InsertInstalledPlugin(ctx, m.ID, "blocker", ""); err != nil {
 		t.Fatalf("install plugin: %v", err)
 	}
 
@@ -657,7 +657,7 @@ func TestInsertInstalledPlugin_Success(t *testing.T) {
 		t.Fatalf("get marketplace: %v", err)
 	}
 
-	if err := store.InsertInstalledPlugin(ctx, m.ID, "test-plugin", "https://example.com/plugin.tar.gz"); err != nil {
+	if _, err := store.InsertInstalledPlugin(ctx, m.ID, "test-plugin", "https://example.com/plugin.tar.gz"); err != nil {
 		t.Fatalf("insert plugin: %v", err)
 	}
 
@@ -695,7 +695,7 @@ func TestInsertInstalledPlugin_EmptySourceURL(t *testing.T) {
 		t.Fatalf("get marketplace: %v", err)
 	}
 
-	if err := store.InsertInstalledPlugin(ctx, m.ID, "local-plugin", ""); err != nil {
+	if _, err := store.InsertInstalledPlugin(ctx, m.ID, "local-plugin", ""); err != nil {
 		t.Fatalf("insert plugin with empty URL: %v", err)
 	}
 
@@ -717,11 +717,11 @@ func TestInsertInstalledPlugin_DuplicateSlug(t *testing.T) {
 		t.Fatalf("get marketplace: %v", err)
 	}
 
-	if err := store.InsertInstalledPlugin(ctx, m.ID, "dup-plugin", ""); err != nil {
+	if _, err := store.InsertInstalledPlugin(ctx, m.ID, "dup-plugin", ""); err != nil {
 		t.Fatalf("first insert: %v", err)
 	}
 
-	err = store.InsertInstalledPlugin(ctx, m.ID, "dup-plugin", "")
+	_, err = store.InsertInstalledPlugin(ctx, m.ID, "dup-plugin", "")
 	if err == nil {
 		t.Fatalf("expected error for duplicate slug")
 	}
@@ -739,7 +739,7 @@ func TestInsertInstalledPlugin_EmptySlug(t *testing.T) {
 		t.Fatalf("get marketplace: %v", err)
 	}
 
-	err = store.InsertInstalledPlugin(ctx, m.ID, "", "")
+	_, err = store.InsertInstalledPlugin(ctx, m.ID, "", "")
 	if err == nil {
 		t.Fatalf("expected error for empty slug")
 	}
@@ -757,7 +757,7 @@ func TestInsertInstalledPlugin_WhitespaceSlug(t *testing.T) {
 		t.Fatalf("get marketplace: %v", err)
 	}
 
-	err = store.InsertInstalledPlugin(ctx, m.ID, "   ", "")
+	_, err = store.InsertInstalledPlugin(ctx, m.ID, "   ", "")
 	if err == nil {
 		t.Fatalf("expected error for whitespace-only slug")
 	}
@@ -770,7 +770,7 @@ func TestInsertInstalledPlugin_InvalidMarketplaceID(t *testing.T) {
 	t.Parallel()
 	store, ctx := openTestStore(t)
 
-	err := store.InsertInstalledPlugin(ctx, 0, "plugin", "")
+	_, err := store.InsertInstalledPlugin(ctx, 0, "plugin", "")
 	if err == nil {
 		t.Fatalf("expected error for zero marketplace ID")
 	}
@@ -778,7 +778,7 @@ func TestInsertInstalledPlugin_InvalidMarketplaceID(t *testing.T) {
 		t.Fatalf("expected 'invalid marketplace ID' error, got: %v", err)
 	}
 
-	err = store.InsertInstalledPlugin(ctx, -1, "plugin", "")
+	_, err = store.InsertInstalledPlugin(ctx, -1, "plugin", "")
 	if err == nil {
 		t.Fatalf("expected error for negative marketplace ID")
 	}
@@ -791,7 +791,7 @@ func TestInsertInstalledPlugin_NonexistentMarketplaceID(t *testing.T) {
 	t.Parallel()
 	store, ctx := openTestStore(t)
 
-	err := store.InsertInstalledPlugin(ctx, 99999, "plugin", "")
+	_, err := store.InsertInstalledPlugin(ctx, 99999, "plugin", "")
 	if err == nil {
 		t.Fatalf("expected error for nonexistent marketplace ID")
 	}
@@ -804,7 +804,7 @@ func TestInsertInstalledPlugin_ReadOnly(t *testing.T) {
 	t.Parallel()
 	store, ctx := openReadOnlyTestStore(t)
 
-	err := store.InsertInstalledPlugin(ctx, 1, "plugin", "")
+	_, err := store.InsertInstalledPlugin(ctx, 1, "plugin", "")
 	if err == nil {
 		t.Fatalf("expected error in read-only mode")
 	}
@@ -844,10 +844,10 @@ func TestListInstalledPlugins_MultipleMarketplaces(t *testing.T) {
 	}
 
 	// Install plugins across marketplaces
-	if err := store.InsertInstalledPlugin(ctx, nupi.ID, "nupi-plugin", "https://example.com/nupi.tar.gz"); err != nil {
+	if _, err := store.InsertInstalledPlugin(ctx, nupi.ID, "nupi-plugin", "https://example.com/nupi.tar.gz"); err != nil {
 		t.Fatalf("insert nupi plugin: %v", err)
 	}
-	if err := store.InsertInstalledPlugin(ctx, others.ID, "other-plugin", ""); err != nil {
+	if _, err := store.InsertInstalledPlugin(ctx, others.ID, "other-plugin", ""); err != nil {
 		t.Fatalf("insert other plugin: %v", err)
 	}
 
@@ -878,10 +878,10 @@ func TestListInstalledPlugins_OrderedByNamespaceThenSlug(t *testing.T) {
 	}
 
 	// Insert in reverse alphabetical order
-	if err := store.InsertInstalledPlugin(ctx, nupi.ID, "zebra", ""); err != nil {
+	if _, err := store.InsertInstalledPlugin(ctx, nupi.ID, "zebra", ""); err != nil {
 		t.Fatalf("insert zebra: %v", err)
 	}
-	if err := store.InsertInstalledPlugin(ctx, nupi.ID, "alpha", ""); err != nil {
+	if _, err := store.InsertInstalledPlugin(ctx, nupi.ID, "alpha", ""); err != nil {
 		t.Fatalf("insert alpha: %v", err)
 	}
 
@@ -913,7 +913,7 @@ func TestGetInstalledPlugin_Success(t *testing.T) {
 		t.Fatalf("get marketplace: %v", err)
 	}
 
-	if err := store.InsertInstalledPlugin(ctx, m.ID, "fetch-plugin", "https://example.com/fetch.tar.gz"); err != nil {
+	if _, err := store.InsertInstalledPlugin(ctx, m.ID, "fetch-plugin", "https://example.com/fetch.tar.gz"); err != nil {
 		t.Fatalf("insert plugin: %v", err)
 	}
 
@@ -954,7 +954,7 @@ func TestGetInstalledPlugin_WrongNamespace(t *testing.T) {
 		t.Fatalf("get marketplace: %v", err)
 	}
 
-	if err := store.InsertInstalledPlugin(ctx, m.ID, "ns-plugin", ""); err != nil {
+	if _, err := store.InsertInstalledPlugin(ctx, m.ID, "ns-plugin", ""); err != nil {
 		t.Fatalf("insert plugin: %v", err)
 	}
 
@@ -1007,7 +1007,7 @@ func TestDeleteInstalledPlugin_Success(t *testing.T) {
 		t.Fatalf("get marketplace: %v", err)
 	}
 
-	if err := store.InsertInstalledPlugin(ctx, m.ID, "del-plugin", ""); err != nil {
+	if _, err := store.InsertInstalledPlugin(ctx, m.ID, "del-plugin", ""); err != nil {
 		t.Fatalf("insert plugin: %v", err)
 	}
 
@@ -1088,7 +1088,7 @@ func TestSetPluginEnabled_Toggle(t *testing.T) {
 		t.Fatalf("get marketplace: %v", err)
 	}
 
-	if err := store.InsertInstalledPlugin(ctx, m.ID, "toggle-plugin", ""); err != nil {
+	if _, err := store.InsertInstalledPlugin(ctx, m.ID, "toggle-plugin", ""); err != nil {
 		t.Fatalf("insert plugin: %v", err)
 	}
 
@@ -1187,7 +1187,7 @@ func TestSetPluginEnabled_IdempotentEnable(t *testing.T) {
 		t.Fatalf("get marketplace: %v", err)
 	}
 
-	if err := store.InsertInstalledPlugin(ctx, m.ID, "idem-plugin", ""); err != nil {
+	if _, err := store.InsertInstalledPlugin(ctx, m.ID, "idem-plugin", ""); err != nil {
 		t.Fatalf("insert plugin: %v", err)
 	}
 
@@ -1239,13 +1239,13 @@ func TestCountInstalledPluginsByMarketplace_WithPlugins(t *testing.T) {
 		t.Fatalf("get marketplace: %v", err)
 	}
 
-	if err := store.InsertInstalledPlugin(ctx, m.ID, "count-a", ""); err != nil {
+	if _, err := store.InsertInstalledPlugin(ctx, m.ID, "count-a", ""); err != nil {
 		t.Fatalf("insert plugin-a: %v", err)
 	}
-	if err := store.InsertInstalledPlugin(ctx, m.ID, "count-b", ""); err != nil {
+	if _, err := store.InsertInstalledPlugin(ctx, m.ID, "count-b", ""); err != nil {
 		t.Fatalf("insert plugin-b: %v", err)
 	}
-	if err := store.InsertInstalledPlugin(ctx, m.ID, "count-c", ""); err != nil {
+	if _, err := store.InsertInstalledPlugin(ctx, m.ID, "count-c", ""); err != nil {
 		t.Fatalf("insert plugin-c: %v", err)
 	}
 
@@ -1272,13 +1272,13 @@ func TestCountInstalledPluginsByMarketplace_IsolatedPerMarketplace(t *testing.T)
 	}
 
 	// Install 2 in ai.nupi, 1 in others
-	if err := store.InsertInstalledPlugin(ctx, nupi.ID, "p1", ""); err != nil {
+	if _, err := store.InsertInstalledPlugin(ctx, nupi.ID, "p1", ""); err != nil {
 		t.Fatalf("insert p1: %v", err)
 	}
-	if err := store.InsertInstalledPlugin(ctx, nupi.ID, "p2", ""); err != nil {
+	if _, err := store.InsertInstalledPlugin(ctx, nupi.ID, "p2", ""); err != nil {
 		t.Fatalf("insert p2: %v", err)
 	}
-	if err := store.InsertInstalledPlugin(ctx, others.ID, "p3", ""); err != nil {
+	if _, err := store.InsertInstalledPlugin(ctx, others.ID, "p3", ""); err != nil {
 		t.Fatalf("insert p3: %v", err)
 	}
 
@@ -1321,10 +1321,10 @@ func TestCountInstalledPluginsByMarketplace_DecreasesAfterDelete(t *testing.T) {
 		t.Fatalf("get marketplace: %v", err)
 	}
 
-	if err := store.InsertInstalledPlugin(ctx, m.ID, "will-delete", ""); err != nil {
+	if _, err := store.InsertInstalledPlugin(ctx, m.ID, "will-delete", ""); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	if err := store.InsertInstalledPlugin(ctx, m.ID, "will-keep", ""); err != nil {
+	if _, err := store.InsertInstalledPlugin(ctx, m.ID, "will-keep", ""); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
 
@@ -1364,10 +1364,10 @@ func TestSameSlugDifferentMarketplaces(t *testing.T) {
 	}
 
 	// Same slug in different marketplaces should be allowed
-	if err := store.InsertInstalledPlugin(ctx, nupi.ID, "shared-slug", "https://nupi.example.com"); err != nil {
+	if _, err := store.InsertInstalledPlugin(ctx, nupi.ID, "shared-slug", "https://nupi.example.com"); err != nil {
 		t.Fatalf("insert into ai.nupi: %v", err)
 	}
-	if err := store.InsertInstalledPlugin(ctx, others.ID, "shared-slug", "https://other.example.com"); err != nil {
+	if _, err := store.InsertInstalledPlugin(ctx, others.ID, "shared-slug", "https://other.example.com"); err != nil {
 		t.Fatalf("insert into others: %v", err)
 	}
 
@@ -1427,7 +1427,7 @@ func TestMarketplaceAndPluginPersistAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("add marketplace: %v", err)
 	}
-	if err := store1.InsertInstalledPlugin(ctx, added.ID, "persist-plugin", "https://persist.example.com/p.tar.gz"); err != nil {
+	if _, err := store1.InsertInstalledPlugin(ctx, added.ID, "persist-plugin", "https://persist.example.com/p.tar.gz"); err != nil {
 		t.Fatalf("insert plugin: %v", err)
 	}
 	if err := store1.SetPluginEnabled(ctx, "persist.test", "persist-plugin", true); err != nil {
