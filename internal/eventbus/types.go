@@ -1,6 +1,8 @@
 package eventbus
 
 import (
+	"fmt"
+	"strings"
 	"time"
 )
 
@@ -145,6 +147,25 @@ type ConversationTurn struct {
 	Text   string
 	At     time.Time
 	Meta   map[string]string
+}
+
+// SerializeTurns formats conversation turns as readable text for AI prompts.
+// Each turn is formatted as "[origin] text" on its own line.
+func SerializeTurns(turns []ConversationTurn) string {
+	var sb strings.Builder
+	for _, t := range turns {
+		origin := "user"
+		switch t.Origin {
+		case OriginAI:
+			origin = "assistant"
+		case OriginTool:
+			origin = "tool"
+		case OriginSystem:
+			origin = "system"
+		}
+		fmt.Fprintf(&sb, "[%s] %s\n", origin, t.Text)
+	}
+	return strings.TrimRight(sb.String(), "\n")
 }
 
 // ConversationMessage represents the new message that triggered the prompt.
@@ -485,6 +506,10 @@ type BridgeDiagnosticEvent struct {
 	// Extra contains additional diagnostic data (e.g., field that failed validation).
 	Extra map[string]string
 }
+
+// DefaultFlushTimeout is the default timeout for memory flush operations.
+// Shared between awareness and conversation services to keep them in sync.
+const DefaultFlushTimeout = 30 * time.Second
 
 // MemoryFlushRequestEvent asks the awareness service to save important context
 // before conversation compaction discards old turns.

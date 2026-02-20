@@ -51,3 +51,33 @@ func TestEmbeddedPromptFilesMatchTemplateKeys(t *testing.T) {
 		t.Errorf("mismatch: %d prompt files vs %d template keys", len(fileKeys), len(defaultPromptTemplates))
 	}
 }
+
+func TestPromptEventDescriptionsSyncWithTemplates(t *testing.T) {
+	templates := DefaultPromptTemplates()
+	descriptions := PromptEventDescriptions()
+
+	for key := range templates {
+		if _, ok := descriptions[key]; !ok {
+			t.Errorf("template key %q has no entry in promptEventDescriptions", key)
+		}
+	}
+	for key := range descriptions {
+		if _, ok := templates[key]; !ok {
+			t.Errorf("description key %q has no entry in defaultPromptTemplates", key)
+		}
+	}
+}
+
+func TestDefaultPromptTemplatesIncludesMemoryFlush(t *testing.T) {
+	templates := DefaultPromptTemplates()
+	content, ok := templates["memory_flush"]
+	if !ok {
+		t.Fatal("expected memory_flush key in DefaultPromptTemplates")
+	}
+	if !strings.Contains(content, "NO_REPLY") {
+		t.Error("memory_flush template should mention NO_REPLY instruction")
+	}
+	if !strings.Contains(content, "{{.history}}") {
+		t.Error("memory_flush template should use {{.history}} placeholder")
+	}
+}
