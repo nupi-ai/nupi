@@ -359,21 +359,22 @@ export default function SessionTerminalScreen() {
         </Text>
         <Pressable
           onPress={handleRetryStream}
-          style={[
+          style={({ pressed }) => [
             styles.button,
-            { backgroundColor: Colors[colorScheme].tint },
+            { backgroundColor: Colors[colorScheme].tint, opacity: pressed ? 0.7 : 1 },
           ]}
           accessibilityRole="button"
           accessibilityLabel="Retry connection"
+          accessibilityHint="Attempts to reconnect the WebSocket stream"
           testID="retry-stream-button"
         >
           <Text style={[styles.buttonText, { color: Colors[colorScheme].background }]}>Retry</Text>
         </Pressable>
         <Pressable
           onPress={() => router.push("/scan")}
-          style={[
+          style={({ pressed }) => [
             styles.goBackButton,
-            { borderColor: Colors[colorScheme].tint },
+            { borderColor: Colors[colorScheme].tint, opacity: pressed ? 0.7 : 1 },
           ]}
           accessibilityRole="button"
           accessibilityLabel="Re-pair by scanning QR code"
@@ -383,13 +384,27 @@ export default function SessionTerminalScreen() {
           <Text style={[styles.buttonText, { color: Colors[colorScheme].tint }]}>Re-pair (scan QR)</Text>
         </Pressable>
         <Pressable
-          onPress={handleGoBack}
-          style={[
+          onPress={() => router.push("/(tabs)/settings")}
+          style={({ pressed }) => [
             styles.goBackButton,
-            { borderColor: Colors[colorScheme].tint },
+            { borderColor: Colors[colorScheme].tint, opacity: pressed ? 0.7 : 1 },
+          ]}
+          accessibilityRole="button"
+          accessibilityLabel="Go to settings"
+          accessibilityHint="View connection details and manage pairing"
+          testID="session-go-to-settings-button"
+        >
+          <Text style={[styles.buttonText, { color: Colors[colorScheme].tint }]}>Go to Settings</Text>
+        </Pressable>
+        <Pressable
+          onPress={handleGoBack}
+          style={({ pressed }) => [
+            styles.goBackButton,
+            { borderColor: Colors[colorScheme].tint, opacity: pressed ? 0.7 : 1 },
           ]}
           accessibilityRole="button"
           accessibilityLabel="Go back to session list"
+          accessibilityHint="Returns to the session list screen"
           testID="go-back-button"
         >
           <Text style={[styles.buttonText, { color: Colors[colorScheme].tint }]}>Go Back</Text>

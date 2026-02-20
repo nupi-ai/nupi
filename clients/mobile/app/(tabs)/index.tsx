@@ -108,6 +108,24 @@ export default function HomeScreen() {
         </Pressable>
       )}
 
+      {showScanButton && connection.error && (
+        <Pressable
+          style={({ pressed }) => [
+            styles.settingsButton,
+            { borderColor: colors.tint, opacity: pressed ? 0.7 : 1 },
+          ]}
+          onPress={() => router.push("/(tabs)/settings")}
+          accessibilityRole="button"
+          accessibilityLabel="Go to settings"
+          accessibilityHint="View connection details and manage pairing"
+          testID="home-go-to-settings-button"
+        >
+          <Text style={[styles.settingsButtonText, { color: colors.tint }]}>
+            Go to Settings
+          </Text>
+        </Pressable>
+      )}
+
       {connection.status === "connected" && (
         <Pressable
           style={({ pressed }) => [
@@ -199,6 +217,17 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   disconnectText: {
+    fontSize: 16,
+    fontWeight: "600",
+  },
+  settingsButton: {
+    marginTop: 12,
+    paddingHorizontal: 24,
+    paddingVertical: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  settingsButtonText: {
     fontSize: 16,
     fontWeight: "600",
   },
