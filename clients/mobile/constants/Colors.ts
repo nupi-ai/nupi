@@ -10,7 +10,10 @@ export default {
     success: "#22c55e",
     warning: "#eab308",
     onWarning: "#000",
+    onDanger: "#fff",
     surface: "#f0f0f0",
+    overlay: "rgba(0,0,0,0.5)",
+    onOverlay: "#fff",
     terminalBackground: "#262626",
   },
   dark: {
@@ -21,7 +24,10 @@ export default {
     success: "#22c55e",
     warning: "#eab308",
     onWarning: "#000",
+    onDanger: "#fff",
     surface: "#1c1c1e",
+    overlay: "rgba(0,0,0,0.7)",
+    onOverlay: "#fff",
     terminalBackground: "#262626",
   },
 };

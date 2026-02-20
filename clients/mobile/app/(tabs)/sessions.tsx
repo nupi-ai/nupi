@@ -8,7 +8,6 @@ import {
   View as RNView,
 } from "react-native";
 import { router } from "expo-router";
-import { ConnectError, Code } from "@connectrpc/connect";
 
 import type { Session } from "@/lib/gen/nupi_pb";
 import Colors from "@/constants/Colors";
@@ -16,30 +15,12 @@ import { useColorScheme } from "@/components/useColorScheme";
 import { Text, View } from "@/components/Themed";
 import { useConnection } from "@/lib/ConnectionContext";
 import { SessionItem } from "@/components/SessionItem";
-
-function mapSessionsError(err: unknown): string {
-  if (err instanceof ConnectError) {
-    switch (err.code) {
-      case Code.Unauthenticated:
-        return "Session expired \u2014 please re-pair.";
-      case Code.PermissionDenied:
-        return "Permission denied \u2014 please re-pair.";
-      case Code.Unavailable:
-        return "Cannot reach nupid.";
-      default:
-        return `Error: ${err.message}`;
-    }
-  }
-  if (err instanceof Error) {
-    return `Connection error: ${err.message}`;
-  }
-  return "An unexpected error occurred.";
-}
+import { mapConnectionError } from "@/lib/errorMessages";
 
 export default function SessionsScreen() {
   const colorScheme = useColorScheme() ?? "light";
   const colors = Colors[colorScheme];
-  const { status, client } = useConnection();
+  const { status, client, reconnecting, reconnectAttempts } = useConnection();
 
   const [sessions, setSessions] = useState<Session[]>([]);
   const [loading, setLoading] = useState(false);
@@ -58,7 +39,7 @@ export default function SessionsScreen() {
       }
     } catch (err) {
       if (mountedRef.current) {
-        setError(mapSessionsError(err));
+        setError(mapConnectionError(err).message);
       }
     }
   }, [client]);
@@ -68,6 +49,7 @@ export default function SessionsScreen() {
     mountedRef.current = true;
 
     if (status === "connected" && client) {
+      setError(null);
       setLoading(true);
       hasFetchedRef.current = true;
       fetchSessions().finally(() => {
@@ -97,7 +79,7 @@ export default function SessionsScreen() {
   }, [status, fetchSessions]);
 
   // Not connected state
-  if (status !== "connected" && !hasFetchedRef.current) {
+  if (status !== "connected" && !hasFetchedRef.current && !reconnecting) {
     return (
       <View style={styles.centered}>
         <Text style={styles.emptyText}>
@@ -121,7 +103,7 @@ export default function SessionsScreen() {
   }
 
   // Error state with retry (or reconnect hint when disconnected)
-  if (error && sessions.length === 0) {
+  if (error && sessions.length === 0 && !reconnecting) {
     return (
       <View style={styles.centered}>
         <Text style={[styles.errorText, { color: colors.danger }]}>
@@ -137,6 +119,7 @@ export default function SessionsScreen() {
             accessibilityRole="button"
             accessibilityLabel="Retry loading sessions"
             accessibilityHint="Attempts to fetch the session list again"
+            testID="retry-sessions-button"
           >
             <Text style={[styles.retryButtonText, { color: colors.background }]}>
               Retry
@@ -155,21 +138,31 @@ export default function SessionsScreen() {
 
   return (
     <View style={styles.container}>
-      {/* Offline banner — black text on yellow for WCAG contrast */}
-      {isOffline && (
-        <RNView style={[styles.offlineBanner, { backgroundColor: colors.warning }]}>
-          <Text style={[styles.offlineBannerText, { color: "#000" }]}>
-            {status === "connecting"
-              ? "Reconnecting\u2026"
-              : "Offline \u2014 showing last known sessions"}
+      {/* Reconnecting/Offline banner — black text on yellow for WCAG contrast */}
+      {(isOffline || reconnecting) && (
+        <RNView
+          style={[styles.offlineBanner, { backgroundColor: colors.warning }]}
+          accessibilityRole="alert"
+        >
+          <Text style={[styles.offlineBannerText, { color: colors.onWarning }]}>
+            {reconnecting
+              ? reconnectAttempts > 0
+                ? `Reconnecting\u2026 (attempt ${reconnectAttempts}/3)`
+                : "Reconnecting\u2026"
+              : status === "connecting"
+                ? "Reconnecting\u2026"
+                : "Offline \u2014 showing last known sessions"}
           </Text>
         </RNView>
       )}
 
       {/* Error banner — white text on red for WCAG contrast */}
-      {error && sessions.length > 0 && (
-        <RNView style={[styles.offlineBanner, { backgroundColor: colors.danger }]}>
-          <Text style={[styles.offlineBannerText, { color: "#fff" }]}>
+      {error && sessions.length > 0 && !reconnecting && (
+        <RNView
+          style={[styles.offlineBanner, { backgroundColor: colors.danger }]}
+          accessibilityRole="alert"
+        >
+          <Text style={[styles.offlineBannerText, { color: colors.onDanger }]}>
             {error}
           </Text>
         </RNView>
