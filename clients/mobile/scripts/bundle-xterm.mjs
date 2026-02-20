@@ -74,6 +74,10 @@ function initTerminal() {
   terminal.open(document.getElementById("terminal"));
   fitAddon.fit();
 
+  document.getElementById("terminal").addEventListener("click", function() {
+    window.ReactNativeWebView.postMessage(JSON.stringify({ type: "tap" }));
+  });
+
   terminal.onData(function(data) {
     window.ReactNativeWebView.postMessage(JSON.stringify({ type: "input", data: data }));
   });
@@ -110,7 +114,7 @@ function handleMessage(event) {
         }
         break;
       case "resize_instruction":
-        if (terminal && msg.cols && msg.rows) {
+        if (terminal && msg.cols > 0 && msg.rows > 0) {
           terminal.resize(msg.cols, msg.rows);
         }
         break;
@@ -130,11 +134,21 @@ function handleMessage(event) {
           document.body.style.background = msg.background;
         }
         break;
+      case "focus_keyboard":
+        if (terminal) {
+          terminal.focus();
+        }
+        break;
+      case "blur_keyboard":
+        if (terminal) {
+          terminal.blur();
+        }
+        break;
     }
   } catch (e) {
     window.ReactNativeWebView.postMessage(JSON.stringify({
       type: "error",
-      message: "Bridge error: " + e.message
+      message: "Bridge error: " + (e.message || String(e))
     }));
   }
 }
@@ -148,7 +162,7 @@ try {
 } catch (e) {
   window.ReactNativeWebView.postMessage(JSON.stringify({
     type: "error",
-    message: "Init error: " + e.message
+    message: "Init error: " + (e.message || String(e))
   }));
 }
 \`;

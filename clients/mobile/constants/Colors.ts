@@ -1,4 +1,4 @@
-const tintColorLight = "#2f95dc";
+const tintColorLight = "#1977b5";
 const tintColorDark = "#fff";
 
 export default {
@@ -6,9 +6,10 @@ export default {
     text: "#000",
     background: "#fff",
     tint: tintColorLight,
-    danger: "#ff4444",
+    danger: "#dc2626",
     success: "#22c55e",
     warning: "#eab308",
+    onWarning: "#000",
     surface: "#f0f0f0",
     terminalBackground: "#262626",
   },
@@ -19,6 +20,7 @@ export default {
     danger: "#ff4444",
     success: "#22c55e",
     warning: "#eab308",
+    onWarning: "#000",
     surface: "#1c1c1e",
     terminalBackground: "#262626",
   },

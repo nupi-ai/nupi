@@ -1,14 +1,19 @@
-import { useLocalSearchParams, router } from "expo-router";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useLocalSearchParams, router, useNavigation } from "expo-router";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Keyboard,
+  KeyboardAvoidingView,
+  Platform,
   Pressable,
   StyleSheet,
   View as RNView,
 } from "react-native";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
+import { useHeaderHeight } from "@react-navigation/elements";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { SpecialKeysToolbar } from "@/components/SpecialKeysToolbar";
 import { Text } from "@/components/Themed";
 import { useColorScheme } from "@/components/useColorScheme";
 import Colors from "@/constants/Colors";
@@ -19,18 +24,34 @@ import {
   type WsEvent,
 } from "@/lib/useSessionStream";
 
+/** Reusable encoder — TextEncoder is stateless, no need to allocate per-call. */
+const textEncoder = new TextEncoder();
+
+/** Encode a string to an ArrayBuffer for binary WebSocket transmission. */
+function encodeToBuffer(data: string): ArrayBuffer {
+  return textEncoder.encode(data).buffer as ArrayBuffer;
+}
+
 export default function SessionTerminalScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const colorScheme = useColorScheme() ?? "dark";
+  const headerHeight = useHeaderHeight();
   const insets = useSafeAreaInsets();
   const webViewRef = useRef<WebView>(null);
-  const [webViewReady, setWebViewReady] = useState(false);
   const webViewReadyRef = useRef(false);
+  const navigation = useNavigation();
   const [sessionStopped, setSessionStopped] = useState(false);
+  const sessionStoppedRef = useRef(false);
   const [exitCode, setExitCode] = useState<string | null>(null);
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
+  const keyboardVisibleRef = useRef(false);
+  const [ctrlActive, setCtrlActive] = useState(false);
+  const ctrlActiveRef = useRef(false);
+  const [recoveryCrashCount, setRecoveryCrashCount] = useState(0);
   // Queue output received before the WebView is ready.
   const pendingOutputRef = useRef<string[]>([]);
   const pendingResizeRef = useRef<{ cols: number; rows: number } | null>(null);
+  const fitDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const sendToWebView = useCallback(
     (msg: Record<string, unknown>) => {
@@ -81,8 +102,10 @@ export default function SessionTerminalScreen() {
           sendToWebView({ type: "resize_instruction", cols, rows });
         }
       } else if (event.event_type === "stopped") {
+        sessionStoppedRef.current = true;
         setSessionStopped(true);
         setExitCode(event.data?.exit_code ?? null);
+        sendToWebView({ type: "blur_keyboard" });
       }
     },
     [sendToWebView]
@@ -107,45 +130,71 @@ export default function SessionTerminalScreen() {
         switch (msg.type) {
           case "ready":
             webViewReadyRef.current = true;
-            setWebViewReady(true);
             flushPending();
+            break;
+          case "tap":
+            // User tapped terminal area — focus to show keyboard.
+            if (!sessionStoppedRef.current) {
+              sendToWebView({ type: "focus_keyboard" });
+            }
             break;
           case "input":
             // Forward terminal keystrokes as binary WS frame.
-            if (msg.data) {
-              const encoder = new TextEncoder();
-              send(encoder.encode(msg.data).buffer as ArrayBuffer);
+            if (msg.data && !sessionStoppedRef.current) {
+              let inputData = msg.data;
+              // Apply Ctrl modifier from toolbar toggle.
+              if (ctrlActiveRef.current && inputData.length === 1) {
+                const upper = inputData.toUpperCase();
+                if (upper >= "A" && upper <= "Z") {
+                  inputData = String.fromCharCode(upper.charCodeAt(0) - 64);
+                  ctrlActiveRef.current = false;
+                  setCtrlActive(false);
+                }
+              }
+              send(encodeToBuffer(inputData));
             }
             break;
-          case "resize":
+          case "resize": {
+            if (sessionStoppedRef.current) break;
             // Forward resize as JSON text WS frame.
-            if (msg.cols && msg.rows) {
+            const resizeCols = msg.cols ?? 0;
+            const resizeRows = msg.rows ?? 0;
+            if (resizeCols > 0 && resizeRows > 0) {
               send(
                 JSON.stringify({
                   type: "resize",
-                  cols: msg.cols,
-                  rows: msg.rows,
+                  cols: resizeCols,
+                  rows: resizeRows,
                 })
               );
             }
             break;
+          }
           case "error":
             // Log bridge errors for debugging.
             console.warn("[xterm bridge]", msg.message);
             break;
         }
-      } catch {
-        // Ignore malformed messages.
+      } catch (e) {
+        if (!(e instanceof SyntaxError)) {
+          console.warn("[handleWebViewMessage]", e);
+        }
       }
     },
-    [send, flushPending]
+    [send, flushPending, sendToWebView]
   );
 
   const handleLayout = useCallback(() => {
-    if (webViewReady) {
-      webViewRef.current?.injectJavaScript("fitAddon.fit(); true;");
+    if (webViewReadyRef.current) {
+      if (fitDebounceRef.current) {
+        clearTimeout(fitDebounceRef.current);
+      }
+      fitDebounceRef.current = setTimeout(() => {
+        webViewRef.current?.injectJavaScript("fitAddon.fit(); true;");
+        fitDebounceRef.current = null;
+      }, 150);
     }
-  }, [webViewReady]);
+  }, []);
 
   const terminalHtml = useMemo(() => getTerminalHtml(), []);
 
@@ -156,6 +205,94 @@ export default function SessionTerminalScreen() {
       router.replace("/(tabs)/sessions");
     }
   }, []);
+
+  const toggleKeyboard = useCallback(() => {
+    if (keyboardVisibleRef.current) {
+      sendToWebView({ type: "blur_keyboard" });
+    } else {
+      sendToWebView({ type: "focus_keyboard" });
+    }
+  }, [sendToWebView]);
+
+  const handleSendInput = useCallback(
+    (data: string) => {
+      if (sessionStoppedRef.current) return;
+      send(encodeToBuffer(data));
+    },
+    [send]
+  );
+
+  const handleCtrlToggle = useCallback(() => {
+    const next = !ctrlActiveRef.current;
+    ctrlActiveRef.current = next;
+    setCtrlActive(next);
+  }, []);
+
+  const handleWebViewCrash = useCallback(() => {
+    console.warn("[WebView] process terminated — reloading");
+    webViewReadyRef.current = false;
+    pendingOutputRef.current = [];
+    pendingResizeRef.current = null;
+    setRecoveryCrashCount(c => c + 1);
+    webViewRef.current?.reload();
+  }, []);
+
+  // Auto-dismiss recovery notice after 4 seconds.
+  useEffect(() => {
+    if (recoveryCrashCount > 0) {
+      const timer = setTimeout(() => setRecoveryCrashCount(0), 4000);
+      return () => clearTimeout(timer);
+    }
+  }, [recoveryCrashCount]);
+
+  // Keyboard visibility tracking
+  useEffect(() => {
+    const showEvent = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
+    const hideEvent = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
+    const showSub = Keyboard.addListener(showEvent, () => {
+      keyboardVisibleRef.current = true;
+      setKeyboardVisible(true);
+    });
+    const hideSub = Keyboard.addListener(hideEvent, () => {
+      keyboardVisibleRef.current = false;
+      setKeyboardVisible(false);
+      // Reset Ctrl modifier so it doesn't silently persist across keyboard sessions.
+      ctrlActiveRef.current = false;
+      setCtrlActive(false);
+    });
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+      if (fitDebounceRef.current) {
+        clearTimeout(fitDebounceRef.current);
+      }
+    };
+  }, []);
+
+  // Header keyboard toggle button — only shown when terminal is active.
+  // Note: Terminal refit on keyboard show/hide is handled by onLayout on the WebView,
+  // which fires when KeyboardAvoidingView changes the WebView's layout dimensions.
+  useEffect(() => {
+    const showToggle = streamStatus === "connected" && !sessionStopped;
+    navigation.setOptions({
+      headerRight: showToggle
+        ? () => (
+            <Pressable
+              onPress={toggleKeyboard}
+              style={styles.headerButton}
+              accessibilityRole="button"
+              accessibilityLabel="Toggle keyboard"
+              testID="keyboard-toggle"
+              accessibilityState={{ expanded: keyboardVisible }}
+            >
+              <Text style={[styles.headerButtonText, { color: Colors[colorScheme].tint }]}>
+                {keyboardVisible ? "⌨\uFE0F\u2713" : "⌨\uFE0F"}
+              </Text>
+            </Pressable>
+          )
+        : undefined,
+    });
+  }, [navigation, toggleKeyboard, keyboardVisible, colorScheme, streamStatus, sessionStopped]);
 
   // Loading state: waiting for WebSocket connection.
   if (streamStatus === "connecting") {
@@ -196,6 +333,7 @@ export default function SessionTerminalScreen() {
           ]}
           accessibilityRole="button"
           accessibilityLabel="Go back to session list"
+          testID="go-back-button"
         >
           <Text style={[styles.buttonText, { color: Colors[colorScheme].background }]}>Go Back</Text>
         </Pressable>
@@ -204,7 +342,11 @@ export default function SessionTerminalScreen() {
   }
 
   return (
-    <RNView style={[styles.container, { backgroundColor: Colors[colorScheme].terminalBackground }]}>
+    <KeyboardAvoidingView
+      style={[styles.container, { backgroundColor: Colors[colorScheme].terminalBackground }]}
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      keyboardVerticalOffset={Platform.OS === "ios" ? headerHeight : 0}
+    >
       <WebView
         ref={webViewRef}
         source={{ html: terminalHtml }}
@@ -218,10 +360,34 @@ export default function SessionTerminalScreen() {
         overScrollMode="never"
         showsVerticalScrollIndicator={false}
         showsHorizontalScrollIndicator={false}
-        allowsInlineMediaPlayback={true}
-        mediaPlaybackRequiresUserAction={false}
+        keyboardDisplayRequiresUserAction={false}
+        hideKeyboardAccessoryView={true}
         accessibilityLabel="Terminal view for session"
+        onContentProcessDidTerminate={handleWebViewCrash}
+        onRenderProcessGone={handleWebViewCrash}
       />
+
+      {keyboardVisible && !sessionStopped && (
+        <SpecialKeysToolbar
+          onSendInput={handleSendInput}
+          ctrlActive={ctrlActive}
+          onCtrlToggle={handleCtrlToggle}
+        />
+      )}
+
+      {recoveryCrashCount > 0 && (
+        <RNView
+          style={[
+            styles.recoveryBanner,
+            { backgroundColor: Colors[colorScheme].warning },
+          ]}
+          accessibilityRole="alert"
+        >
+          <Text style={[styles.recoveryText, { color: Colors[colorScheme].onWarning }]}>
+            Terminal view recovered — history unavailable
+          </Text>
+        </RNView>
+      )}
 
       {sessionStopped && (
         <RNView
@@ -250,12 +416,13 @@ export default function SessionTerminalScreen() {
             ]}
             accessibilityRole="button"
             accessibilityLabel="Return to session list"
+            testID="back-to-sessions-button"
           >
             <Text style={[styles.buttonText, { color: Colors[colorScheme].background }]}>Back to Sessions</Text>
           </Pressable>
         </RNView>
       )}
-    </RNView>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -290,6 +457,20 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "600",
   },
+  recoveryBanner: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    alignItems: "center",
+    zIndex: 1,
+  },
+  recoveryText: {
+    fontSize: 13,
+    fontWeight: "600",
+  },
   stoppedBanner: {
     position: "absolute",
     bottom: 0,
@@ -300,6 +481,7 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+    zIndex: 1,
   },
   stoppedText: {
     fontSize: 14,
@@ -308,8 +490,15 @@ const styles = StyleSheet.create({
   },
   bannerButton: {
     paddingHorizontal: 16,
-    paddingVertical: 8,
+    paddingVertical: 12,
     borderRadius: 6,
     marginLeft: 12,
+  },
+  headerButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+  },
+  headerButtonText: {
+    fontSize: 20,
   },
 });
