@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/jsrunner"
 	"github.com/nupi-ai/nupi/internal/plugins"
 	pipelinecleaners "github.com/nupi-ai/nupi/internal/plugins/pipeline_cleaners"
+	toolhandlers "github.com/nupi-ai/nupi/internal/plugins/tool_handlers"
 )
 
 var (
@@ -796,5 +798,272 @@ func TestServiceHotRestartClearsStaleIndicesWhenBunDisappears(t *testing.T) {
 	}
 	if _, ok := svc.PipelinePluginFor("hotclean"); ok {
 		t.Fatal("stale pipeline plugin still present after hot-restart without Bun")
+	}
+}
+
+// --- IntegrityChecker Tests ---
+
+func TestServiceIntegrityCheckerRefusesPipelineCleaner(t *testing.T) {
+	skipIfNoBun(t)
+	t.Parallel()
+
+	root := t.TempDir()
+	writePlugin(t, root, "test", "refused-cleaner", "pipeline-cleaner", `module.exports = {
+  name: "refused-cleaner",
+  commands: ["refusedclean"],
+  transform: function(input) { return input; }
+};`)
+
+	svc := plugins.NewService(root)
+	svc.SetIntegrityChecker(func(namespace, slug, pluginDir string) error {
+		return fmt.Errorf("modified: main.js")
+	})
+	if err := svc.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(context.Background())
+
+	if _, ok := svc.PipelinePluginFor("refusedclean"); ok {
+		t.Fatal("expected pipeline plugin to be REFUSED by integrity checker")
+	}
+}
+
+func TestServiceIntegrityCheckerRefusesToolHandler(t *testing.T) {
+	skipIfNoBun(t)
+	t.Parallel()
+
+	root := t.TempDir()
+	writePlugin(t, root, "test", "refused-handler", "tool-handler", `module.exports = {
+  name: "refused-handler",
+  commands: ["refusedcmd"],
+  detect: function(output) { return output.includes("refusedcmd"); }
+};`)
+
+	svc := plugins.NewService(root)
+	svc.SetIntegrityChecker(func(namespace, slug, pluginDir string) error {
+		return fmt.Errorf("modified: main.js")
+	})
+	if err := svc.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(context.Background())
+
+	if _, ok := svc.ToolHandlerPluginFor("refusedcmd"); ok {
+		t.Fatal("expected tool handler to be REFUSED by integrity checker")
+	}
+}
+
+func TestServiceIntegrityCheckerPassAllowsLoad(t *testing.T) {
+	skipIfNoBun(t)
+	t.Parallel()
+
+	root := t.TempDir()
+	writePlugin(t, root, "test", "pass-cleaner", "pipeline-cleaner", `module.exports = {
+  name: "pass-cleaner",
+  commands: ["passcleancmd"],
+  transform: function(input) { return input; }
+};`)
+	writePlugin(t, root, "test", "pass-handler", "tool-handler", `module.exports = {
+  name: "pass-handler",
+  commands: ["passcmd"],
+  detect: function(output) { return output.includes("passcmd"); }
+};`)
+
+	svc := plugins.NewService(root)
+	svc.SetIntegrityChecker(func(namespace, slug, pluginDir string) error {
+		return nil // pass
+	})
+	if err := svc.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(context.Background())
+
+	if _, ok := svc.PipelinePluginFor("passcleancmd"); !ok {
+		t.Fatal("expected pipeline plugin to be loaded when integrity checker passes")
+	}
+	if _, ok := svc.ToolHandlerPluginFor("passcmd"); !ok {
+		t.Fatal("expected tool handler to be loaded when integrity checker passes")
+	}
+}
+
+func TestServiceIntegrityCheckerNilSkipsCheck(t *testing.T) {
+	skipIfNoBun(t)
+	t.Parallel()
+
+	root := t.TempDir()
+	writePlugin(t, root, "test", "nil-handler", "tool-handler", `module.exports = {
+  name: "nil-handler",
+  commands: ["nilcmd"],
+  detect: function(output) { return output.includes("nilcmd"); }
+};`)
+
+	svc := plugins.NewService(root)
+	// Do NOT set IntegrityChecker — it should remain nil
+	if err := svc.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(context.Background())
+
+	if _, ok := svc.ToolHandlerPluginFor("nilcmd"); !ok {
+		t.Fatal("expected tool handler to load when no integrity checker is set (backward compat)")
+	}
+}
+
+func TestServiceIntegrityCheckerReceivesCorrectArgs(t *testing.T) {
+	skipIfNoBun(t)
+	t.Parallel()
+
+	root := t.TempDir()
+	writePlugin(t, root, "check-ns", "check-slug", "tool-handler", `module.exports = {
+  name: "check-slug",
+  commands: ["checkcmd"],
+  detect: function(output) { return output.includes("checkcmd"); }
+};`)
+
+	var capturedNamespace, capturedSlug, capturedDir string
+	var captureOnce sync.Once
+	svc := plugins.NewService(root)
+	svc.SetIntegrityChecker(func(namespace, slug, pluginDir string) error {
+		captureOnce.Do(func() {
+			capturedNamespace = namespace
+			capturedSlug = slug
+			capturedDir = pluginDir
+		})
+		return nil
+	})
+	if err := svc.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(context.Background())
+
+	if capturedNamespace != "check-ns" {
+		t.Fatalf("expected namespace 'check-ns', got %q", capturedNamespace)
+	}
+	if capturedSlug != "check-slug" {
+		t.Fatalf("expected slug 'check-slug', got %q", capturedSlug)
+	}
+	expectedDirSuffix := filepath.Join("plugins", "check-ns", "check-slug")
+	if !strings.HasSuffix(capturedDir, expectedDirSuffix) {
+		t.Fatalf("expected pluginDir to end with %q, got %q", expectedDirSuffix, capturedDir)
+	}
+}
+
+func TestServiceIntegrityCheckerCalledAfterEnabledChecker(t *testing.T) {
+	skipIfNoBun(t)
+	t.Parallel()
+
+	root := t.TempDir()
+	writePlugin(t, root, "test", "order-handler", "tool-handler", `module.exports = {
+  name: "order-handler",
+  commands: ["ordercmd"],
+  detect: function(output) { return output.includes("ordercmd"); }
+};`)
+
+	integrityCalled := false
+	svc := plugins.NewService(root)
+	svc.SetEnabledChecker(func(namespace, slug string) bool {
+		return false // disabled — should skip before integrity check
+	})
+	svc.SetIntegrityChecker(func(namespace, slug, pluginDir string) error {
+		integrityCalled = true
+		return nil
+	})
+	if err := svc.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(context.Background())
+
+	if integrityCalled {
+		t.Fatal("expected integrity checker NOT to be called when plugin is disabled by enabled checker")
+	}
+	if _, ok := svc.ToolHandlerPluginFor("ordercmd"); ok {
+		t.Fatal("expected disabled plugin NOT to be loaded")
+	}
+}
+
+func TestServiceIntegrityCheckerExcludesFromIndex(t *testing.T) {
+	skipIfNoBun(t)
+	t.Parallel()
+
+	root := t.TempDir()
+	writePlugin(t, root, "test", "idx-refused", "tool-handler", `module.exports = {
+  name: "idx-refused",
+  commands: ["idxrefusedcmd"],
+  detect: function(output) { return output.includes("idxrefusedcmd"); }
+};`)
+
+	svc := plugins.NewService(root)
+	svc.SetIntegrityChecker(func(namespace, slug, pluginDir string) error {
+		return fmt.Errorf("tampered: main.js")
+	})
+	if err := svc.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(context.Background())
+
+	// Read handlers_index.json and verify the refused plugin's command is absent.
+	indexPath := filepath.Join(root, "plugins", "handlers_index.json")
+	index, err := toolhandlers.LoadIndex(indexPath)
+	if err != nil {
+		t.Fatalf("LoadIndex: %v", err)
+	}
+	if paths, ok := index["idxrefusedcmd"]; ok {
+		t.Fatalf("expected refused plugin command NOT in index, but found: %v", paths)
+	}
+}
+
+func TestServiceIntegrityCheckerExcludesFromIndexOnReload(t *testing.T) {
+	skipIfNoBun(t)
+	t.Parallel()
+
+	root := t.TempDir()
+	writePlugin(t, root, "test", "reload-refused", "tool-handler", `module.exports = {
+  name: "reload-refused",
+  commands: ["reloadrefusedcmd"],
+  detect: function(output) { return output.includes("reloadrefusedcmd"); }
+};`)
+
+	svc := plugins.NewService(root)
+
+	// Start without integrity checker — plugin loads normally.
+	if err := svc.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(context.Background())
+
+	if _, ok := svc.ToolHandlerPluginFor("reloadrefusedcmd"); !ok {
+		t.Fatal("expected tool handler to be loaded before integrity checker is set")
+	}
+
+	indexPath := filepath.Join(root, "plugins", "handlers_index.json")
+	index, err := toolhandlers.LoadIndex(indexPath)
+	if err != nil {
+		t.Fatalf("LoadIndex before reload: %v", err)
+	}
+	if _, ok := index["reloadrefusedcmd"]; !ok {
+		t.Fatal("expected command in index before reload")
+	}
+
+	// Now set integrity checker that refuses the plugin and reload.
+	svc.SetIntegrityChecker(func(namespace, slug, pluginDir string) error {
+		return fmt.Errorf("tampered: main.js")
+	})
+
+	if err := svc.Reload(); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+
+	// Tool handler should be refused after reload.
+	if _, ok := svc.ToolHandlerPluginFor("reloadrefusedcmd"); ok {
+		t.Fatal("expected tool handler to be REFUSED after reload with integrity checker")
+	}
+
+	// Index should no longer contain the refused command.
+	index, err = toolhandlers.LoadIndex(indexPath)
+	if err != nil {
+		t.Fatalf("LoadIndex after reload: %v", err)
+	}
+	if paths, ok := index["reloadrefusedcmd"]; ok {
+		t.Fatalf("expected refused plugin command NOT in index after reload, but found: %v", paths)
 	}
 }
