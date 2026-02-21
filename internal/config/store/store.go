@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -49,10 +50,10 @@ func (e NotFoundError) Error() string {
 	return fmt.Sprintf("%s %s not found", e.Entity, e.Key)
 }
 
-// IsNotFound returns true when err is a NotFoundError.
+// IsNotFound returns true when err is (or wraps) a NotFoundError.
 func IsNotFound(err error) bool {
-	_, ok := err.(NotFoundError)
-	return ok
+	var target NotFoundError
+	return errors.As(err, &target)
 }
 
 // Open initialises the configuration store for the given instance/profile.

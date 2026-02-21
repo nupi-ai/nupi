@@ -30,9 +30,10 @@ import (
 	"github.com/nupi-ai/nupi/internal/intentrouter"
 	"github.com/nupi-ai/nupi/internal/observability"
 	"github.com/nupi-ai/nupi/internal/plugins"
+	adapters "github.com/nupi-ai/nupi/internal/plugins/adapters"
+	"github.com/nupi-ai/nupi/internal/plugins/integrity"
 	"github.com/nupi-ai/nupi/internal/procutil"
 	"github.com/nupi-ai/nupi/internal/prompts"
-	adapters "github.com/nupi-ai/nupi/internal/plugins/adapters"
 	daemonruntime "github.com/nupi-ai/nupi/internal/runtime"
 	"github.com/nupi-ai/nupi/internal/server"
 	"github.com/nupi-ai/nupi/internal/server/runtimebridge"
@@ -64,6 +65,20 @@ type Daemon struct {
 	transportSnapshot server.TransportSnapshot
 	commandExecutor   intentrouter.CommandExecutor
 }
+
+const (
+	// storeQueryTimeout bounds context deadlines for store lookups during
+	// daemon operation (plugin enabled checks, integrity checksums, config reloads).
+	storeQueryTimeout = 5 * time.Second
+
+	// serviceOpTimeout bounds context deadlines for service lifecycle
+	// operations (restart, graceful shutdown).
+	serviceOpTimeout = 5 * time.Second
+
+	// transportMonitorInterval is the polling period for TLS certificate
+	// file-change detection in the transport monitor goroutine.
+	transportMonitorInterval = 5 * time.Second
+)
 
 // New creates a new daemon instance bound to the provided configuration store.
 func New(opts Options) (*Daemon, error) {
@@ -98,11 +113,38 @@ func New(opts Options) (*Daemon, error) {
 
 	pluginService := plugins.NewService(paths.Home)
 	pluginService.SetEnabledChecker(func(namespace, slug string) bool {
-		p, err := opts.Store.GetInstalledPlugin(context.Background(), namespace, slug)
+		ctx, cancel := context.WithTimeout(context.Background(), storeQueryTimeout)
+		defer cancel()
+		p, err := opts.Store.GetInstalledPlugin(ctx, namespace, slug)
 		if err != nil {
-			return true // not tracked in DB → backward compat, load it
+			if configstore.IsNotFound(err) {
+				return true // not tracked in DB → manual install, load it
+			}
+			log.Printf("[Plugins] %s/%s: enabled check failed (DB error), refusing to load: %v", namespace, slug, err)
+			return false
 		}
 		return p.Enabled
+	})
+	pluginService.SetIntegrityChecker(func(namespace, slug, pluginDir string) error {
+		ctx, cancel := context.WithTimeout(context.Background(), storeQueryTimeout)
+		defer cancel()
+		checksums, err := opts.Store.GetPluginChecksumsByPlugin(ctx, namespace, slug)
+		if err != nil {
+			return fmt.Errorf("read checksums: %w", err)
+		}
+		if len(checksums) == 0 {
+			log.Printf("[Plugins] %s/%s: no integrity checksums (manual install), skipping verification", namespace, slug)
+			return nil
+		}
+		expected := make([]integrity.FileChecksum, len(checksums))
+		for i, c := range checksums {
+			expected[i] = integrity.FileChecksum{Path: c.FilePath, SHA256: c.SHA256}
+		}
+		result := integrity.VerifyPlugin(pluginDir, expected)
+		if !result.Verified {
+			return errors.New(strings.Join(result.Mismatches, "; "))
+		}
+		return nil
 	})
 	sessionManager.SetPluginDir(pluginService.PluginDir())
 	sessionManager.SetJSRuntimeFunc(pluginService.JSRuntime)
@@ -329,7 +371,7 @@ func New(opts Options) (*Daemon, error) {
 			return
 		default:
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), serviceOpTimeout)
 		defer cancel()
 		if err := host.Restart(ctx, "transport_gateway"); err != nil {
 			log.Printf("[Daemon] Failed to restart transport_gateway after transport change: %v", err)
@@ -387,7 +429,7 @@ func (d *Daemon) Start() error {
 		d.cancel()
 	}
 
-	stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	stopCtx, cancel := context.WithTimeout(context.Background(), serviceOpTimeout)
 	if err := d.serviceHost.Stop(stopCtx); err != nil && !errors.Is(err, context.Canceled) {
 		fmt.Fprintf(os.Stderr, "daemon: service shutdown error: %v\n", err)
 		if d.runErr == nil {
@@ -487,7 +529,7 @@ func (d *Daemon) handleTransportSettings() {
 	default:
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), storeQueryTimeout)
 	defer cancel()
 
 	cfg, err := d.store.GetTransportConfig(ctx)
@@ -502,7 +544,9 @@ func (d *Daemon) handleTransportSettings() {
 		return
 	}
 
-	if err := d.serviceHost.Restart(ctx, "transport_gateway"); err != nil {
+	restartCtx, restartCancel := context.WithTimeout(context.Background(), serviceOpTimeout)
+	defer restartCancel()
+	if err := d.serviceHost.Restart(restartCtx, "transport_gateway"); err != nil {
 		log.Printf("[Daemon] restart transport_gateway failed: %v", err)
 	} else {
 		log.Printf("[Daemon] transport_gateway restarted after transport config change")
@@ -516,7 +560,7 @@ func (d *Daemon) startTransportMonitor() error {
 	}
 
 	go func() {
-		ticker := time.NewTicker(5 * time.Second)
+		ticker := time.NewTicker(transportMonitorInterval)
 		defer ticker.Stop()
 		for {
 			select {
@@ -541,7 +585,7 @@ func (d *Daemon) restartService(name string) {
 	default:
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), serviceOpTimeout)
 	defer cancel()
 
 	if err := d.serviceHost.Restart(ctx, name); err != nil {
@@ -570,7 +614,7 @@ func (d *Daemon) checkTransportFiles() {
 	}
 
 	log.Printf("[Daemon] TLS assets changed, restarting transport_gateway")
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), serviceOpTimeout)
 	defer cancel()
 	if err := d.serviceHost.Restart(ctx, "transport_gateway"); err != nil {
 		log.Printf("[Daemon] restart transport_gateway after TLS change failed: %v", err)
