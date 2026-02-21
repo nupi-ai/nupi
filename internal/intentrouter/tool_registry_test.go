@@ -466,3 +466,65 @@ func newTestBus(t *testing.T) *eventbus.Bus {
 	t.Helper()
 	return eventbus.New()
 }
+
+func TestRegisteredAwarenessToolsEventTypeFiltering(t *testing.T) {
+	reg := NewToolRegistry()
+
+	// Register all 4 awareness tools.
+	awarenessTools := []string{"memory_search", "memory_get", "memory_write", "core_memory_update"}
+	for _, name := range awarenessTools {
+		reg.Register(newMockHandler(name, "Awareness tool: "+name))
+	}
+
+	// user_intent should return all 4 awareness tools.
+	defs := reg.GetToolsForEventType(EventTypeUserIntent)
+	names := make(map[string]bool)
+	for _, d := range defs {
+		names[d.Name] = true
+	}
+	for _, tool := range awarenessTools {
+		if !names[tool] {
+			t.Fatalf("Expected %q in user_intent tools, got %v", tool, names)
+		}
+	}
+
+	// memory_flush should return only memory_write.
+	defs = reg.GetToolsForEventType(EventTypeMemoryFlush)
+	if len(defs) != 1 {
+		t.Fatalf("Expected 1 tool for memory_flush, got %d", len(defs))
+	}
+	if defs[0].Name != "memory_write" {
+		t.Fatalf("Expected memory_write for memory_flush, got %s", defs[0].Name)
+	}
+
+	// history_summary should return empty.
+	defs = reg.GetToolsForEventType(EventTypeHistorySummary)
+	if len(defs) != 0 {
+		t.Fatalf("Expected 0 tools for history_summary, got %d", len(defs))
+	}
+
+	// session_output should return only memory_search.
+	defs = reg.GetToolsForEventType(EventTypeSessionOutput)
+	if len(defs) != 1 {
+		t.Fatalf("Expected 1 tool for session_output, got %d", len(defs))
+	}
+	if defs[0].Name != "memory_search" {
+		t.Fatalf("Expected memory_search for session_output, got %s", defs[0].Name)
+	}
+
+	// scheduled_task should return memory_search and memory_write.
+	defs = reg.GetToolsForEventType(EventTypeScheduledTask)
+	if len(defs) != 2 {
+		t.Fatalf("Expected 2 tools for scheduled_task, got %d", len(defs))
+	}
+	schedNames := make(map[string]bool)
+	for _, d := range defs {
+		schedNames[d.Name] = true
+	}
+	if !schedNames["memory_search"] {
+		t.Fatal("Expected memory_search in scheduled_task results")
+	}
+	if !schedNames["memory_write"] {
+		t.Fatal("Expected memory_write in scheduled_task results")
+	}
+}
