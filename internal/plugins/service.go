@@ -21,14 +21,20 @@ import (
 // plugin on disk), it should return true for backward compatibility.
 type EnabledChecker func(namespace, slug string) bool
 
+// IntegrityChecker verifies that plugin files have not been tampered with since
+// installation. It receives the plugin's namespace, slug, and directory path.
+// Return nil to allow loading, or an error to refuse the plugin.
+type IntegrityChecker func(namespace, slug string, pluginDir string) error
+
 // Service manages plugin assets and metadata for the daemon.
 type Service struct {
-	pluginDir      string
-	runDir         string // directory for runtime sockets (IPC)
-	reloadMu       sync.Mutex // serializes Reload/GenerateIndex to prevent concurrent file writes
-	enabledChecker EnabledChecker
-	pipelineIdx    map[string]*pipelinecleaners.PipelinePlugin
-	pipelineMu     sync.RWMutex
+	pluginDir        string
+	runDir           string     // directory for runtime sockets (IPC)
+	reloadMu         sync.Mutex // serializes Reload/GenerateIndex to prevent concurrent file writes
+	enabledChecker   EnabledChecker
+	integrityChecker IntegrityChecker
+	pipelineIdx      map[string]*pipelinecleaners.PipelinePlugin
+	pipelineMu       sync.RWMutex
 
 	toolHandlerIdx map[string]*toolhandlers.JSPlugin // tool name -> plugin
 	toolHandlerMu  sync.RWMutex
@@ -45,9 +51,9 @@ func NewService(instanceDir string) *Service {
 	pluginDir := filepath.Join(instanceDir, "plugins")
 	runDir := filepath.Join(instanceDir, "run")
 	return &Service{
-		pluginDir:       pluginDir,
-		runDir:          runDir,
-		pipelineIdx:     make(map[string]*pipelinecleaners.PipelinePlugin),
+		pluginDir:      pluginDir,
+		runDir:         runDir,
+		pipelineIdx:    make(map[string]*pipelinecleaners.PipelinePlugin),
 		toolHandlerIdx: make(map[string]*toolhandlers.JSPlugin),
 	}
 }
@@ -64,6 +70,39 @@ func (s *Service) PluginDir() string {
 // loaded for backward compatibility with pre-marketplace plugins.
 func (s *Service) SetEnabledChecker(fn EnabledChecker) {
 	s.enabledChecker = fn
+}
+
+// SetIntegrityChecker configures a function that verifies plugin file integrity
+// before loading. When set, plugins that fail the integrity check are refused
+// with a warning log. Plugins without checksums (manual installs) are loaded
+// normally — the checker itself decides the policy via its return value.
+func (s *Service) SetIntegrityChecker(fn IntegrityChecker) {
+	s.integrityChecker = fn
+}
+
+// filterByIntegrity returns only manifests that pass the enabled and integrity
+// checks. It skips disabled plugins (via enabledChecker) and tampered plugins
+// (via integrityChecker). When neither checker is set, all manifests are
+// returned unchanged.
+// This method does not log refusals — callers that need per-type logging
+// (loadPipelinePlugins, loadToolHandlerPlugins) handle their own logging.
+func (s *Service) filterByIntegrity(manifests []*manifest.Manifest) []*manifest.Manifest {
+	if s.enabledChecker == nil && s.integrityChecker == nil {
+		return manifests
+	}
+	filtered := make([]*manifest.Manifest, 0, len(manifests))
+	for _, mf := range manifests {
+		if s.enabledChecker != nil && !s.enabledChecker(mf.Metadata.Namespace, mf.Metadata.Slug) {
+			continue
+		}
+		if s.integrityChecker != nil {
+			if err := s.integrityChecker(mf.Metadata.Namespace, mf.Metadata.Slug, mf.Dir); err != nil {
+				continue
+			}
+		}
+		filtered = append(filtered, mf)
+	}
+	return filtered
 }
 
 // LoadPipelinePlugins rebuilds the in-memory cleaner registry.
@@ -94,6 +133,14 @@ func (s *Service) loadPipelinePlugins(manifests []*manifest.Manifest) error {
 		if s.enabledChecker != nil && !s.enabledChecker(mf.Metadata.Namespace, mf.Metadata.Slug) {
 			log.Printf("[Plugins] skip disabled pipeline cleaner %s/%s", mf.Metadata.Namespace, mf.Metadata.Slug)
 			continue
+		}
+
+		// Verify plugin file integrity before loading
+		if s.integrityChecker != nil {
+			if err := s.integrityChecker(mf.Metadata.Namespace, mf.Metadata.Slug, mf.Dir); err != nil {
+				log.Printf("[Plugins] REFUSED pipeline cleaner %s/%s: integrity check failed: %v", mf.Metadata.Namespace, mf.Metadata.Slug, err)
+				continue
+			}
 		}
 
 		mainPath, err := mf.MainPath()
@@ -193,6 +240,14 @@ func (s *Service) loadToolHandlerPlugins(manifests []*manifest.Manifest) error {
 			continue
 		}
 
+		// Verify plugin file integrity before loading
+		if s.integrityChecker != nil {
+			if err := s.integrityChecker(mf.Metadata.Namespace, mf.Metadata.Slug, mf.Dir); err != nil {
+				log.Printf("[Plugins] REFUSED tool handler %s/%s: integrity check failed: %v", mf.Metadata.Namespace, mf.Metadata.Slug, err)
+				continue
+			}
+		}
+
 		mainPath, err := mf.MainPath()
 		if err != nil {
 			log.Printf("[Plugins] skip tool handler %s: %v", mf.Dir, err)
@@ -280,8 +335,9 @@ func (s *Service) GenerateIndex() error {
 		}
 	}
 
-	// Use jsruntime-aware index generator when available
-	generator := toolhandlers.NewIndexGeneratorWithRuntime(s.pluginDir, manifests, s.runtime())
+	// Use jsruntime-aware index generator when available.
+	// Filter by integrity to prevent tampered plugins from executing JS during index generation.
+	generator := toolhandlers.NewIndexGeneratorWithRuntime(s.pluginDir, s.filterByIntegrity(manifests), s.runtime())
 	if err := generator.Generate(); err != nil {
 		return err
 	}
@@ -317,7 +373,7 @@ func (s *Service) Reload() error {
 		errs = append(errs, fmt.Sprintf("tool handlers: %v", err))
 	}
 
-	generator := toolhandlers.NewIndexGeneratorWithRuntime(s.pluginDir, manifests, s.runtime())
+	generator := toolhandlers.NewIndexGeneratorWithRuntime(s.pluginDir, s.filterByIntegrity(manifests), s.runtime())
 	if err := generator.Generate(); err != nil {
 		errs = append(errs, fmt.Sprintf("index generation: %v", err))
 	}
@@ -384,7 +440,8 @@ func (s *Service) Start(ctx context.Context) error {
 
 	// Index generation still runs — it handles nil runtime and is needed
 	// for adapter plugin manifest discovery regardless of JS availability.
-	generator := toolhandlers.NewIndexGeneratorWithRuntime(s.pluginDir, manifests, s.runtime())
+	// Filter by integrity to prevent tampered plugins from executing JS during index generation.
+	generator := toolhandlers.NewIndexGeneratorWithRuntime(s.pluginDir, s.filterByIntegrity(manifests), s.runtime())
 	if err := generator.Generate(); err != nil {
 		return err
 	}
