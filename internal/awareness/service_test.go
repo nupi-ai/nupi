@@ -897,7 +897,7 @@ func TestWriteFlushContentNoTempFileLeak(t *testing.T) {
 	}
 }
 
-// TestWriteFlushContentConcurrent verifies that flushWriteMu correctly
+// TestWriteFlushContentConcurrent verifies that memoryWriteMu correctly
 // serializes concurrent writes from multiple goroutines. All entries must
 // appear in the daily file without corruption or data loss.
 func TestWriteFlushContentConcurrent(t *testing.T) {

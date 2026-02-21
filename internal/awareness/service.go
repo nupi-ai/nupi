@@ -36,13 +36,14 @@ type Service struct {
 	flushReplySub *eventbus.TypedSubscription[eventbus.ConversationReplyEvent]
 	pendingFlush  sync.Map // promptID → *flushState
 	flushTimeout  time.Duration
-	flushWriteMu  sync.Mutex // serializes daily file writes in writeFlushContent
+	memoryWriteMu sync.Mutex // serializes all memory file writes (flush, daily, topic)
 
 	exportSub      *eventbus.TypedSubscription[eventbus.SessionExportRequestEvent]
 	exportReplySub *eventbus.TypedSubscription[eventbus.ConversationReplyEvent]
 	pendingExport  sync.Map // promptID → *exportState
 	slugTimeout    time.Duration
 	exportWriteMu  sync.Mutex // serializes session export file writes
+	coreWriteMu    sync.Mutex // serializes core memory file writes in UpdateCoreMemory
 
 	shuttingDown atomic.Bool
 
@@ -319,11 +320,12 @@ func (s *Service) ensureDirectories() error {
 
 	// Clean up stale .tmp files from interrupted atomic writes.
 	// These can remain if the process crashes between os.WriteFile and os.Rename.
-	for _, subdir := range []string{"daily", "sessions"} {
-		dir := filepath.Join(s.awarenessDir, "memory", subdir)
+	// Covers both top-level (daily/, topics/, sessions/) and project-scoped
+	// (projects/<slug>/daily/, projects/<slug>/topics/) directories.
+	cleanTmp := func(dir string) {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
-			continue
+			return
 		}
 		for _, e := range entries {
 			if !e.IsDir() && strings.HasSuffix(e.Name(), ".tmp") {
@@ -332,6 +334,26 @@ func (s *Service) ensureDirectories() error {
 					log.Printf("[Awareness] WARNING: failed to clean up stale tmp file %s: %v", tmpPath, err)
 				} else {
 					log.Printf("[Awareness] Cleaned up stale tmp file: %s", e.Name())
+				}
+			}
+		}
+	}
+
+	// Clean awareness root dir (.tmp from core memory atomic writes).
+	cleanTmp(s.awarenessDir)
+
+	for _, subdir := range []string{"daily", "topics", "sessions"} {
+		cleanTmp(filepath.Join(s.awarenessDir, "memory", subdir))
+	}
+
+	// Walk project-scoped directories for stale .tmp files.
+	projectsDir := filepath.Join(s.awarenessDir, "memory", "projects")
+	projectEntries, err := os.ReadDir(projectsDir)
+	if err == nil {
+		for _, pe := range projectEntries {
+			if pe.IsDir() {
+				for _, subdir := range []string{"daily", "topics"} {
+					cleanTmp(filepath.Join(projectsDir, pe.Name(), subdir))
 				}
 			}
 		}

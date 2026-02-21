@@ -208,8 +208,8 @@ func (s *Service) writeFlushContent(ctx context.Context, sessionID, content stri
 
 	// Serialize daily file writes to prevent data loss from concurrent flushes
 	// (e.g., multiple sessions flushing to the same date file simultaneously).
-	s.flushWriteMu.Lock()
-	defer s.flushWriteMu.Unlock()
+	s.memoryWriteMu.Lock()
+	defer s.memoryWriteMu.Unlock()
 
 	// For now, always write to global daily/ directory.
 	// Future stories will add project-scoped writing based on session metadata.

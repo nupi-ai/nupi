@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -19,6 +20,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/audio/ingress"
 	"github.com/nupi-ai/nupi/internal/audio/stt"
 	"github.com/nupi-ai/nupi/internal/audio/vad"
+
 	"github.com/nupi-ai/nupi/internal/awareness"
 	"github.com/nupi-ai/nupi/internal/config"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
@@ -214,6 +216,20 @@ func New(opts Options) (*Daemon, error) {
 	// Command executor with priority queue (user > tool > ai > system).
 	commandExecutor := runtimebridge.CommandExecutor(sessionManager)
 
+	// Tool registry — awareness tools are registered before intent router creation.
+	// Handlers are closures that call Service methods; since they're only invoked
+	// when the intent router processes a prompt (after all services start), it's
+	// safe to register them at construction time.
+	toolRegistry := intentrouter.NewToolRegistry()
+	for _, spec := range awarenessService.ToolSpecs() {
+		toolRegistry.Register(&awarenessToolWrapper{
+			name:    spec.Name,
+			desc:    spec.Description,
+			params:  spec.ParametersJSON,
+			handler: spec.Handler,
+		})
+	}
+
 	// Intent router service - bridges conversation to AI adapters
 	// Starts in passive mode (no adapter) - real AI adapter will be set via
 	// SetAdapter() when configured through adapter manager/config store
@@ -222,6 +238,7 @@ func New(opts Options) (*Daemon, error) {
 		intentrouter.WithCommandExecutor(commandExecutor),
 		intentrouter.WithPromptEngine(promptEngineAdapter),
 		intentrouter.WithCoreMemoryProvider(awarenessService),
+		intentrouter.WithToolRegistry(toolRegistry),
 	)
 
 	if err := host.Register("intent_router", func(ctx context.Context) (daemonruntime.Service, error) {
@@ -658,4 +675,24 @@ func IsRunning() bool {
 	}
 
 	return true
+}
+
+// awarenessToolWrapper bridges awareness.ToolSpec to intentrouter.ToolHandler.
+// This adapter maintains service boundary isolation: the awareness package
+// does not import intentrouter types.
+type awarenessToolWrapper struct {
+	name, desc, params string
+	handler            func(ctx context.Context, args json.RawMessage) (json.RawMessage, error)
+}
+
+func (w *awarenessToolWrapper) Definition() intentrouter.ToolDefinition {
+	return intentrouter.ToolDefinition{
+		Name:           w.name,
+		Description:    w.desc,
+		ParametersJSON: w.params,
+	}
+}
+
+func (w *awarenessToolWrapper) Execute(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
+	return w.handler(ctx, args)
 }
