@@ -55,21 +55,6 @@ func TestStartCreatesDirectories(t *testing.T) {
 	}
 }
 
-func TestStartWithEmptyAwarenessDir(t *testing.T) {
-	dir := t.TempDir()
-	svc := NewService(dir)
-
-	if err := svc.Start(context.Background()); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-	defer svc.Shutdown(context.Background())
-
-	// No core memory files → empty string
-	if got := svc.CoreMemory(); got != "" {
-		t.Errorf("CoreMemory() = %q, want empty string", got)
-	}
-}
-
 func TestShutdownWithTimeout(t *testing.T) {
 	dir := t.TempDir()
 	svc := NewService(dir)

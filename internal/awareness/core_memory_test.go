@@ -67,11 +67,12 @@ func TestCoreMemoryLoadsAllFiles(t *testing.T) {
 	}
 }
 
-func TestCoreMemoryMissingFiles(t *testing.T) {
+func TestCoreMemoryMissingFilesScaffolded(t *testing.T) {
 	dir := t.TempDir()
 	aDir := filepath.Join(dir, "awareness")
 
-	// Only create SOUL.md — others missing
+	// Only create SOUL.md with custom content — others missing.
+	// Start() scaffolds missing files with defaults.
 	writeFile(t, filepath.Join(aDir, "SOUL.md"), "I am helpful.")
 
 	svc := NewService(dir)
@@ -82,11 +83,15 @@ func TestCoreMemoryMissingFiles(t *testing.T) {
 
 	cm := svc.CoreMemory()
 
-	if !strings.Contains(cm, "## SOUL") {
-		t.Error("SOUL section should be present")
+	// Custom SOUL preserved.
+	if !strings.Contains(cm, "I am helpful.") {
+		t.Error("custom SOUL content should be preserved")
 	}
-	if strings.Contains(cm, "## IDENTITY") {
-		t.Error("IDENTITY section should not be present (file missing)")
+	// Scaffolded sections should now be present (created from defaults).
+	for _, section := range []string{"## IDENTITY", "## USER", "## GLOBAL"} {
+		if !strings.Contains(cm, section) {
+			t.Errorf("%s section should be present (scaffolded)", section)
+		}
 	}
 }
 
@@ -169,6 +174,52 @@ func TestCoreMemory15KCapUTF8(t *testing.T) {
 	// Verify the string is valid UTF-8 (not broken mid-character)
 	if !utf8.ValidString(cm) {
 		t.Error("CoreMemory() produced invalid UTF-8 after truncation")
+	}
+}
+
+func TestCoreMemoryStripsMatchingH1(t *testing.T) {
+	dir := t.TempDir()
+	aDir := filepath.Join(dir, "awareness")
+
+	// Matching H1 heading → stripped (prevents ## SOUL wrapping # Soul).
+	writeFile(t, filepath.Join(aDir, "SOUL.md"), "# Soul\n\nSoul body content.")
+	writeFile(t, filepath.Join(aDir, "IDENTITY.md"), "# Identity\n\nIdentity body.")
+	// Non-matching H1 → preserved.
+	writeFile(t, filepath.Join(aDir, "USER.md"), "# My Profile\n\nUser info.")
+	// No heading at all → unchanged.
+	writeFile(t, filepath.Join(aDir, "GLOBAL.md"), "Global rules here.")
+
+	svc := NewService(dir)
+	if err := svc.ensureDirectories(); err != nil {
+		t.Fatal(err)
+	}
+	svc.loadCoreMemory("")
+	cm := svc.CoreMemory()
+
+	// Matching H1 headings should be stripped — only ## wrapper remains.
+	if strings.Contains(cm, "\n# Soul\n") {
+		t.Error("matching H1 '# Soul' should be stripped from SOUL section")
+	}
+	if strings.Contains(cm, "\n# Identity\n") {
+		t.Error("matching H1 '# Identity' should be stripped from IDENTITY section")
+	}
+
+	// Body content must survive stripping.
+	if !strings.Contains(cm, "Soul body content.") {
+		t.Error("SOUL body content should remain after H1 stripping")
+	}
+	if !strings.Contains(cm, "Identity body.") {
+		t.Error("IDENTITY body should remain after H1 stripping")
+	}
+
+	// Non-matching H1 must be preserved.
+	if !strings.Contains(cm, "# My Profile") {
+		t.Error("non-matching H1 '# My Profile' should be preserved in USER section")
+	}
+
+	// Content without heading should work normally.
+	if !strings.Contains(cm, "Global rules here.") {
+		t.Error("content without H1 heading should be present")
 	}
 }
 
