@@ -464,9 +464,6 @@ func (s *Service) flushAndProcess(ctx context.Context, sessionID string, buf *Ou
 		return
 	}
 
-	// Normalize line endings
-	text = strings.ReplaceAll(text, "\r\n", "\n")
-
 	annotations := map[string]string{}
 
 	// Mark if buffer was truncated due to overflow (AI sees incomplete context)
