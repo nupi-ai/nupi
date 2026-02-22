@@ -11,8 +11,8 @@ import (
 	"io"
 	"log"
 	"os"
-	"runtime"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -200,18 +200,18 @@ func MigratePlaintext(ctx context.Context, db *sql.DB, key []byte) (int, error) 
 	if err != nil {
 		return 0, fmt.Errorf("config: begin migration tx: %w", err)
 	}
+	defer tx.Rollback() // no-op after successful Commit
+
 	stmt, err := tx.PrepareContext(ctx,
 		`UPDATE security_settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE rowid = ?`,
 	)
 	if err != nil {
-		tx.Rollback()
 		return 0, fmt.Errorf("config: prepare migration update: %w", err)
 	}
 	defer stmt.Close()
 
 	for _, u := range updates {
 		if _, err := stmt.ExecContext(ctx, u.enc, u.rowid); err != nil {
-			tx.Rollback()
 			return 0, fmt.Errorf("config: update row %d during migration: %w", u.rowid, err)
 		}
 	}

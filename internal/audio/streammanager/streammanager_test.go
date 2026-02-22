@@ -181,8 +181,9 @@ func TestRetryCreatesStreamWhenAdapterBecomesAvailable(t *testing.T) {
 	defer cancel()
 
 	var (
-		mu    sync.Mutex
-		ready bool
+		mu      sync.Mutex
+		ready   bool
+		tried   = make(chan struct{}, 1) // signals factory was called at least once
 	)
 
 	mgr := New(Config[string]{
@@ -194,8 +195,13 @@ func TestRetryCreatesStreamWhenAdapterBecomesAvailable(t *testing.T) {
 		},
 		Factory: StreamFactoryFunc[string](func(_ context.Context, key string, _ SessionParams) (StreamHandle[string], error) {
 			mu.Lock()
-			defer mu.Unlock()
-			if !ready {
+			r := ready
+			mu.Unlock()
+			if !r {
+				select {
+				case tried <- struct{}{}:
+				default:
+				}
 				return nil, errAdapterUnavailable
 			}
 			return newMockHandle(key), nil
@@ -210,18 +216,25 @@ func TestRetryCreatesStreamWhenAdapterBecomesAvailable(t *testing.T) {
 
 	mgr.BufferPending(key, params, "seg-1")
 
+	// Wait until the factory has been called at least once (retry fired).
+	select {
+	case <-tried:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for first retry attempt")
+	}
+
 	// Should not have a stream yet.
 	if _, ok := mgr.Stream(key); ok {
 		t.Fatal("expected no stream before adapter ready")
 	}
 
-	// Make adapter available.
+	// Make adapter available — next retry will succeed.
 	mu.Lock()
 	ready = true
 	mu.Unlock()
 
-	// Wait for retry to fire.
-	deadline := time.After(time.Second)
+	// Wait for retry to fire and create the stream.
+	deadline := time.After(2 * time.Second)
 	for {
 		if _, ok := mgr.Stream(key); ok {
 			break
@@ -229,12 +242,19 @@ func TestRetryCreatesStreamWhenAdapterBecomesAvailable(t *testing.T) {
 		select {
 		case <-deadline:
 			t.Fatal("timeout waiting for stream creation via retry")
-		case <-time.After(2 * time.Millisecond):
+		case <-time.After(5 * time.Millisecond):
 		}
 	}
 
-	if mgr.PendingCount() != 0 {
-		t.Fatalf("expected pending cleared after retry, got %d", mgr.PendingCount())
+	// FlushPending may still be running when Stream() becomes visible.
+	// Poll briefly for pending to clear.
+	flushDeadline := time.After(time.Second)
+	for mgr.PendingCount() != 0 {
+		select {
+		case <-flushDeadline:
+			t.Fatalf("expected pending cleared after retry, got %d", mgr.PendingCount())
+		case <-time.After(5 * time.Millisecond):
+		}
 	}
 }
 

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
+	"sync/atomic"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -18,6 +20,65 @@ const (
 	defaultBusyTimeout        = 5 * time.Second
 	defaultConnectionLifetime = 0 // unlimited
 )
+
+// keychainProberFunc is the function type for keychain availability probing.
+type keychainProberFunc func(string, string) (storecrypto.SecretBackend, bool)
+
+// probeKeychainPtr controls how Open() detects keychain availability.
+// Defaults to probing the real OS keychain. Tests can override this
+// via setKeychainProber to prevent non-deterministic real keychain access.
+// Uses atomic.Pointer to allow safe concurrent access from Open() and
+// test setup/teardown.
+var probeKeychainPtr atomic.Pointer[keychainProberFunc]
+
+func init() {
+	fn := keychainProberFunc(defaultKeychainProber)
+	probeKeychainPtr.Store(&fn)
+}
+
+func loadKeychainProber() keychainProberFunc {
+	return *probeKeychainPtr.Load()
+}
+
+func defaultKeychainProber(instance, profile string) (storecrypto.SecretBackend, bool) {
+	// NUPI_KEYCHAIN controls keychain behaviour:
+	//   "off"   — disable keychain entirely, use AES-file only
+	//   "force" — skip availability check, assume keychain works
+	//   ""/"auto"/anything else — auto-detect via platform-safe pre-check
+	env := os.Getenv("NUPI_KEYCHAIN")
+	switch env {
+	case "off":
+		return nil, false
+	case "force":
+		kb := storecrypto.NewKeychainBackend(instance, profile)
+		kb.SetForceAvailable()
+		return kb, true
+	default:
+		if env != "" && env != "auto" {
+			log.Printf("[Config] WARNING: unrecognized NUPI_KEYCHAIN=%q — valid values are \"off\", \"force\", \"auto\"; falling back to auto-detect", env)
+		}
+		kb := storecrypto.NewKeychainBackend(instance, profile)
+		return kb, kb.Available()
+	}
+}
+
+// setKeychainProber replaces the keychain probe function (for testing).
+// Returns a cleanup function that restores the original prober.
+func setKeychainProber(fn keychainProberFunc) func() {
+	old := probeKeychainPtr.Load()
+	probeKeychainPtr.Store(&fn)
+	return func() { probeKeychainPtr.Store(old) }
+}
+
+// DisableKeychainForTesting disables real OS keychain probing so that
+// store.Open() always uses the AES-file backend. Call from TestMain in
+// any package whose tests transitively call store.Open().
+// Returns a cleanup function that restores the default prober.
+func DisableKeychainForTesting() func() {
+	return setKeychainProber(func(_, _ string) (storecrypto.SecretBackend, bool) {
+		return nil, false
+	})
+}
 
 // Options describes parameters for opening a configuration store.
 type Options struct {
@@ -34,7 +95,7 @@ type Store struct {
 	profileName   string
 	dbPath        string
 	readOnly      bool
-	encryptionKey []byte // AES-256 key for encrypting security settings
+	secretBackend storecrypto.SecretBackend // abstracted secret storage (keychain or AES fallback)
 }
 
 // NotFoundError indicates a requested record does not exist.
@@ -173,13 +234,38 @@ func Open(opts Options) (*Store, error) {
 		}
 	}
 
+	// Construct the secret backend: keychain (primary) + AES-file (fallback).
+	var backend storecrypto.SecretBackend
+	if encKey != nil {
+		aesBackend := storecrypto.NewAESBackend(db, encKey, opts.InstanceName, opts.ProfileName)
+
+		// probeKeychainFunc is replaceable for testing (see DisableKeychainForTesting).
+		keychainBackend, keychainAvailable := loadKeychainProber()(opts.InstanceName, opts.ProfileName)
+		if keychainAvailable && keychainBackend != nil {
+			backend = storecrypto.NewFallbackBackend(keychainBackend, aesBackend)
+			log.Printf("[Config] Secret backend: keychain (OS keyring) with AES-file fallback")
+		} else {
+			backend = aesBackend
+			log.Printf("[Config] Secret backend: AES-file (OS keychain unavailable) — to enable OS keychain, unlock your keyring or set NUPI_KEYCHAIN=force")
+		}
+	} else if opts.ReadOnly {
+		// No AES key in read-only mode — try keychain as a degraded backend.
+		// Covers the edge case where .secrets.key was lost but the OS keychain
+		// still has plaintext copies from dual-write.
+		keychainBackend, keychainAvailable := loadKeychainProber()(opts.InstanceName, opts.ProfileName)
+		if keychainAvailable && keychainBackend != nil {
+			backend = keychainBackend
+			log.Printf("[Config] Secret backend: keychain-only (no AES key — read-only degraded mode)")
+		}
+	}
+
 	return &Store{
 		db:            db,
 		instanceName:  opts.InstanceName,
 		profileName:   opts.ProfileName,
 		dbPath:        dbPath,
 		readOnly:      opts.ReadOnly,
-		encryptionKey: encKey,
+		secretBackend: backend,
 	}, nil
 }
 

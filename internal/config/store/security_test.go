@@ -1,8 +1,10 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -391,12 +393,12 @@ func TestSecuritySettingsReadOnlyWithMissingKeyReturnsError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when loading encrypted value without key")
 	}
-	if !strings.Contains(err.Error(), "encryption key not available") {
-		t.Fatalf("expected 'encryption key not available' error, got: %v", err)
+	if !strings.Contains(err.Error(), "secret backend not available") {
+		t.Fatalf("expected 'secret backend not available' error, got: %v", err)
 	}
 }
 
-func TestSaveSecuritySettingsNilKeyGuard(t *testing.T) {
+func TestSaveSecuritySettingsNilBackendGuard(t *testing.T) {
 	t.Parallel()
 
 	dbPath := filepath.Join(t.TempDir(), "config.db")
@@ -408,15 +410,342 @@ func TestSaveSecuritySettingsNilKeyGuard(t *testing.T) {
 	}
 	defer store.Close()
 
-	// Simulate a regression where encryptionKey becomes nil after Open.
-	store.encryptionKey = nil
+	// Simulate a regression where secretBackend becomes nil after Open.
+	store.secretBackend = nil
 
 	err = store.SaveSecuritySettings(ctx, map[string]string{"api_key": "secret"})
 	if err == nil {
-		t.Fatal("expected error when saving with nil encryption key")
+		t.Fatal("expected error when saving with nil secret backend")
 	}
-	if !strings.Contains(err.Error(), "encryption key not available") {
-		t.Fatalf("expected 'encryption key not available' error, got: %v", err)
+	if !strings.Contains(err.Error(), "secret backend not available") {
+		t.Fatalf("expected 'secret backend not available' error, got: %v", err)
+	}
+}
+
+func TestSaveSecuritySettingsReadOnlyGuard(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "config.db")
+
+	// Create schema via RW open, then close.
+	s, err := Open(Options{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	s.Close()
+
+	// Open read-only.
+	roStore, err := Open(Options{DBPath: dbPath, ReadOnly: true})
+	if err != nil {
+		t.Fatalf("open RO: %v", err)
+	}
+	defer roStore.Close()
+
+	ctx := context.Background()
+	err = roStore.SaveSecuritySettings(ctx, map[string]string{"api_key": "secret"})
+	if err == nil {
+		t.Fatal("expected error when saving in read-only mode")
+	}
+	if !strings.Contains(err.Error(), "store opened read-only") {
+		t.Fatalf("expected 'store opened read-only' error, got: %v", err)
+	}
+}
+
+func TestSaveSecuritySettingsEmptyMap(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "config.db")
+	s, err := Open(Options{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+
+	// Empty map should return nil immediately (no backend call).
+	if err := s.SaveSecuritySettings(ctx, map[string]string{}); err != nil {
+		t.Fatalf("SaveSecuritySettings empty map: %v", err)
+	}
+}
+
+// TestNupiKeychainEnvOff does not call t.Parallel() because t.Setenv
+// panics when used with parallel tests.
+func TestNupiKeychainEnvOff(t *testing.T) {
+	t.Setenv("NUPI_KEYCHAIN", "off")
+	kb, avail := defaultKeychainProber("default", "default")
+	if kb != nil {
+		t.Fatal("expected nil backend for NUPI_KEYCHAIN=off")
+	}
+	if avail {
+		t.Fatal("expected false availability for NUPI_KEYCHAIN=off")
+	}
+}
+
+// TestNupiKeychainEnvForce does not call t.Parallel() because t.Setenv
+// panics when used with parallel tests.
+func TestNupiKeychainEnvForce(t *testing.T) {
+	t.Setenv("NUPI_KEYCHAIN", "force")
+	kb, avail := defaultKeychainProber("default", "default")
+	if kb == nil {
+		t.Fatal("expected non-nil backend for NUPI_KEYCHAIN=force")
+	}
+	if !avail {
+		t.Fatal("expected true availability for NUPI_KEYCHAIN=force")
+	}
+	// Available() must return true unconditionally (force mode bypasses platform check).
+	if !kb.Available() {
+		t.Fatal("expected Available() true for NUPI_KEYCHAIN=force — force mode should bypass platform check")
+	}
+}
+
+// TestNupiKeychainEnvUnrecognized does not call t.Parallel() because
+// t.Setenv panics when used with parallel tests.
+func TestNupiKeychainEnvUnrecognized(t *testing.T) {
+	t.Setenv("NUPI_KEYCHAIN", "yes")
+
+	// Capture log output to verify the warning is emitted.
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	// Unrecognized value should log a warning and fall back to auto-detect.
+	// The auto-detect path creates a real KeychainBackend and probes the OS
+	// keychain (up to 3s timeout on macOS/Linux). This is acceptable because
+	// the test's primary purpose is verifying the warning log, and the probe
+	// has a bounded timeout that prevents indefinite hangs.
+	_, _ = defaultKeychainProber("default", "default")
+
+	if !strings.Contains(buf.String(), "unrecognized NUPI_KEYCHAIN") {
+		t.Fatalf("expected warning log for unrecognized NUPI_KEYCHAIN, got log output: %q", buf.String())
+	}
+}
+
+// mockKeychainForStore is a simple in-memory SecretBackend for testing the
+// Store → FallbackBackend → keychain integration path.
+type mockKeychainForStore struct {
+	data map[string]string
+}
+
+func newMockKeychainForStore() *mockKeychainForStore {
+	return &mockKeychainForStore{data: make(map[string]string)}
+}
+
+func (m *mockKeychainForStore) Set(_ context.Context, key, value string) error {
+	m.data[key] = value
+	return nil
+}
+
+func (m *mockKeychainForStore) SetBatch(_ context.Context, values map[string]string) error {
+	for k, v := range values {
+		m.data[k] = v
+	}
+	return nil
+}
+
+func (m *mockKeychainForStore) Get(_ context.Context, key string) (string, error) {
+	v, ok := m.data[key]
+	if !ok {
+		return "", storecrypto.ErrSecretNotFound
+	}
+	return v, nil
+}
+
+func (m *mockKeychainForStore) GetBatch(_ context.Context, keys []string) (map[string]string, error) {
+	result := make(map[string]string, len(keys))
+	for _, k := range keys {
+		if v, ok := m.data[k]; ok {
+			result[k] = v
+		}
+	}
+	return result, nil
+}
+
+func (m *mockKeychainForStore) Delete(_ context.Context, key string) error {
+	if _, ok := m.data[key]; !ok {
+		return storecrypto.ErrSecretNotFound
+	}
+	delete(m.data, key)
+	return nil
+}
+
+func (m *mockKeychainForStore) Available() bool { return true }
+func (m *mockKeychainForStore) Name() string    { return "mock-keychain" }
+
+// TestOpenWithMockKeychainDualWrites does not call t.Parallel() because
+// it overrides the package-level keychain prober, which would race with
+// other tests calling store.Open() concurrently.
+func TestOpenWithMockKeychainDualWrites(t *testing.T) {
+	mock := newMockKeychainForStore()
+	cleanup := setKeychainProber(func(_, _ string) (storecrypto.SecretBackend, bool) {
+		return mock, true
+	})
+	t.Cleanup(cleanup)
+
+	dbPath := filepath.Join(t.TempDir(), "config.db")
+	s, err := Open(Options{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+
+	// Save secrets — should dual-write to mock keychain + AES.
+	secrets := map[string]string{
+		"api_key":       "sk-test-123",
+		"pairing_token": "pair-abc",
+	}
+	if err := s.SaveSecuritySettings(ctx, secrets); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	// Verify secrets are in mock keychain (plaintext, not AES-encrypted).
+	for k, v := range secrets {
+		if mock.data[k] != v {
+			t.Fatalf("keychain %q: expected %q, got %q", k, v, mock.data[k])
+		}
+	}
+
+	// Verify secrets are also in SQLite (AES-encrypted, not plaintext).
+	for k, plaintext := range secrets {
+		var rawValue string
+		err = s.db.QueryRowContext(ctx,
+			`SELECT value FROM security_settings WHERE key = ? AND instance_name = ? AND profile_name = ?`,
+			k, s.instanceName, s.profileName,
+		).Scan(&rawValue)
+		if err != nil {
+			t.Fatalf("raw query %q: %v", k, err)
+		}
+		if rawValue == plaintext {
+			t.Fatalf("expected AES-encrypted value for %q in SQLite, got plaintext", k)
+		}
+	}
+
+	// Load via Store — should read from keychain (primary).
+	loaded, err := s.LoadSecuritySettings(ctx, "api_key", "pairing_token")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	for k, v := range secrets {
+		if loaded[k] != v {
+			t.Fatalf("loaded %q: expected %q, got %q", k, v, loaded[k])
+		}
+	}
+
+	// Delete from keychain mock only — Load should fall back to AES.
+	delete(mock.data, "api_key")
+	loadedFallback, err := s.LoadSecuritySettings(ctx, "api_key")
+	if err != nil {
+		t.Fatalf("load fallback: %v", err)
+	}
+	if loadedFallback["api_key"] != "sk-test-123" {
+		t.Fatalf("fallback: expected sk-test-123, got %q", loadedFallback["api_key"])
+	}
+}
+
+// TestReadOnlyKeychainOnlyFallback does not call t.Parallel() because
+// it overrides the package-level keychain prober.
+func TestReadOnlyKeychainOnlyFallback(t *testing.T) {
+	mock := newMockKeychainForStore()
+	mock.data["api_key"] = "keychain-secret"
+
+	cleanup := setKeychainProber(func(_, _ string) (storecrypto.SecretBackend, bool) {
+		return mock, true
+	})
+	t.Cleanup(cleanup)
+
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "config.db")
+
+	// Create schema and encryption key via RW open.
+	s, err := Open(Options{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	s.Close()
+
+	// Delete encryption key to simulate key loss.
+	os.Remove(storecrypto.KeyPath(dbPath))
+
+	// Open read-only — should use keychain-only backend.
+	roStore, err := Open(Options{DBPath: dbPath, ReadOnly: true})
+	if err != nil {
+		t.Fatalf("open RO: %v", err)
+	}
+	defer roStore.Close()
+
+	ctx := context.Background()
+
+	// Load specific key — should come from keychain.
+	loaded, err := roStore.LoadSecuritySettings(ctx, "api_key")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if loaded["api_key"] != "keychain-secret" {
+		t.Fatalf("expected keychain-secret, got %q", loaded["api_key"])
+	}
+}
+
+// TestReadOnlyKeychainOnlyLoadAll tests the zero-keys path of
+// LoadSecuritySettings with a keychain-only backend. The DB has key
+// names from a previous session, but the keychain may not have all
+// values, resulting in a partial result with a warning log.
+func TestReadOnlyKeychainOnlyLoadAll(t *testing.T) {
+	mock := newMockKeychainForStore()
+	// Keychain has only one of the two keys.
+	mock.data["api_key"] = "keychain-secret"
+
+	cleanup := setKeychainProber(func(_, _ string) (storecrypto.SecretBackend, bool) {
+		return mock, true
+	})
+	t.Cleanup(cleanup)
+
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "config.db")
+	ctx := context.Background()
+
+	// Create schema, key, and seed two secrets via RW store.
+	s, err := Open(Options{DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := s.SaveSecuritySettings(ctx, map[string]string{
+		"api_key":       "rw-secret-1",
+		"pairing_token": "rw-secret-2",
+	}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	s.Close()
+
+	// Delete encryption key to force keychain-only mode.
+	os.Remove(storecrypto.KeyPath(dbPath))
+
+	// Clear mock — simulate keychain that only has one key.
+	mock.data = map[string]string{"api_key": "keychain-secret"}
+
+	// Open read-only — should use keychain-only backend.
+	roStore, err := Open(Options{DBPath: dbPath, ReadOnly: true})
+	if err != nil {
+		t.Fatalf("open RO: %v", err)
+	}
+	defer roStore.Close()
+
+	// Load ALL keys (zero-keys path → loadAllSecuritySettings).
+	// DB enumerates 2 keys, keychain only has 1 → partial result + warning.
+	loaded, err := roStore.LoadSecuritySettings(ctx)
+	if err != nil {
+		t.Fatalf("load all: %v", err)
+	}
+	if loaded["api_key"] != "keychain-secret" {
+		t.Fatalf("expected keychain-secret, got %q", loaded["api_key"])
+	}
+	if _, ok := loaded["pairing_token"]; ok {
+		t.Fatal("expected pairing_token to be missing from keychain-only backend")
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("expected 1 result (partial), got %d: %v", len(loaded), loaded)
 	}
 }
 

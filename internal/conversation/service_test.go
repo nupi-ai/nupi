@@ -417,10 +417,13 @@ func TestConversationSessionlessReply(t *testing.T) {
 	// Send user message
 	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{SessionID: "", Origin: eventbus.OriginUser, Text: "what sessions?"})
 
+	// Allow goroutine to process the first event before publishing the next.
+	time.Sleep(50 * time.Millisecond)
+
 	// Send AI reply
 	eventbus.Publish(context.Background(), bus, eventbus.Conversation.Reply, eventbus.SourceConversation, eventbus.ConversationReplyEvent{SessionID: "", Text: "You have no active sessions."})
 
-	deadline := time.Now().Add(500 * time.Millisecond)
+	deadline := time.Now().Add(2 * time.Second)
 	for {
 		ctx2 := globalStore.GetContext()
 		if len(ctx2) >= 2 {
