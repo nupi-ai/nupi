@@ -20,9 +20,9 @@ import {
   downloadModel,
   isCoreMLDownloaded,
   isModelDownloaded,
-  raceTimeout,
   whisperManager,
 } from "./whisper";
+import { raceTimeout } from "./raceTimeout";
 
 export type ModelStatus =
   | "not_downloaded"

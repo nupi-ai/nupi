@@ -1391,3 +1391,28 @@ func TestSessionsServiceNilManagerReturnsUnavailable(t *testing.T) {
 		}
 	})
 }
+
+func TestSessionsServiceSendVoiceCommandAuthRequired(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	bus := eventbus.New()
+	apiServer.SetEventBus(bus)
+	apiServer.sessionManager = &stubSessionManager{}
+
+	// Enable auth so that requireRoleGRPC actually checks credentials.
+	apiServer.authMu.Lock()
+	apiServer.authRequired = true
+	apiServer.authMu.Unlock()
+
+	service := newSessionsService(apiServer)
+	ctx := context.Background() // no auth token
+
+	_, err := service.SendVoiceCommand(ctx, &apiv1.SendVoiceCommandRequest{
+		Text: "hello",
+	})
+	if err == nil {
+		t.Fatal("expected auth error, got nil")
+	}
+	if status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("expected Unauthenticated, got %v", status.Code(err))
+	}
+}

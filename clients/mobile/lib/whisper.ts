@@ -27,7 +27,6 @@ function createStallDetector(timeoutMs: number) {
 }
 
 import { raceTimeout } from "./raceTimeout";
-export { raceTimeout };
 
 const MODEL_FILENAME = "ggml-medium-q8_0.bin";
 const GGML_MODEL_SIZE_MB = 500;

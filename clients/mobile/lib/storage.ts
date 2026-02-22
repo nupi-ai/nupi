@@ -121,11 +121,3 @@ export async function clearLanguage(): Promise<void> {
 export async function clearAll(): Promise<void> {
   await Promise.all([clearToken(), clearConnectionConfig(), clearLanguage()]);
 }
-
-/** Invalidate all in-memory caches (e.g. after logout / re-pair). */
-export function invalidateCache(): void {
-  tokenVersion++;
-  languageVersion++;
-  cachedToken = undefined;
-  cachedLanguage = undefined;
-}
