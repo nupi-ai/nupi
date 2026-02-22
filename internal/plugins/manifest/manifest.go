@@ -51,7 +51,6 @@ type PipelineCleanerSpec struct {
 type AdapterSpec struct {
 	Slot       string                   `yaml:"slot"`
 	Entrypoint AdapterEntrypoint        `yaml:"entrypoint"`
-	Assets     AdapterAssets            `yaml:"assets"`
 	Telemetry  AdapterTelemetry         `yaml:"telemetry"`
 	Options    map[string]AdapterOption `yaml:"options"`
 }
@@ -65,14 +64,6 @@ type AdapterEntrypoint struct {
 	WorkingDir      string   `yaml:"workingDir"`
 	ReadyTimeout    string   `yaml:"readyTimeout"`
 	ShutdownTimeout string   `yaml:"shutdownTimeout"`
-}
-
-type AdapterAssets struct {
-	Models AdapterModelAssets `yaml:"models"`
-}
-
-type AdapterModelAssets struct {
-	CacheDirEnv string `yaml:"cacheDirEnv"`
 }
 
 type AdapterTelemetry struct {
