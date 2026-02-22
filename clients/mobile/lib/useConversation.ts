@@ -3,6 +3,7 @@ import { timestampDate } from "@bufbuild/protobuf/wkt";
 
 import type { NupiClient } from "./connect";
 import type { ConversationTurn as ProtoTurn } from "./gen/nupi_pb";
+import { raceTimeout } from "./raceTimeout";
 
 export interface ConversationTurn {
   origin: "user" | "ai" | "system" | "tool";
@@ -120,12 +121,21 @@ export function useConversation(
       // blocking all subsequent polls (fetchingRef stays true indefinitely).
       const controller = new AbortController();
       abortRef.current = controller;
-      const pollTimeout = setTimeout(() => controller.abort(), POLL_REQUEST_TIMEOUT);
       const offset = serverTotalRef.current;
-      const result = await fetchTurns(offset, POLL_LIMIT, controller.signal);
-      clearTimeout(pollTimeout);
-      abortRef.current = null;
-      fetchingRef.current = false;
+      let result: Awaited<ReturnType<typeof fetchTurns>> = null;
+      try {
+        result = await raceTimeout(
+          fetchTurns(offset, POLL_LIMIT, controller.signal),
+          POLL_REQUEST_TIMEOUT,
+          "Conversation poll request timed out",
+        );
+      } catch {
+        controller.abort();
+        result = null;
+      } finally {
+        abortRef.current = null;
+        fetchingRef.current = false;
+      }
 
       if (!pollingRef.current || !mountedRef.current) return;
 
