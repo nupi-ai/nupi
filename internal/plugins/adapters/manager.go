@@ -21,6 +21,7 @@ import (
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/jsrunner"
+	"github.com/nupi-ai/nupi/internal/napdial"
 	"github.com/nupi-ai/nupi/internal/plugins/manifest"
 	"github.com/nupi-ai/nupi/internal/voice/slots"
 )
@@ -102,6 +103,9 @@ type Manager struct {
 
 	mu        sync.Mutex
 	instances map[Slot]*adapterInstance
+
+	slotErrMu    sync.Mutex
+	lastSlotErrs map[Slot]string
 }
 
 type adapterInstance struct {
@@ -124,13 +128,22 @@ type bindingPlan struct {
 const adapterReadyTimeoutEnv = "NUPI_ADAPTER_READY_TIMEOUT"
 
 var allocateProcessAddressFn = allocateProcessAddress
-var waitForAdapterReadyFn = waitForAdapterReady
-var readinessCheckerMu sync.Mutex
+var allocateProcessAddrMu sync.RWMutex
+
+// getAllocateProcessAddress safely retrieves the current address allocator function.
+func getAllocateProcessAddress() func() (string, error) {
+	allocateProcessAddrMu.RLock()
+	defer allocateProcessAddrMu.RUnlock()
+	return allocateProcessAddressFn
+}
+
+var waitForAdapterReadyFn func(ctx context.Context, addr, transport string, tlsCfg *napdial.TLSConfig) error = waitForAdapterReadyTransportAware
+var readinessCheckerMu sync.RWMutex
 
 // getReadinessChecker safely retrieves the current readiness checker function.
-func getReadinessChecker() func(ctx context.Context, addr string) error {
-	readinessCheckerMu.Lock()
-	defer readinessCheckerMu.Unlock()
+func getReadinessChecker() func(ctx context.Context, addr, transport string, tlsCfg *napdial.TLSConfig) error {
+	readinessCheckerMu.RLock()
+	defer readinessCheckerMu.RUnlock()
 	return waitForAdapterReadyFn
 }
 
@@ -161,6 +174,7 @@ func NewManager(opts ManagerOptions) *Manager {
 		allowedCommandDirs: cleaned,
 		slots:              opts.Slots,
 		instances:          make(map[Slot]*adapterInstance),
+		lastSlotErrs:       make(map[Slot]string),
 	}
 	if len(manager.slots) == 0 {
 		manager.slots = defaultSlots
@@ -187,23 +201,30 @@ func (m *Manager) Ensure(ctx context.Context) error {
 	}
 
 	plans := make(map[Slot]bindingPlan, len(active))
-	var planErrs []error
+	type planErr struct {
+		slot      Slot
+		adapterID string
+		err       error
+	}
+	var planErrs []planErr
 	for slot, binding := range active {
 		plan, err := m.prepareBinding(ctx, binding)
 		if err != nil {
-			planErrs = append(planErrs, fmt.Errorf("adapters: prepare %s: %w", slot, err))
+			planErrs = append(planErrs, planErr{slot: slot, adapterID: binding.AdapterID, err: fmt.Errorf("adapters: prepare %s: %w", slot, err)})
 			continue
 		}
 		plans[slot] = plan
 	}
-	if len(planErrs) > 0 && len(plans) == 0 {
-		return errors.Join(planErrs...)
-	}
 	if len(planErrs) > 0 {
-		for _, err := range planErrs {
-			if err != nil {
-				logError(m.bus, err)
+		for _, pe := range planErrs {
+			m.logSlotError(pe.slot, pe.adapterID, pe.err)
+		}
+		if len(plans) == 0 {
+			errs := make([]error, len(planErrs))
+			for i, pe := range planErrs {
+				errs[i] = pe.err
 			}
+			return errors.Join(errs...)
 		}
 	}
 
@@ -222,11 +243,12 @@ func (m *Manager) Ensure(ctx context.Context) error {
 			instance, err := m.startAdapter(ctx, plan)
 			if err != nil {
 				wrapped := fmt.Errorf("adapters: start %s: %w", slot, err)
-				logError(m.bus, wrapped)
+				m.logSlotError(slot, plan.binding.AdapterID, wrapped)
 				ensureErrs = append(ensureErrs, wrapped)
 				continue
 			}
 			m.instances[slot] = instance
+			m.clearSlotError(slot)
 			continue
 		}
 
@@ -236,17 +258,25 @@ func (m *Manager) Ensure(ctx context.Context) error {
 
 		if err := m.stopAdapter(ctx, slot, current); err != nil {
 			wrapped := fmt.Errorf("adapters: stop %s: %w", slot, err)
-			logError(m.bus, wrapped)
+			m.logSlotError(slot, current.binding.AdapterID, wrapped)
 			ensureErrs = append(ensureErrs, wrapped)
+			// Keep the instance tracked — the old process may still be
+			// running. Next reconcile cycle will retry the stop.
+			continue
 		}
+		// Stop succeeded — remove the old entry before attempting restart
+		// so that a start failure does not leave a stale (stopped) entry.
+		delete(m.instances, slot)
+		m.clearSlotError(slot)
 		instance, err := m.startAdapter(ctx, plan)
 		if err != nil {
 			wrapped := fmt.Errorf("adapters: restart %s: %w", slot, err)
-			logError(m.bus, wrapped)
+			m.logSlotError(slot, plan.binding.AdapterID, wrapped)
 			ensureErrs = append(ensureErrs, wrapped)
 			continue
 		}
 		m.instances[slot] = instance
+		m.clearSlotError(slot)
 	}
 
 	for slot, instance := range m.instances {
@@ -255,14 +285,19 @@ func (m *Manager) Ensure(ctx context.Context) error {
 		}
 		if err := m.stopAdapter(ctx, slot, instance); err != nil {
 			wrapped := fmt.Errorf("adapters: stop %s: %w", slot, err)
-			logError(m.bus, wrapped)
+			m.logSlotError(slot, instance.binding.AdapterID, wrapped)
 			ensureErrs = append(ensureErrs, wrapped)
+			// Keep instance tracked so next reconcile retries the stop.
+			continue
 		}
 		delete(m.instances, slot)
+		m.clearSlotError(slot)
 	}
 
 	if len(planErrs) > 0 {
-		ensureErrs = append(ensureErrs, planErrs...)
+		for _, pe := range planErrs {
+			ensureErrs = append(ensureErrs, pe.err)
+		}
 	}
 	if len(ensureErrs) > 0 {
 		return errors.Join(ensureErrs...)
@@ -279,6 +314,8 @@ func (m *Manager) Stop(ctx context.Context) error {
 	for slot, instance := range m.instances {
 		if err := m.stopAdapter(ctx, slot, instance); err != nil {
 			errs = append(errs, fmt.Errorf("adapters: stop %s: %w", slot, err))
+			// Keep instance tracked so a subsequent call can retry the stop.
+			continue
 		}
 		delete(m.instances, slot)
 	}
@@ -371,23 +408,6 @@ func (m *Manager) StopSlot(ctx context.Context, slot Slot) error {
 	return nil
 }
 
-// StopAll stops all running adapter instances.
-func (m *Manager) StopAll(ctx context.Context) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	var errs []error
-	for slot, inst := range m.instances {
-		if err := m.stopAdapter(ctx, slot, inst); err != nil {
-			errs = append(errs, fmt.Errorf("adapters: stop %s: %w", slot, err))
-		}
-		delete(m.instances, slot)
-	}
-	if len(errs) > 0 {
-		return errors.Join(errs...)
-	}
-	return nil
-}
 
 func (m *Manager) startAdapter(ctx context.Context, plan bindingPlan) (*adapterInstance, error) {
 	// Handle builtin mock adapters without launching a process.
@@ -516,13 +536,16 @@ func (m *Manager) startAdapter(ctx context.Context, plan bindingPlan) (*adapterI
 			return nil, fmt.Errorf("adapters: %s transport requires address for %s", transport, plan.binding.AdapterID)
 		}
 
-		// Verify remote adapter is reachable before marking as ready
+		// Verify remote adapter health before marking as ready.
+		// gRPC adapters must implement grpc.health.v1; HTTP adapters must expose GET /health.
+		tlsCfg := napdial.TLSConfigFromFields(endpoint.TLSCertPath, endpoint.TLSKeyPath, endpoint.TLSCACertPath, endpoint.TLSInsecure)
 		readyCtx, cancel := context.WithTimeout(ctx, readyTimeout)
-		readyErr := getReadinessChecker()(readyCtx, addr)
+		readyErr := getReadinessChecker()(readyCtx, addr, transport, tlsCfg)
 		cancel()
 		if readyErr != nil {
-			return nil, fmt.Errorf("adapters: remote adapter %s at %s not reachable: %w", plan.binding.AdapterID, addr, readyErr)
+			return nil, fmt.Errorf("%s not ready: %w", plan.binding.AdapterID, readyErr)
 		}
+		log.Printf("[Adapters] remote adapter %s (%s) at %s passed health check", plan.binding.AdapterID, transport, addr)
 
 		plan.binding.Runtime = map[string]string{
 			RuntimeExtraTransport: transport,
@@ -542,8 +565,6 @@ func (m *Manager) startAdapter(ctx context.Context, plan bindingPlan) (*adapterI
 		}
 		plan.fingerprint = computePlanFingerprint(plan.binding, plan.manifest, plan.adapter.Manifest, plan.endpoint)
 		plan.binding.Fingerprint = plan.fingerprint
-
-		cleanups = nil // Don't clean up adapter home on success
 
 		return &adapterInstance{
 			binding:     plan.binding,
@@ -728,7 +749,7 @@ func (m *Manager) startAdapter(ctx context.Context, plan bindingPlan) (*adapterI
 
 		if transport == "process" {
 			readyCtx, cancel := context.WithTimeout(ctx, readyTimeout)
-			readyErr := getReadinessChecker()(readyCtx, addr)
+			readyErr := getReadinessChecker()(readyCtx, addr, "process", nil)
 			cancel()
 			if readyErr != nil {
 				if stdoutLogger != nil {
@@ -738,7 +759,7 @@ func (m *Manager) startAdapter(ctx context.Context, plan bindingPlan) (*adapterI
 					stderrLogger.Close()
 				}
 				stopHandle()
-				return nil, fmt.Errorf("adapters: process adapter %s readiness: %w", plan.binding.AdapterID, readyErr)
+				return nil, readyErr
 			}
 		}
 
@@ -767,7 +788,7 @@ func (m *Manager) startAdapter(ctx context.Context, plan bindingPlan) (*adapterI
 		if err := checkCtx(); err != nil {
 			return nil, err
 		}
-		addr, err := allocateProcessAddressFn()
+		addr, err := getAllocateProcessAddress()()
 		if err != nil {
 			return nil, fmt.Errorf("adapters: allocate process address: %w", err)
 		}
@@ -1108,15 +1129,39 @@ func (m *Manager) lookupEndpoint(ctx context.Context, adapterID string) (configs
 	return endpoint, nil
 }
 
-func logError(bus *eventbus.Bus, err error) {
+// logSlotError publishes an error event for a specific slot, with deduplication.
+// Consecutive identical errors for the same slot are suppressed to avoid
+// event bus spam during persistent failures across reconcile cycles.
+func (m *Manager) logSlotError(slot Slot, adapterID string, err error) {
 	if err == nil {
 		return
 	}
+	msg := err.Error()
+
+	m.slotErrMu.Lock()
+	if m.lastSlotErrs[slot] == msg {
+		m.slotErrMu.Unlock()
+		return
+	}
+	m.lastSlotErrs[slot] = msg
+	m.slotErrMu.Unlock()
+
 	log.Printf("[Adapters] %v", err)
-	eventbus.Publish(context.Background(), bus, eventbus.Adapters.Status, eventbus.SourceAdaptersService, eventbus.AdapterStatusEvent{
-		Status:  eventbus.AdapterHealthError,
-		Message: err.Error(),
+	eventbus.Publish(context.Background(), m.bus, eventbus.Adapters.Status, eventbus.SourceAdaptersService, eventbus.AdapterStatusEvent{
+		AdapterID: adapterID,
+		Slot:      string(slot),
+		Status:    eventbus.AdapterHealthError,
+		Message:   msg,
 	})
+}
+
+// clearSlotError removes the cached error for a slot, allowing the next
+// error (even if identical) to be published. Called when an adapter starts
+// or stops successfully to reset the deduplication state.
+func (m *Manager) clearSlotError(slot Slot) {
+	m.slotErrMu.Lock()
+	delete(m.lastSlotErrs, slot)
+	m.slotErrMu.Unlock()
 }
 
 func sanitizeAdapterSlug(manifest *manifest.Manifest, fallback string) string {
@@ -1271,23 +1316,46 @@ func waitForAdapterReady(ctx context.Context, addr string) error {
 		return errors.New("adapters: wait ready: address empty")
 	}
 
+	// Pre-validate address format (parity with grpcHealthDial/httpHealthSetup)
+	// so malformed addresses fail fast instead of burning the full readyTimeout
+	// with repeated dial parse errors.
+	if _, _, splitErr := net.SplitHostPort(addr); splitErr != nil {
+		return fmt.Errorf("process readiness: invalid address %q: %w", addr, splitErr)
+	}
+
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
+	var lastErr error
+	dials := 0
 	for {
+		dials++
 		conn, err := net.DialTimeout("tcp", addr, 250*time.Millisecond)
 		if err == nil {
 			_ = conn.Close()
+			if dials > 1 {
+				log.Printf("[Adapters] process TCP dial for %s succeeded after %d dials", addr, dials)
+			}
 			return nil
 		}
-		lastErr := err
+
+		// Update lastErr unless the parent context is already done AND we
+		// have a meaningful error from a prior dial. Preserves the actual
+		// dial error instead of replacing with "context deadline exceeded".
+		if ctx.Err() == nil || lastErr == nil {
+			lastErr = err
+		}
 
 		select {
 		case <-ctx.Done():
-			if ctx.Err() != nil {
-				return fmt.Errorf("dial %s: %w", addr, ctx.Err())
+			p := "dials"
+			if dials == 1 {
+				p = "dial"
 			}
-			return fmt.Errorf("dial %s: %w", addr, lastErr)
+			if lastErr != nil && !errors.Is(lastErr, context.DeadlineExceeded) && !errors.Is(lastErr, context.Canceled) {
+				return fmt.Errorf("process readiness for %s: %w after %d %s (last: %v)", addr, ctx.Err(), dials, p, lastErr)
+			}
+			return fmt.Errorf("process readiness for %s: %w after %d %s", addr, ctx.Err(), dials, p)
 		case <-ticker.C:
 		}
 	}
@@ -1307,7 +1375,7 @@ func cloneStringMap(in map[string]string) map[string]string {
 // SetReadinessChecker allows tests to override the adapter readiness check function.
 // Call the returned function to restore the original behavior.
 // This should only be used in tests.
-func SetReadinessChecker(fn func(ctx context.Context, addr string) error) func() {
+func SetReadinessChecker(fn func(ctx context.Context, addr, transport string, tlsCfg *napdial.TLSConfig) error) func() {
 	readinessCheckerMu.Lock()
 	original := waitForAdapterReadyFn
 	waitForAdapterReadyFn = fn
@@ -1316,6 +1384,21 @@ func SetReadinessChecker(fn func(ctx context.Context, addr string) error) func()
 		readinessCheckerMu.Lock()
 		waitForAdapterReadyFn = original
 		readinessCheckerMu.Unlock()
+	}
+}
+
+// SetAllocateProcessAddress allows tests to override the process address allocator.
+// Call the returned function to restore the original behavior.
+// This should only be used in tests.
+func SetAllocateProcessAddress(fn func() (string, error)) func() {
+	allocateProcessAddrMu.Lock()
+	original := allocateProcessAddressFn
+	allocateProcessAddressFn = fn
+	allocateProcessAddrMu.Unlock()
+	return func() {
+		allocateProcessAddrMu.Lock()
+		allocateProcessAddressFn = original
+		allocateProcessAddrMu.Unlock()
 	}
 }
 

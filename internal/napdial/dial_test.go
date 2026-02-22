@@ -273,3 +273,55 @@ func TestDefaultQoS(t *testing.T) {
 		t.Fatalf("expected 10s keepalive timeout, got %v", qos.KeepaliveTimeout)
 	}
 }
+
+// TestBuildStdTLSConfig verifies the exported BuildStdTLSConfig delegates correctly.
+func TestBuildStdTLSConfig(t *testing.T) {
+	cfg := &TLSConfig{
+		ServerName:         "exported-test",
+		InsecureSkipVerify: true,
+	}
+
+	// Suppress tlswarn log
+	log.SetOutput(io.Discard)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	tlsCfg, err := cfg.BuildStdTLSConfig()
+	if err != nil {
+		t.Fatalf("BuildStdTLSConfig: %v", err)
+	}
+	if tlsCfg.ServerName != "exported-test" {
+		t.Fatalf("expected ServerName exported-test, got %s", tlsCfg.ServerName)
+	}
+	if !tlsCfg.InsecureSkipVerify {
+		t.Fatal("expected InsecureSkipVerify=true")
+	}
+}
+
+func TestBuildStdTLSConfigNilReceiver(t *testing.T) {
+	var cfg *TLSConfig
+	tlsCfg, err := cfg.BuildStdTLSConfig()
+	if err != nil {
+		t.Fatalf("expected nil error for nil receiver, got: %v", err)
+	}
+	if tlsCfg != nil {
+		t.Fatal("expected nil tls.Config for nil receiver")
+	}
+}
+
+func TestBuildStdTLSConfigWithCA(t *testing.T) {
+	dir := t.TempDir()
+	caPath, _ := writeTestCert(t, dir, true)
+
+	cfg := &TLSConfig{
+		CACertPath: caPath,
+		ServerName: "ca-test",
+	}
+
+	tlsCfg, err := cfg.BuildStdTLSConfig()
+	if err != nil {
+		t.Fatalf("BuildStdTLSConfig: %v", err)
+	}
+	if tlsCfg.RootCAs == nil {
+		t.Fatal("expected RootCAs to be set")
+	}
+}

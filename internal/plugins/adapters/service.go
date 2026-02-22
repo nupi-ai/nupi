@@ -190,7 +190,19 @@ func (s *Service) reconcile(ctx context.Context) error {
 
 	err := s.manager.Ensure(ctx)
 	if err != nil {
-		s.publishError(ctx, err)
+		// When the manager's bus is configured, per-slot error events
+		// (with AdapterID and Slot) are published inside Ensure via
+		// logSlotError. Skip the generic catch-all event for joined
+		// errors (which are always per-slot) to avoid duplicate events
+		// on the same topic with incomplete identification fields.
+		// Infrastructure errors (like binding source failures) return
+		// as single errors and still need the generic publishError path.
+		var joined interface{ Unwrap() []error }
+		if s.manager.bus == nil || !errors.As(err, &joined) {
+			s.publishError(ctx, err)
+		} else {
+			s.clearLastError()
+		}
 	} else {
 		s.clearLastError()
 	}
@@ -484,7 +496,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		s.cancel()
 	}
 	s.wg.Wait()
-	return s.manager.StopAll(ctx)
+	return s.manager.Stop(ctx)
 }
 
 func bindingFingerprint(binding Binding) string {

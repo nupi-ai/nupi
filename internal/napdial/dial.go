@@ -61,6 +61,16 @@ func TLSConfigFromFields(certPath, keyPath, caCertPath string, insecureSkipVerif
 	}
 }
 
+// BuildStdTLSConfig converts TLSConfig into a stdlib *tls.Config.
+// This is the exported variant used by packages that need TLS config
+// outside of gRPC (e.g., HTTP health checks).
+func (t *TLSConfig) BuildStdTLSConfig() (*tls.Config, error) {
+	if t == nil {
+		return nil, nil
+	}
+	return t.buildTLSConfig()
+}
+
 // buildTLSConfig converts TLSConfig into a stdlib *tls.Config.
 func (t *TLSConfig) buildTLSConfig() (*tls.Config, error) {
 	// Validate partial mTLS: both cert and key must be provided, or neither.
