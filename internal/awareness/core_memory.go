@@ -1,6 +1,7 @@
 package awareness
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -12,12 +13,14 @@ import (
 // maxCoreMemoryChars is the hard cap for total core memory content (NFR29).
 const maxCoreMemoryChars = 15000
 
-// coreMemoryFiles lists the core memory files loaded in order.
-// Each entry is relative to the awareness directory.
-var coreMemoryFiles = []struct {
+// coreMemoryFile maps a display name to its filename in the awareness directory.
+type coreMemoryFile struct {
 	name     string // Display name used as section header
 	filename string // File path relative to awarenessDir
-}{
+}
+
+// coreMemoryFiles lists the core memory files loaded in order.
+var coreMemoryFiles = []coreMemoryFile{
 	{"SOUL", "SOUL.md"},
 	{"IDENTITY", "IDENTITY.md"},
 	{"USER", "USER.md"},
@@ -34,7 +37,7 @@ func (s *Service) loadCoreMemory(activeProjectSlug string) {
 		path := filepath.Join(s.awarenessDir, f.filename)
 		content, err := os.ReadFile(path)
 		if err != nil {
-			if os.IsNotExist(err) {
+			if errors.Is(err, os.ErrNotExist) {
 				log.Printf("[Awareness] WARNING: core memory file missing: %s", path)
 			} else {
 				log.Printf("[Awareness] ERROR: reading core memory file %s: %v", path, err)
@@ -47,6 +50,16 @@ func (s *Service) loadCoreMemory(activeProjectSlug string) {
 			continue
 		}
 
+		// Strip leading H1 heading that duplicates the ## NAME wrapper,
+		// preventing inverted markdown hierarchy (## NAME wrapping # Name).
+		if firstLine, rest, _ := strings.Cut(text, "\n"); strings.HasPrefix(firstLine, "# ") &&
+			strings.EqualFold(strings.TrimSpace(firstLine[2:]), f.name) {
+			text = strings.TrimSpace(rest)
+			if text == "" {
+				continue
+			}
+		}
+
 		sections = append(sections, fmt.Sprintf("## %s\n%s", f.name, text))
 	}
 
@@ -56,7 +69,7 @@ func (s *Service) loadCoreMemory(activeProjectSlug string) {
 		projectPath := filepath.Join(s.awarenessDir, "memory", "projects", activeProjectSlug, "PROJECT.md")
 		content, err := os.ReadFile(projectPath)
 		if err != nil {
-			if os.IsNotExist(err) {
+			if errors.Is(err, os.ErrNotExist) {
 				log.Printf("[Awareness] WARNING: project core memory file missing: %s", projectPath)
 			} else {
 				log.Printf("[Awareness] ERROR: reading project core memory %s: %v", projectPath, err)

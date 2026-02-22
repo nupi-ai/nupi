@@ -100,6 +100,10 @@ func (s *Service) Start(ctx context.Context) error {
 		return err
 	}
 
+	if err := s.scaffoldCoreFiles(); err != nil {
+		return fmt.Errorf("awareness: scaffold core files: %w", err)
+	}
+
 	s.loadCoreMemory("")
 
 	// Open archival memory indexer and sync files.
