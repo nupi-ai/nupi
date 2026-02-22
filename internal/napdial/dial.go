@@ -15,8 +15,10 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"time"
 
+	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/tlswarn"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -184,4 +186,40 @@ func DialOptions(ctx context.Context, tlsCfg *TLSConfig, qos *QoSConfig) ([]grpc
 	}
 
 	return opts, nil
+}
+
+// DialAdapter validates the adapter endpoint and opens a gRPC client
+// connection with transport security and QoS defaults.
+//
+// extraOpts are appended to the default dial options and can be used by
+// callers that require additional gRPC client behavior.
+func DialAdapter(ctx context.Context, endpoint configstore.AdapterEndpoint, extraOpts ...grpc.DialOption) (*grpc.ClientConn, error) {
+	transport := strings.TrimSpace(endpoint.Transport)
+	if transport == "" {
+		transport = "process"
+	}
+	switch transport {
+	case "grpc", "process":
+	default:
+		return nil, fmt.Errorf("unsupported transport %q for adapter %s", endpoint.Transport, endpoint.AdapterID)
+	}
+
+	address := strings.TrimSpace(endpoint.Address)
+	if address == "" {
+		return nil, fmt.Errorf("adapter %s missing address", endpoint.AdapterID)
+	}
+
+	tlsCfg := TLSConfigFromFields(endpoint.TLSCertPath, endpoint.TLSKeyPath, endpoint.TLSCACertPath, endpoint.TLSInsecure)
+	dialOpts, err := DialOptions(ctx, tlsCfg, DefaultQoS())
+	if err != nil {
+		return nil, fmt.Errorf("adapter %s: %w", endpoint.AdapterID, err)
+	}
+	dialOpts = append(dialOpts, extraOpts...)
+
+	conn, err := grpc.NewClient(PassthroughPrefix+address, dialOpts...)
+	if err != nil {
+		return nil, fmt.Errorf("create client for adapter %s: %w", endpoint.AdapterID, err)
+	}
+
+	return conn, nil
 }

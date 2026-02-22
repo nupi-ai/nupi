@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"strings"
 	"sync"
 	"time"
 
@@ -34,28 +33,9 @@ type napAnalyzer struct {
 }
 
 func newNAPAnalyzer(ctx context.Context, params SessionParams, endpoint configstore.AdapterEndpoint) (Analyzer, error) {
-	transport := strings.TrimSpace(endpoint.Transport)
-	if transport == "" {
-		transport = "process"
-	}
-	switch transport {
-	case "grpc", "process":
-	default:
-		return nil, fmt.Errorf("vad: unsupported transport %q for adapter %s", endpoint.Transport, endpoint.AdapterID)
-	}
-	address := strings.TrimSpace(endpoint.Address)
-	if address == "" {
-		return nil, fmt.Errorf("vad: adapter %s missing address", endpoint.AdapterID)
-	}
-
-	tlsCfg := napdial.TLSConfigFromFields(endpoint.TLSCertPath, endpoint.TLSKeyPath, endpoint.TLSCACertPath, endpoint.TLSInsecure)
-	dialOpts, err := napdial.DialOptions(ctx, tlsCfg, napdial.DefaultQoS())
+	conn, err := napdial.DialAdapter(ctx, endpoint)
 	if err != nil {
-		return nil, fmt.Errorf("vad: adapter %s: %w", endpoint.AdapterID, err)
-	}
-	conn, err := grpc.NewClient(napdial.PassthroughPrefix+address, dialOpts...)
-	if err != nil {
-		return nil, fmt.Errorf("vad: create client for adapter %s: %w", endpoint.AdapterID, err)
+		return nil, fmt.Errorf("vad: %w", err)
 	}
 
 	streamCtx, cancel := context.WithCancel(ctx)
