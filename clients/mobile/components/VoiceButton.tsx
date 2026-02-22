@@ -104,7 +104,6 @@ export function VoiceButton({
         accessibilityRole="button"
         accessibilityLabel={accessibilityLabel}
         accessibilityHint={accessibilityHint}
-        accessibilityLiveRegion="polite"
         testID="voice-button"
       >
         <FontAwesome

@@ -35,6 +35,9 @@ interface ModelDownloadSheetProps {
 }
 
 function getDownloadingLabel(stage: DownloadStage): string {
+  if (stage === "extracting") {
+    return "Extracting CoreML model";
+  }
   if (stage === "coreml") {
     return `Downloading CoreML acceleration (${formatSize(COREML_SIZE_MB)})`;
   }
@@ -142,7 +145,6 @@ export function ModelDownloadSheet({
             />
             <Text
               style={[styles.progressText, { color: Colors[colorScheme].text }]}
-              accessibilityLiveRegion="polite"
             >
               Initializing voice model...
             </Text>

@@ -20,6 +20,7 @@ import {
   downloadModel,
   isCoreMLDownloaded,
   isModelDownloaded,
+  raceTimeout,
   whisperManager,
 } from "./whisper";
 
@@ -34,21 +35,21 @@ export type RecordingStatus =
   | "recording"
   | "result";
 
-export type DownloadStage = "model" | "coreml" | null;
+export type DownloadStage = "model" | "coreml" | "extracting" | null;
 
 interface VoiceContextValue {
   modelStatus: ModelStatus;
   recordingStatus: RecordingStatus;
   confirmedText: string;
   pendingText: string;
-  modelError: string | null;
+  voiceError: string | null;
   downloadProgress: number;
   downloadStage: DownloadStage;
   initModel: () => Promise<void>;
   startRecording: () => Promise<void>;
   stopRecording: () => Promise<void>;
   clearTranscription: () => void;
-  clearModelError: () => void;
+  clearVoiceError: () => void;
 }
 
 const VoiceContext = createContext<VoiceContextValue>({
@@ -56,14 +57,14 @@ const VoiceContext = createContext<VoiceContextValue>({
   recordingStatus: "idle",
   confirmedText: "",
   pendingText: "",
-  modelError: null,
+  voiceError: null,
   downloadProgress: 0,
   downloadStage: null,
   initModel: async () => {},
   startRecording: async () => {},
   stopRecording: async () => {},
   clearTranscription: () => {},
-  clearModelError: () => {},
+  clearVoiceError: () => {},
 });
 
 export function useVoice() {
@@ -97,7 +98,7 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
     useState<RecordingStatus>("idle");
   const [confirmedText, setConfirmedText] = useState("");
   const [pendingText, setPendingText] = useState("");
-  const [modelError, setModelError] = useState<string | null>(null);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
   const [downloadProgress, setDownloadProgress] = useState(0);
   const [downloadStage, setDownloadStage] = useState<DownloadStage>(null);
   const destroyedRef = useRef(false);
@@ -193,14 +194,14 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
     if (event.type === "error") {
       if (!destroyedRef.current) {
         const detail = event.data?.result;
-        setModelError(detail ? `Transcription error: ${detail}` : "Transcription error");
+        setVoiceError(detail ? `Transcription error: ${detail}` : "Transcription error");
       }
     }
   }, []);
 
   const onError = useCallback((err: string) => {
     if (destroyedRef.current) return;
-    setModelError(err);
+    setVoiceError(err);
   }, []);
 
   const onStatusChange = useCallback((isActive: boolean) => {
@@ -217,16 +218,9 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
       // Timeout-guarded release — if native audio module is in error state
       // (which triggered this unexpected stop), release() may also hang.
       if (transcriber) {
-        const releasePromise = transcriber.release();
-        releasePromise.catch(() => {});
-        let releaseTimer: ReturnType<typeof setTimeout> | null = null;
-        Promise.race([
-          releasePromise,
-          new Promise<void>((resolve) => { releaseTimer = setTimeout(resolve, 5000); }),
-        ]).finally(() => { if (releaseTimer) clearTimeout(releaseTimer); })
-          .catch(() => {});
+        raceTimeout(transcriber.release(), 5000).catch(() => {});
       }
-      setModelError("Recording stopped unexpectedly — tap to try again");
+      setVoiceError("Recording stopped unexpectedly — tap to try again");
       // Promote any partial transcription so the user can still see/use
       // what was already transcribed before the unexpected stop.
       if (prevFullTextRef.current) {
@@ -283,7 +277,7 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
         try { deleteModel(); } catch {}
         try { deleteCoreML(); } catch {}
         updateModelStatus("not_downloaded");
-        setModelError(
+        setVoiceError(
           err instanceof Error ? err.message : "Failed to initialize model"
         );
       }
@@ -308,7 +302,7 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
     ) {
       return;
     }
-    setModelError(null);
+    setVoiceError(null);
     setDownloadProgress(0);
     setDownloadStage(null);
 
@@ -335,11 +329,18 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
         updateModelStatus("downloading");
         setDownloadStage("coreml");
         setDownloadProgress(0);
-        await downloadCoreML((progress) => {
-          if (!destroyedRef.current) {
-            setDownloadProgress(progress);
-          }
-        });
+        await downloadCoreML(
+          (progress) => {
+            if (!destroyedRef.current) {
+              setDownloadProgress(progress);
+            }
+          },
+          () => {
+            if (!destroyedRef.current) {
+              setDownloadStage("extracting");
+            }
+          },
+        );
       }
 
       if (destroyedRef.current) return;
@@ -383,7 +384,7 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
         try { deleteCoreML(); } catch {}
       }
       updateModelStatus("not_downloaded");
-      setModelError(
+      setVoiceError(
         err instanceof Error ? err.message : "Failed to initialize model"
       );
     }
@@ -394,7 +395,7 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
 
     const ctx = whisperManager.getContext();
     if (!ctx) {
-      setModelError("Voice model not ready — please restart the app");
+      setVoiceError("Voice model not ready — please restart the app");
       return;
     }
 
@@ -413,14 +414,14 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
       micResult = await requestMicPermission();
     } catch {
       isStartingRecordingRef.current = false;
-      setModelError("Microphone permission check failed");
+      setVoiceError("Microphone permission check failed");
       return;
     }
     if (micResult !== true) {
       isStartingRecordingRef.current = false;
       // "never_ask_again": system won't show dialog again — guide to Settings.
       // "denied": user can be re-prompted on next attempt.
-      setModelError(
+      setVoiceError(
         micResult === "never_ask_again"
           ? "Microphone permission required. Check Settings → Apps → Nupi → Permissions."
           : "Microphone permission required"
@@ -434,7 +435,7 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
     }
 
     try {
-      setModelError(null);
+      setVoiceError(null);
       transcriptionClearedRef.current = false;
       // Cancel stale idle timer from a previous recording (defense-in-depth —
       // stopRecording and onStatusChange also clear it, but a missed path
@@ -476,18 +477,7 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
       // Timeout-guarded: if native audio module is unresponsive (e.g., iOS
       // audio session conflict), start() could hang forever, leaving
       // isStartingRecordingRef true and blocking all future recordings.
-      const startPromise = transcriber.start();
-      startPromise.catch(() => {});
-      let startTimer: ReturnType<typeof setTimeout> | null = null;
-      await Promise.race([
-        startPromise,
-        new Promise<void>((_, reject) => {
-          startTimer = setTimeout(
-            () => reject(new Error("Recording start timed out")),
-            10_000,
-          );
-        }),
-      ]).finally(() => { if (startTimer) clearTimeout(startTimer); });
+      await raceTimeout(transcriber.start(), 10_000, "Recording start timed out");
 
       // Check if user released button during start()
       if (stoppedRef.current || destroyedRef.current) {
@@ -504,24 +494,8 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
           // Timeout-guarded — matching stopRecording/onStatusChange patterns.
           // Without timeout, a hung native stop()/release() would leave
           // isStartingRecordingRef true forever, blocking all future recordings.
-          try {
-            const stopP = transcriber.stop();
-            stopP.catch(() => {});
-            let stopT: ReturnType<typeof setTimeout> | null = null;
-            await Promise.race([
-              stopP,
-              new Promise<void>((resolve) => { stopT = setTimeout(resolve, 5000); }),
-            ]).finally(() => { if (stopT) clearTimeout(stopT); });
-          } catch {}
-          try {
-            const relP = transcriber.release();
-            relP.catch(() => {});
-            let relT: ReturnType<typeof setTimeout> | null = null;
-            await Promise.race([
-              relP,
-              new Promise<void>((resolve) => { relT = setTimeout(resolve, 5000); }),
-            ]).finally(() => { if (relT) clearTimeout(relT); });
-          } catch {}
+          try { await raceTimeout(transcriber.stop(), 5000); } catch {}
+          try { await raceTimeout(transcriber.release(), 5000); } catch {}
         }
         isStartingRecordingRef.current = false;
         return;
@@ -544,18 +518,9 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
       // this, a failed start() leaks listeners and native audio state.
       const transcriber = transcriberRef.current;
       if (transcriber) {
-        // Timeout-guarded — matching stopRecording/onStatusChange patterns.
-        // If native module is in error state (which triggered the catch),
-        // release() may also hang.
-        try {
-          const relP = transcriber.release();
-          relP.catch(() => {});
-          let relT: ReturnType<typeof setTimeout> | null = null;
-          await Promise.race([
-            relP,
-            new Promise<void>((resolve) => { relT = setTimeout(resolve, 5000); }),
-          ]).finally(() => { if (relT) clearTimeout(relT); });
-        } catch {}
+        // Timeout-guarded — if native module is in error state (which
+        // triggered the catch), release() may also hang.
+        try { await raceTimeout(transcriber.release(), 5000); } catch {}
       }
       transcriberRef.current = null;
       audioStreamRef.current = null;
@@ -564,7 +529,7 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
       // PermissionsAndroid equivalent). Append Settings guidance so the user
       // knows how to recover — harmlessly informative for non-permission errors.
       const raw = err instanceof Error ? err.message : "Failed to start recording";
-      setModelError(
+      setVoiceError(
         Platform.OS === "ios"
           ? `${raw}. Check microphone permission in Settings → Nupi.`
           : raw
@@ -596,28 +561,12 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
       // Timeout guard: native stop() should be near-instant, but if the audio
       // capture module is unresponsive (iOS audio session conflict), waiting
       // indefinitely would freeze the UI with pulsing animation stuck on.
-      // Attach .catch to the native promise — if the timeout wins the race and
-      // the native call later rejects, Node/Hermes would emit unhandledRejection.
-      const stopPromise = transcriber.stop();
-      stopPromise.catch(() => {});
-      let stopTimer: ReturnType<typeof setTimeout> | null = null;
-      await Promise.race([
-        stopPromise,
-        new Promise<void>((resolve) => { stopTimer = setTimeout(resolve, 5000); }),
-      ]).finally(() => { if (stopTimer) clearTimeout(stopTimer); });
+      await raceTimeout(transcriber.stop(), 5000);
 
       // Release immediately to avoid double-stop on unmount.
       // Also timeout-guarded — if stop() hung and we fell through via timeout,
       // release() on a half-stopped transcriber could also hang.
-      try {
-        const releasePromise = transcriber.release();
-        releasePromise.catch(() => {});
-        let releaseTimer: ReturnType<typeof setTimeout> | null = null;
-        await Promise.race([
-          releasePromise,
-          new Promise<void>((resolve) => { releaseTimer = setTimeout(resolve, 5000); }),
-        ]).finally(() => { if (releaseTimer) clearTimeout(releaseTimer); });
-      } catch {}
+      try { await raceTimeout(transcriber.release(), 5000); } catch {}
       transcriberRef.current = null;
       audioStreamRef.current = null;
       isStoppingRecordingRef.current = false;
@@ -630,7 +579,7 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
       }
     } catch (err) {
       if (!destroyedRef.current) {
-        setModelError(
+        setVoiceError(
           err instanceof Error ? err.message : "Failed to stop recording"
         );
         // Promote any accumulated text so the user can still see what was
@@ -649,15 +598,7 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
       // Timeout-guarded — if stop() crashed the native module, release() may
       // also hang, permanently blocking isStoppingRecordingRef.
       try {
-        if (transcriber) {
-          const releasePromise = transcriber.release();
-          releasePromise.catch(() => {});
-          let releaseTimer: ReturnType<typeof setTimeout> | null = null;
-          await Promise.race([
-            releasePromise,
-            new Promise<void>((resolve) => { releaseTimer = setTimeout(resolve, 5000); }),
-          ]).finally(() => { if (releaseTimer) clearTimeout(releaseTimer); });
-        }
+        if (transcriber) { await raceTimeout(transcriber.release(), 5000); }
       } catch {}
       transcriberRef.current = null;
       audioStreamRef.current = null;
@@ -681,39 +622,44 @@ export function VoiceProvider({ children }: { children: React.ReactNode }) {
     setRecordingStatus("idle");
   }, []);
 
-  const clearModelError = useCallback(() => {
+  const clearVoiceError = useCallback(() => {
     if (destroyedRef.current) return;
-    setModelError(null);
+    setVoiceError(null);
   }, []);
 
+  // Note: context value changes on every downloadProgress tick and transcription
+  // update, re-rendering all consumers (currently only session screen). This is
+  // the standard React Context tradeoff — acceptable because the session screen's
+  // heavy rendering (WebView) is ref-based and unaffected by React reconciliation.
+  // If performance becomes an issue, split into ModelContext + RecordingContext.
   const value = React.useMemo(
     () => ({
       modelStatus,
       recordingStatus,
       confirmedText,
       pendingText,
-      modelError,
+      voiceError,
       downloadProgress,
       downloadStage,
       initModel,
       startRecording,
       stopRecording,
       clearTranscription,
-      clearModelError,
+      clearVoiceError,
     }),
     [
       modelStatus,
       recordingStatus,
       confirmedText,
       pendingText,
-      modelError,
+      voiceError,
       downloadProgress,
       downloadStage,
       initModel,
       startRecording,
       stopRecording,
       clearTranscription,
-      clearModelError,
+      clearVoiceError,
     ]
   );
 
