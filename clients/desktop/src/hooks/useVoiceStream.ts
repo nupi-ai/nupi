@@ -1,7 +1,5 @@
 import { useCallback, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-
-type JsonValue = unknown;
+import { api, toErrorMessage, type JsonValue } from "../api";
 
 const CANCELLED_MESSAGE = "Voice stream cancelled by user";
 
@@ -155,7 +153,7 @@ export function useVoiceStream(options: VoiceStreamOptions): VoiceStreamState {
     const operationId = createOperationId();
     setActiveOperationId(operationId);
     try {
-      const payload = await invoke<JsonValue>("voice_stream_from_file", {
+      const payload = await api.voice.streamFromFile({
         sessionId: sessionId.trim(),
         streamId: streamId.trim() || null,
         inputPath,
@@ -176,7 +174,7 @@ export function useVoiceStream(options: VoiceStreamOptions): VoiceStreamState {
     } catch (error) {
       console.error(error);
       setPlaybackError(null);
-      const message = error instanceof Error ? error.message : String(error);
+      const message = toErrorMessage(error);
       if (message.trim().toLowerCase() === CANCELLED_MESSAGE.toLowerCase()) {
         setStatus("Voice stream cancelled");
       } else {
@@ -204,7 +202,7 @@ export function useVoiceStream(options: VoiceStreamOptions): VoiceStreamState {
     setBusy(true);
     setStatus("Sending interrupt\u2026");
     try {
-      const payload = await invoke<JsonValue>("voice_interrupt_command", {
+      const payload = await api.voice.interrupt({
         sessionId: sessionId.trim(),
         streamId: streamId.trim() || null,
         metadata: metadataValidation.metadata,
@@ -215,11 +213,7 @@ export function useVoiceStream(options: VoiceStreamOptions): VoiceStreamState {
     } catch (error) {
       console.error(error);
       setPlaybackError(null);
-      setStatus(
-        `Interrupt failed: ${
-          error instanceof Error ? error.message : String(error)
-        }`
-      );
+      setStatus(`Interrupt failed: ${toErrorMessage(error)}`);
     } finally {
       setBusy(false);
     }
@@ -232,9 +226,7 @@ export function useVoiceStream(options: VoiceStreamOptions): VoiceStreamState {
     setCancelling(true);
     setStatus("Cancelling voice stream\u2026");
     try {
-      const cancelled = await invoke<boolean>("voice_cancel_stream", {
-        operationId: activeOperationId,
-      });
+      const cancelled = await api.voice.cancel(activeOperationId);
       if (!cancelled) {
         setStatus("No active voice upload to cancel");
         setCancelling(false);
@@ -243,8 +235,7 @@ export function useVoiceStream(options: VoiceStreamOptions): VoiceStreamState {
       }
     } catch (error) {
       console.error(error);
-      const message = error instanceof Error ? error.message : String(error);
-      setStatus(`Cancel request failed: ${message}`);
+      setStatus(`Cancel request failed: ${toErrorMessage(error)}`);
       setCancelling(false);
     }
   }, [activeOperationId, isCancelling]);
@@ -253,9 +244,7 @@ export function useVoiceStream(options: VoiceStreamOptions): VoiceStreamState {
     setBusy(true);
     setStatus("Fetching audio capabilities\u2026");
     try {
-      const payload = await invoke<JsonValue>("voice_status_command", {
-        sessionId: sessionId.trim() || null,
-      });
+      const payload = await api.voice.status(sessionId.trim() || null);
       setCapabilities(payload);
       if (
         payload &&
@@ -272,11 +261,7 @@ export function useVoiceStream(options: VoiceStreamOptions): VoiceStreamState {
       }
     } catch (error) {
       console.error(error);
-      setStatus(
-        `Failed to fetch capabilities: ${
-          error instanceof Error ? error.message : String(error)
-        }`
-      );
+      setStatus(`Failed to fetch capabilities: ${toErrorMessage(error)}`);
     } finally {
       setBusy(false);
     }
