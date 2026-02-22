@@ -3,6 +3,15 @@
  * Attaches .catch(() => {}) to the input promise and cleans up the timer via .finally().
  * @param errorMessage If provided, rejects with Error on timeout. Otherwise resolves silently.
  */
+export function raceTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  errorMessage: string,
+): Promise<T>;
+export function raceTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+): Promise<T | void>;
 export async function raceTimeout<T>(
   promise: Promise<T>,
   ms: number,
