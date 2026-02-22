@@ -67,14 +67,3 @@ const (
 	EventProcessExited  = "process_exited"
 	EventError          = "error"
 )
-
-// Error codes
-const (
-	ErrorSessionNotFound  = 1001
-	ErrorSessionExists    = 1002
-	ErrorInvalidCommand   = 1003
-	ErrorPermissionDenied = 1004
-	ErrorDaemonNotRunning = 1005
-	ErrorInvalidRequest   = 2001
-	ErrorInternalError    = 5000
-)
