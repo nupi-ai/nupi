@@ -20,10 +20,6 @@ import (
 // ─── DaemonService: Shutdown, GetPluginWarnings ───
 
 func (d *daemonService) Shutdown(ctx context.Context, _ *apiv1.ShutdownRequest) (*apiv1.ShutdownResponse, error) {
-	if _, err := d.api.requireRoleGRPC(ctx, roleAdmin); err != nil {
-		return nil, err
-	}
-
 	d.api.lifecycle.shutdownMu.RLock()
 	shutdown := d.api.lifecycle.shutdownFn
 	d.api.lifecycle.shutdownMu.RUnlock()
@@ -43,10 +39,6 @@ func (d *daemonService) Shutdown(ctx context.Context, _ *apiv1.ShutdownRequest) 
 }
 
 func (d *daemonService) GetPluginWarnings(ctx context.Context, _ *apiv1.GetPluginWarningsRequest) (*apiv1.GetPluginWarningsResponse, error) {
-	if _, err := d.api.requireRoleGRPC(ctx, roleAdmin, roleReadOnly); err != nil {
-		return nil, err
-	}
-
 	resp := &apiv1.GetPluginWarningsResponse{
 		Warnings: make([]*apiv1.PluginWarning, 0),
 	}
@@ -67,10 +59,6 @@ func (d *daemonService) GetPluginWarnings(ctx context.Context, _ *apiv1.GetPlugi
 }
 
 func (d *daemonService) ReloadPlugins(ctx context.Context, _ *apiv1.ReloadPluginsRequest) (*apiv1.ReloadPluginsResponse, error) {
-	if _, err := d.api.requireRoleGRPC(ctx, roleAdmin); err != nil {
-		return nil, err
-	}
-
 	if d.api.observability.pluginReloader == nil {
 		return nil, status.Error(codes.Unavailable, "plugin reloader unavailable")
 	}
@@ -101,9 +89,6 @@ func (d *daemonService) ListLanguages(_ context.Context, _ *apiv1.ListLanguagesR
 // ─── AdapterRuntimeService: RegisterAdapter, StreamAdapterLogs, GetAdapterLogs ───
 
 func (m *adapterRuntimeService) RegisterAdapter(ctx context.Context, req *apiv1.RegisterAdapterRequest) (*apiv1.RegisterAdapterResponse, error) {
-	if _, err := m.api.requireRoleGRPC(ctx, roleAdmin); err != nil {
-		return nil, err
-	}
 	if m.api.configStore == nil {
 		return nil, status.Error(codes.Unavailable, "configuration store unavailable")
 	}
@@ -212,9 +197,6 @@ func (m *adapterRuntimeService) RegisterAdapter(ctx context.Context, req *apiv1.
 }
 
 func (m *adapterRuntimeService) StreamAdapterLogs(req *apiv1.StreamAdapterLogsRequest, srv apiv1.AdapterRuntimeService_StreamAdapterLogsServer) error {
-	if _, err := m.api.requireRoleGRPC(srv.Context(), roleAdmin, roleReadOnly); err != nil {
-		return err
-	}
 	if m.api.eventBus == nil {
 		return status.Error(codes.Unavailable, "event bus unavailable")
 	}
@@ -311,10 +293,6 @@ func (m *adapterRuntimeService) StreamAdapterLogs(req *apiv1.StreamAdapterLogsRe
 }
 
 func (m *adapterRuntimeService) GetAdapterLogs(ctx context.Context, req *apiv1.GetAdapterLogsRequest) (*apiv1.GetAdapterLogsResponse, error) {
-	if _, err := m.api.requireRoleGRPC(ctx, roleAdmin, roleReadOnly); err != nil {
-		return nil, err
-	}
-
 	// GetAdapterLogs returns recent buffered log entries. Since the event bus is
 	// real-time and doesn't retain history, return an empty list. Clients should
 	// use StreamAdapterLogs for live tailing.
@@ -355,9 +333,6 @@ func newRecordingsService(api *APIServer) *recordingsService {
 }
 
 func (r *recordingsService) ListRecordings(ctx context.Context, req *apiv1.ListRecordingsRequest) (*apiv1.ListRecordingsResponse, error) {
-	if _, err := r.api.requireRoleGRPC(ctx, roleAdmin, roleReadOnly); err != nil {
-		return nil, err
-	}
 
 	store := r.api.sessionManager.GetRecordingStore()
 	if store == nil {
@@ -402,10 +377,6 @@ func (r *recordingsService) ListRecordings(ctx context.Context, req *apiv1.ListR
 }
 
 func (r *recordingsService) GetRecording(req *apiv1.GetRecordingRequest, srv apiv1.RecordingsService_GetRecordingServer) error {
-	if _, err := r.api.requireRoleGRPC(srv.Context(), roleAdmin, roleReadOnly); err != nil {
-		return err
-	}
-
 	sessionID := strings.TrimSpace(req.GetSessionId())
 	if sessionID == "" {
 		return status.Error(codes.InvalidArgument, "session_id is required")
@@ -440,8 +411,8 @@ func (r *recordingsService) GetRecording(req *apiv1.GetRecordingRequest, srv api
 			}
 			if seq == 0 {
 				chunk.Metadata = map[string]string{
-					"filename":    metadata.Filename,
-					"session_id":  metadata.SessionID,
+					"filename":     metadata.Filename,
+					"session_id":   metadata.SessionID,
 					"content_type": "application/x-asciicast",
 				}
 			}

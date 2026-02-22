@@ -226,7 +226,7 @@ func (g *Gateway) Start(ctx context.Context) (*Info, error) {
 			ReadTimeout:    30 * time.Second,
 			WriteTimeout:   30 * time.Second,
 			IdleTimeout:    120 * time.Second,
-			MaxHeaderBytes: 1 << 20, // 1 MB
+			MaxHeaderBytes: 1 << 20,                                                                       // 1 MB
 			ErrorLog:       log.New(log.Default().Writer(), "Transport gateway Connect: ", log.LstdFlags), // writer captured at Start time
 		}
 		numListeners++
@@ -477,6 +477,9 @@ func (g *Gateway) unaryAuthInterceptor(ctx context.Context, req interface{}, inf
 		return nil, status.Error(codes.Unauthenticated, "unauthorized")
 	}
 	ctx = g.apiServer.ContextWithToken(ctx, meta)
+	if err := g.apiServer.AuthorizeGRPCMethod(ctx, info.FullMethod); err != nil {
+		return nil, err
+	}
 	return handler(ctx, req)
 }
 
@@ -493,9 +496,13 @@ func (g *Gateway) streamAuthInterceptor(srv interface{}, ss grpc.ServerStream, i
 	if !ok {
 		return status.Error(codes.Unauthenticated, "unauthorized")
 	}
+	ctx := g.apiServer.ContextWithToken(ss.Context(), meta)
+	if err := g.apiServer.AuthorizeGRPCMethod(ctx, info.FullMethod); err != nil {
+		return err
+	}
 	wrapped := &authenticatedStream{
 		ServerStream: ss,
-		ctx:          g.apiServer.ContextWithToken(ss.Context(), meta),
+		ctx:          ctx,
 	}
 	return handler(srv, wrapped)
 }

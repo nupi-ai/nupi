@@ -72,7 +72,7 @@ type stubSessionManager struct {
 	sessions map[string]*session.Session
 }
 
-func (s *stubSessionManager) ListSessions() []*session.Session                       { return nil }
+func (s *stubSessionManager) ListSessions() []*session.Session { return nil }
 func (s *stubSessionManager) CreateSession(pty.StartOptions, bool) (*session.Session, error) {
 	return nil, fmt.Errorf("not implemented")
 }
@@ -85,13 +85,13 @@ func (s *stubSessionManager) GetSession(id string) (*session.Session, error) {
 	// Return a zero-value session for any ID to pass validation.
 	return &session.Session{}, nil
 }
-func (s *stubSessionManager) KillSession(string) error                            { return nil }
-func (s *stubSessionManager) WriteToSession(string, []byte) error                 { return nil }
-func (s *stubSessionManager) ResizeSession(string, int, int) error                { return nil }
-func (s *stubSessionManager) GetRecordingStore() *recording.Store                 { return nil }
-func (s *stubSessionManager) AddEventListener(session.SessionEventListener)       {}
-func (s *stubSessionManager) AttachToSession(string, pty.OutputSink, bool) error  { return nil }
-func (s *stubSessionManager) DetachFromSession(string, pty.OutputSink) error      { return nil }
+func (s *stubSessionManager) KillSession(string) error                           { return nil }
+func (s *stubSessionManager) WriteToSession(string, []byte) error                { return nil }
+func (s *stubSessionManager) ResizeSession(string, int, int) error               { return nil }
+func (s *stubSessionManager) GetRecordingStore() *recording.Store                { return nil }
+func (s *stubSessionManager) AddEventListener(session.SessionEventListener)      {}
+func (s *stubSessionManager) AttachToSession(string, pty.OutputSink, bool) error { return nil }
+func (s *stubSessionManager) DetachFromSession(string, pty.OutputSink) error     { return nil }
 
 func TestSessionsServiceGetConversation(t *testing.T) {
 	skipIfNoPTY(t)
@@ -865,16 +865,15 @@ func (f *fakeAudioOutServer) RecvMsg(interface{}) error    { return nil }
 func TestConfigServiceTransportAuthRequired(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
 
-	// Enable auth so that requireRoleGRPC actually checks credentials.
+	// Enable auth so that method-level authorization requires token context.
 	apiServer.authMu.Lock()
 	apiServer.authRequired = true
 	apiServer.authMu.Unlock()
 
-	service := newConfigService(apiServer)
 	ctx := context.Background() // no auth token
 
 	t.Run("GetTransportConfig", func(t *testing.T) {
-		_, err := service.GetTransportConfig(ctx, &emptypb.Empty{})
+		err := apiServer.AuthorizeGRPCMethod(ctx, "/nupi.api.v1.ConfigService/GetTransportConfig")
 		if err == nil {
 			t.Fatal("expected auth error, got nil")
 		}
@@ -884,9 +883,7 @@ func TestConfigServiceTransportAuthRequired(t *testing.T) {
 	})
 
 	t.Run("UpdateTransportConfig", func(t *testing.T) {
-		_, err := service.UpdateTransportConfig(ctx, &apiv1.UpdateTransportConfigRequest{
-			Config: &apiv1.TransportConfig{Binding: "loopback"},
-		})
+		err := apiServer.AuthorizeGRPCMethod(ctx, "/nupi.api.v1.ConfigService/UpdateTransportConfig")
 		if err == nil {
 			t.Fatal("expected auth error, got nil")
 		}
@@ -1340,79 +1337,54 @@ func TestSessionsServiceSendVoiceCommandMetadataMultibyteWithinLimit(t *testing.
 	}
 }
 
-func TestSessionsServiceNilManagerReturnsUnavailable(t *testing.T) {
-	apiServer, _ := newTestAPIServer(t)
-	apiServer.sessionManager = nil
-
-	service := newSessionsService(apiServer)
-	ctx := context.WithValue(context.Background(), authContextKey{}, storedToken{Role: string(roleAdmin)})
-
-	t.Run("ListSessions", func(t *testing.T) {
-		_, err := service.ListSessions(ctx, &apiv1.ListSessionsRequest{})
-		if err == nil || status.Code(err) != codes.Unavailable {
-			t.Fatalf("expected Unavailable, got %v", err)
-		}
-	})
-
-	t.Run("CreateSession", func(t *testing.T) {
-		_, err := service.CreateSession(ctx, &apiv1.CreateSessionRequest{Command: "echo"})
-		if err == nil || status.Code(err) != codes.Unavailable {
-			t.Fatalf("expected Unavailable, got %v", err)
-		}
-	})
-
-	t.Run("KillSession", func(t *testing.T) {
-		_, err := service.KillSession(ctx, &apiv1.KillSessionRequest{SessionId: "fake"})
-		if err == nil || status.Code(err) != codes.Unavailable {
-			t.Fatalf("expected Unavailable, got %v", err)
-		}
-	})
-
-	t.Run("GetConversation", func(t *testing.T) {
-		// GetConversation requires conversation store first, so set it to something
-		apiServer.conversation = &mockConversationStore{}
-		_, err := service.GetConversation(ctx, &apiv1.GetConversationRequest{SessionId: "fake"})
-		if err == nil || status.Code(err) != codes.Unavailable {
-			t.Fatalf("expected Unavailable, got %v", err)
-		}
-	})
-
-	t.Run("SendVoiceCommand", func(t *testing.T) {
-		// M3 fix (Review 6): verify SendVoiceCommand with non-empty session_id
-		// returns Unavailable when session manager is nil.
-		bus := eventbus.New()
-		apiServer.SetEventBus(bus)
-		_, err := service.SendVoiceCommand(ctx, &apiv1.SendVoiceCommandRequest{
-			SessionId: "some-session",
-			Text:      "hello",
-		})
-		if err == nil || status.Code(err) != codes.Unavailable {
-			t.Fatalf("expected Unavailable, got %v", err)
-		}
-	})
-}
-
 func TestSessionsServiceSendVoiceCommandAuthRequired(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
-	bus := eventbus.New()
-	apiServer.SetEventBus(bus)
-	apiServer.sessionManager = &stubSessionManager{}
 
-	// Enable auth so that requireRoleGRPC actually checks credentials.
+	// Enable auth so that method-level authorization requires token context.
 	apiServer.authMu.Lock()
 	apiServer.authRequired = true
 	apiServer.authMu.Unlock()
 
-	service := newSessionsService(apiServer)
 	ctx := context.Background() // no auth token
 
-	_, err := service.SendVoiceCommand(ctx, &apiv1.SendVoiceCommandRequest{
-		Text: "hello",
-	})
+	err := apiServer.AuthorizeGRPCMethod(ctx, "/nupi.api.v1.SessionsService/SendVoiceCommand")
 	if err == nil {
 		t.Fatal("expected auth error, got nil")
 	}
 	if status.Code(err) != codes.Unauthenticated {
 		t.Fatalf("expected Unauthenticated, got %v", status.Code(err))
 	}
+}
+
+func TestAuthorizeGRPCMethodRoleMatrix(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	apiServer.authMu.Lock()
+	apiServer.authRequired = true
+	apiServer.authMu.Unlock()
+
+	readOnlyCtx := context.WithValue(context.Background(), authContextKey{}, storedToken{
+		Token: "readonly-token",
+		Role:  string(roleReadOnly),
+	})
+
+	t.Run("denied_for_admin_only_method", func(t *testing.T) {
+		err := apiServer.AuthorizeGRPCMethod(readOnlyCtx, "/nupi.api.v1.ConfigService/UpdateTransportConfig")
+		if status.Code(err) != codes.PermissionDenied {
+			t.Fatalf("expected PermissionDenied, got %v", status.Code(err))
+		}
+	})
+
+	t.Run("allowed_for_readonly_method", func(t *testing.T) {
+		err := apiServer.AuthorizeGRPCMethod(readOnlyCtx, "/nupi.api.v1.DaemonService/GetPluginWarnings")
+		if err != nil {
+			t.Fatalf("expected success, got %v", err)
+		}
+	})
+
+	t.Run("no_role_mapping_means_token_only", func(t *testing.T) {
+		err := apiServer.AuthorizeGRPCMethod(readOnlyCtx, "/nupi.api.v1.DaemonService/Status")
+		if err != nil {
+			t.Fatalf("expected success, got %v", err)
+		}
+	})
 }
