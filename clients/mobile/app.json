@@ -15,7 +15,10 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.nupi.mobile"
+      "bundleIdentifier": "com.nupi.mobile",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "Nupi needs microphone access for voice commands."
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -23,7 +26,8 @@
         "backgroundColor": "#1a1a2e"
       },
       "edgeToEdgeEnabled": true,
-      "package": "com.nupi.mobile"
+      "package": "com.nupi.mobile",
+      "permissions": ["android.permission.RECORD_AUDIO"]
     },
     "web": {
       "bundler": "metro",

@@ -12,6 +12,7 @@ import "react-native-reanimated";
 
 import { useColorScheme } from "@/components/useColorScheme";
 import { ConnectionProvider } from "@/lib/ConnectionContext";
+import { VoiceProvider } from "@/lib/VoiceContext";
 
 export { ErrorBoundary } from "expo-router";
 
@@ -49,19 +50,21 @@ function RootLayoutNav() {
 
   return (
     <ConnectionProvider>
-      <ThemeProvider value={colorScheme === "dark" ? DarkTheme : DefaultTheme}>
-        <Stack>
-          <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-          <Stack.Screen
-            name="scan"
-            options={{ presentation: "modal", title: "Scan QR Code" }}
-          />
-          <Stack.Screen
-            name="session/[id]"
-            options={{ title: "Terminal", headerBackTitle: "Sessions" }}
-          />
-        </Stack>
-      </ThemeProvider>
+      <VoiceProvider>
+        <ThemeProvider value={colorScheme === "dark" ? DarkTheme : DefaultTheme}>
+          <Stack>
+            <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+            <Stack.Screen
+              name="scan"
+              options={{ presentation: "modal", title: "Scan QR Code" }}
+            />
+            <Stack.Screen
+              name="session/[id]"
+              options={{ title: "Terminal", headerBackTitle: "Sessions" }}
+            />
+          </Stack>
+        </ThemeProvider>
+      </VoiceProvider>
     </ConnectionProvider>
   );
 }

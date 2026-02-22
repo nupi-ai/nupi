@@ -5,6 +5,12 @@
     "paths": {
       "@/*": [
         "./*"
+      ],
+      "whisper.rn/realtime-transcription": [
+        "./node_modules/whisper.rn/lib/typescript/realtime-transcription"
+      ],
+      "whisper.rn/realtime-transcription/adapters/AudioPcmStreamAdapter": [
+        "./node_modules/whisper.rn/lib/typescript/realtime-transcription/adapters/AudioPcmStreamAdapter"
       ]
     }
   },
@@ -12,6 +18,7 @@
     "**/*.ts",
     "**/*.tsx",
     ".expo/types/**/*.ts",
-    "expo-env.d.ts"
+    "expo-env.d.ts",
+    "types/**/*.d.ts"
   ]
 }
