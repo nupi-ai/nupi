@@ -119,9 +119,13 @@ func (kb *KeychainBackend) withTimeout(op string, fn func() error) error {
 }
 
 // compositeKey builds the keyring user field: "<instance>\x1f<profile>\x1f<key>".
-// Returns an error if any component contains the separator — this guards
-// against corrupted config data that could produce ambiguous keyring entries.
+// Returns an error if any component is empty or contains the separator — this
+// guards against ambiguous keyring entries from corrupted or misconfigured data.
 func (kb *KeychainBackend) compositeKey(key string) (string, error) {
+	if kb.instance == "" || kb.profile == "" || key == "" {
+		return "", fmt.Errorf("keychain: composite key component is empty: instance=%q profile=%q key=%q",
+			kb.instance, kb.profile, key)
+	}
 	if strings.Contains(kb.instance, compositeKeySep) ||
 		strings.Contains(kb.profile, compositeKeySep) ||
 		strings.Contains(key, compositeKeySep) {
@@ -140,7 +144,7 @@ func (kb *KeychainBackend) compositeKey(key string) (string, error) {
 func (kb *KeychainBackend) SetBatch(ctx context.Context, values map[string]string) error {
 	for key, value := range values {
 		if kb.disabled.Load() {
-			return fmt.Errorf("keychain: disabled by circuit breaker")
+			return fmt.Errorf("keychain SetBatch: disabled by circuit breaker")
 		}
 		if err := kb.Set(ctx, key, value); err != nil {
 			return err
@@ -154,7 +158,7 @@ func (kb *KeychainBackend) GetBatch(ctx context.Context, keys []string) (map[str
 	result := make(map[string]string, len(keys))
 	for _, key := range keys {
 		if kb.disabled.Load() {
-			return nil, fmt.Errorf("keychain: disabled by circuit breaker")
+			return nil, fmt.Errorf("keychain GetBatch: disabled by circuit breaker")
 		}
 		val, err := kb.Get(ctx, key)
 		if err != nil {

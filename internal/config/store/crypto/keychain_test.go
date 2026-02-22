@@ -236,6 +236,39 @@ func TestKeychainBackendForceAvailableOverridesProbe(t *testing.T) {
 	}
 }
 
+func TestKeychainBackendCompositeKeyRejectsEmpty(t *testing.T) {
+	t.Parallel()
+	mock := newMockKeyring()
+	ctx := context.Background()
+
+	t.Run("empty key", func(t *testing.T) {
+		kb := newKeychainBackendWithProvider("inst", "prof", mock)
+		err := kb.Set(ctx, "", "val")
+		if err == nil {
+			t.Fatal("expected error for empty key")
+		}
+		if !strings.Contains(err.Error(), "empty") {
+			t.Fatalf("expected empty error, got: %v", err)
+		}
+	})
+
+	t.Run("empty instance", func(t *testing.T) {
+		kb := newKeychainBackendWithProvider("", "prof", mock)
+		err := kb.Set(ctx, "key", "val")
+		if err == nil {
+			t.Fatal("expected error for empty instance")
+		}
+	})
+
+	t.Run("empty profile", func(t *testing.T) {
+		kb := newKeychainBackendWithProvider("inst", "", mock)
+		err := kb.Set(ctx, "key", "val")
+		if err == nil {
+			t.Fatal("expected error for empty profile")
+		}
+	})
+}
+
 func TestKeychainBackendCompositeKeyRejectsSeparator(t *testing.T) {
 	t.Parallel()
 	mock := newMockKeyring()
