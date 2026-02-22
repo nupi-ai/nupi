@@ -33,6 +33,7 @@ func captureStdout(t *testing.T, fn func()) string {
 	go func() {
 		var buf bytes.Buffer
 		buf.ReadFrom(r)
+		r.Close()
 		ch <- buf.String()
 	}()
 
@@ -144,6 +145,31 @@ func (s *fakeDaemonServer) Status(_ context.Context, _ *apiv1.DaemonStatusReques
 	return &apiv1.DaemonStatusResponse{Version: s.version}, nil
 }
 
+func TestDaemonStatusUsesFormatVersion(t *testing.T) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("network not permitted: %v", err)
+	}
+	srv := grpc.NewServer()
+	apiv1.RegisterDaemonServiceServer(srv, &fakeDaemonServer{version: "1.2.3"})
+	go srv.Serve(lis)
+	t.Cleanup(srv.Stop)
+
+	t.Setenv("NUPI_BASE_URL", "http://"+lis.Addr().String())
+	t.Setenv("NUPI_API_TOKEN", "")
+
+	output := captureStdout(t, func() {
+		cmd := newDaemonCommand()
+		cmd.SetArgs([]string{"status"})
+		_ = cmd.Execute()
+	})
+
+	// Verify FormatVersion is applied (shows "v" prefix).
+	if !strings.Contains(output, "Version: v1.2.3") {
+		t.Errorf("daemon status should display formatted version 'v1.2.3', got:\n%s", output)
+	}
+}
+
 func TestVersionCommandMismatchOutput(t *testing.T) {
 	// Start a gRPC server that returns daemon version "9.9.9".
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
@@ -175,5 +201,48 @@ func TestVersionCommandMismatchOutput(t *testing.T) {
 	}
 	if !strings.Contains(output, "WARNING") {
 		t.Errorf("missing mismatch warning, got:\n%s", output)
+	}
+}
+
+func TestVersionCommandJSONMismatchOutput(t *testing.T) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("network not permitted: %v", err)
+	}
+	srv := grpc.NewServer()
+	apiv1.RegisterDaemonServiceServer(srv, &fakeDaemonServer{version: "9.9.9"})
+	go srv.Serve(lis)
+	t.Cleanup(srv.Stop)
+
+	cleanup := nupiversion.ForTesting("1.0.0")
+	t.Cleanup(cleanup)
+
+	t.Setenv("NUPI_BASE_URL", "http://"+lis.Addr().String())
+	t.Setenv("NUPI_API_TOKEN", "")
+
+	output := captureStdout(t, func() {
+		root := &cobra.Command{Use: "test"}
+		root.PersistentFlags().Bool("json", false, "Output in JSON format")
+		root.AddCommand(newVersionCommand())
+		root.SetArgs([]string{"version", "--json"})
+		_ = root.Execute()
+	})
+
+	var result map[string]interface{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &result); err != nil {
+		t.Fatalf("JSON output is not valid JSON: %v\nOutput:\n%s", err, output)
+	}
+
+	if result["client"] != "1.0.0" {
+		t.Errorf("client = %v, want %q", result["client"], "1.0.0")
+	}
+	if result["daemon"] != "9.9.9" {
+		t.Errorf("daemon = %v, want %q", result["daemon"], "9.9.9")
+	}
+	if result["mismatch"] != true {
+		t.Errorf("mismatch = %v, want true", result["mismatch"])
+	}
+	if _, ok := result["warning"]; !ok {
+		t.Error("JSON output missing 'warning' key")
 	}
 }
