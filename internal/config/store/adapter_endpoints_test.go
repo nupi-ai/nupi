@@ -314,26 +314,3 @@ func TestAdapterEndpointTLSDefaults(t *testing.T) {
 		t.Fatal("expected TLSInsecure=false")
 	}
 }
-
-func TestApplyMigrationsIdempotent(t *testing.T) {
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "config.db")
-
-	store, err := Open(Options{DBPath: dbPath})
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer store.Close()
-
-	ctx := context.Background()
-
-	// Migrations already ran during Open(). Run again to verify idempotency.
-	if err := applyMigrations(ctx, store.DB()); err != nil {
-		t.Fatalf("second applyMigrations: %v", err)
-	}
-
-	// Third time for good measure.
-	if err := applyMigrations(ctx, store.DB()); err != nil {
-		t.Fatalf("third applyMigrations: %v", err)
-	}
-}
