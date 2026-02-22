@@ -359,10 +359,6 @@ func (r *recordingsService) ListRecordings(ctx context.Context, req *apiv1.ListR
 		return nil, err
 	}
 
-	if r.api.sessionManager == nil {
-		return nil, status.Error(codes.Unavailable, "session manager unavailable")
-	}
-
 	store := r.api.sessionManager.GetRecordingStore()
 	if store == nil {
 		return nil, status.Error(codes.Unavailable, "recording store not available")
@@ -413,10 +409,6 @@ func (r *recordingsService) GetRecording(req *apiv1.GetRecordingRequest, srv api
 	sessionID := strings.TrimSpace(req.GetSessionId())
 	if sessionID == "" {
 		return status.Error(codes.InvalidArgument, "session_id is required")
-	}
-
-	if r.api.sessionManager == nil {
-		return status.Error(codes.Unavailable, "session manager unavailable")
 	}
 
 	store := r.api.sessionManager.GetRecordingStore()

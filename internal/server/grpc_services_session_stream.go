@@ -134,10 +134,6 @@ func (s *sessionsService) AttachSession(stream apiv1.SessionsService_AttachSessi
 		return status.Error(codes.InvalidArgument, "session_id is required")
 	}
 
-	if s.api.sessionManager == nil {
-		return status.Error(codes.Unavailable, "session manager unavailable")
-	}
-
 	if _, err := s.api.sessionManager.GetSession(sessionID); err != nil {
 		return status.Errorf(codes.NotFound, "session %s not found", sessionID)
 	}

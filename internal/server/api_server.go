@@ -237,6 +237,10 @@ type APIServer struct {
 
 // NewAPIServer creates a new API server.
 func NewAPIServer(sessionManager SessionManager, configStore ConfigStore, runtime RuntimeInfoProvider) (*APIServer, error) {
+	if sessionManager == nil {
+		return nil, fmt.Errorf("session manager is required")
+	}
+
 	resizeManager, err := termresize.NewManagerWithDefaults()
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialise resize manager: %w", err)

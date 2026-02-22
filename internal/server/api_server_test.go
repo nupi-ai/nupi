@@ -2,10 +2,26 @@ package server
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/nupi-ai/nupi/internal/version"
 )
+
+func TestNewAPIServerRequiresSessionManager(t *testing.T) {
+	store := openTestStore(t)
+
+	server, err := NewAPIServer(nil, store, runtimeStub{})
+	if err == nil {
+		t.Fatal("expected error when session manager is nil")
+	}
+	if server != nil {
+		t.Fatal("expected nil server on constructor error")
+	}
+	if !strings.Contains(err.Error(), "session manager is required") {
+		t.Fatalf("expected session manager validation error, got %v", err)
+	}
+}
 
 func TestDaemonStatusReturnsRealVersion(t *testing.T) {
 	srv, _ := newTestAPIServer(t)
