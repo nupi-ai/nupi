@@ -26,22 +26,9 @@ type flushState struct {
 }
 
 func (s *Service) consumeFlushRequests(ctx context.Context) {
-	defer s.wg.Done()
-	if s.flushSub == nil {
-		return
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case env, ok := <-s.flushSub.C():
-			if !ok {
-				return
-			}
-			s.handleFlushRequest(ctx, env.Payload)
-		}
-	}
+	eventbus.Consume(ctx, s.flushSub, &s.wg, func(event eventbus.MemoryFlushRequestEvent) {
+		s.handleFlushRequest(ctx, event)
+	})
 }
 
 func (s *Service) handleFlushRequest(ctx context.Context, event eventbus.MemoryFlushRequestEvent) {
@@ -123,26 +110,13 @@ func (s *Service) handleFlushRequest(ctx context.Context, event eventbus.MemoryF
 }
 
 func (s *Service) consumeFlushReplies(ctx context.Context) {
-	defer s.wg.Done()
-	if s.flushReplySub == nil {
-		return
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
+	eventbus.Consume(ctx, s.flushReplySub, &s.wg, func(reply eventbus.ConversationReplyEvent) {
+		// Only process memory_flush replies.
+		if reply.Metadata["event_type"] != "memory_flush" {
 			return
-		case env, ok := <-s.flushReplySub.C():
-			if !ok {
-				return
-			}
-			// Only process memory_flush replies.
-			if env.Payload.Metadata["event_type"] != "memory_flush" {
-				continue
-			}
-			s.handleFlushReply(ctx, env.Payload)
 		}
-	}
+		s.handleFlushReply(ctx, reply)
+	})
 }
 
 func (s *Service) handleFlushReply(ctx context.Context, reply eventbus.ConversationReplyEvent) {
@@ -258,4 +232,3 @@ func (s *Service) writeFlushContent(ctx context.Context, sessionID, content stri
 
 	return nil
 }
-

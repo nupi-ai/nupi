@@ -93,7 +93,7 @@ type Service struct {
 
 	mu        sync.RWMutex
 	sessions  map[string][]eventbus.ConversationTurn
-	sessionAI map[string]bool   // tracks whether session ever had an AI turn (survives FIFO trim)
+	sessionAI map[string]bool // tracks whether session ever had an AI turn (survives FIFO trim)
 	detach    map[string]*time.Timer
 	toolCache map[string]string // sessionID -> current tool name
 
@@ -269,128 +269,47 @@ func (s *Service) Shutdown(ctx context.Context) error {
 }
 
 func (s *Service) consumePipeline(ctx context.Context) {
-	defer s.wg.Done()
-	if s.cleanedSub == nil {
-		return
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case env, ok := <-s.cleanedSub.C():
-			if !ok {
-				return
-			}
-			s.handlePipelineMessage(env.Timestamp, env.Payload)
-		}
-	}
+	eventbus.ConsumeEnvelope(ctx, s.cleanedSub, &s.wg, func(env eventbus.TypedEnvelope[eventbus.PipelineMessageEvent]) {
+		s.handlePipelineMessage(env.Timestamp, env.Payload)
+	})
 }
 
 func (s *Service) consumeLifecycle(ctx context.Context) {
-	defer s.wg.Done()
-	if s.lifecycleSub == nil {
-		return
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case env, ok := <-s.lifecycleSub.C():
-			if !ok {
-				return
-			}
-			msg := env.Payload
-			switch msg.State {
-			case eventbus.SessionStateStopped:
-				s.clearSession(msg.SessionID)
-			case eventbus.SessionStateDetached:
-				// Clear tool cache immediately to prevent stale current_tool injection
-				// (conversation history is still kept until detachTTL expires)
-				s.clearToolCache(msg.SessionID)
-				s.scheduleDetachCleanup(msg.SessionID)
-			case eventbus.SessionStateRunning, eventbus.SessionStateCreated:
-				s.cancelDetachCleanup(msg.SessionID)
-			}
+	eventbus.Consume(ctx, s.lifecycleSub, &s.wg, func(msg eventbus.SessionLifecycleEvent) {
+		switch msg.State {
+		case eventbus.SessionStateStopped:
+			s.clearSession(msg.SessionID)
+		case eventbus.SessionStateDetached:
+			// Clear tool cache immediately to prevent stale current_tool injection
+			// (conversation history is still kept until detachTTL expires)
+			s.clearToolCache(msg.SessionID)
+			s.scheduleDetachCleanup(msg.SessionID)
+		case eventbus.SessionStateRunning, eventbus.SessionStateCreated:
+			s.cancelDetachCleanup(msg.SessionID)
 		}
-	}
+	})
 }
 
 func (s *Service) consumeReplies(ctx context.Context) {
-	defer s.wg.Done()
-	if s.replySub == nil {
-		return
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case env, ok := <-s.replySub.C():
-			if !ok {
-				return
-			}
-			s.handleReplyMessage(env.Timestamp, env.Payload)
-		}
-	}
+	eventbus.ConsumeEnvelope(ctx, s.replySub, &s.wg, func(env eventbus.TypedEnvelope[eventbus.ConversationReplyEvent]) {
+		s.handleReplyMessage(env.Timestamp, env.Payload)
+	})
 }
 
 func (s *Service) consumeBarge(ctx context.Context) {
-	defer s.wg.Done()
-	if s.bargeSub == nil {
-		return
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case env, ok := <-s.bargeSub.C():
-			if !ok {
-				return
-			}
-			s.handleBargeEvent(env.Payload)
-		}
-	}
+	eventbus.Consume(ctx, s.bargeSub, &s.wg, s.handleBargeEvent)
 }
 
 func (s *Service) consumeToolEvents(ctx context.Context) {
-	defer s.wg.Done()
-	if s.toolSub == nil {
-		return
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case env, ok := <-s.toolSub.C():
-			if !ok {
-				return
-			}
-			s.updateToolCache(env.Payload.SessionID, env.Payload.ToolName)
-		}
-	}
+	eventbus.Consume(ctx, s.toolSub, &s.wg, func(event eventbus.SessionToolEvent) {
+		s.updateToolCache(event.SessionID, event.ToolName)
+	})
 }
 
 func (s *Service) consumeToolChangeEvents(ctx context.Context) {
-	defer s.wg.Done()
-	if s.toolChangeSub == nil {
-		return
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case env, ok := <-s.toolChangeSub.C():
-			if !ok {
-				return
-			}
-			s.updateToolCache(env.Payload.SessionID, env.Payload.NewTool)
-		}
-	}
+	eventbus.Consume(ctx, s.toolChangeSub, &s.wg, func(event eventbus.SessionToolChangedEvent) {
+		s.updateToolCache(event.SessionID, event.NewTool)
+	})
 }
 
 func (s *Service) updateToolCache(sessionID, toolName string) {
@@ -783,22 +702,7 @@ func (s *Service) proceedWithSummary(sessionID string, oldest []eventbus.Convers
 
 // consumeFlushResponses listens for memory flush responses from the awareness service.
 func (s *Service) consumeFlushResponses(ctx context.Context) {
-	defer s.wg.Done()
-	if s.flushResponseSub == nil {
-		return
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case env, ok := <-s.flushResponseSub.C():
-			if !ok {
-				return
-			}
-			s.handleFlushResponse(env.Payload)
-		}
-	}
+	eventbus.Consume(ctx, s.flushResponseSub, &s.wg, s.handleFlushResponse)
 }
 
 // handleFlushResponse processes a memory flush response, then proceeds with summary.

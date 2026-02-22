@@ -65,11 +65,11 @@ type AdapterBridge struct {
 	napAdapter     *NAPAdapter   // NAP adapter reference for cleanup
 
 	// Circuit-breaker state for backoff on repeated failures
-	consecutiveErrors   int       // count of consecutive READY handling failures
-	lastErrorTime       time.Time // when the last error occurred (for backoff calculation)
-	lastFailedAdapter   string    // adapter ID that triggered the errors (for reset detection)
-	lastFailedAddress   string    // address that triggered the errors (for reset detection)
-	lastConfigVersion   string    // config version from last failed attempt (UpdatedAt or hash fallback)
+	consecutiveErrors int       // count of consecutive READY handling failures
+	lastErrorTime     time.Time // when the last error occurred (for backoff calculation)
+	lastFailedAdapter string    // adapter ID that triggered the errors (for reset detection)
+	lastFailedAddress string    // address that triggered the errors (for reset detection)
+	lastConfigVersion string    // config version from last failed attempt (UpdatedAt or hash fallback)
 
 	// Embedding bridge for awareness system vector search
 	embeddingBridge *EmbeddingBridge
@@ -261,23 +261,9 @@ func (b *AdapterBridge) Shutdown(ctx context.Context) error {
 }
 
 func (b *AdapterBridge) consumeEvents(ctx context.Context) {
-	defer b.wg.Done()
-	if b.sub == nil {
-		return
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case env, ok := <-b.sub.C():
-			if !ok {
-				return
-			}
-
-			b.handleAdapterStatus(ctx, env.Payload)
-		}
-	}
+	eventbus.Consume(ctx, b.sub, &b.wg, func(event eventbus.AdapterStatusEvent) {
+		b.handleAdapterStatus(ctx, event)
+	})
 }
 
 func (b *AdapterBridge) handleAdapterStatus(ctx context.Context, evt eventbus.AdapterStatusEvent) {

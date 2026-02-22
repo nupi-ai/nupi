@@ -149,64 +149,21 @@ func (s *Service) Shutdown(ctx context.Context) error {
 }
 
 func (s *Service) consumeVAD() {
-	defer s.wg.Done()
-	if s.vadSub == nil {
-		return
-	}
-
-	for {
-		select {
-		case <-s.ctx.Done():
-			return
-		case env, ok := <-s.vadSub.C():
-			if !ok {
-				return
-			}
-			s.handleVADEvent(env.Payload)
-		}
-	}
+	eventbus.Consume(s.ctx, s.vadSub, &s.wg, s.handleVADEvent)
 }
 
 func (s *Service) consumeClient() {
-	defer s.wg.Done()
-	if s.clientSub == nil {
-		return
-	}
-
-	for {
-		select {
-		case <-s.ctx.Done():
-			return
-		case env, ok := <-s.clientSub.C():
-			if !ok {
-				return
-			}
-			s.handleClientEvent(env.Payload)
-		}
-	}
+	eventbus.Consume(s.ctx, s.clientSub, &s.wg, s.handleClientEvent)
 }
 
 func (s *Service) consumePlayback() {
-	defer s.wg.Done()
-	if s.playbackSub == nil {
-		return
-	}
-
-	for {
-		select {
-		case <-s.ctx.Done():
-			return
-		case env, ok := <-s.playbackSub.C():
-			if !ok {
-				return
-			}
-			ts := env.Timestamp
-			if ts.IsZero() {
-				ts = time.Now().UTC()
-			}
-			s.handlePlaybackEvent(env.Payload, ts)
+	eventbus.ConsumeEnvelope(s.ctx, s.playbackSub, &s.wg, func(env eventbus.TypedEnvelope[eventbus.AudioEgressPlaybackEvent]) {
+		ts := env.Timestamp
+		if ts.IsZero() {
+			ts = time.Now().UTC()
 		}
-	}
+		s.handlePlaybackEvent(env.Payload, ts)
+	})
 }
 
 func (s *Service) handleVADEvent(event eventbus.SpeechVADEvent) {

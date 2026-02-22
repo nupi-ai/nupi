@@ -36,22 +36,9 @@ var slugSanitizeRe = regexp.MustCompile(`[^a-z0-9-]`)
 var multiHyphenRe = regexp.MustCompile(`-{2,}`)
 
 func (s *Service) consumeExportRequests(ctx context.Context) {
-	defer s.wg.Done()
-	if s.exportSub == nil {
-		return
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case env, ok := <-s.exportSub.C():
-			if !ok {
-				return
-			}
-			s.handleExportRequest(ctx, env.Payload)
-		}
-	}
+	eventbus.Consume(ctx, s.exportSub, &s.wg, func(event eventbus.SessionExportRequestEvent) {
+		s.handleExportRequest(ctx, event)
+	})
 }
 
 func (s *Service) handleExportRequest(ctx context.Context, event eventbus.SessionExportRequestEvent) {
@@ -130,26 +117,13 @@ func (s *Service) handleExportRequest(ctx context.Context, event eventbus.Sessio
 }
 
 func (s *Service) consumeExportReplies(ctx context.Context) {
-	defer s.wg.Done()
-	if s.exportReplySub == nil {
-		return
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
+	eventbus.Consume(ctx, s.exportReplySub, &s.wg, func(reply eventbus.ConversationReplyEvent) {
+		// Only process session_slug replies.
+		if reply.Metadata["event_type"] != "session_slug" {
 			return
-		case env, ok := <-s.exportReplySub.C():
-			if !ok {
-				return
-			}
-			// Only process session_slug replies.
-			if env.Payload.Metadata["event_type"] != "session_slug" {
-				continue
-			}
-			s.handleExportReply(ctx, env.Payload)
 		}
-	}
+		s.handleExportReply(ctx, reply)
+	})
 }
 
 func (s *Service) handleExportReply(ctx context.Context, reply eventbus.ConversationReplyEvent) {

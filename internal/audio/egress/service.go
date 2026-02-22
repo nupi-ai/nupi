@@ -274,98 +274,39 @@ func (s *Service) Shutdown(ctx context.Context) error {
 }
 
 func (s *Service) consumeReplies() {
-	defer s.wg.Done()
-	if s.replySub == nil {
-		return
-	}
-
-	for {
-		select {
-		case <-s.ctx.Done():
-			return
-		case env, ok := <-s.replySub.C():
-			if !ok {
-				return
-			}
-			reply := env.Payload
-			s.handleSpeakRequest(speakRequest{
-				SessionID: reply.SessionID,
-				StreamID:  s.streamID,
-				PromptID:  reply.PromptID,
-				Text:      reply.Text,
-				Metadata:  copyMetadata(reply.Metadata),
-			})
-		}
-	}
+	eventbus.Consume(s.ctx, s.replySub, &s.wg, func(reply eventbus.ConversationReplyEvent) {
+		s.handleSpeakRequest(speakRequest{
+			SessionID: reply.SessionID,
+			StreamID:  s.streamID,
+			PromptID:  reply.PromptID,
+			Text:      reply.Text,
+			Metadata:  copyMetadata(reply.Metadata),
+		})
+	})
 }
 
 func (s *Service) consumeSpeak() {
-	defer s.wg.Done()
-	if s.speakSub == nil {
-		return
-	}
-
-	for {
-		select {
-		case <-s.ctx.Done():
-			return
-		case env, ok := <-s.speakSub.C():
-			if !ok {
-				return
-			}
-			event := env.Payload
-			s.handleSpeakRequest(speakRequest{
-				SessionID: event.SessionID,
-				StreamID:  s.streamID,
-				PromptID:  event.PromptID,
-				Text:      event.Text,
-				Metadata:  copyMetadata(event.Metadata),
-			})
-		}
-	}
+	eventbus.Consume(s.ctx, s.speakSub, &s.wg, func(event eventbus.ConversationSpeakEvent) {
+		s.handleSpeakRequest(speakRequest{
+			SessionID: event.SessionID,
+			StreamID:  s.streamID,
+			PromptID:  event.PromptID,
+			Text:      event.Text,
+			Metadata:  copyMetadata(event.Metadata),
+		})
+	})
 }
 
 func (s *Service) consumeLifecycle() {
-	defer s.wg.Done()
-	if s.lifecycleSub == nil {
-		return
-	}
-
-	for {
-		select {
-		case <-s.ctx.Done():
-			return
-		case env, ok := <-s.lifecycleSub.C():
-			if !ok {
-				return
-			}
-			msg := env.Payload
-			if msg.State == eventbus.SessionStateStopped {
-				if s.manager != nil {
-					s.manager.RemoveStreamByKey(streammanager.StreamKey(msg.SessionID, s.streamID))
-				}
-			}
+	eventbus.Consume(s.ctx, s.lifecycleSub, &s.wg, func(msg eventbus.SessionLifecycleEvent) {
+		if msg.State == eventbus.SessionStateStopped && s.manager != nil {
+			s.manager.RemoveStreamByKey(streammanager.StreamKey(msg.SessionID, s.streamID))
 		}
-	}
+	})
 }
 
 func (s *Service) consumeBarge() {
-	defer s.wg.Done()
-	if s.bargeSub == nil {
-		return
-	}
-
-	for {
-		select {
-		case <-s.ctx.Done():
-			return
-		case env, ok := <-s.bargeSub.C():
-			if !ok {
-				return
-			}
-			s.handleBargeEvent(env.Payload)
-		}
-	}
+	eventbus.Consume(s.ctx, s.bargeSub, &s.wg, s.handleBargeEvent)
 }
 
 func (s *Service) handleBargeEvent(event eventbus.SpeechBargeInEvent) {

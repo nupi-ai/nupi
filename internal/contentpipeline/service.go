@@ -25,8 +25,8 @@ type Service struct {
 	toolBySession sync.Map // sessionID -> toolMetadata
 
 	// Output buffering per session for idle detection
-	buffers    sync.Map // sessionID -> *OutputBuffer
-	idleTimers sync.Map // sessionID -> *time.Timer
+	buffers    sync.Map    // sessionID -> *OutputBuffer
+	idleTimers sync.Map    // sessionID -> *time.Timer
 	stopped    atomic.Bool // prevents timer callbacks after shutdown
 
 	// Last-seen metadata per session for tool-change flush
@@ -177,108 +177,56 @@ func (s *Service) Shutdown(ctx context.Context) error {
 }
 
 func (s *Service) consumeToolEvents(ctx context.Context) {
-	defer s.wg.Done()
-	if s.toolSub == nil {
-		return
-	}
-	for {
-		select {
-		case <-ctx.Done():
+	eventbus.Consume(ctx, s.toolSub, &s.wg, func(payload eventbus.SessionToolEvent) {
+		if payload.SessionID == "" {
 			return
-		case env, ok := <-s.toolSub.C():
-			if !ok {
-				return
-			}
-			payload := env.Payload
-			if payload.SessionID == "" {
-				continue
-			}
-			// Check if tool changed - if so, flush current buffer to avoid mixing output
-			// from different tools in the same buffer
-			if oldVal, exists := s.toolBySession.Load(payload.SessionID); exists {
-				oldMeta := oldVal.(toolMetadata)
-				newToolKey := payload.ToolID
-				if newToolKey == "" {
-					newToolKey = payload.ToolName
-				}
-				oldToolKey := oldMeta.ID
-				if oldToolKey == "" {
-					oldToolKey = oldMeta.Name
-				}
-				// If tool actually changed, flush the buffer
-				if newToolKey != oldToolKey && oldToolKey != "" {
-					s.flushOnToolChange(ctx, payload.SessionID, oldMeta)
-				}
-			}
-			s.toolBySession.Store(payload.SessionID, toolMetadata{ID: payload.ToolID, Name: payload.ToolName})
 		}
-	}
+		// Check if tool changed - if so, flush current buffer to avoid mixing output
+		// from different tools in the same buffer
+		if oldVal, exists := s.toolBySession.Load(payload.SessionID); exists {
+			oldMeta := oldVal.(toolMetadata)
+			newToolKey := payload.ToolID
+			if newToolKey == "" {
+				newToolKey = payload.ToolName
+			}
+			oldToolKey := oldMeta.ID
+			if oldToolKey == "" {
+				oldToolKey = oldMeta.Name
+			}
+			// If tool actually changed, flush the buffer
+			if newToolKey != oldToolKey && oldToolKey != "" {
+				s.flushOnToolChange(ctx, payload.SessionID, oldMeta)
+			}
+		}
+		s.toolBySession.Store(payload.SessionID, toolMetadata{ID: payload.ToolID, Name: payload.ToolName})
+	})
 }
 
 func (s *Service) consumeOutputEvents(ctx context.Context) {
-	defer s.wg.Done()
-	if s.outputSub == nil {
-		return
-	}
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case env, ok := <-s.outputSub.C():
-			if !ok {
-				return
-			}
-			s.handleSessionOutput(ctx, env.Payload)
-		}
-	}
+	eventbus.Consume(ctx, s.outputSub, &s.wg, func(event eventbus.SessionOutputEvent) {
+		s.handleSessionOutput(ctx, event)
+	})
 }
 
 func (s *Service) consumeLifecycleEvents(ctx context.Context) {
-	defer s.wg.Done()
-	if s.lifecycleSub == nil {
-		return
-	}
-	for {
-		select {
-		case <-ctx.Done():
+	eventbus.Consume(ctx, s.lifecycleSub, &s.wg, func(payload eventbus.SessionLifecycleEvent) {
+		if payload.SessionID == "" {
 			return
-		case env, ok := <-s.lifecycleSub.C():
-			if !ok {
-				return
-			}
-			payload := env.Payload
-			if payload.SessionID == "" {
-				continue
-			}
-			switch payload.State {
-			case eventbus.SessionStateStopped:
-				s.toolBySession.Delete(payload.SessionID)
-				s.cleanupSessionBuffer(payload.SessionID)
-			case eventbus.SessionStateCreated:
-				// ensure a clean slate when a session is recreated
-				s.toolBySession.Delete(payload.SessionID)
-				s.cleanupSessionBuffer(payload.SessionID)
-			}
 		}
-	}
+		switch payload.State {
+		case eventbus.SessionStateStopped:
+			s.toolBySession.Delete(payload.SessionID)
+			s.cleanupSessionBuffer(payload.SessionID)
+		case eventbus.SessionStateCreated:
+			// ensure a clean slate when a session is recreated
+			s.toolBySession.Delete(payload.SessionID)
+			s.cleanupSessionBuffer(payload.SessionID)
+		}
+	})
 }
 
 func (s *Service) consumeTranscriptEvents(ctx context.Context) {
-	defer s.wg.Done()
-	if s.transcriptSub == nil {
-		return
-	}
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case env, ok := <-s.transcriptSub.C():
-			if !ok {
-				return
-			}
-			s.handleTranscript(env.Payload)
-		}
-	}
+	eventbus.Consume(ctx, s.transcriptSub, &s.wg, s.handleTranscript)
 }
 
 func (s *Service) handleSessionOutput(ctx context.Context, evt eventbus.SessionOutputEvent) {
