@@ -156,6 +156,7 @@ func TestAdapterLogWriter_DroppedMessageReport(t *testing.T) {
 	defer sub.Close()
 
 	writer := newAdapterLogWriter(bus, "test-adapter", SlotSTT, eventbus.LogLevelInfo)
+	writer.dropReportInterval = 100 * time.Millisecond // Short interval for test speed.
 
 	// Send enough messages to trigger rate limiting.
 	for i := 0; i < rateLimitBurstSize+100; i++ {
@@ -166,7 +167,7 @@ func TestAdapterLogWriter_DroppedMessageReport(t *testing.T) {
 	}
 
 	// Wait for drop report interval + buffer.
-	time.Sleep(droppedMessagesReportInterval + 100*time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
 
 	// Send one more message to trigger report check.
 	_, err := writer.Write([]byte("trigger\n"))
@@ -232,6 +233,146 @@ func TestAdapterLogWriter_Truncation(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("timeout waiting for truncated log event")
 	}
+}
+
+// TestLogAggregation_AC1_AdapterIDAndTimestamp explicitly proves AC #1:
+// logs are aggregated on adapters.log with adapter ID and timestamp.
+func TestLogAggregation_AC1_AdapterIDAndTimestamp(t *testing.T) {
+	t.Parallel()
+	bus := eventbus.New()
+	sub := eventbus.SubscribeTo(bus, eventbus.Adapters.Log)
+	defer sub.Close()
+
+	const adapterID = "adapter.stt.whisper"
+	writer := newAdapterLogWriter(bus, adapterID, SlotSTT, eventbus.LogLevelInfo)
+
+	before := time.Now().UTC().Add(-time.Second)
+	_, err := writer.Write([]byte("hello from adapter\n"))
+	if err != nil {
+		t.Fatalf("Write failed: %v", err)
+	}
+	after := time.Now().UTC().Add(time.Second)
+
+	select {
+	case env := <-sub.C():
+		evt := env.Payload
+		if evt.AdapterID != adapterID {
+			t.Errorf("expected AdapterID %q, got %q", adapterID, evt.AdapterID)
+		}
+		if evt.Timestamp.IsZero() {
+			t.Error("expected non-zero Timestamp")
+		}
+		if evt.Timestamp.Before(before) || evt.Timestamp.After(after) {
+			t.Errorf("Timestamp %v not in expected range [%v, %v]", evt.Timestamp, before, after)
+		}
+		if evt.Fields["slot"] != string(SlotSTT) {
+			t.Errorf("expected slot %q, got %q", SlotSTT, evt.Fields["slot"])
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for log event")
+	}
+}
+
+// TestLogAggregation_AC1_StdoutAndStderr proves both stdout (info level)
+// and stderr (error level) are captured per adapter instance.
+func TestLogAggregation_AC1_StdoutAndStderr(t *testing.T) {
+	t.Parallel()
+	bus := eventbus.New()
+	sub := eventbus.SubscribeTo(bus, eventbus.Adapters.Log, eventbus.WithSubscriptionBuffer(10))
+	defer sub.Close()
+
+	const adapterID = "adapter.ai.openai"
+	stdout := newAdapterLogWriter(bus, adapterID, SlotAI, eventbus.LogLevelInfo)
+	stderr := newAdapterLogWriter(bus, adapterID, SlotAI, eventbus.LogLevelError)
+
+	stdout.Write([]byte("info message\n"))
+	stderr.Write([]byte("error message\n"))
+
+	var gotInfo, gotError bool
+	timeout := time.After(time.Second)
+	for !gotInfo || !gotError {
+		select {
+		case env := <-sub.C():
+			evt := env.Payload
+			if evt.AdapterID != adapterID {
+				t.Errorf("unexpected AdapterID %q", evt.AdapterID)
+			}
+			switch evt.Level {
+			case eventbus.LogLevelInfo:
+				if evt.Message != "info message" {
+					t.Errorf("unexpected info message: %q", evt.Message)
+				}
+				gotInfo = true
+			case eventbus.LogLevelError:
+				if evt.Message != "error message" {
+					t.Errorf("unexpected error message: %q", evt.Message)
+				}
+				gotError = true
+			}
+		case <-timeout:
+			t.Fatalf("timeout: gotInfo=%v gotError=%v", gotInfo, gotError)
+		}
+	}
+}
+
+// TestLogAggregation_AC1_RateLimitDropReport proves rate limiting (50 msg/s, burst 100):
+// emit >100 messages rapidly, verify only ≤100 published + drop report emitted.
+func TestLogAggregation_AC1_RateLimitDropReport(t *testing.T) {
+	t.Parallel()
+	bus := eventbus.New()
+	sub := eventbus.SubscribeTo(bus, eventbus.Adapters.Log, eventbus.WithSubscriptionBuffer(300))
+	defer sub.Close()
+
+	writer := newAdapterLogWriter(bus, "chatty", SlotTTS, eventbus.LogLevelInfo)
+	writer.dropReportInterval = 100 * time.Millisecond // Short interval for test speed.
+
+	// Send burst_size + 50 messages instantly.
+	total := rateLimitBurstSize + 50
+	for i := 0; i < total; i++ {
+		writer.Write([]byte("msg\n"))
+	}
+
+	// Drain burst messages first (timeout-based to handle async delivery).
+	burstCount := 0
+	burstTimer := time.NewTimer(500 * time.Millisecond)
+burstDrain:
+	for {
+		select {
+		case <-sub.C():
+			burstCount++
+		case <-burstTimer.C:
+			break burstDrain
+		}
+	}
+
+	if burstCount >= total {
+		t.Errorf("expected rate limiting: published %d of %d sent", burstCount, total)
+	}
+	if burstCount > rateLimitBurstSize+5 {
+		t.Errorf("expected ≤%d published (burst size + margin), got %d", rateLimitBurstSize+5, burstCount)
+	}
+
+	// Wait for drop report interval to elapse, then trigger a publish.
+	time.Sleep(200 * time.Millisecond)
+	writer.Write([]byte("trigger\n"))
+
+	// Look for the drop report among received messages.
+	var foundDropReport bool
+	reportTimer := time.After(time.Second)
+	for !foundDropReport {
+		select {
+		case env := <-sub.C():
+			if env.Payload.Level == eventbus.LogLevelWarn &&
+				strings.Contains(env.Payload.Message, "Rate limit exceeded") &&
+				strings.Contains(env.Payload.Message, "messages dropped") {
+				foundDropReport = true
+			}
+		case <-reportTimer:
+			t.Error("expected drop report warning but none received")
+			return
+		}
+	}
+	t.Logf("Sent %d, burst published %d, drop report=%v", total, burstCount, foundDropReport)
 }
 
 func TestAdapterLogWriter_BufferFlush(t *testing.T) {
