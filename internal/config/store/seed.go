@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"embed"
 	"fmt"
+	"maps"
 )
 
 //go:embed prompts/*.txt
@@ -42,11 +43,7 @@ var requiredAdapterSlots = []string{
 // DefaultPromptTemplates returns a copy of the default prompt templates.
 // Used by prompts.Engine for reset operations and CLI.
 func DefaultPromptTemplates() map[string]string {
-	result := make(map[string]string, len(defaultPromptTemplates))
-	for k, v := range defaultPromptTemplates {
-		result[k] = v
-	}
-	return result
+	return maps.Clone(defaultPromptTemplates)
 }
 
 // promptEventDescriptions maps event types to human-readable descriptions.
@@ -63,11 +60,7 @@ var promptEventDescriptions = map[string]string{
 // PromptEventDescriptions returns a copy of the event type descriptions.
 // Used by CLI for validation and display.
 func PromptEventDescriptions() map[string]string {
-	result := make(map[string]string, len(promptEventDescriptions))
-	for k, v := range promptEventDescriptions {
-		result[k] = v
-	}
-	return result
+	return maps.Clone(promptEventDescriptions)
 }
 
 func seedDefaults(ctx context.Context, db *sql.DB, instanceName, profileName string) error {

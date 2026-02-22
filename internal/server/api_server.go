@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"maps"
 	"os"
 	"strings"
 	"sync"
@@ -16,12 +17,12 @@ import (
 
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
-	nupiversion "github.com/nupi-ai/nupi/internal/version"
 	adapters "github.com/nupi-ai/nupi/internal/plugins/adapters"
 	"github.com/nupi-ai/nupi/internal/protocol"
 	"github.com/nupi-ai/nupi/internal/pty"
 	"github.com/nupi-ai/nupi/internal/session"
 	"github.com/nupi-ai/nupi/internal/termresize"
+	nupiversion "github.com/nupi-ai/nupi/internal/version"
 	"github.com/nupi-ai/nupi/internal/voice/slots"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -1220,9 +1221,5 @@ func cloneStringMap(in map[string]string) map[string]string {
 	if len(in) == 0 {
 		return nil
 	}
-	out := make(map[string]string, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
-	return out
+	return maps.Clone(in)
 }

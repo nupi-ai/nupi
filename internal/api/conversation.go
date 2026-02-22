@@ -1,6 +1,7 @@
 package api
 
 import (
+	"maps"
 	"time"
 
 	"github.com/nupi-ai/nupi/internal/eventbus"
@@ -38,10 +39,7 @@ func ToConversationState(sessionID string, total, offset, limit int, turns []eve
 	for i, turn := range turns {
 		var meta map[string]string
 		if len(turn.Meta) > 0 {
-			meta = make(map[string]string, len(turn.Meta))
-			for k, v := range turn.Meta {
-				meta[k] = v
-			}
+			meta = maps.Clone(turn.Meta)
 		}
 
 		result.Turns[i] = ConversationTurnDTO{
