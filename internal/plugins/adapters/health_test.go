@@ -544,10 +544,8 @@ func TestCheckHTTPHealth_TLSCertErrorFailsFast(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected TLS error, got nil")
 	}
-	// Should fail fast — well under the 30s timeout.
-	if elapsed > 3*time.Second {
-		t.Fatalf("TLS cert error should fail fast (terminal), but took %v", elapsed)
-	}
+	requireTerminal(t, err)
+	requireFailsFast(t, elapsed)
 }
 
 // --- Per-probe timeout contract test ---
@@ -730,6 +728,9 @@ func TestTransportAware_HTTPOK(t *testing.T) {
 }
 
 func TestTransportAware_HTTP503(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping slow retry-timeout test in short mode")
+	}
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -737,7 +738,7 @@ func TestTransportAware_HTTP503(t *testing.T) {
 	defer srv.Close()
 
 	addr := strings.TrimPrefix(srv.URL, "http://")
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
 	err := waitForAdapterReadyTransportAware(ctx, addr, "http", nil)
@@ -868,7 +869,34 @@ func TestWaitForAdapterReady_InvalidAddressFailsFast(t *testing.T) {
 	if !strings.Contains(err.Error(), "invalid address") {
 		t.Fatalf("expected invalid address error, got: %v", err)
 	}
+	requireTerminal(t, err)
 	requireFailsFast(t, elapsed)
+}
+
+func TestWaitForAdapterReady_EmptyAddress(t *testing.T) {
+	t.Parallel()
+	// Empty address should return an immediate error, not enter the dial loop.
+	err := waitForAdapterReady(context.Background(), "")
+	if err == nil {
+		t.Fatal("expected error for empty address, got nil")
+	}
+	if !strings.Contains(err.Error(), "address empty") {
+		t.Fatalf("expected 'address empty' error, got: %v", err)
+	}
+	requireTerminal(t, err)
+}
+
+func TestWaitForAdapterReady_WhitespaceOnlyAddress(t *testing.T) {
+	t.Parallel()
+	// Whitespace-only address is trimmed to empty — same as empty.
+	err := waitForAdapterReady(context.Background(), "   ")
+	if err == nil {
+		t.Fatal("expected error for whitespace-only address, got nil")
+	}
+	if !strings.Contains(err.Error(), "address empty") {
+		t.Fatalf("expected 'address empty' error, got: %v", err)
+	}
+	requireTerminal(t, err)
 }
 
 func TestTransportAware_UnknownTransportReturnsError(t *testing.T) {
@@ -1392,10 +1420,8 @@ func TestCheckGRPCHealth_TLSCertErrorFailsFast(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected TLS error, got nil")
 	}
-	// Should fail fast — well under the 30s timeout.
-	if elapsed > 3*time.Second {
-		t.Fatalf("TLS cert error should fail fast (terminal), but took %v", elapsed)
-	}
+	requireTerminal(t, err)
+	requireFailsFast(t, elapsed)
 }
 
 func TestCheckGRPCHealth_TLS(t *testing.T) {

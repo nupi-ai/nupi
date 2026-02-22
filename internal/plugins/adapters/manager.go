@@ -1313,14 +1313,14 @@ func allocateProcessAddress() (string, error) {
 func waitForAdapterReady(ctx context.Context, addr string) error {
 	addr = strings.TrimSpace(addr)
 	if addr == "" {
-		return errors.New("adapters: wait ready: address empty")
+		return &terminalHealthError{msg: "process readiness: address empty"}
 	}
 
 	// Pre-validate address format (parity with grpcHealthDial/httpHealthSetup)
 	// so malformed addresses fail fast instead of burning the full readyTimeout
 	// with repeated dial parse errors.
 	if _, _, splitErr := net.SplitHostPort(addr); splitErr != nil {
-		return fmt.Errorf("process readiness: invalid address %q: %w", addr, splitErr)
+		return &terminalHealthError{msg: fmt.Sprintf("process readiness: invalid address %q: %v", addr, splitErr), cause: splitErr}
 	}
 
 	ticker := time.NewTicker(100 * time.Millisecond)
