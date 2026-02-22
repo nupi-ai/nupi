@@ -95,7 +95,7 @@ func grpcHealthDial(ctx context.Context, addr string, tlsCfg *napdial.TLSConfig)
 	}))
 	conn, err := grpc.NewClient(napdial.PassthroughPrefix+addr, dialOpts...)
 	if err != nil {
-		return nil, nil, fmt.Errorf("grpc health check: connect: %w", err)
+		return nil, nil, &terminalHealthError{msg: fmt.Sprintf("grpc health check: connect: %v", err), cause: err}
 	}
 	return conn, healthpb.NewHealthClient(conn), nil
 }
@@ -208,6 +208,7 @@ func httpHealthProbe(ctx context.Context, client *http.Client, healthURL string)
 	if err != nil {
 		return fmt.Errorf("http health check: create request: %w", err)
 	}
+	req.Header.Set("User-Agent", "nupi-health-check/1.0")
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -374,7 +375,7 @@ func waitForAdapterReadyTransportAware(ctx context.Context, addr, transport stri
 	case "process":
 		return waitForAdapterReady(ctx, addr)
 	default:
-		return &terminalHealthError{msg: fmt.Sprintf("health check: unsupported transport %q", transport)}
+		return &terminalHealthError{msg: fmt.Sprintf("health check: unsupported transport %q for %s", transport, addr)}
 	}
 
 	// Retry loop: probe until success or the caller's context (readyTimeout) expires.
