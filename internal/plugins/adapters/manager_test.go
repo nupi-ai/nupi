@@ -627,9 +627,6 @@ spec:
     token:
       type: string
       description: API token
-  assets:
-    models:
-      cacheDirEnv: ADAPTER_CACHE_DIR
   telemetry:
     stdout: true
     stderr: false
@@ -728,9 +725,6 @@ spec:
 	}
 	if _, err := os.Stat(dataDir); err != nil {
 		t.Fatalf("data dir not created: %v", err)
-	}
-	if cacheDir, ok := envLookup("ADAPTER_CACHE_DIR"); !ok || cacheDir != dataDir {
-		t.Fatalf("expected ADAPTER_CACHE_DIR=%s, got %q", dataDir, cacheDir)
 	}
 	if transport, ok := envLookup("NUPI_ADAPTER_TRANSPORT"); !ok || transport != endpoint.Transport {
 		t.Fatalf("expected transport %s, got %q", endpoint.Transport, transport)
@@ -2677,9 +2671,6 @@ spec:
   telemetry:
     stdout: true
     stderr: false
-  assets:
-    models:
-      cacheDirEnv: MODEL_CACHE
   options:
     model:
       type: string
@@ -3016,14 +3007,6 @@ spec:
 		if fpNil == fpExplicit {
 			t.Fatal("nil Stdout pointer should produce different fingerprint than explicit true")
 		}
-	})
-
-	// --- Manifest assets ---
-
-	t.Run("manifest/assets/CacheDirEnv", func(t *testing.T) {
-		mf := cloneManifest()
-		mf.Adapter.Assets.Models.CacheDirEnv = "OTHER_CACHE"
-		assertChanged(t, computePlanFingerprint(baseBinding, mf, baseManifestYAML, baseEndpoint))
 	})
 
 	// --- Manifest slot ---

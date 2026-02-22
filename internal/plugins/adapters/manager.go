@@ -619,12 +619,6 @@ func (m *Manager) startAdapter(ctx context.Context, plan bindingPlan) (*adapterI
 			})
 		}
 		env = append(env, "NUPI_ADAPTER_DATA_DIR="+dataDir)
-		if manifest != nil && manifest.Adapter != nil {
-			cacheEnv := strings.TrimSpace(manifest.Adapter.Assets.Models.CacheDirEnv)
-			if cacheEnv != "" {
-				env = append(env, fmt.Sprintf("%s=%s", cacheEnv, dataDir))
-			}
-		}
 	}
 
 	baseEnv := append([]string(nil), env...)
@@ -965,7 +959,7 @@ func resolveAdapterConfig(options map[string]manifest.AdapterOption, current map
 // computePlanFingerprint generates a hash used to detect configuration changes
 // that require adapter restart. The fingerprint includes:
 // - Adapter binding (ID, config)
-// - Manifest runtime fields (slot/entrypoint including shutdownTimeout/options/telemetry/assets)
+// - Manifest runtime fields (slot/entrypoint including shutdownTimeout/options/telemetry)
 // - Endpoint settings (transport, command, args, env, TLS; address only for non-process transports)
 // Intentionally excluded: Binding.Slot (slot comes from manifest), Binding.Fingerprint,
 // Binding.Runtime (output fields), endpoint AdapterID/timestamps, AdapterOption.Required (validation-only).
@@ -1015,7 +1009,6 @@ func computePlanFingerprint(binding Binding, manifest *manifest.Manifest, manife
 		} else {
 			write("stderr:nil")
 		}
-		write(strings.TrimSpace(spec.Assets.Models.CacheDirEnv))
 		if len(spec.Options) == 0 {
 			write("")
 		} else {
