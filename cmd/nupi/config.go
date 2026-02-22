@@ -44,138 +44,123 @@ func newConfigCommand() *cobra.Command {
 }
 
 func configTransport(cmd *cobra.Command, args []string) error {
-	out := newOutputFormatter(cmd)
+	return withClient(cmd, daemonConnectErrorMessage, func(gc *grpcclient.Client, out *OutputFormatter) error {
+		flags := cmd.Flags()
 
-	gc, err := grpcclient.New()
-	if err != nil {
-		return out.Error("Failed to connect to daemon", err)
-	}
-	defer gc.Close()
+		// Check if any update flags were provided.
+		hasUpdate := flags.Changed("binding") ||
+			flags.Changed("tls-cert") || flags.Changed("tls-key") ||
+			flags.Changed("grpc-port") || flags.Changed("grpc-binding")
 
-	flags := cmd.Flags()
+		if hasUpdate {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
 
-	// Check if any update flags were provided.
-	hasUpdate := flags.Changed("binding") ||
-		flags.Changed("tls-cert") || flags.Changed("tls-key") ||
-		flags.Changed("grpc-port") || flags.Changed("grpc-binding")
+			updateCfg := &apiv1.TransportConfig{}
+			if flags.Changed("binding") {
+				binding, _ := flags.GetString("binding")
+				updateCfg.Binding = binding
+			}
+			if flags.Changed("tls-cert") {
+				path, _ := flags.GetString("tls-cert")
+				updateCfg.TlsCertPath = path
+			}
+			if flags.Changed("tls-key") {
+				path, _ := flags.GetString("tls-key")
+				updateCfg.TlsKeyPath = path
+			}
+			if flags.Changed("grpc-port") {
+				gp, _ := flags.GetInt("grpc-port")
+				updateCfg.GrpcPort = int32(gp)
+			}
+			if flags.Changed("grpc-binding") {
+				gb, _ := flags.GetString("grpc-binding")
+				updateCfg.GrpcBinding = gb
+			}
 
-	if hasUpdate {
+			if _, err := gc.UpdateTransportConfig(ctx, updateCfg); err != nil {
+				return out.Error("Failed to update transport configuration", err)
+			}
+		}
+
+		// Fetch current config.
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		updateCfg := &apiv1.TransportConfig{}
-		if flags.Changed("binding") {
-			binding, _ := flags.GetString("binding")
-			updateCfg.Binding = binding
-		}
-		if flags.Changed("tls-cert") {
-			path, _ := flags.GetString("tls-cert")
-			updateCfg.TlsCertPath = path
-		}
-		if flags.Changed("tls-key") {
-			path, _ := flags.GetString("tls-key")
-			updateCfg.TlsKeyPath = path
-		}
-		if flags.Changed("grpc-port") {
-			gp, _ := flags.GetInt("grpc-port")
-			updateCfg.GrpcPort = int32(gp)
-		}
-		if flags.Changed("grpc-binding") {
-			gb, _ := flags.GetString("grpc-binding")
-			updateCfg.GrpcBinding = gb
+		cfg, err := gc.TransportConfig(ctx)
+		if err != nil {
+			return out.Error("Failed to fetch transport configuration", err)
 		}
 
-		if _, err := gc.UpdateTransportConfig(ctx, updateCfg); err != nil {
-			return out.Error("Failed to update transport configuration", err)
+		if out.jsonMode {
+			return out.Print(map[string]interface{}{
+				"config": map[string]interface{}{
+					"binding":       cfg.GetBinding(),
+					"tls_cert_path": cfg.GetTlsCertPath(),
+					"tls_key_path":  cfg.GetTlsKeyPath(),
+					"grpc_port":     cfg.GetGrpcPort(),
+					"grpc_binding":  cfg.GetGrpcBinding(),
+					"auth_required": cfg.GetAuthRequired(),
+				},
+			})
 		}
-	}
 
-	// Fetch current config.
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+		fmt.Println("Transport configuration:")
+		fmt.Printf("  Binding: %s\n", cfg.GetBinding())
+		fmt.Printf("  gRPC Binding: %s\n", cfg.GetGrpcBinding())
+		fmt.Printf("  gRPC Port: %d\n", cfg.GetGrpcPort())
+		if cfg.GetTlsCertPath() != "" {
+			fmt.Printf("  TLS Cert: %s\n", cfg.GetTlsCertPath())
+		}
+		if cfg.GetTlsKeyPath() != "" {
+			fmt.Printf("  TLS Key: %s\n", cfg.GetTlsKeyPath())
+		}
+		fmt.Printf("  Auth Required: %v\n", cfg.GetAuthRequired())
 
-	cfg, err := gc.TransportConfig(ctx)
-	if err != nil {
-		return out.Error("Failed to fetch transport configuration", err)
-	}
-
-	if out.jsonMode {
-		return out.Print(map[string]interface{}{
-			"config": map[string]interface{}{
-				"binding":       cfg.GetBinding(),
-				"tls_cert_path": cfg.GetTlsCertPath(),
-				"tls_key_path":  cfg.GetTlsKeyPath(),
-				"grpc_port":     cfg.GetGrpcPort(),
-				"grpc_binding":  cfg.GetGrpcBinding(),
-				"auth_required": cfg.GetAuthRequired(),
-			},
-		})
-	}
-
-	fmt.Println("Transport configuration:")
-	fmt.Printf("  Binding: %s\n", cfg.GetBinding())
-	fmt.Printf("  gRPC Binding: %s\n", cfg.GetGrpcBinding())
-	fmt.Printf("  gRPC Port: %d\n", cfg.GetGrpcPort())
-	if cfg.GetTlsCertPath() != "" {
-		fmt.Printf("  TLS Cert: %s\n", cfg.GetTlsCertPath())
-	}
-	if cfg.GetTlsKeyPath() != "" {
-		fmt.Printf("  TLS Key: %s\n", cfg.GetTlsKeyPath())
-	}
-	fmt.Printf("  Auth Required: %v\n", cfg.GetAuthRequired())
-
-	return nil
+		return nil
+	})
 }
 
 func configMigrate(cmd *cobra.Command, _ []string) error {
-	out := newOutputFormatter(cmd)
-
-	gc, err := grpcclient.New()
-	if err != nil {
-		return out.Error("Failed to connect to daemon", err)
-	}
-	defer gc.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	resp, err := gc.Migrate(ctx, &apiv1.ConfigMigrateRequest{})
-	if err != nil {
-		return out.Error("Failed to run configuration migration", err)
-	}
-
-	if out.jsonMode {
-		return out.Print(map[string]interface{}{
-			"updated_slots":          resp.GetUpdatedSlots(),
-			"pending_slots":          resp.GetPendingSlots(),
-			"audio_settings_updated": resp.GetAudioSettingsUpdated(),
-		})
-	}
-
-	fmt.Println("Configuration migration summary:")
-	if len(resp.GetUpdatedSlots()) > 0 {
-		fmt.Println("  Updated slots:")
-		for _, slot := range resp.GetUpdatedSlots() {
-			fmt.Printf("    - %s\n", slot)
+	return withClientTimeout(cmd, 5*time.Second, func(ctx context.Context, gc *grpcclient.Client, out *OutputFormatter) error {
+		resp, err := gc.Migrate(ctx, &apiv1.ConfigMigrateRequest{})
+		if err != nil {
+			return out.Error("Failed to run configuration migration", err)
 		}
-	} else {
-		fmt.Println("  Updated slots: (none)")
-	}
 
-	if len(resp.GetPendingSlots()) > 0 {
-		fmt.Println("  Pending quickstart slots:")
-		for _, slot := range resp.GetPendingSlots() {
-			fmt.Printf("    - %s\n", slot)
+		if out.jsonMode {
+			return out.Print(map[string]interface{}{
+				"updated_slots":          resp.GetUpdatedSlots(),
+				"pending_slots":          resp.GetPendingSlots(),
+				"audio_settings_updated": resp.GetAudioSettingsUpdated(),
+			})
 		}
-	} else {
-		fmt.Println("  Pending quickstart slots: (none)")
-	}
 
-	if resp.GetAudioSettingsUpdated() {
-		fmt.Println("  Audio settings: defaults reconciled")
-	} else {
-		fmt.Println("  Audio settings: already up-to-date")
-	}
+		fmt.Println("Configuration migration summary:")
+		if len(resp.GetUpdatedSlots()) > 0 {
+			fmt.Println("  Updated slots:")
+			for _, slot := range resp.GetUpdatedSlots() {
+				fmt.Printf("    - %s\n", slot)
+			}
+		} else {
+			fmt.Println("  Updated slots: (none)")
+		}
 
-	return nil
+		if len(resp.GetPendingSlots()) > 0 {
+			fmt.Println("  Pending quickstart slots:")
+			for _, slot := range resp.GetPendingSlots() {
+				fmt.Printf("    - %s\n", slot)
+			}
+		} else {
+			fmt.Println("  Pending quickstart slots: (none)")
+		}
+
+		if resp.GetAudioSettingsUpdated() {
+			fmt.Println("  Audio settings: defaults reconciled")
+		} else {
+			fmt.Println("  Audio settings: already up-to-date")
+		}
+
+		return nil
+	})
 }

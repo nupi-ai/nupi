@@ -328,99 +328,83 @@ func voiceInterrupt(cmd *cobra.Command, defaultReason string) error {
 		streamID = slots.TTS
 	}
 
-	gc, err := grpcclient.New()
-	if err != nil {
-		return out.Error("Failed to connect to daemon", err)
-	}
-	defer gc.Close()
+	return withOutputClientTimeout(out, 5*time.Second, daemonConnectErrorMessage, func(ctx context.Context, gc *grpcclient.Client) error {
+		if err := gc.InterruptTTS(ctx, &apiv1.InterruptTTSRequest{
+			SessionId: sessionID,
+			StreamId:  streamID,
+			Reason:    reason,
+		}); err != nil {
+			return out.Error("Failed to send interruption", err)
+		}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+		if out.jsonMode {
+			return out.Print(map[string]any{
+				"session_id": sessionID,
+				"stream_id":  streamID,
+				"reason":     reason,
+			})
+		}
 
-	if err := gc.InterruptTTS(ctx, &apiv1.InterruptTTSRequest{
-		SessionId: sessionID,
-		StreamId:  streamID,
-		Reason:    reason,
-	}); err != nil {
-		return out.Error("Failed to send interruption", err)
-	}
-
-	if out.jsonMode {
-		return out.Print(map[string]any{
-			"session_id": sessionID,
-			"stream_id":  streamID,
-			"reason":     reason,
-		})
-	}
-
-	fmt.Fprintf(os.Stdout, "Sent interruption (%s) to session %s\n", reason, sessionID)
-	return nil
+		fmt.Fprintf(os.Stdout, "Sent interruption (%s) to session %s\n", reason, sessionID)
+		return nil
+	})
 }
 
 func voiceStatus(cmd *cobra.Command, _ []string) error {
-	out := newOutputFormatter(cmd)
 	sessionID := strings.TrimSpace(cmd.Flag("session").Value.String())
+	return withClientTimeout(cmd, 5*time.Second, func(ctx context.Context, gc *grpcclient.Client, out *OutputFormatter) error {
+		caps, err := gc.AudioCapabilities(ctx, &apiv1.GetAudioCapabilitiesRequest{
+			SessionId: sessionID,
+		})
+		if err != nil {
+			return out.Error("Failed to fetch audio capabilities", err)
+		}
 
-	gc, err := grpcclient.New()
-	if err != nil {
-		return out.Error("Failed to connect to daemon", err)
-	}
-	defer gc.Close()
+		captureEnabled := hasCaptureEnabled(caps)
+		playbackEnabled := hasPlaybackEnabled(caps)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+		if out.jsonMode {
+			payload := map[string]any{
+				"capture":          formatCapabilitiesProtoJSON(caps.GetCapture()),
+				"playback":         formatCapabilitiesProtoJSON(caps.GetPlayback()),
+				"capture_enabled":  captureEnabled,
+				"playback_enabled": playbackEnabled,
+			}
+			return out.Print(payload)
+		}
 
-	caps, err := gc.AudioCapabilities(ctx, &apiv1.GetAudioCapabilitiesRequest{
-		SessionId: sessionID,
+		fmt.Printf("Capture enabled: %v\n", captureEnabled)
+		fmt.Println("Capture capabilities:")
+		if len(caps.GetCapture()) == 0 {
+			fmt.Println("  (none)")
+		} else {
+			for _, cap := range caps.GetCapture() {
+				fmt.Printf("  - stream=%s %dHz %dbit %dch\n",
+					cap.GetStreamId(),
+					cap.GetFormat().GetSampleRate(),
+					cap.GetFormat().GetBitDepth(),
+					cap.GetFormat().GetChannels(),
+				)
+			}
+		}
+
+		fmt.Printf("Playback enabled: %v\n", playbackEnabled)
+		fmt.Println("Playback capabilities:")
+		if len(caps.GetPlayback()) == 0 {
+			fmt.Println("  (none)")
+		} else {
+			for _, cap := range caps.GetPlayback() {
+				fmt.Printf("  - stream=%s %dHz %dbit %dch\n",
+					cap.GetStreamId(),
+					cap.GetFormat().GetSampleRate(),
+					cap.GetFormat().GetBitDepth(),
+					cap.GetFormat().GetChannels(),
+				)
+			}
+		}
+
+		return nil
 	})
-	if err != nil {
-		return out.Error("Failed to fetch audio capabilities", err)
-	}
-
-	captureEnabled := hasCaptureEnabled(caps)
-	playbackEnabled := hasPlaybackEnabled(caps)
-
-	if out.jsonMode {
-		payload := map[string]any{
-			"capture":          formatCapabilitiesProtoJSON(caps.GetCapture()),
-			"playback":         formatCapabilitiesProtoJSON(caps.GetPlayback()),
-			"capture_enabled":  captureEnabled,
-			"playback_enabled": playbackEnabled,
-		}
-		return out.Print(payload)
-	}
-
-	fmt.Printf("Capture enabled: %v\n", captureEnabled)
-	fmt.Println("Capture capabilities:")
-	if len(caps.GetCapture()) == 0 {
-		fmt.Println("  (none)")
-	} else {
-		for _, cap := range caps.GetCapture() {
-			fmt.Printf("  - stream=%s %dHz %dbit %dch\n",
-				cap.GetStreamId(),
-				cap.GetFormat().GetSampleRate(),
-				cap.GetFormat().GetBitDepth(),
-				cap.GetFormat().GetChannels(),
-			)
-		}
-	}
-
-	fmt.Printf("Playback enabled: %v\n", playbackEnabled)
-	fmt.Println("Playback capabilities:")
-	if len(caps.GetPlayback()) == 0 {
-		fmt.Println("  (none)")
-	} else {
-		for _, cap := range caps.GetPlayback() {
-			fmt.Printf("  - stream=%s %dHz %dbit %dch\n",
-				cap.GetStreamId(),
-				cap.GetFormat().GetSampleRate(),
-				cap.GetFormat().GetBitDepth(),
-				cap.GetFormat().GetChannels(),
-			)
-		}
-	}
-
-	return nil
 }
 
 func formatCapabilitiesProtoJSON(caps []*apiv1.AudioCapability) []map[string]any {

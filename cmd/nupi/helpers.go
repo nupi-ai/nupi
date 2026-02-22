@@ -1,8 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"strings"
+	"time"
+
+	"github.com/nupi-ai/nupi/internal/grpcclient"
+	"github.com/spf13/cobra"
 )
 
 // Shared types used across command files.
@@ -18,7 +23,62 @@ type adapterInfo struct {
 const (
 	quickstartMissingRefsWarning = "WARN: Missing reference adapters: %s\n"
 	quickstartMissingRefsHelp    = "Install the recommended packages before completing quickstart.\n"
+
+	daemonConnectErrorMessage     = "Failed to connect to daemon"
+	daemonConnectGRPCErrorMessage = "Failed to connect to daemon via gRPC"
 )
+
+type ClientHandler func(client *grpcclient.Client, out *OutputFormatter) error
+
+type TimedClientHandler func(ctx context.Context, client *grpcclient.Client, out *OutputFormatter) error
+
+type OutputTimedClientHandler func(ctx context.Context, client *grpcclient.Client) error
+
+func withClient(cmd *cobra.Command, connectErrorMessage string, fn ClientHandler) error {
+	out := newOutputFormatter(cmd)
+	return withOutputClient(out, connectErrorMessage, func(client *grpcclient.Client) error {
+		return fn(client, out)
+	})
+}
+
+func withClientTimeout(cmd *cobra.Command, timeout time.Duration, fn TimedClientHandler) error {
+	return withClientTimeoutMessage(cmd, timeout, daemonConnectErrorMessage, fn)
+}
+
+func withClientTimeoutMessage(
+	cmd *cobra.Command,
+	timeout time.Duration,
+	connectErrorMessage string,
+	fn TimedClientHandler,
+) error {
+	return withClient(cmd, connectErrorMessage, func(client *grpcclient.Client, out *OutputFormatter) error {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		return fn(ctx, client, out)
+	})
+}
+
+func withOutputClient(out *OutputFormatter, connectErrorMessage string, fn func(client *grpcclient.Client) error) error {
+	client, err := grpcclient.New()
+	if err != nil {
+		return out.Error(connectErrorMessage, err)
+	}
+	defer client.Close()
+	return fn(client)
+}
+
+func withOutputClientTimeout(
+	out *OutputFormatter,
+	timeout time.Duration,
+	connectErrorMessage string,
+	fn OutputTimedClientHandler,
+) error {
+	return withOutputClient(out, connectErrorMessage, func(client *grpcclient.Client) error {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		return fn(ctx, client)
+	})
+}
 
 func printMissingReferenceAdapters(missing []string, showHelp bool) {
 	if len(missing) == 0 {
