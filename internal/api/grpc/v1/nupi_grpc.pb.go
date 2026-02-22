@@ -268,6 +268,7 @@ const (
 	SessionsService_SetSessionMode_FullMethodName        = "/nupi.api.v1.SessionsService/SetSessionMode"
 	SessionsService_GetConversation_FullMethodName       = "/nupi.api.v1.SessionsService/GetConversation"
 	SessionsService_GetGlobalConversation_FullMethodName = "/nupi.api.v1.SessionsService/GetGlobalConversation"
+	SessionsService_SendVoiceCommand_FullMethodName      = "/nupi.api.v1.SessionsService/SendVoiceCommand"
 )
 
 // SessionsServiceClient is the client API for SessionsService service.
@@ -284,6 +285,7 @@ type SessionsServiceClient interface {
 	SetSessionMode(ctx context.Context, in *SetSessionModeRequest, opts ...grpc.CallOption) (*SetSessionModeResponse, error)
 	GetConversation(ctx context.Context, in *GetConversationRequest, opts ...grpc.CallOption) (*GetConversationResponse, error)
 	GetGlobalConversation(ctx context.Context, in *GetGlobalConversationRequest, opts ...grpc.CallOption) (*GetGlobalConversationResponse, error)
+	SendVoiceCommand(ctx context.Context, in *SendVoiceCommandRequest, opts ...grpc.CallOption) (*SendVoiceCommandResponse, error)
 }
 
 type sessionsServiceClient struct {
@@ -406,6 +408,15 @@ func (c *sessionsServiceClient) GetGlobalConversation(ctx context.Context, in *G
 	return out, nil
 }
 
+func (c *sessionsServiceClient) SendVoiceCommand(ctx context.Context, in *SendVoiceCommandRequest, opts ...grpc.CallOption) (*SendVoiceCommandResponse, error) {
+	out := new(SendVoiceCommandResponse)
+	err := c.cc.Invoke(ctx, SessionsService_SendVoiceCommand_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // SessionsServiceServer is the server API for SessionsService service.
 // All implementations must embed UnimplementedSessionsServiceServer
 // for forward compatibility
@@ -420,6 +431,7 @@ type SessionsServiceServer interface {
 	SetSessionMode(context.Context, *SetSessionModeRequest) (*SetSessionModeResponse, error)
 	GetConversation(context.Context, *GetConversationRequest) (*GetConversationResponse, error)
 	GetGlobalConversation(context.Context, *GetGlobalConversationRequest) (*GetGlobalConversationResponse, error)
+	SendVoiceCommand(context.Context, *SendVoiceCommandRequest) (*SendVoiceCommandResponse, error)
 	mustEmbedUnimplementedSessionsServiceServer()
 }
 
@@ -456,6 +468,9 @@ func (UnimplementedSessionsServiceServer) GetConversation(context.Context, *GetC
 }
 func (UnimplementedSessionsServiceServer) GetGlobalConversation(context.Context, *GetGlobalConversationRequest) (*GetGlobalConversationResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetGlobalConversation not implemented")
+}
+func (UnimplementedSessionsServiceServer) SendVoiceCommand(context.Context, *SendVoiceCommandRequest) (*SendVoiceCommandResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SendVoiceCommand not implemented")
 }
 func (UnimplementedSessionsServiceServer) mustEmbedUnimplementedSessionsServiceServer() {}
 
@@ -658,6 +673,24 @@ func _SessionsService_GetGlobalConversation_Handler(srv interface{}, ctx context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _SessionsService_SendVoiceCommand_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SendVoiceCommandRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(SessionsServiceServer).SendVoiceCommand(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: SessionsService_SendVoiceCommand_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(SessionsServiceServer).SendVoiceCommand(ctx, req.(*SendVoiceCommandRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // SessionsService_ServiceDesc is the grpc.ServiceDesc for SessionsService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -700,6 +733,10 @@ var SessionsService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetGlobalConversation",
 			Handler:    _SessionsService_GetGlobalConversation_Handler,
+		},
+		{
+			MethodName: "SendVoiceCommand",
+			Handler:    _SessionsService_SendVoiceCommand_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

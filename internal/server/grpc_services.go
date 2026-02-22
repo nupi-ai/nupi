@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/nupi-ai/nupi/internal/api"
 	apiv1 "github.com/nupi-ai/nupi/internal/api/grpc/v1"
@@ -791,6 +792,82 @@ func (s *sessionsService) GetGlobalConversation(ctx context.Context, req *apiv1.
 	}
 
 	return resp, nil
+}
+
+// maxVoiceCommandTextLen is the maximum allowed length for voice command text.
+const maxVoiceCommandTextLen = 10000
+
+// maxVoiceCommandMetadataEntries is the maximum number of caller-supplied metadata entries.
+const maxVoiceCommandMetadataEntries = 50
+
+// maxVoiceCommandMetadataKeyLen is the maximum length of a single metadata key.
+const maxVoiceCommandMetadataKeyLen = 256
+
+// maxVoiceCommandMetadataValueLen is the maximum length of a single metadata value.
+const maxVoiceCommandMetadataValueLen = 1024
+
+func (s *sessionsService) SendVoiceCommand(ctx context.Context, req *apiv1.SendVoiceCommandRequest) (*apiv1.SendVoiceCommandResponse, error) {
+	if _, err := s.api.requireRoleGRPC(ctx, roleAdmin); err != nil {
+		return nil, err
+	}
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+
+	text := strings.TrimSpace(req.GetText())
+	if text == "" {
+		return nil, status.Error(codes.InvalidArgument, "text is required")
+	}
+	if utf8.RuneCountInString(text) > maxVoiceCommandTextLen {
+		return nil, status.Errorf(codes.InvalidArgument, "text exceeds maximum length of %d characters", maxVoiceCommandTextLen)
+	}
+
+	sessionID := strings.TrimSpace(req.GetSessionId())
+	if sessionID != "" {
+		if s.api.sessionManager == nil {
+			return nil, status.Error(codes.Unavailable, "session manager unavailable")
+		}
+		if _, err := s.api.sessionManager.GetSession(sessionID); err != nil {
+			return nil, status.Errorf(codes.NotFound, "session %s not found", sessionID)
+		}
+	}
+
+	if s.api.eventBus == nil {
+		return nil, status.Error(codes.Unavailable, "event bus unavailable")
+	}
+
+	if len(req.GetMetadata()) > maxVoiceCommandMetadataEntries {
+		return nil, status.Errorf(codes.InvalidArgument, "metadata exceeds maximum of %d entries", maxVoiceCommandMetadataEntries)
+	}
+
+	annotations := map[string]string{
+		"input_source": "voice",
+	}
+	for k, v := range req.GetMetadata() {
+		kLen, vLen := utf8.RuneCountInString(k), utf8.RuneCountInString(v)
+		if kLen > maxVoiceCommandMetadataKeyLen || vLen > maxVoiceCommandMetadataValueLen {
+			return nil, status.Errorf(codes.InvalidArgument,
+				"metadata entry %q exceeds limits (key: %d/%d chars, value: %d/%d chars)",
+				k, kLen, maxVoiceCommandMetadataKeyLen, vLen, maxVoiceCommandMetadataValueLen)
+		}
+		switch k {
+		case "input_source":
+			// Reserved — always "voice" for this RPC.
+		default:
+			annotations[k] = v
+		}
+	}
+	annotations = language.MergeContextLanguage(ctx, annotations)
+
+	eventbus.Publish(ctx, s.api.eventBus, eventbus.Pipeline.Cleaned, eventbus.SourceClient, eventbus.PipelineMessageEvent{
+		SessionID:   sessionID,
+		Origin:      eventbus.OriginUser,
+		Text:        text,
+		Annotations: annotations,
+		Sequence:    0,
+	})
+
+	return &apiv1.SendVoiceCommandResponse{Accepted: true, Message: "voice command queued"}, nil
 }
 
 func RegisterGRPCServices(api *APIServer, registrar grpc.ServiceRegistrar) {

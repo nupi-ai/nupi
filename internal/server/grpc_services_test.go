@@ -16,6 +16,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/audio/ingress"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
+	"github.com/nupi-ai/nupi/internal/language"
 	adapters "github.com/nupi-ai/nupi/internal/plugins/adapters"
 	"github.com/nupi-ai/nupi/internal/pty"
 	"github.com/nupi-ai/nupi/internal/recording"
@@ -895,6 +896,450 @@ func TestConfigServiceTransportAuthRequired(t *testing.T) {
 	})
 }
 
+func TestSessionsServiceSendVoiceCommand(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	bus := eventbus.New()
+	apiServer.SetEventBus(bus)
+	apiServer.sessionManager = &stubSessionManager{}
+
+	service := newSessionsService(apiServer)
+
+	sub := eventbus.SubscribeTo(bus, eventbus.Pipeline.Cleaned)
+	defer sub.Close()
+
+	resp, err := service.SendVoiceCommand(context.Background(), &apiv1.SendVoiceCommandRequest{
+		SessionId: "test-session",
+		Text:      "check status",
+		Metadata:  map[string]string{"source": "whisper", "client_type": "mobile"},
+	})
+	if err != nil {
+		t.Fatalf("SendVoiceCommand returned error: %v", err)
+	}
+	if !resp.GetAccepted() {
+		t.Fatalf("expected accepted=true")
+	}
+	if resp.GetMessage() != "voice command queued" {
+		t.Fatalf("expected message 'voice command queued', got %q", resp.GetMessage())
+	}
+
+	env := recvEnvelope(t, sub)
+	evt := env.Payload
+	if evt.SessionID != "test-session" {
+		t.Fatalf("expected session_id 'test-session', got %q", evt.SessionID)
+	}
+	if evt.Origin != eventbus.OriginUser {
+		t.Fatalf("expected origin 'user', got %q", evt.Origin)
+	}
+	if evt.Text != "check status" {
+		t.Fatalf("expected text 'check status', got %q", evt.Text)
+	}
+	if evt.Annotations["input_source"] != "voice" {
+		t.Fatalf("expected input_source=voice, got %q", evt.Annotations["input_source"])
+	}
+	if evt.Annotations["client_type"] != "mobile" {
+		t.Fatalf("expected client_type=mobile from caller metadata, got %q", evt.Annotations["client_type"])
+	}
+	if evt.Annotations["source"] != "whisper" {
+		t.Fatalf("expected source=whisper from caller metadata, got %q", evt.Annotations["source"])
+	}
+}
+
+func TestSessionsServiceSendVoiceCommandEmptyText(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	bus := eventbus.New()
+	apiServer.SetEventBus(bus)
+	apiServer.sessionManager = &stubSessionManager{}
+
+	service := newSessionsService(apiServer)
+
+	_, err := service.SendVoiceCommand(context.Background(), &apiv1.SendVoiceCommandRequest{
+		SessionId: "test-session",
+		Text:      "",
+	})
+	if err == nil {
+		t.Fatal("expected error for empty text")
+	}
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument, got %v", status.Code(err))
+	}
+}
+
+func TestSessionsServiceSendVoiceCommandNoEventBus(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	apiServer.sessionManager = &stubSessionManager{}
+	// eventBus is nil by default
+
+	service := newSessionsService(apiServer)
+
+	_, err := service.SendVoiceCommand(context.Background(), &apiv1.SendVoiceCommandRequest{
+		Text: "hello",
+	})
+	if err == nil {
+		t.Fatal("expected error when event bus unavailable")
+	}
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("expected Unavailable, got %v", status.Code(err))
+	}
+}
+
+func TestSessionsServiceSendVoiceCommandGlobalNoSession(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	bus := eventbus.New()
+	apiServer.SetEventBus(bus)
+
+	service := newSessionsService(apiServer)
+
+	sub := eventbus.SubscribeTo(bus, eventbus.Pipeline.Cleaned)
+	defer sub.Close()
+
+	// Empty session_id should work (global/sessionless)
+	resp, err := service.SendVoiceCommand(context.Background(), &apiv1.SendVoiceCommandRequest{
+		Text: "what sessions do I have",
+	})
+	if err != nil {
+		t.Fatalf("SendVoiceCommand returned error: %v", err)
+	}
+	if !resp.GetAccepted() {
+		t.Fatalf("expected accepted=true")
+	}
+
+	env := recvEnvelope(t, sub)
+	if env.Payload.SessionID != "" {
+		t.Fatalf("expected empty session_id, got %q", env.Payload.SessionID)
+	}
+}
+
+// notFoundSessionManager returns errors for all GetSession calls,
+// used to test the NotFound code path in SendVoiceCommand.
+type notFoundSessionManager struct {
+	stubSessionManager
+}
+
+func (s *notFoundSessionManager) GetSession(string) (*session.Session, error) {
+	return nil, fmt.Errorf("session not found")
+}
+
+func TestSessionsServiceSendVoiceCommandWhitespaceOnlyText(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	bus := eventbus.New()
+	apiServer.SetEventBus(bus)
+	apiServer.sessionManager = &stubSessionManager{}
+
+	service := newSessionsService(apiServer)
+
+	_, err := service.SendVoiceCommand(context.Background(), &apiv1.SendVoiceCommandRequest{
+		Text: "   \t\n  ",
+	})
+	if err == nil {
+		t.Fatal("expected error for whitespace-only text")
+	}
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument, got %v", status.Code(err))
+	}
+}
+
+func TestSessionsServiceSendVoiceCommandReservedAnnotationKeys(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	bus := eventbus.New()
+	apiServer.SetEventBus(bus)
+	apiServer.sessionManager = &stubSessionManager{}
+
+	service := newSessionsService(apiServer)
+
+	sub := eventbus.SubscribeTo(bus, eventbus.Pipeline.Cleaned)
+	defer sub.Close()
+
+	// Send metadata that attempts to override reserved annotation keys.
+	// Only input_source is reserved; client_type and confidence are caller-provided.
+	resp, err := service.SendVoiceCommand(context.Background(), &apiv1.SendVoiceCommandRequest{
+		Text: "test",
+		Metadata: map[string]string{
+			"input_source": "hacked",
+			"client_type":  "desktop",
+			"confidence":   "0.95",
+			"custom_key":   "allowed",
+		},
+	})
+	if err != nil {
+		t.Fatalf("SendVoiceCommand returned error: %v", err)
+	}
+	if !resp.GetAccepted() {
+		t.Fatalf("expected accepted=true")
+	}
+
+	env := recvEnvelope(t, sub)
+	annotations := env.Payload.Annotations
+
+	// input_source is reserved — must retain "voice".
+	if annotations["input_source"] != "voice" {
+		t.Fatalf("reserved input_source overridden: got %q, want %q", annotations["input_source"], "voice")
+	}
+	// client_type and confidence are caller-provided — should pass through.
+	if annotations["client_type"] != "desktop" {
+		t.Fatalf("expected client_type=desktop from caller, got %q", annotations["client_type"])
+	}
+	if annotations["confidence"] != "0.95" {
+		t.Fatalf("expected confidence=0.95 from caller, got %q", annotations["confidence"])
+	}
+	// Other non-reserved keys must pass through.
+	if annotations["custom_key"] != "allowed" {
+		t.Fatalf("custom metadata not passed through: got %q, want %q", annotations["custom_key"], "allowed")
+	}
+}
+
+func TestSessionsServiceSendVoiceCommandTextTooLong(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	bus := eventbus.New()
+	apiServer.SetEventBus(bus)
+	apiServer.sessionManager = &stubSessionManager{}
+
+	service := newSessionsService(apiServer)
+
+	longText := strings.Repeat("a", 10001)
+	_, err := service.SendVoiceCommand(context.Background(), &apiv1.SendVoiceCommandRequest{
+		Text: longText,
+	})
+	if err == nil {
+		t.Fatal("expected error for text exceeding max length")
+	}
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument, got %v", status.Code(err))
+	}
+	if !strings.Contains(err.Error(), "exceeds maximum length") {
+		t.Fatalf("expected max length error message, got %v", err)
+	}
+}
+
+// M1 fix test: verify length is counted in runes, not bytes.
+// A string of 10000 multi-byte runes (ą = 2 bytes each = 20000 bytes)
+// should be accepted because it's exactly 10000 characters.
+func TestSessionsServiceSendVoiceCommandMultibyteWithinLimit(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	bus := eventbus.New()
+	apiServer.SetEventBus(bus)
+	apiServer.sessionManager = &stubSessionManager{}
+
+	service := newSessionsService(apiServer)
+
+	sub := eventbus.SubscribeTo(bus, eventbus.Pipeline.Cleaned)
+	defer sub.Close()
+
+	// 10000 Polish "ą" characters = 20000 bytes but 10000 runes — within limit.
+	multibyteText := strings.Repeat("ą", maxVoiceCommandTextLen)
+	resp, err := service.SendVoiceCommand(context.Background(), &apiv1.SendVoiceCommandRequest{
+		Text: multibyteText,
+	})
+	if err != nil {
+		t.Fatalf("expected success for %d-rune multi-byte text, got error: %v", maxVoiceCommandTextLen, err)
+	}
+	if !resp.GetAccepted() {
+		t.Fatalf("expected accepted=true")
+	}
+
+	env := recvEnvelope(t, sub)
+	if env.Payload.Text != multibyteText {
+		t.Fatalf("text mismatch")
+	}
+}
+
+func TestSessionsServiceSendVoiceCommandInvalidSession(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	bus := eventbus.New()
+	apiServer.SetEventBus(bus)
+	apiServer.sessionManager = &notFoundSessionManager{}
+
+	service := newSessionsService(apiServer)
+
+	_, err := service.SendVoiceCommand(context.Background(), &apiv1.SendVoiceCommandRequest{
+		SessionId: "nonexistent-session",
+		Text:      "hello",
+	})
+	if err == nil {
+		t.Fatal("expected error for non-existent session")
+	}
+	if status.Code(err) != codes.NotFound {
+		t.Fatalf("expected NotFound, got %v", status.Code(err))
+	}
+}
+
+func TestSessionsServiceSendVoiceCommandLanguagePropagation(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	bus := eventbus.New()
+	apiServer.SetEventBus(bus)
+	apiServer.sessionManager = &stubSessionManager{}
+
+	service := newSessionsService(apiServer)
+
+	sub := eventbus.SubscribeTo(bus, eventbus.Pipeline.Cleaned)
+	defer sub.Close()
+
+	// Set language in context via language.WithLanguage (simulates gRPC
+	// middleware that parses the nupi-language header).
+	ctx := language.WithLanguage(context.Background(), language.Language{
+		ISO1:        "pl",
+		BCP47:       "pl-PL",
+		EnglishName: "Polish",
+		NativeName:  "Polski",
+	})
+
+	resp, err := service.SendVoiceCommand(ctx, &apiv1.SendVoiceCommandRequest{
+		Text: "sprawdź status",
+	})
+	if err != nil {
+		t.Fatalf("SendVoiceCommand returned error: %v", err)
+	}
+	if !resp.GetAccepted() {
+		t.Fatalf("expected accepted=true")
+	}
+
+	env := recvEnvelope(t, sub)
+	annotations := env.Payload.Annotations
+
+	if annotations[language.MetaISO1] != "pl" {
+		t.Fatalf("expected nupi.lang.iso1=pl, got %q", annotations[language.MetaISO1])
+	}
+	if annotations[language.MetaBCP47] != "pl-PL" {
+		t.Fatalf("expected nupi.lang.bcp47=pl-PL, got %q", annotations[language.MetaBCP47])
+	}
+	if annotations[language.MetaEnglish] != "Polish" {
+		t.Fatalf("expected nupi.lang.english=Polish, got %q", annotations[language.MetaEnglish])
+	}
+	if annotations[language.MetaNative] != "Polski" {
+		t.Fatalf("expected nupi.lang.native=Polski, got %q", annotations[language.MetaNative])
+	}
+}
+
+func TestSessionsServiceSendVoiceCommandNilMetadata(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	bus := eventbus.New()
+	apiServer.SetEventBus(bus)
+	apiServer.sessionManager = &stubSessionManager{}
+
+	service := newSessionsService(apiServer)
+
+	sub := eventbus.SubscribeTo(bus, eventbus.Pipeline.Cleaned)
+	defer sub.Close()
+
+	// Nil metadata map should work — annotations get only the default "input_source".
+	resp, err := service.SendVoiceCommand(context.Background(), &apiv1.SendVoiceCommandRequest{
+		Text:     "hello",
+		Metadata: nil,
+	})
+	if err != nil {
+		t.Fatalf("SendVoiceCommand returned error: %v", err)
+	}
+	if !resp.GetAccepted() {
+		t.Fatalf("expected accepted=true")
+	}
+
+	env := recvEnvelope(t, sub)
+	if env.Payload.Annotations["input_source"] != "voice" {
+		t.Fatalf("expected input_source=voice, got %q", env.Payload.Annotations["input_source"])
+	}
+}
+
+func TestSessionsServiceSendVoiceCommandMetadataTooMany(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	bus := eventbus.New()
+	apiServer.SetEventBus(bus)
+	apiServer.sessionManager = &stubSessionManager{}
+
+	service := newSessionsService(apiServer)
+
+	// Exceed max metadata entry count.
+	bigMeta := make(map[string]string, 51)
+	for i := range 51 {
+		bigMeta[fmt.Sprintf("key_%d", i)] = "value"
+	}
+	_, err := service.SendVoiceCommand(context.Background(), &apiv1.SendVoiceCommandRequest{
+		Text:     "hello",
+		Metadata: bigMeta,
+	})
+	if err == nil {
+		t.Fatal("expected error for too many metadata entries")
+	}
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument, got %v", status.Code(err))
+	}
+	if !strings.Contains(err.Error(), "metadata exceeds maximum") {
+		t.Fatalf("expected metadata limit error message, got %v", err)
+	}
+}
+
+func TestSessionsServiceSendVoiceCommandMetadataValueTooLong(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	bus := eventbus.New()
+	apiServer.SetEventBus(bus)
+	apiServer.sessionManager = &stubSessionManager{}
+
+	service := newSessionsService(apiServer)
+
+	_, err := service.SendVoiceCommand(context.Background(), &apiv1.SendVoiceCommandRequest{
+		Text:     "hello",
+		Metadata: map[string]string{"key": strings.Repeat("x", 1025)},
+	})
+	if err == nil {
+		t.Fatal("expected error for metadata value too long")
+	}
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument, got %v", status.Code(err))
+	}
+}
+
+func TestSessionsServiceSendVoiceCommandMetadataKeyTooLong(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	bus := eventbus.New()
+	apiServer.SetEventBus(bus)
+	apiServer.sessionManager = &stubSessionManager{}
+
+	service := newSessionsService(apiServer)
+
+	_, err := service.SendVoiceCommand(context.Background(), &apiv1.SendVoiceCommandRequest{
+		Text:     "hello",
+		Metadata: map[string]string{strings.Repeat("k", 257): "value"},
+	})
+	if err == nil {
+		t.Fatal("expected error for metadata key too long")
+	}
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument, got %v", status.Code(err))
+	}
+	if !strings.Contains(err.Error(), "exceeds limits") {
+		t.Fatalf("expected limits error message, got %v", err)
+	}
+}
+
+// Verify metadata length is counted in runes, not bytes — same fix as text field (Review 5).
+func TestSessionsServiceSendVoiceCommandMetadataMultibyteWithinLimit(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	bus := eventbus.New()
+	apiServer.SetEventBus(bus)
+	apiServer.sessionManager = &stubSessionManager{}
+
+	service := newSessionsService(apiServer)
+
+	sub := eventbus.SubscribeTo(bus, eventbus.Pipeline.Cleaned)
+	defer sub.Close()
+
+	// 1024 Polish "ź" characters = 2048 bytes but 1024 runes — within value limit.
+	multibyteValue := strings.Repeat("ź", maxVoiceCommandMetadataValueLen)
+	resp, err := service.SendVoiceCommand(context.Background(), &apiv1.SendVoiceCommandRequest{
+		Text:     "hello",
+		Metadata: map[string]string{"lang_note": multibyteValue},
+	})
+	if err != nil {
+		t.Fatalf("expected success for %d-rune multi-byte metadata value, got error: %v", maxVoiceCommandMetadataValueLen, err)
+	}
+	if !resp.GetAccepted() {
+		t.Fatalf("expected accepted=true")
+	}
+
+	env := recvEnvelope(t, sub)
+	if env.Payload.Annotations["lang_note"] != multibyteValue {
+		t.Fatal("metadata value mismatch")
+	}
+}
+
 func TestSessionsServiceNilManagerReturnsUnavailable(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
 	apiServer.sessionManager = nil
@@ -927,6 +1372,20 @@ func TestSessionsServiceNilManagerReturnsUnavailable(t *testing.T) {
 		// GetConversation requires conversation store first, so set it to something
 		apiServer.conversation = &mockConversationStore{}
 		_, err := service.GetConversation(ctx, &apiv1.GetConversationRequest{SessionId: "fake"})
+		if err == nil || status.Code(err) != codes.Unavailable {
+			t.Fatalf("expected Unavailable, got %v", err)
+		}
+	})
+
+	t.Run("SendVoiceCommand", func(t *testing.T) {
+		// M3 fix (Review 6): verify SendVoiceCommand with non-empty session_id
+		// returns Unavailable when session manager is nil.
+		bus := eventbus.New()
+		apiServer.SetEventBus(bus)
+		_, err := service.SendVoiceCommand(ctx, &apiv1.SendVoiceCommandRequest{
+			SessionId: "some-session",
+			Text:      "hello",
+		})
 		if err == nil || status.Code(err) != codes.Unavailable {
 			t.Fatalf("expected Unavailable, got %v", err)
 		}

@@ -320,6 +320,19 @@ message SendInputRequest {
 // SendInputResponse is empty on success.
 message SendInputResponse {}
 
+// SendVoiceCommandRequest sends transcribed speech text to a session's AI pipeline.
+message SendVoiceCommandRequest {
+  string session_id = 1;              // Optional — empty string for global/sessionless
+  string text = 2;                    // Required — transcribed speech (server trims leading/trailing whitespace)
+  map<string, string> metadata = 3;   // Optional — source, confidence, etc.
+}
+
+// SendVoiceCommandResponse acknowledges the voice command was accepted.
+message SendVoiceCommandResponse {
+  bool accepted = 1;
+  string message = 2;
+}
+
 // ─── Session mode management ───
 
 // GetSessionModeRequest asks for the current mode of a session.
@@ -715,6 +728,7 @@ service SessionsService {
   rpc SetSessionMode(SetSessionModeRequest) returns (SetSessionModeResponse);
   rpc GetConversation(GetConversationRequest) returns (GetConversationResponse);
   rpc GetGlobalConversation(GetGlobalConversationRequest) returns (GetGlobalConversationResponse);
+  rpc SendVoiceCommand(SendVoiceCommandRequest) returns (SendVoiceCommandResponse);
 }
 
 service AdapterRuntimeService {

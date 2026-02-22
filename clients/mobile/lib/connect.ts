@@ -1,33 +1,49 @@
 import { createClient, type Client, type Interceptor } from "@connectrpc/connect";
 import { createConnectTransport } from "@connectrpc/connect-web";
-import * as SecureStore from "expo-secure-store";
 
 import {
   DaemonService,
   SessionsService,
   AuthService,
 } from "@/lib/gen/nupi_pb";
-import { TOKEN_KEY } from "./storage";
+import { getToken, getLanguage } from "./storage";
 
 export interface ConnectionConfig {
   host: string;
   port: number;
   tls: boolean;
-  token: string;
 }
 
 /**
- * Interceptor that attaches Bearer token from expo-secure-store
- * to every outgoing Connect RPC request.
+ * Interceptor that attaches Bearer token to every outgoing Connect RPC request.
+ * M2 fix: reads from in-memory cache (populated by storage.ts) to avoid
+ * repeated SecureStore disk reads during fast polling intervals.
  */
 const authInterceptor: Interceptor = (next) => async (req) => {
   try {
-    const token = await SecureStore.getItemAsync(TOKEN_KEY);
+    const token = await getToken();
     if (token) {
       req.header.set("Authorization", `Bearer ${token}`);
     }
   } catch {
     // Proceed unauthenticated — server will return proper Unauthenticated error.
+  }
+  return next(req);
+};
+
+/**
+ * Interceptor that attaches nupi-language header from stored preference.
+ * AC1 requires voice commands to include language preference when set.
+ * M2 fix: reads from in-memory cache to avoid SecureStore reads per RPC.
+ */
+const languageInterceptor: Interceptor = (next) => async (req) => {
+  try {
+    const lang = await getLanguage();
+    if (lang) {
+      req.header.set("nupi-language", lang);
+    }
+  } catch {
+    // Proceed without language header — server gracefully handles missing header.
   }
   return next(req);
 };
@@ -49,6 +65,7 @@ type MobileSessionsClient = Pick<
   | "getSessionMode"
   | "getConversation"
   | "getGlobalConversation"
+  | "sendVoiceCommand"
 >;
 
 /**
@@ -72,7 +89,7 @@ export function createNupiClient(baseUrl: string) {
   const transport = createConnectTransport({
     baseUrl,
     useBinaryFormat: true,
-    interceptors: [authInterceptor],
+    interceptors: [authInterceptor, languageInterceptor],
   });
 
   const fullSessions = createClient(SessionsService, transport);
@@ -84,6 +101,7 @@ export function createNupiClient(baseUrl: string) {
     getSessionMode: fullSessions.getSessionMode.bind(fullSessions),
     getConversation: fullSessions.getConversation.bind(fullSessions),
     getGlobalConversation: fullSessions.getGlobalConversation.bind(fullSessions),
+    sendVoiceCommand: fullSessions.sendVoiceCommand.bind(fullSessions),
   };
 
   const auth: MobileAuthClient = {
