@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"strings"
 	"sync"
 	"time"
 
@@ -50,40 +49,14 @@ const capabilitiesProbeTimeout = 3 * time.Second
 
 // NewNAPAdapter creates a new NAP AI adapter that connects to a gRPC endpoint.
 func NewNAPAdapter(ctx context.Context, params NAPAdapterParams) (*NAPAdapter, error) {
-	transport := strings.TrimSpace(params.Endpoint.Transport)
-	if transport == "" {
-		transport = "process"
-	}
-	switch transport {
-	case "grpc", "process":
-		// supported
-	default:
-		return nil, fmt.Errorf("ai: unsupported transport %q for adapter %s", params.Endpoint.Transport, params.AdapterID)
-	}
+	endpoint := params.Endpoint
+	endpoint.AdapterID = params.AdapterID
 
-	address := strings.TrimSpace(params.Endpoint.Address)
-	if address == "" {
-		return nil, fmt.Errorf("ai: adapter %s missing address", params.AdapterID)
-	}
-
-	tlsCfg := napdial.TLSConfigFromFields(
-		params.Endpoint.TLSCertPath,
-		params.Endpoint.TLSKeyPath,
-		params.Endpoint.TLSCACertPath,
-		params.Endpoint.TLSInsecure,
-	)
-	dialOpts, err := napdial.DialOptions(ctx, tlsCfg, napdial.DefaultQoS())
-	if err != nil {
-		return nil, fmt.Errorf("ai: adapter %s: %w", params.AdapterID, err)
-	}
-
-	dialOpts = append(dialOpts, grpc.WithConnectParams(grpc.ConnectParams{
+	conn, err := napdial.DialAdapter(ctx, endpoint, grpc.WithConnectParams(grpc.ConnectParams{
 		MinConnectTimeout: connectTimeout,
 	}))
-
-	conn, err := grpc.NewClient(napdial.PassthroughPrefix+address, dialOpts...)
 	if err != nil {
-		return nil, fmt.Errorf("ai: connect adapter %s: %w", params.AdapterID, err)
+		return nil, fmt.Errorf("ai: %w", err)
 	}
 
 	client := napv1.NewIntentResolutionServiceClient(conn)

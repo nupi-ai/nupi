@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"strings"
 	"time"
 
 	napv1 "github.com/nupi-ai/nupi/api/nap/v1"
@@ -25,28 +24,9 @@ type napSynthesizer struct {
 }
 
 func newNAPSynthesizer(ctx context.Context, params SessionParams, endpoint configstore.AdapterEndpoint) (Synthesizer, error) {
-	transport := strings.TrimSpace(endpoint.Transport)
-	if transport == "" {
-		transport = "process"
-	}
-	switch transport {
-	case "grpc", "process":
-	default:
-		return nil, fmt.Errorf("tts: unsupported transport %q for adapter %s", endpoint.Transport, endpoint.AdapterID)
-	}
-	address := strings.TrimSpace(endpoint.Address)
-	if address == "" {
-		return nil, fmt.Errorf("tts: adapter %s missing address", endpoint.AdapterID)
-	}
-
-	tlsCfg := napdial.TLSConfigFromFields(endpoint.TLSCertPath, endpoint.TLSKeyPath, endpoint.TLSCACertPath, endpoint.TLSInsecure)
-	dialOpts, err := napdial.DialOptions(ctx, tlsCfg, napdial.DefaultQoS())
+	conn, err := napdial.DialAdapter(ctx, endpoint)
 	if err != nil {
-		return nil, fmt.Errorf("tts: adapter %s: %w", endpoint.AdapterID, err)
-	}
-	conn, err := grpc.NewClient(napdial.PassthroughPrefix+address, dialOpts...)
-	if err != nil {
-		return nil, fmt.Errorf("tts: create client for adapter %s: %w", endpoint.AdapterID, err)
+		return nil, fmt.Errorf("tts: %w", err)
 	}
 
 	return &napSynthesizer{
