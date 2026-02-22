@@ -68,11 +68,11 @@ type Service struct {
 	conversationSessionTime time.Time // When it was last referenced
 
 	// Metrics - using atomic for thread-safe access
-	requestsTotal   uint64
-	requestsFailed  uint64
-	commandsQueued  uint64
-	clarifications  uint64
-	speakEvents     uint64
+	requestsTotal  uint64
+	requestsFailed uint64
+	commandsQueued uint64
+	clarifications uint64
+	speakEvents    uint64
 }
 
 // NewService creates an intent router service.
@@ -210,65 +210,23 @@ func (s *Service) SetCoreMemoryProvider(provider CoreMemoryProvider) {
 }
 
 func (s *Service) consumePrompts(ctx context.Context) {
-	defer s.wg.Done()
-	if s.promptSub == nil {
-		return
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case env, ok := <-s.promptSub.C():
-			if !ok {
-				return
-			}
-
-			s.handlePrompt(ctx, env.Payload)
-		}
-	}
+	eventbus.Consume(ctx, s.promptSub, &s.wg, func(prompt eventbus.ConversationPromptEvent) {
+		s.handlePrompt(ctx, prompt)
+	})
 }
 
 func (s *Service) consumeToolEvents(ctx context.Context) {
-	defer s.wg.Done()
-	if s.toolSub == nil {
-		return
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case env, ok := <-s.toolSub.C():
-			if !ok {
-				return
-			}
-
-			s.updateToolCache(env.Payload.SessionID, env.Payload.ToolName)
-		}
-	}
+	eventbus.Consume(ctx, s.toolSub, &s.wg, func(event eventbus.SessionToolEvent) {
+		s.updateToolCache(event.SessionID, event.ToolName)
+	})
 }
 
 func (s *Service) consumeToolChangeEvents(ctx context.Context) {
-	defer s.wg.Done()
-	if s.toolChangeSub == nil {
-		return
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case env, ok := <-s.toolChangeSub.C():
-			if !ok {
-				return
-			}
-
-			s.updateToolCache(env.Payload.SessionID, env.Payload.NewTool)
-			log.Printf("[IntentRouter] Tool changed for session %s: %s -> %s",
-				env.Payload.SessionID, env.Payload.PreviousTool, env.Payload.NewTool)
-		}
-	}
+	eventbus.Consume(ctx, s.toolChangeSub, &s.wg, func(event eventbus.SessionToolChangedEvent) {
+		s.updateToolCache(event.SessionID, event.NewTool)
+		log.Printf("[IntentRouter] Tool changed for session %s: %s -> %s",
+			event.SessionID, event.PreviousTool, event.NewTool)
+	})
 }
 
 func (s *Service) updateToolCache(sessionID, toolName string) {
@@ -362,27 +320,13 @@ func (s *Service) selectTargetSession(prompt eventbus.ConversationPromptEvent, p
 }
 
 func (s *Service) consumeLifecycleEvents(ctx context.Context) {
-	defer s.wg.Done()
-	if s.lifecycleSub == nil {
-		return
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case env, ok := <-s.lifecycleSub.C():
-			if !ok {
-				return
-			}
-
-			// Clean up tool cache when session stops or detaches
-			switch env.Payload.State {
-			case eventbus.SessionStateStopped, eventbus.SessionStateDetached:
-				s.clearToolCache(env.Payload.SessionID)
-			}
+	eventbus.Consume(ctx, s.lifecycleSub, &s.wg, func(event eventbus.SessionLifecycleEvent) {
+		// Clean up tool cache when session stops or detaches
+		switch event.State {
+		case eventbus.SessionStateStopped, eventbus.SessionStateDetached:
+			s.clearToolCache(event.SessionID)
 		}
-	}
+	})
 }
 
 func (s *Service) handlePrompt(ctx context.Context, prompt eventbus.ConversationPromptEvent) {

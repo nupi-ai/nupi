@@ -198,21 +198,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 }
 
 func (s *Service) consumeSegments() {
-	defer s.wg.Done()
-	if s.sub == nil {
-		return
-	}
-	for {
-		select {
-		case <-s.ctx.Done():
-			return
-		case env, ok := <-s.sub.C():
-			if !ok {
-				return
-			}
-			s.handleSegment(env.Payload)
-		}
-	}
+	eventbus.Consume(s.ctx, s.sub, &s.wg, s.handleSegment)
 }
 
 func (s *Service) handleSegment(segment eventbus.AudioIngressSegmentEvent) {
