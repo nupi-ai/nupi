@@ -102,9 +102,10 @@ func (m *MockLauncher) Reset() {
 }
 
 type mockHandle struct {
-	parent *MockLauncher
-	slot   string
-	pid    int
+	parent  *MockLauncher
+	slot    string
+	pid     int
+	stopErr error
 }
 
 func (h *mockHandle) Stop(context.Context) error {
@@ -113,7 +114,7 @@ func (h *mockHandle) Stop(context.Context) error {
 		h.parent.stops[h.slot]++
 		h.parent.mu.Unlock()
 	}
-	return nil
+	return h.stopErr
 }
 
 func (h *mockHandle) PID() int {

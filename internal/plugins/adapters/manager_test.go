@@ -13,6 +13,8 @@ import (
 	"time"
 
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
+	"github.com/nupi-ai/nupi/internal/eventbus"
+	"github.com/nupi-ai/nupi/internal/napdial"
 	manifestpkg "github.com/nupi-ai/nupi/internal/plugins/manifest"
 )
 
@@ -85,9 +87,7 @@ func (f *fakeBindingSource) GetAdapterEndpoint(ctx context.Context, adapterID st
 
 func TestManagerEnsureStartsAdapters(t *testing.T) {
 	// Mock readiness so remote adapters don't try to actually connect
-	origReady := waitForAdapterReadyFn
-	waitForAdapterReadyFn = func(context.Context, string) error { return nil }
-	t.Cleanup(func() { waitForAdapterReadyFn = origReady })
+	t.Cleanup(SetReadinessChecker(func(context.Context, string, string, *napdial.TLSConfig) error { return nil }))
 
 	// Test grpc transport - no process is launched, adapter is remote
 	store := &fakeBindingSource{
@@ -164,18 +164,12 @@ func TestManagerEnsureStartsAdapters(t *testing.T) {
 }
 
 func TestManagerEnsureProcessTransportAllocFailure(t *testing.T) {
-	defer func(original func() (string, error)) {
-		allocateProcessAddressFn = original
-	}(allocateProcessAddressFn)
-	allocateProcessAddressFn = func() (string, error) {
+	t.Cleanup(SetAllocateProcessAddress(func() (string, error) {
 		return "", errors.New("no ports")
-	}
-	defer func(original func(context.Context, string) error) {
-		waitForAdapterReadyFn = original
-	}(waitForAdapterReadyFn)
-	waitForAdapterReadyFn = func(context.Context, string) error {
+	}))
+	t.Cleanup(SetReadinessChecker(func(context.Context, string, string, *napdial.TLSConfig) error {
 		return nil
-	}
+	}))
 
 	store := &fakeBindingSource{
 		bindings: []configstore.AdapterBinding{
@@ -214,20 +208,14 @@ func TestManagerEnsureProcessTransportAllocFailure(t *testing.T) {
 }
 
 func TestManagerEnsureProcessTransportReadyFailure(t *testing.T) {
-	defer func(original func() (string, error)) {
-		allocateProcessAddressFn = original
-	}(allocateProcessAddressFn)
 	var portCounter int
-	allocateProcessAddressFn = func() (string, error) {
+	t.Cleanup(SetAllocateProcessAddress(func() (string, error) {
 		portCounter++
 		return fmt.Sprintf("127.0.0.1:%d", 60100+portCounter), nil
-	}
-	defer func(original func(context.Context, string) error) {
-		waitForAdapterReadyFn = original
-	}(waitForAdapterReadyFn)
-	waitForAdapterReadyFn = func(context.Context, string) error {
+	}))
+	t.Cleanup(SetReadinessChecker(func(context.Context, string, string, *napdial.TLSConfig) error {
 		return errors.New("dial failed")
-	}
+	}))
 
 	store := &fakeBindingSource{
 		bindings: []configstore.AdapterBinding{
@@ -269,12 +257,9 @@ func TestManagerEnsureProcessTransportReadyFailure(t *testing.T) {
 }
 
 func TestManagerEnsureProcessTransportReallocatesPortOnRestart(t *testing.T) {
-	defer func(original func() (string, error)) {
-		allocateProcessAddressFn = original
-	}(allocateProcessAddressFn)
 	ports := []string{"127.0.0.1:60001", "127.0.0.1:60002"}
 	var mu sync.Mutex
-	allocateProcessAddressFn = func() (string, error) {
+	t.Cleanup(SetAllocateProcessAddress(func() (string, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		if len(ports) == 0 {
@@ -283,13 +268,10 @@ func TestManagerEnsureProcessTransportReallocatesPortOnRestart(t *testing.T) {
 		addr := ports[0]
 		ports = ports[1:]
 		return addr, nil
-	}
-	defer func(original func(context.Context, string) error) {
-		waitForAdapterReadyFn = original
-	}(waitForAdapterReadyFn)
-	waitForAdapterReadyFn = func(context.Context, string) error {
+	}))
+	t.Cleanup(SetReadinessChecker(func(context.Context, string, string, *napdial.TLSConfig) error {
 		return nil
-	}
+	}))
 
 	store := &fakeBindingSource{
 		bindings: []configstore.AdapterBinding{
@@ -318,9 +300,8 @@ func TestManagerEnsureProcessTransportReallocatesPortOnRestart(t *testing.T) {
 	if err := manager.Ensure(context.Background()); err != nil {
 		t.Fatalf("initial ensure: %v", err)
 	}
-	mu.Lock()
+	// Ensure() has returned — no concurrent access to instances.
 	inst, ok := manager.instances[SlotAI]
-	mu.Unlock()
 	if !ok {
 		t.Fatalf("adapter instance not registered")
 	}
@@ -337,9 +318,7 @@ func TestManagerEnsureProcessTransportReallocatesPortOnRestart(t *testing.T) {
 		t.Fatalf("ensure after config change: %v", err)
 	}
 
-	mu.Lock()
 	inst, ok = manager.instances[SlotAI]
-	mu.Unlock()
 	if !ok {
 		t.Fatalf("adapter instance missing after restart")
 	}
@@ -353,12 +332,9 @@ func TestManagerEnsureProcessTransportReallocatesPortOnRestart(t *testing.T) {
 }
 
 func TestManagerEnsureProcessTransportAllocatesFreshPortAfterStop(t *testing.T) {
-	defer func(original func() (string, error)) {
-		allocateProcessAddressFn = original
-	}(allocateProcessAddressFn)
 	ports := []string{"127.0.0.1:60005", "127.0.0.1:60006"}
 	var mu sync.Mutex
-	allocateProcessAddressFn = func() (string, error) {
+	t.Cleanup(SetAllocateProcessAddress(func() (string, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		if len(ports) == 0 {
@@ -367,13 +343,10 @@ func TestManagerEnsureProcessTransportAllocatesFreshPortAfterStop(t *testing.T) 
 		addr := ports[0]
 		ports = ports[1:]
 		return addr, nil
-	}
-	defer func(original func(context.Context, string) error) {
-		waitForAdapterReadyFn = original
-	}(waitForAdapterReadyFn)
-	waitForAdapterReadyFn = func(context.Context, string) error {
+	}))
+	t.Cleanup(SetReadinessChecker(func(context.Context, string, string, *napdial.TLSConfig) error {
 		return nil
-	}
+	}))
 
 	store := &fakeBindingSource{
 		bindings: []configstore.AdapterBinding{
@@ -404,9 +377,8 @@ func TestManagerEnsureProcessTransportAllocatesFreshPortAfterStop(t *testing.T) 
 		t.Fatalf("initial ensure: %v", err)
 	}
 
-	mu.Lock()
+	// Ensure() has returned — no concurrent access to instances.
 	inst, ok := manager.instances[SlotAI]
-	mu.Unlock()
 	if !ok {
 		t.Fatalf("adapter instance missing")
 	}
@@ -423,9 +395,7 @@ func TestManagerEnsureProcessTransportAllocatesFreshPortAfterStop(t *testing.T) 
 		t.Fatalf("ensure after stop: %v", err)
 	}
 
-	mu.Lock()
 	inst, ok = manager.instances[SlotAI]
-	mu.Unlock()
 	if !ok {
 		t.Fatalf("adapter instance missing after restart")
 	}
@@ -439,20 +409,14 @@ func TestManagerEnsureProcessTransportAllocatesFreshPortAfterStop(t *testing.T) 
 }
 
 func TestManagerProcessTransportReadyTimeoutOverride(t *testing.T) {
-	defer func(original func() (string, error)) {
-		allocateProcessAddressFn = original
-	}(allocateProcessAddressFn)
-	allocateProcessAddressFn = func() (string, error) {
+	t.Cleanup(SetAllocateProcessAddress(func() (string, error) {
 		return "127.0.0.1:60300", nil
-	}
-	defer func(original func(context.Context, string) error) {
-		waitForAdapterReadyFn = original
-	}(waitForAdapterReadyFn)
+	}))
 	var capturedDeadline time.Time
-	waitForAdapterReadyFn = func(ctx context.Context, _ string) error {
+	t.Cleanup(SetReadinessChecker(func(ctx context.Context, _, _ string, _ *napdial.TLSConfig) error {
 		capturedDeadline, _ = ctx.Deadline()
 		return nil
-	}
+	}))
 
 	storeDir := t.TempDir()
 	store, err := configstore.Open(configstore.Options{DBPath: filepath.Join(storeDir, "config.db")})
@@ -518,9 +482,7 @@ spec:
 
 func TestManagerEnsureUpdatesOnAdapterChange(t *testing.T) {
 	// Mock readiness so process adapters don't try to actually connect
-	origReady := waitForAdapterReadyFn
-	waitForAdapterReadyFn = func(context.Context, string) error { return nil }
-	t.Cleanup(func() { waitForAdapterReadyFn = origReady })
+	t.Cleanup(SetReadinessChecker(func(context.Context, string, string, *napdial.TLSConfig) error { return nil }))
 
 	store := &fakeBindingSource{
 		bindings: []configstore.AdapterBinding{
@@ -574,9 +536,7 @@ func TestManagerEnsureUpdatesOnAdapterChange(t *testing.T) {
 
 func TestManagerEnsureConfigChange(t *testing.T) {
 	// Mock readiness so process adapters don't try to actually connect
-	origReady := waitForAdapterReadyFn
-	waitForAdapterReadyFn = func(context.Context, string) error { return nil }
-	t.Cleanup(func() { waitForAdapterReadyFn = origReady })
+	t.Cleanup(SetReadinessChecker(func(context.Context, string, string, *napdial.TLSConfig) error { return nil }))
 
 	store := &fakeBindingSource{
 		bindings: []configstore.AdapterBinding{
@@ -635,9 +595,7 @@ func TestManagerEnsureMissingStore(t *testing.T) {
 
 func TestManagerStartAdapterConfiguresEnvironment(t *testing.T) {
 	// Mock readiness so process adapters don't try to actually connect
-	origReady := waitForAdapterReadyFn
-	waitForAdapterReadyFn = func(context.Context, string) error { return nil }
-	t.Cleanup(func() { waitForAdapterReadyFn = origReady })
+	t.Cleanup(SetReadinessChecker(func(context.Context, string, string, *napdial.TLSConfig) error { return nil }))
 
 	ctx := context.Background()
 	tempDir := t.TempDir()
@@ -801,9 +759,7 @@ spec:
 
 func TestManagerEnsureRestartsOnEndpointChange(t *testing.T) {
 	// Mock readiness so process adapters don't try to actually connect
-	origReady := waitForAdapterReadyFn
-	waitForAdapterReadyFn = func(context.Context, string) error { return nil }
-	t.Cleanup(func() { waitForAdapterReadyFn = origReady })
+	t.Cleanup(SetReadinessChecker(func(context.Context, string, string, *napdial.TLSConfig) error { return nil }))
 
 	ctx := context.Background()
 	tempDir := t.TempDir()
@@ -886,11 +842,392 @@ func TestManagerEnsureRestartsOnEndpointChange(t *testing.T) {
 	}
 }
 
+func TestManagerRemoteGRPCPassesTransportAndTLS(t *testing.T) {
+	// Verify that the remote gRPC adapter call site passes the correct
+	// transport type ("grpc") and TLS config to the readiness checker.
+	var capturedTransport string
+	var capturedTLS *napdial.TLSConfig
+	t.Cleanup(SetReadinessChecker(func(_ context.Context, _ string, transport string, tlsCfg *napdial.TLSConfig) error {
+		capturedTransport = transport
+		capturedTLS = tlsCfg
+		return nil
+	}))
+
+	store := &fakeBindingSource{
+		bindings: []configstore.AdapterBinding{
+			{
+				Slot:      string(SlotAI),
+				Status:    "active",
+				AdapterID: strPtr("adapter.ai.remote"),
+			},
+		},
+	}
+	store.setAdapter(configstore.Adapter{ID: "adapter.ai.remote"})
+	store.setEndpoint(configstore.AdapterEndpoint{
+		AdapterID:   "adapter.ai.remote",
+		Transport:   "grpc",
+		Address:     "10.0.0.1:50051",
+		TLSCertPath: "/certs/client.pem",
+		TLSKeyPath:  "/certs/client-key.pem",
+		TLSInsecure: true,
+	})
+	manager := NewManager(ManagerOptions{
+		Store:     store,
+		Adapters:  store,
+		Launcher:  NewMockLauncher(),
+		PluginDir: t.TempDir(),
+	})
+
+	if err := manager.Ensure(context.Background()); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+
+	if capturedTransport != "grpc" {
+		t.Fatalf("expected transport %q, got %q", "grpc", capturedTransport)
+	}
+	if capturedTLS == nil {
+		t.Fatal("expected non-nil TLS config for remote gRPC with TLS fields")
+	}
+	if capturedTLS.CertPath != "/certs/client.pem" {
+		t.Fatalf("expected CertPath %q, got %q", "/certs/client.pem", capturedTLS.CertPath)
+	}
+	if capturedTLS.KeyPath != "/certs/client-key.pem" {
+		t.Fatalf("expected KeyPath %q, got %q", "/certs/client-key.pem", capturedTLS.KeyPath)
+	}
+	if !capturedTLS.InsecureSkipVerify {
+		t.Fatal("expected InsecureSkipVerify=true")
+	}
+}
+
+func TestManagerRemoteHTTPPassesTransportAndTLS(t *testing.T) {
+	// Verify that the remote HTTP adapter call site passes the correct
+	// transport type ("http") and TLS config to the readiness checker.
+	var capturedTransport string
+	var capturedTLS *napdial.TLSConfig
+	t.Cleanup(SetReadinessChecker(func(_ context.Context, _ string, transport string, tlsCfg *napdial.TLSConfig) error {
+		capturedTransport = transport
+		capturedTLS = tlsCfg
+		return nil
+	}))
+
+	store := &fakeBindingSource{
+		bindings: []configstore.AdapterBinding{
+			{
+				Slot:      string(SlotTTS),
+				Status:    "active",
+				AdapterID: strPtr("adapter.tts.remote"),
+			},
+		},
+	}
+	store.setAdapter(configstore.Adapter{ID: "adapter.tts.remote"})
+	store.setEndpoint(configstore.AdapterEndpoint{
+		AdapterID:    "adapter.tts.remote",
+		Transport:    "http",
+		Address:      "10.0.0.2:8080",
+		TLSCACertPath: "/certs/ca.pem",
+	})
+	manager := NewManager(ManagerOptions{
+		Store:     store,
+		Adapters:  store,
+		Launcher:  NewMockLauncher(),
+		PluginDir: t.TempDir(),
+	})
+
+	if err := manager.Ensure(context.Background()); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+
+	if capturedTransport != "http" {
+		t.Fatalf("expected transport %q, got %q", "http", capturedTransport)
+	}
+	if capturedTLS == nil {
+		t.Fatal("expected non-nil TLS config for remote HTTP with CA cert")
+	}
+	if capturedTLS.CACertPath != "/certs/ca.pem" {
+		t.Fatalf("expected CACertPath %q, got %q", "/certs/ca.pem", capturedTLS.CACertPath)
+	}
+}
+
+func TestManagerRemoteNoTLSPassesNilConfig(t *testing.T) {
+	// Verify that a remote adapter without any TLS fields passes nil TLS config.
+	var capturedTransport string
+	var capturedTLS *napdial.TLSConfig
+	capturedTLS = &napdial.TLSConfig{} // sentinel to detect nil
+	t.Cleanup(SetReadinessChecker(func(_ context.Context, _ string, transport string, tlsCfg *napdial.TLSConfig) error {
+		capturedTransport = transport
+		capturedTLS = tlsCfg
+		return nil
+	}))
+
+	store := &fakeBindingSource{
+		bindings: []configstore.AdapterBinding{
+			{
+				Slot:      string(SlotAI),
+				Status:    "active",
+				AdapterID: strPtr("adapter.ai.plain"),
+			},
+		},
+	}
+	store.setAdapter(configstore.Adapter{ID: "adapter.ai.plain"})
+	store.setEndpoint(configstore.AdapterEndpoint{
+		AdapterID: "adapter.ai.plain",
+		Transport: "grpc",
+		Address:   "10.0.0.3:50051",
+		// No TLS fields
+	})
+	manager := NewManager(ManagerOptions{
+		Store:     store,
+		Adapters:  store,
+		Launcher:  NewMockLauncher(),
+		PluginDir: t.TempDir(),
+	})
+
+	if err := manager.Ensure(context.Background()); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+
+	if capturedTransport != "grpc" {
+		t.Fatalf("expected transport %q, got %q", "grpc", capturedTransport)
+	}
+	if capturedTLS != nil {
+		t.Fatalf("expected nil TLS config for remote adapter without TLS fields, got %+v", capturedTLS)
+	}
+}
+
+func TestManagerProcessPassesTransportAndNilTLS(t *testing.T) {
+	// Verify that the process adapter call site passes transport="process"
+	// and nil TLS config to the readiness checker (symmetric with remote tests).
+	t.Cleanup(SetAllocateProcessAddress(func() (string, error) {
+		return "127.0.0.1:60999", nil
+	}))
+
+	var capturedTransport string
+	var capturedTLS *napdial.TLSConfig
+	capturedTLS = &napdial.TLSConfig{} // sentinel to detect nil
+	t.Cleanup(SetReadinessChecker(func(_ context.Context, _ string, transport string, tlsCfg *napdial.TLSConfig) error {
+		capturedTransport = transport
+		capturedTLS = tlsCfg
+		return nil
+	}))
+
+	store := &fakeBindingSource{
+		bindings: []configstore.AdapterBinding{
+			{
+				Slot:      string(SlotAI),
+				Status:    "active",
+				AdapterID: strPtr("adapter.ai.process"),
+			},
+		},
+	}
+	store.setAdapter(configstore.Adapter{ID: "adapter.ai.process"})
+	store.setEndpoint(configstore.AdapterEndpoint{
+		AdapterID: "adapter.ai.process",
+		Transport: "process",
+		Command:   "serve",
+	})
+
+	manager := NewManager(ManagerOptions{
+		Store:     store,
+		Adapters:  store,
+		Launcher:  NewMockLauncher(),
+		PluginDir: t.TempDir(),
+	})
+
+	if err := manager.Ensure(context.Background()); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+
+	if capturedTransport != "process" {
+		t.Fatalf("expected transport %q, got %q", "process", capturedTransport)
+	}
+	if capturedTLS != nil {
+		t.Fatalf("expected nil TLS config for process transport, got %+v", capturedTLS)
+	}
+}
+
+func TestManagerEnsureRestartFailureRemovesStaleInstance(t *testing.T) {
+	// When a restart's start phase fails, the stopped instance must be
+	// removed from the map so Running() does not return a stale entry.
+	var ensureCount int
+	t.Cleanup(SetReadinessChecker(func(context.Context, string, string, *napdial.TLSConfig) error {
+		ensureCount++
+		if ensureCount >= 2 {
+			return errors.New("health check: NOT_SERVING")
+		}
+		return nil
+	}))
+
+	store := &fakeBindingSource{
+		bindings: []configstore.AdapterBinding{
+			{
+				Slot:      string(SlotAI),
+				Status:    "active",
+				AdapterID: strPtr("adapter.ai"),
+				Config:    `{"v":1}`,
+			},
+		},
+	}
+	store.setAdapter(configstore.Adapter{ID: "adapter.ai"})
+	store.setEndpoint(configstore.AdapterEndpoint{
+		AdapterID: "adapter.ai",
+		Transport: "grpc",
+		Address:   "127.0.0.1:9400",
+	})
+	launcher := NewMockLauncher()
+	manager := NewManager(ManagerOptions{
+		Store:     store,
+		Adapters:  store,
+		Launcher:  launcher,
+		PluginDir: t.TempDir(),
+	})
+
+	ctx := context.Background()
+
+	// First Ensure — adapter starts successfully.
+	if err := manager.Ensure(ctx); err != nil {
+		t.Fatalf("initial ensure: %v", err)
+	}
+	if len(manager.Running()) != 1 {
+		t.Fatalf("expected 1 running adapter, got %d", len(manager.Running()))
+	}
+
+	// Change config to trigger restart path.
+	store.mu.Lock()
+	store.bindings[0].Config = `{"v":2}`
+	store.mu.Unlock()
+
+	// Second Ensure — stop succeeds but start fails (readiness returns error).
+	err := manager.Ensure(ctx)
+	if err == nil {
+		t.Fatal("expected error from failed restart, got nil")
+	}
+
+	// The stale instance must NOT appear in Running().
+	if len(manager.Running()) != 0 {
+		t.Fatalf("expected 0 running adapters after failed restart, got %d", len(manager.Running()))
+	}
+}
+
+func TestManagerEnsureRemovalKeepsInstanceOnStopFailure(t *testing.T) {
+	// When removing an adapter whose stop fails, the instance should be
+	// retained in the map so the next reconcile retries the stop.
+	t.Cleanup(SetReadinessChecker(func(context.Context, string, string, *napdial.TLSConfig) error { return nil }))
+
+	store := &fakeBindingSource{
+		bindings: []configstore.AdapterBinding{
+			{
+				Slot:      string(SlotAI),
+				Status:    "active",
+				AdapterID: strPtr("adapter.ai.remote"),
+			},
+		},
+	}
+	store.setAdapter(configstore.Adapter{ID: "adapter.ai.remote"})
+	store.setEndpoint(configstore.AdapterEndpoint{
+		AdapterID: "adapter.ai.remote",
+		Transport: "grpc",
+		Address:   "127.0.0.1:9100",
+	})
+	launcher := NewMockLauncher()
+	manager := NewManager(ManagerOptions{
+		Store:     store,
+		Adapters:  store,
+		Launcher:  launcher,
+		PluginDir: t.TempDir(),
+	})
+
+	ctx := context.Background()
+
+	// First Ensure — adapter starts (remote gRPC, no process).
+	if err := manager.Ensure(ctx); err != nil {
+		t.Fatalf("initial ensure: %v", err)
+	}
+	if len(manager.Running()) != 1 {
+		t.Fatalf("expected 1 running adapter, got %d", len(manager.Running()))
+	}
+
+	// Remove the binding so the removal path triggers.
+	store.mu.Lock()
+	store.bindings = nil
+	store.mu.Unlock()
+
+	// Inject a handle that fails on stop to simulate stop failure.
+	manager.mu.Lock()
+	instance := manager.instances[SlotAI]
+	instance.handle = &mockHandle{parent: launcher, slot: string(SlotAI), pid: 1, stopErr: errors.New("stop failed")}
+	manager.mu.Unlock()
+
+	// Second Ensure — stop fails, instance should be retained for retry.
+	err := manager.Ensure(ctx)
+	if err == nil {
+		t.Fatal("expected error from failed stop, got nil")
+	}
+	if len(manager.Running()) != 1 {
+		t.Fatal("expected instance to be retained after stop failure for retry")
+	}
+}
+
+func TestManagerEnsurePrepareFailurePublishesPerSlotEvent(t *testing.T) {
+	// When all bindings fail in prepareBinding (e.g. malformed manifest),
+	// logSlotError should publish per-slot events before the early return
+	// (review #10 regression test).
+	t.Cleanup(SetReadinessChecker(func(context.Context, string, string, *napdial.TLSConfig) error { return nil }))
+
+	store := &fakeBindingSource{
+		bindings: []configstore.AdapterBinding{
+			{
+				Slot:      string(SlotAI),
+				Status:    "active",
+				AdapterID: strPtr("adapter.ai.badmanifest"),
+			},
+		},
+	}
+	// Set adapter with a malformed manifest — prepareBinding will fail
+	// on manifest.Parse, before reaching startAdapter.
+	store.setAdapter(configstore.Adapter{
+		ID:       "adapter.ai.badmanifest",
+		Manifest: "{{not valid yaml or json}}",
+	})
+	bus := eventbus.New()
+	manager := NewManager(ManagerOptions{
+		Store:     store,
+		Adapters:  store,
+		Launcher:  NewMockLauncher(),
+		Bus:       bus,
+		PluginDir: t.TempDir(),
+	})
+
+	sub := eventbus.SubscribeTo(bus, eventbus.Adapters.Status)
+	defer sub.Close()
+
+	err := manager.Ensure(context.Background())
+	if err == nil {
+		t.Fatal("expected error from prepare failure, got nil")
+	}
+	if !strings.Contains(err.Error(), "parse manifest") {
+		t.Fatalf("expected manifest parse error, got: %v", err)
+	}
+
+	select {
+	case evt := <-sub.C():
+		status := evt.Payload
+		if status.Status != eventbus.AdapterHealthError {
+			t.Fatalf("expected error status, got %s", status.Status)
+		}
+		if status.AdapterID != "adapter.ai.badmanifest" {
+			t.Fatalf("expected AdapterID adapter.ai.badmanifest, got %q", status.AdapterID)
+		}
+		if status.Slot != string(SlotAI) {
+			t.Fatalf("expected Slot %s, got %q", SlotAI, status.Slot)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for prepare-failure event")
+	}
+}
+
 func TestManagerEnsureRestartsOnManifestChange(t *testing.T) {
 	// Mock readiness so process adapters don't try to actually connect
-	origReady := waitForAdapterReadyFn
-	waitForAdapterReadyFn = func(context.Context, string) error { return nil }
-	t.Cleanup(func() { waitForAdapterReadyFn = origReady })
+	t.Cleanup(SetReadinessChecker(func(context.Context, string, string, *napdial.TLSConfig) error { return nil }))
 
 	ctx := context.Background()
 	tempDir := t.TempDir()
@@ -1044,23 +1381,15 @@ func TestEnsurePopulatesAdapterConfigEnv(t *testing.T) {
 	tempDir := t.TempDir()
 	dbPath := filepath.Join(tempDir, "config.db")
 
-	originalWait := waitForAdapterReadyFn
-	t.Cleanup(func() {
-		waitForAdapterReadyFn = originalWait
-	})
-	waitForAdapterReadyFn = func(context.Context, string) error {
+	t.Cleanup(SetReadinessChecker(func(context.Context, string, string, *napdial.TLSConfig) error {
 		return nil
-	}
+	}))
 
-	originalAlloc := allocateProcessAddressFn
-	t.Cleanup(func() {
-		allocateProcessAddressFn = originalAlloc
-	})
 	var portCounter int
-	allocateProcessAddressFn = func() (string, error) {
+	t.Cleanup(SetAllocateProcessAddress(func() (string, error) {
 		portCounter++
 		return fmt.Sprintf("127.0.0.1:%d", 55050+portCounter), nil
-	}
+	}))
 
 	store, err := configstore.Open(configstore.Options{DBPath: dbPath})
 	if err != nil {
@@ -1355,7 +1684,7 @@ func TestMergeManifestEndpointRequiresAddressForNetworkTransports(t *testing.T) 
 	}
 }
 
-func TestManagerStopAllStopsEveryInstance(t *testing.T) {
+func TestManagerStopStopsEveryInstance(t *testing.T) {
 	manager := NewManager(ManagerOptions{
 		Launcher: NewMockLauncher(),
 	})
@@ -1370,8 +1699,8 @@ func TestManagerStopAllStopsEveryInstance(t *testing.T) {
 		},
 	}
 
-	if err := manager.StopAll(context.Background()); err != nil {
-		t.Fatalf("StopAll returned error: %v", err)
+	if err := manager.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop returned error: %v", err)
 	}
 	if len(manager.instances) != 0 {
 		t.Fatalf("expected instances to be cleared, got %d", len(manager.instances))
@@ -1385,17 +1714,13 @@ func TestManagerStopAllStopsEveryInstance(t *testing.T) {
 func TestStartAdapterRejectsInvalidEnvVars(t *testing.T) {
 	ctx := context.Background()
 
-	originalAlloc := allocateProcessAddressFn
-	allocateProcessAddressFn = func() (string, error) {
+	t.Cleanup(SetAllocateProcessAddress(func() (string, error) {
 		return "127.0.0.1:55555", nil
-	}
-	defer func() { allocateProcessAddressFn = originalAlloc }()
+	}))
 
-	originalReady := waitForAdapterReadyFn
-	waitForAdapterReadyFn = func(context.Context, string) error {
+	t.Cleanup(SetReadinessChecker(func(context.Context, string, string, *napdial.TLSConfig) error {
 		return nil
-	}
-	defer func() { waitForAdapterReadyFn = originalReady }()
+	}))
 
 	manifestRaw := `
 apiVersion: nap.nupi.ai/v1alpha1
@@ -1492,23 +1817,19 @@ func TestStartAdapterRetriesOnReadinessFailure(t *testing.T) {
 	tempDir := t.TempDir()
 
 	var portCounter int
-	originalAlloc := allocateProcessAddressFn
-	allocateProcessAddressFn = func() (string, error) {
+	t.Cleanup(SetAllocateProcessAddress(func() (string, error) {
 		portCounter++
 		return fmt.Sprintf("127.0.0.1:%d", 55000+portCounter), nil
-	}
-	t.Cleanup(func() { allocateProcessAddressFn = originalAlloc })
+	}))
 
 	var readyCalls int
-	originalReady := waitForAdapterReadyFn
-	waitForAdapterReadyFn = func(context.Context, string) error {
+	t.Cleanup(SetReadinessChecker(func(context.Context, string, string, *napdial.TLSConfig) error {
 		readyCalls++
 		if readyCalls == 1 {
 			return fmt.Errorf("not ready yet")
 		}
 		return nil
-	}
-	t.Cleanup(func() { waitForAdapterReadyFn = originalReady })
+	}))
 
 	manifestRaw := `
 apiVersion: nap.nupi.ai/v1alpha1
@@ -1575,17 +1896,13 @@ func TestStartAdapterCleansUpOnLaunchFailure(t *testing.T) {
 	ctx := context.Background()
 	tempDir := t.TempDir()
 
-	originalAlloc := allocateProcessAddressFn
-	allocateProcessAddressFn = func() (string, error) {
+	t.Cleanup(SetAllocateProcessAddress(func() (string, error) {
 		return "127.0.0.1:59000", nil
-	}
-	t.Cleanup(func() { allocateProcessAddressFn = originalAlloc })
+	}))
 
-	originalReady := waitForAdapterReadyFn
-	waitForAdapterReadyFn = func(context.Context, string) error {
+	t.Cleanup(SetReadinessChecker(func(context.Context, string, string, *napdial.TLSConfig) error {
 		return nil
-	}
-	t.Cleanup(func() { waitForAdapterReadyFn = originalReady })
+	}))
 
 	manifestRaw := `
 apiVersion: nap.nupi.ai/v1alpha1
@@ -1785,17 +2102,13 @@ func TestIsBuiltinMockAdapter(t *testing.T) {
 }
 
 func TestStartAdapterWorkingDirResolution(t *testing.T) {
-	originalAlloc := allocateProcessAddressFn
-	t.Cleanup(func() { allocateProcessAddressFn = originalAlloc })
 	var portCounter int
-	allocateProcessAddressFn = func() (string, error) {
+	t.Cleanup(SetAllocateProcessAddress(func() (string, error) {
 		portCounter++
 		return fmt.Sprintf("127.0.0.1:%d", 56000+portCounter), nil
-	}
+	}))
 
-	originalReady := waitForAdapterReadyFn
-	t.Cleanup(func() { waitForAdapterReadyFn = originalReady })
-	waitForAdapterReadyFn = func(context.Context, string) error { return nil }
+	t.Cleanup(SetReadinessChecker(func(context.Context, string, string, *napdial.TLSConfig) error { return nil }))
 
 	baseManifestYAML := `
 apiVersion: nap.nupi.ai/v1alpha1
@@ -2015,7 +2328,7 @@ spec:
 // Validate adapter hot-swap and lifecycle consistency
 
 func TestManagerHotSwapVADWithoutAffectingSTT(t *testing.T) {
-	t.Cleanup(SetReadinessChecker(func(context.Context, string) error { return nil }))
+	t.Cleanup(SetReadinessChecker(func(context.Context, string, string, *napdial.TLSConfig) error { return nil }))
 
 	store := &fakeBindingSource{
 		bindings: []configstore.AdapterBinding{
@@ -2114,7 +2427,7 @@ func TestManagerHotSwapVADWithoutAffectingSTT(t *testing.T) {
 }
 
 func TestManagerUnbindSlotLeavesOthersRunning(t *testing.T) {
-	t.Cleanup(SetReadinessChecker(func(context.Context, string) error { return nil }))
+	t.Cleanup(SetReadinessChecker(func(context.Context, string, string, *napdial.TLSConfig) error { return nil }))
 
 	store := &fakeBindingSource{
 		bindings: []configstore.AdapterBinding{
@@ -2183,7 +2496,7 @@ func TestManagerUnbindSlotLeavesOthersRunning(t *testing.T) {
 }
 
 func TestLaunchEnvConsistencyAllSlots(t *testing.T) {
-	t.Cleanup(SetReadinessChecker(func(context.Context, string) error { return nil }))
+	t.Cleanup(SetReadinessChecker(func(context.Context, string, string, *napdial.TLSConfig) error { return nil }))
 
 	slots := []Slot{SlotSTT, SlotTTS, SlotVAD, SlotAI, SlotTunnel}
 	requiredEnvKeys := []string{
@@ -2801,7 +3114,7 @@ spec:
 }
 
 func TestDiscoveredManifestFeedsManagerPlan(t *testing.T) {
-	t.Cleanup(SetReadinessChecker(func(context.Context, string) error { return nil }))
+	t.Cleanup(SetReadinessChecker(func(context.Context, string, string, *napdial.TLSConfig) error { return nil }))
 
 	// Create a plugin directory with a real manifest
 	pluginRoot := t.TempDir()
@@ -2902,7 +3215,7 @@ spec:
 }
 
 func TestEnsureIdempotentWithManifestDefaults(t *testing.T) {
-	t.Cleanup(SetReadinessChecker(func(context.Context, string) error { return nil }))
+	t.Cleanup(SetReadinessChecker(func(context.Context, string, string, *napdial.TLSConfig) error { return nil }))
 
 	// Manifest with options that have defaults
 	manifestYAML := `apiVersion: nap.nupi.ai/v1alpha1
