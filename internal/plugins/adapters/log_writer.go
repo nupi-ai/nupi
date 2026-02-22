@@ -34,22 +34,24 @@ type adapterLogWriter struct {
 	buf bytes.Buffer
 
 	// Rate limiting state (token bucket).
-	tokens         float64
-	lastRefill     time.Time
-	droppedCount   int
-	lastDropReport time.Time
+	tokens             float64
+	lastRefill         time.Time
+	droppedCount       int
+	lastDropReport     time.Time
+	dropReportInterval time.Duration
 }
 
 func newAdapterLogWriter(bus *eventbus.Bus, adapterID string, slot Slot, level eventbus.LogLevel) *adapterLogWriter {
 	now := time.Now()
 	return &adapterLogWriter{
-		bus:            bus,
-		adapterID:      adapterID,
-		slot:           slot,
-		level:          level,
-		tokens:         rateLimitBurstSize, // Start with full bucket.
-		lastRefill:     now,
-		lastDropReport: now,
+		bus:                bus,
+		adapterID:          adapterID,
+		slot:               slot,
+		level:              level,
+		tokens:             rateLimitBurstSize, // Start with full bucket.
+		lastRefill:         now,
+		lastDropReport:     now,
+		dropReportInterval: droppedMessagesReportInterval,
 	}
 }
 
@@ -111,7 +113,7 @@ func (w *adapterLogWriter) publish(message string) {
 	w.refillTokens(now)
 
 	// Check if we should publish or drop due to rate limiting.
-	if !w.shouldPublish(now) {
+	if !w.shouldPublish() {
 		w.droppedCount++
 		return
 	}
@@ -152,7 +154,7 @@ func (w *adapterLogWriter) refillTokens(now time.Time) {
 }
 
 // shouldPublish checks if we have tokens available and consumes one if so.
-func (w *adapterLogWriter) shouldPublish(now time.Time) bool {
+func (w *adapterLogWriter) shouldPublish() bool {
 	if w.tokens >= 1.0 {
 		w.tokens -= 1.0
 		return true
@@ -165,7 +167,7 @@ func (w *adapterLogWriter) reportDroppedMessages(now time.Time) {
 	if w.droppedCount == 0 {
 		return
 	}
-	if now.Sub(w.lastDropReport) < droppedMessagesReportInterval {
+	if now.Sub(w.lastDropReport) < w.dropReportInterval {
 		return
 	}
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 	"sync"
@@ -21,8 +22,9 @@ type Service struct {
 	store   *configstore.Store
 	bus     *eventbus.Bus
 
-	watchInterval  time.Duration
-	ensureInterval time.Duration
+	watchInterval     time.Duration
+	ensureInterval    time.Duration
+	heartbeatInterval time.Duration
 
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -33,6 +35,11 @@ type Service struct {
 	lastErr  string
 	statusMu sync.RWMutex
 	statuses map[Slot]runtimeStatus
+
+	// heartbeatState tracks per-slot health for transition detection.
+	heartbeatMu         sync.Mutex
+	heartbeatState      map[Slot]heartbeatSlotState
+	heartbeatAllBuiltin bool // dedup: only log "all builtin" once per transition
 }
 
 // ServiceOption configures the service behaviour.
@@ -56,6 +63,16 @@ func WithEnsureInterval(d time.Duration) ServiceOption {
 	}
 }
 
+// WithHeartbeatInterval overrides the periodic health probe interval.
+// Set to 0 to disable heartbeat probing.
+func WithHeartbeatInterval(d time.Duration) ServiceOption {
+	return func(s *Service) {
+		if d >= 0 {
+			s.heartbeatInterval = d
+		}
+	}
+}
+
 var (
 	// ErrManagerNotConfigured indicates the service is missing the adapters manager dependency.
 	ErrManagerNotConfigured = errors.New("adapters: manager is required")
@@ -69,12 +86,21 @@ type adapterState struct {
 	startedAt   time.Time
 }
 
+// heartbeatSlotState tracks the health state of a single adapter slot for
+// transition detection (healthy→degraded, degraded→healthy).
+type heartbeatSlotState struct {
+	healthy    bool
+	degradedAt time.Time // zero when healthy
+	lastError  string    // last probe error message (for recovery logging)
+	cleared    bool      // adapter stopped/swapped — ignore in-flight probe results
+}
+
 type runtimeStatus struct {
 	event    eventbus.AdapterStatusEvent
 	recorded time.Time
 }
 
-// RuntimeStatus describes the last known runtime state of a adapter process.
+// RuntimeStatus describes the last known runtime state of an adapter process.
 type RuntimeStatus struct {
 	AdapterID string
 	Health    eventbus.AdapterHealth
@@ -97,13 +123,15 @@ type BindingStatus struct {
 // NewService constructs a adapters service responsible for driving adapter processes.
 func NewService(manager *Manager, store *configstore.Store, bus *eventbus.Bus, opts ...ServiceOption) *Service {
 	svc := &Service{
-		manager:        manager,
-		store:          store,
-		bus:            bus,
-		watchInterval:  time.Second,
-		ensureInterval: 15 * time.Second,
-		state:          make(map[Slot]adapterState),
-		statuses:       make(map[Slot]runtimeStatus),
+		manager:           manager,
+		store:             store,
+		bus:               bus,
+		watchInterval:     time.Second,
+		ensureInterval:    15 * time.Second,
+		heartbeatInterval: defaultHeartbeatInterval,
+		state:             make(map[Slot]adapterState),
+		statuses:          make(map[Slot]runtimeStatus),
+		heartbeatState:    make(map[Slot]heartbeatSlotState),
 	}
 	for _, opt := range opts {
 		opt(svc)
@@ -135,6 +163,10 @@ func (s *Service) Start(ctx context.Context) error {
 
 	if s.ensureInterval > 0 {
 		s.startTicker(runCtx)
+	}
+
+	if s.heartbeatInterval > 0 {
+		s.startHeartbeat(runCtx)
 	}
 
 	return nil
@@ -237,6 +269,7 @@ func (s *Service) updateState(ctx context.Context, running []Binding) {
 				Message:   "adapter stopped",
 			})
 			delete(s.state, slot)
+			s.clearHeartbeatState(slot)
 			continue
 		}
 
@@ -249,6 +282,7 @@ func (s *Service) updateState(ctx context.Context, running []Binding) {
 				Message:   "adapter restarting",
 			})
 			delete(s.state, slot)
+			s.clearHeartbeatState(slot)
 		}
 	}
 
@@ -488,6 +522,160 @@ func cloneAdapterStatusEvent(evt eventbus.AdapterStatusEvent) eventbus.AdapterSt
 		cloned.Extra = extra
 	}
 	return cloned
+}
+
+func (s *Service) startHeartbeat(ctx context.Context) {
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.runHeartbeat(ctx) // Immediate first probe — no blind spot after Start().
+		ticker := time.NewTicker(s.heartbeatInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				s.runHeartbeat(ctx)
+			}
+		}
+	}()
+}
+
+func (s *Service) runHeartbeat(ctx context.Context) {
+	running := s.manager.Running()
+	probe := getHeartbeatProber()
+
+	var wg sync.WaitGroup
+	probed := 0
+	for _, binding := range running {
+		if ctx.Err() != nil {
+			break
+		}
+		// Skip builtin adapters — in-process mocks, always healthy.
+		// Defense-in-depth: probeAdapter also returns nil for builtin,
+		// but skipping here avoids unnecessary goroutine + state tracking.
+		if binding.Runtime[RuntimeExtraTransport] == "builtin" {
+			continue
+		}
+		probed++
+		wg.Add(1)
+		go func(b Binding) {
+			defer wg.Done()
+			err := probe(ctx, b)
+			s.handleHeartbeatResult(ctx, b, err)
+		}(binding)
+	}
+	allBuiltin := probed == 0 && len(running) > 0
+	s.heartbeatMu.Lock()
+	if allBuiltin && !s.heartbeatAllBuiltin {
+		log.Printf("[Adapters] heartbeat: no adapters to probe (%d running, all builtin)", len(running))
+	}
+	s.heartbeatAllBuiltin = allBuiltin
+	s.heartbeatMu.Unlock()
+	wg.Wait()
+
+	// Purge cleared entries AFTER all probe goroutines complete. The cleared
+	// sentinel must remain readable while in-flight probes run so that
+	// handleHeartbeatResult can discard stale results for stopped/swapped
+	// adapters. Purging before wg.Wait() would race with concurrent
+	// clearHeartbeatState calls from reconcile → updateState.
+	s.heartbeatMu.Lock()
+	for slot, st := range s.heartbeatState {
+		if st.cleared {
+			delete(s.heartbeatState, slot)
+		}
+	}
+	s.heartbeatMu.Unlock()
+}
+
+func (s *Service) handleHeartbeatResult(ctx context.Context, binding Binding, err error) {
+	if ctx.Err() != nil {
+		return // Don't publish spurious degraded events during shutdown.
+	}
+
+	slot := binding.Slot
+	s.heartbeatMu.Lock()
+	state, tracked := s.heartbeatState[slot]
+	if tracked && state.cleared {
+		// Adapter was stopped/swapped while probe was in-flight — discard result.
+		s.heartbeatMu.Unlock()
+		return
+	}
+	if !tracked {
+		// First probe for this slot — assume healthy (just started).
+		state = heartbeatSlotState{healthy: true}
+	}
+
+	if err != nil {
+		// Probe failed.
+		if state.healthy {
+			// Transition: healthy → unhealthy.
+			// Use time.Now() (not .UTC()) to preserve monotonic clock reading
+			// for accurate downtime measurement via time.Since().
+			s.heartbeatState[slot] = heartbeatSlotState{healthy: false, degradedAt: time.Now(), lastError: err.Error()}
+			s.heartbeatMu.Unlock()
+			log.Printf("[Adapters] heartbeat: %s (slot %s) degraded: %v", binding.AdapterID, slot, err)
+			s.publishStatus(ctx, s.buildHeartbeatEvent(slot, binding, eventbus.AdapterHealthDegraded, "heartbeat probe failed: "+err.Error()))
+			return
+		}
+		// Already unhealthy — update last error for accurate recovery logging,
+		// but don't re-publish (deduplicate).
+		state.lastError = err.Error()
+		s.heartbeatState[slot] = state
+		s.heartbeatMu.Unlock()
+		return
+	}
+
+	// Probe succeeded.
+	if !state.healthy {
+		// Transition: unhealthy → healthy (recovery).
+		downtime := time.Since(state.degradedAt).Round(time.Second)
+		lastErr := state.lastError
+		s.heartbeatState[slot] = heartbeatSlotState{healthy: true}
+		s.heartbeatMu.Unlock()
+		log.Printf("[Adapters] heartbeat: %s (slot %s) recovered (downtime %s, was: %s)", binding.AdapterID, slot, downtime, lastErr)
+		evt := s.buildHeartbeatEvent(slot, binding, eventbus.AdapterHealthReady, "heartbeat probe recovered")
+		evt.Extra["downtime"] = downtime.String()
+		evt.Extra["last_error"] = lastErr
+		s.publishStatus(ctx, evt)
+		return
+	}
+	// Steady-state healthy — no event.
+	s.heartbeatMu.Unlock()
+}
+
+// buildHeartbeatEvent constructs an AdapterStatusEvent for heartbeat publishing,
+// preserving StartedAt and runtime Extra (transport, address, TLS) from the
+// existing stored status. Without this, heartbeat events would erase metadata
+// set by reconcile's updateState.
+func (s *Service) buildHeartbeatEvent(slot Slot, binding Binding, health eventbus.AdapterHealth, message string) eventbus.AdapterStatusEvent {
+	evt := eventbus.AdapterStatusEvent{
+		AdapterID: binding.AdapterID,
+		Slot:      string(slot),
+		Status:    health,
+		Message:   message,
+		Extra:     map[string]string{"source": "heartbeat"},
+	}
+	s.statusMu.RLock()
+	if existing, ok := s.statuses[slot]; ok {
+		evt.StartedAt = existing.event.StartedAt
+		for k, v := range existing.event.Extra {
+			if _, set := evt.Extra[k]; !set {
+				evt.Extra[k] = v
+			}
+		}
+	}
+	s.statusMu.RUnlock()
+	return evt
+}
+
+func (s *Service) clearHeartbeatState(slot Slot) {
+	s.heartbeatMu.Lock()
+	// Mark as cleared rather than deleting so in-flight heartbeat probe
+	// goroutines discard stale results instead of re-initializing state.
+	s.heartbeatState[slot] = heartbeatSlotState{cleared: true}
+	s.heartbeatMu.Unlock()
 }
 
 // Shutdown stops background goroutines and terminates managed adapter processes.
