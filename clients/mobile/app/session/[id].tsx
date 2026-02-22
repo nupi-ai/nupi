@@ -13,6 +13,7 @@ import { WebView, type WebViewMessageEvent } from "react-native-webview";
 import { useHeaderHeight } from "@react-navigation/elements";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { ConversationPanel } from "@/components/ConversationPanel";
 import { ModelDownloadSheet } from "@/components/ModelDownloadSheet";
 import { SpecialKeysToolbar } from "@/components/SpecialKeysToolbar";
 import { Text } from "@/components/Themed";
@@ -21,12 +22,15 @@ import { useColorScheme } from "@/components/useColorScheme";
 import { VoiceButton } from "@/components/VoiceButton";
 import Colors from "@/constants/Colors";
 import { arrayBufferToBase64 } from "@/lib/base64";
+import { useConnection } from "@/lib/ConnectionContext";
 import { getTerminalHtml } from "@/lib/terminal-html";
+import { useConversation } from "@/lib/useConversation";
 import {
   useSessionStream,
   type WsEvent,
 } from "@/lib/useSessionStream";
 import { useVoice } from "@/lib/VoiceContext";
+import { raceTimeout } from "@/lib/raceTimeout";
 
 /** Reusable encoder — TextEncoder is stateless, no need to allocate per-call. */
 const textEncoder = new TextEncoder();
@@ -69,6 +73,19 @@ export default function SessionTerminalScreen() {
   } = useVoice();
   const modelStatusRef = useRef(modelStatus);
   modelStatusRef.current = modelStatus;
+  const { client } = useConnection();
+  const [voiceCommandStatus, setVoiceCommandStatus] = useState<
+    "idle" | "sending" | "thinking" | "error"
+  >("idle");
+  const voiceCommandStatusRef = useRef(voiceCommandStatus);
+  voiceCommandStatusRef.current = voiceCommandStatus;
+  const isSendingRef = useRef(false);
+  const pendingCommandsRef = useRef(0);
+  // L2 fix: track error recovery timer so it can be cleared on unmount.
+  const errorRecoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const screenMountedRef = useRef(true);
+  // NOTE: useConversation is called after useSessionStream (below) so that
+  // streamStatus is available for the isConnected parameter.
   // Queue output received before the WebView is ready.
   const pendingOutputRef = useRef<string[]>([]);
   const pendingResizeRef = useRef<{ cols: number; rows: number } | null>(null);
@@ -151,6 +168,30 @@ export default function SessionTerminalScreen() {
   // Ref for stable access in callbacks without triggering recreations.
   const streamStatusRef = useRef(streamStatus);
   streamStatusRef.current = streamStatus;
+
+  // M2 fix: pass isConnected so useConversation pauses polling when disconnected.
+  const {
+    turns,
+    isPolling,
+    error: conversationError,
+    startPolling,
+    stopPolling,
+    refresh,
+    addOptimistic,
+    removeLastOptimistic,
+  } = useConversation(id ?? "", client, streamStatus === "connected");
+  const prevTurnsLenRef = useRef(turns.length);
+
+  // H1 fix: refresh conversation after WebSocket reconnection so that AI
+  // responses that arrived during the outage become visible.
+  const prevStreamStatusRef = useRef(streamStatus);
+  useEffect(() => {
+    const prev = prevStreamStatusRef.current;
+    prevStreamStatusRef.current = streamStatus;
+    if (streamStatus === "connected" && prev === "reconnecting") {
+      refresh();
+    }
+  }, [streamStatus, refresh]);
 
   const handleRetryStream = useCallback(() => {
     wsReconnect();
@@ -288,17 +329,127 @@ export default function SessionTerminalScreen() {
     webViewRef.current?.reload();
   }, []);
 
-  // Stop recording and clear transcript when leaving the session screen.
+  // Stop recording, polling, and clear transcript when leaving the session screen.
   // VoiceProvider is app-scoped, so without this the native audio stream
   // would keep recording in the background and transcript text would
   // carry over to a different session screen.
   useEffect(() => {
     return () => {
+      screenMountedRef.current = false;
       voiceStopRecording();
       clearTranscription();
       clearVoiceError();
+      stopPolling();
+      pendingCommandsRef.current = 0;
+      // L2 fix: clear error recovery timer on unmount.
+      if (errorRecoveryTimerRef.current) {
+        clearTimeout(errorRecoveryTimerRef.current);
+        errorRecoveryTimerRef.current = null;
+      }
     };
-  }, [voiceStopRecording, clearTranscription, clearVoiceError]);
+  }, [voiceStopRecording, clearTranscription, clearVoiceError, stopPolling]);
+
+  // Auto-send voice command when recording finishes with confirmed text.
+  useEffect(() => {
+    if (recordingStatus !== "result" || !confirmedText || isSendingRef.current) return;
+    if (!client) return;
+
+    isSendingRef.current = true;
+    setVoiceCommandStatus("sending");
+
+    const text = confirmedText;
+    addOptimistic(text);
+    clearTranscription();
+
+    (async () => {
+      try {
+        // H2 fix: timeout on Connect RPC send (10s per Story 11-1 intelligence).
+        const resp = await raceTimeout(
+          client.sessions.sendVoiceCommand({
+            sessionId: id ?? "",
+            text,
+            metadata: { client_type: "mobile" },
+          }),
+          10_000,
+          "Voice command timed out",
+        );
+        if (resp && !resp.accepted) {
+          throw new Error(resp.message || "Command rejected by server");
+        }
+        pendingCommandsRef.current += 1;
+        if (voiceCommandStatusRef.current !== "idle") {
+          setVoiceCommandStatus("thinking");
+        }
+        startPolling();
+      } catch (e) {
+        // H1 fix (Review 10): SendVoiceCommand is fire-and-forget — the server
+        // likely received and processed the command even when the HTTP response
+        // times out. Start polling so the AI response isn't silently lost.
+        const isTimeout = e instanceof Error && e.message.includes("timed out");
+        if (isTimeout) {
+          console.warn("[voice-command] send timed out, polling for possible response");
+          pendingCommandsRef.current += 1;
+          setVoiceCommandStatus("thinking");
+          startPolling();
+        } else {
+          // L2 fix (Review 10): log full error object for stack trace debugging.
+          console.error("[voice-command] send failed:", e);
+          setVoiceCommandStatus("error");
+          removeLastOptimistic();
+          // M1 fix: Auto-reset from error after 3s so user can retry.
+          // L2 fix: store timer ref so it can be cleared on unmount.
+          // M1 fix (Review 6): clear any existing recovery timer before setting
+          // a new one to prevent orphaned timers on rapid consecutive errors.
+          if (errorRecoveryTimerRef.current) {
+            clearTimeout(errorRecoveryTimerRef.current);
+          }
+          errorRecoveryTimerRef.current = setTimeout(() => {
+            errorRecoveryTimerRef.current = null;
+            if (voiceCommandStatusRef.current === "error") {
+              setVoiceCommandStatus("idle");
+            }
+          }, 3000);
+        }
+      } finally {
+        isSendingRef.current = false;
+      }
+    })();
+  }, [recordingStatus, confirmedText, client, id, addOptimistic, removeLastOptimistic, clearTranscription, startPolling]);
+
+  // Detect AI response arrival — decrement pending counter, stop polling when all answered.
+  useEffect(() => {
+    // Always track turns length so it stays current after refresh/reconnection
+    // even when voiceCommandStatus is "idle". Without this, prevTurnsLenRef
+    // becomes stale and causes phantom AI detection on the next voice command.
+    const prevLen = prevTurnsLenRef.current;
+    prevTurnsLenRef.current = turns.length;
+
+    if (voiceCommandStatusRef.current !== "thinking" && voiceCommandStatusRef.current !== "sending") return;
+    // Check if new AI turns appeared since last render.
+    // Decrement by at most 1 per render cycle to avoid multi-turn AI responses
+    // (tool-use, multi-step) from draining the counter too fast.
+    if (turns.length > prevLen) {
+      const newTurns = turns.slice(prevLen);
+      const hasNewAi = newTurns.some(t => t.origin === "ai" && !t.isOptimistic);
+      if (hasNewAi) {
+        pendingCommandsRef.current = Math.max(0, pendingCommandsRef.current - 1);
+        if (pendingCommandsRef.current === 0) {
+          setVoiceCommandStatus("idle");
+          stopPolling();
+        }
+      }
+    }
+  }, [turns, stopPolling]);
+
+  // H1 fix: Reset voiceCommandStatus when polling auto-stops without AI response.
+  // useConversation stops polling after 60s; without this, the thinking spinner
+  // would persist forever.
+  useEffect(() => {
+    if (!isPolling && voiceCommandStatusRef.current === "thinking") {
+      setVoiceCommandStatus("idle");
+      pendingCommandsRef.current = 0;
+    }
+  }, [isPolling]);
 
   // Auto-close download sheet when model becomes ready.
   useEffect(() => {
@@ -307,20 +458,23 @@ export default function SessionTerminalScreen() {
     }
   }, [modelStatus, showDownloadSheet]);
 
-  // Stop recording and clear transcription when session ends. The "stopped" event
-  // sets sessionStopped which unmounts the voiceRow (hiding VoiceButton), but
-  // the WebSocket may still be "connected" so the disconnect effect below won't fire.
-  // clearTranscription prevents the orphaned TranscriptionBubble from floating
-  // over the "Session ended" banner.
+  // Stop recording, polling, and clear transcription when session ends.
+  // The "stopped" event sets sessionStopped which unmounts the voiceRow
+  // (hiding VoiceButton), but the WebSocket may still be "connected" so
+  // the disconnect effect below won't fire. clearTranscription prevents
+  // the orphaned TranscriptionBubble from floating over the "Session ended" banner.
   useEffect(() => {
     if (sessionStopped) {
       voiceStopRecording();
       clearTranscription();
       clearVoiceError();
+      stopPolling();
+      setVoiceCommandStatus("idle");
+      pendingCommandsRef.current = 0;
     }
-  }, [sessionStopped, voiceStopRecording, clearTranscription, clearVoiceError]);
+  }, [sessionStopped, voiceStopRecording, clearTranscription, clearVoiceError, stopPolling]);
 
-  // Dismiss keyboard and stop recording when stream disconnects.
+  // Dismiss keyboard, stop recording and polling when stream disconnects.
   // Without this, a disconnect while recording leaves the native audio stream
   // capturing in the background with no visible VoiceButton to stop it
   // (voiceRow unmounts when streamStatus !== "connected").
@@ -336,11 +490,15 @@ export default function SessionTerminalScreen() {
       // and becomes non-interactive due to overlay's pointerEvents="box-only".
       clearTranscription();
       clearVoiceError();
+      stopPolling();
+      setVoiceCommandStatus("idle");
+      isSendingRef.current = false; // M2 fix: unblock sends after reconnect
+      pendingCommandsRef.current = 0;
     }
     if (streamStatus === "error" || streamStatus === "connecting") {
       webViewReadyRef.current = false;
     }
-  }, [streamStatus, voiceStopRecording, clearTranscription, clearVoiceError]);
+  }, [streamStatus, voiceStopRecording, clearTranscription, clearVoiceError, stopPolling]);
 
   // Auto-dismiss recovery notice after 4 seconds.
   useEffect(() => {
@@ -511,6 +669,15 @@ export default function SessionTerminalScreen() {
         onContentProcessDidTerminate={handleWebViewCrash}
         onRenderProcessGone={handleWebViewCrash}
       />
+
+      {(turns.length > 0 || voiceCommandStatus !== "idle") && streamStatus === "connected" && (
+        <ConversationPanel
+          turns={turns}
+          isThinking={voiceCommandStatus === "thinking"}
+          sendError={voiceCommandStatus === "error"}
+          pollError={conversationError}
+        />
+      )}
 
       {(confirmedText || pendingText) && streamStatus === "connected" && (recordingStatus === "recording" || recordingStatus === "result") && (
         <TranscriptionBubble

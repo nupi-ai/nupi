@@ -26,28 +26,8 @@ function createStallDetector(timeoutMs: number) {
   return { promise, reset, clear };
 }
 
-/**
- * Race a promise against a timeout with unhandled-rejection safety.
- * Attaches .catch(() => {}) to the input promise and cleans up the timer via .finally().
- * @param errorMessage If provided, rejects with Error on timeout. Otherwise resolves silently.
- */
-export async function raceTimeout<T>(
-  promise: Promise<T>,
-  ms: number,
-  errorMessage?: string,
-): Promise<T | void> {
-  promise.catch(() => {});
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  const timeout = errorMessage
-    ? new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(errorMessage)), ms);
-      })
-    : new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, ms);
-      });
-  return Promise.race([promise, timeout])
-    .finally(() => { if (timer) clearTimeout(timer); });
-}
+import { raceTimeout } from "./raceTimeout";
+export { raceTimeout };
 
 const MODEL_FILENAME = "ggml-medium-q8_0.bin";
 const GGML_MODEL_SIZE_MB = 500;
@@ -375,24 +355,21 @@ async function initWhisperContext(
   // Timeout guard: if native whisper.cpp enters an infinite loop on a corrupt
   // model file, the app would be stuck in "initializing" forever. A 30s timeout
   // ensures recovery — the caller deletes the model and prompts re-download.
+  // M1 fix (Review 10): use raceTimeout instead of inline timeout for consistency.
   const initPromise = initWhisper({
     filePath: toPath(modelUri),
     useGpu: false,
     useCoreMLIos: true,
   });
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timer = setTimeout(
-      () => reject(new Error(`Model initialization timed out after ${INIT_TIMEOUT_MS / 1000}s — model may be corrupt`)),
-      INIT_TIMEOUT_MS,
-    );
-  });
   try {
-    const ctx = await Promise.race([initPromise, timeoutPromise]);
-    if (timer) clearTimeout(timer);
+    // errorMessage provided → rejects on timeout (never resolves void).
+    const ctx = await raceTimeout(
+      initPromise,
+      INIT_TIMEOUT_MS,
+      `Model initialization timed out after ${INIT_TIMEOUT_MS / 1000}s — model may be corrupt`,
+    ) as WhisperContext;
     return ctx;
   } catch (err) {
-    if (timer) clearTimeout(timer);
     // If timeout won the race, native initWhisper() is still in-flight.
     // Attach cleanup to release the WhisperContext if it eventually succeeds —
     // prevents ~500MB native memory leak from orphaned context.
