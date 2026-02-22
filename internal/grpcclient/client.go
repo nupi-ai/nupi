@@ -122,7 +122,7 @@ func newFromStore() (*Client, error) {
 	if grpcBinding == "" {
 		grpcBinding = cfg.Binding
 	}
-	host := DetermineHost(grpcBinding, tlsEnabled)
+	host := DetermineHost(tlsEnabled)
 	if override := strings.TrimSpace(os.Getenv("NUPI_DAEMON_HOST")); override != "" {
 		host = override
 	}

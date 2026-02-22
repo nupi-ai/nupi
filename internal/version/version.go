@@ -57,6 +57,10 @@ func CheckVersionMismatch(daemonVersion string) string {
 	if client == "dev" || daemonVersion == "dev" {
 		return ""
 	}
+	// 0.0.0 is the CARGO_SEMVER fallback when no git tags exist (see Makefile).
+	if client == "0.0.0" || daemonVersion == "0.0.0" {
+		return ""
+	}
 	clientNorm := normalizeVersion(client)
 	daemonNorm := normalizeVersion(daemonVersion)
 	if clientNorm == daemonNorm {

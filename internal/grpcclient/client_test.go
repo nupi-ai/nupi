@@ -334,6 +334,60 @@ func TestDisableVersionCheck_NoExtraRPC(t *testing.T) {
 	}
 }
 
+func TestConcurrentVersionCheck(t *testing.T) {
+	cleanup := nupiversion.ForTesting("1.0.0")
+	t.Cleanup(cleanup)
+
+	counter := &countingDaemonServer{}
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("network not permitted: %v", err)
+	}
+	srv := grpc.NewServer()
+	apiv1.RegisterDaemonServiceServer(srv, counter)
+	go func() { _ = srv.Serve(lis) }()
+	t.Cleanup(srv.Stop)
+
+	t.Setenv("NUPI_BASE_URL", "http://"+lis.Addr().String())
+	t.Setenv("NUPI_API_TOKEN", "")
+
+	client, err := New()
+	if err != nil {
+		t.Fatalf("New(): %v", err)
+	}
+	t.Cleanup(func() { client.Close() })
+
+	var buf bytes.Buffer
+	client.warningWriter = &buf
+
+	// Launch 10 concurrent DaemonStatus calls — only 1 version check RPC should fire.
+	const goroutines = 10
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			_, _ = client.DaemonStatus(context.Background())
+		}()
+	}
+	wg.Wait()
+
+	// Version check RPC + N actual DaemonStatus RPCs.
+	// The versionChecking guard should ensure at most 1 version-check RPC.
+	statusCalls := counter.calls.Load()
+	// Expected: 10 (actual calls) + 1 (version check) = 11, or 10 if version check
+	// is concurrent with the first actual call. Either way, should not be 20 (no double checks).
+	if statusCalls > int32(goroutines)+1 {
+		t.Errorf("expected at most %d Status RPCs (version check + actual calls), got %d", goroutines+1, statusCalls)
+	}
+
+	// Warning should appear exactly once (not 10 times).
+	warningCount := strings.Count(buf.String(), "WARNING")
+	if warningCount != 1 {
+		t.Errorf("expected exactly 1 version warning, got %d: %q", warningCount, buf.String())
+	}
+}
+
 func extractPort(addr string) int {
 	_, portStr, _ := net.SplitHostPort(addr)
 	port, _ := strconv.Atoi(portStr)

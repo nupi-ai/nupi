@@ -90,7 +90,7 @@ func ResolveExplicitOptions(boot *bootstrap.Config) (string, TLSExplicitOptions)
 // DetermineHost returns the host to use for gRPC connections. Local clients
 // always connect to loopback; TLS requires "localhost" for certificate
 // hostname validation.
-func DetermineHost(binding string, tlsEnabled bool) string {
+func DetermineHost(tlsEnabled bool) string {
 	if tlsEnabled {
 		return "localhost"
 	}

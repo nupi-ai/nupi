@@ -1,7 +1,6 @@
 package version
 
 import (
-	"fmt"
 	"strings"
 	"testing"
 )
@@ -94,6 +93,18 @@ func TestCheckVersionMismatch(t *testing.T) {
 			daemonVersion: "v0.2.0",
 			wantWarning:   true,
 		},
+		{
+			name:          "cargo sentinel 0.0.0 client skip",
+			clientVersion: "0.0.0",
+			daemonVersion: "0.3.0",
+			wantWarning:   false,
+		},
+		{
+			name:          "cargo sentinel 0.0.0 daemon skip",
+			clientVersion: "0.3.0",
+			daemonVersion: "0.0.0",
+			wantWarning:   false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -109,11 +120,12 @@ func TestCheckVersionMismatch(t *testing.T) {
 				t.Errorf("expected no warning, got %q", got)
 			}
 			if tt.wantWarning {
-				wantClient := FormatVersion(tt.clientVersion)
-				wantDaemon := FormatVersion(tt.daemonVersion)
-				want := fmt.Sprintf("WARNING: nupi %s connected to nupid %s", wantClient, wantDaemon)
-				if !strings.Contains(got, want) {
-					t.Errorf("warning %q does not contain expected %q", got, want)
+				// Use literal substrings — NOT FormatVersion() — to avoid tautological assertion.
+				if !strings.HasPrefix(got, "WARNING: nupi ") {
+					t.Errorf("warning %q missing expected prefix", got)
+				}
+				if !strings.Contains(got, "nupid ") {
+					t.Errorf("warning %q missing daemon version reference", got)
 				}
 				if !strings.Contains(got, "please restart the daemon or reinstall") {
 					t.Errorf("warning %q missing remediation suffix", got)

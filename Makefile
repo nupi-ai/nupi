@@ -101,7 +101,7 @@ download-bun:
 # Sync VERSION into desktop config files before build
 sync-version:
 	@command -v jq >/dev/null 2>&1 || { echo "$(RED)✗ 'jq' is required for sync-version but not found. Install via: brew install jq$(NC)"; exit 1; }
-	@echo "$(VERSION)" | grep -qE '^[0-9a-zA-Z._-]+$$' || { echo "$(RED)✗ VERSION '$(VERSION)' contains invalid characters$(NC)"; exit 1; }
+	@echo "$(VERSION)" | grep -qE '^([0-9]+\.[0-9]+\.[0-9]+(-[0-9a-zA-Z._-]+)*|[0-9a-f]+|dev)$$' || { echo "$(RED)✗ VERSION '$(VERSION)' is not semver, commit hash, or 'dev'$(NC)"; exit 1; }
 	@echo "$(YELLOW)Syncing version $(CARGO_SEMVER) into desktop config files...$(NC)"
 	@jq '.version = "$(CARGO_SEMVER)"' $(APP_DIR)/src-tauri/tauri.conf.json > tmp.$$$$.json && mv tmp.$$$$.json $(APP_DIR)/src-tauri/tauri.conf.json
 	@jq '.version = "$(CARGO_SEMVER)"' $(APP_DIR)/package.json > tmp.$$$$.json && mv tmp.$$$$.json $(APP_DIR)/package.json

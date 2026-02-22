@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 
-	nupiversion "github.com/nupi-ai/nupi/internal/version"
 	"github.com/spf13/cobra"
 )
 
@@ -128,8 +127,7 @@ monitor multiple sessions, and attach/detach from running processes.
 
 Designed for AI coding assistants like Claude Code, Aider, and others.`,
 	}
-	rootCmd.Version = nupiversion.String()
-	rootCmd.SetVersionTemplate("{{printf \"%s\\n\" .Version}}")
+	// No rootCmd.Version — use `nupi version` subcommand instead (shows client + daemon).
 
 	// Add global --json flag
 	rootCmd.PersistentFlags().Bool("json", false, "Output in JSON format")

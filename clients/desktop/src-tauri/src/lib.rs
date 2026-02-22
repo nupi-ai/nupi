@@ -862,6 +862,10 @@ async fn install_binaries(app: tauri::AppHandle) -> Result<String, String> {
 
 /// Strips the `v` prefix and any trailing git-describe suffix (`-N-gHASH`)
 /// so that versions like "v0.3.0-5-gabcdef" and "0.3.0" compare as equal.
+///
+/// Assumes input is ASCII (version strings contain only digits, dots, hyphens,
+/// and lowercase hex letters). Non-ASCII input is safe (no panic) but may
+/// produce incorrect results.
 fn normalize_version(v: &str) -> &str {
     let v = v.strip_prefix('v').unwrap_or(v);
     // Strip git-describe suffix: "-<digits>-g<hex>" at end of string.
@@ -1058,6 +1062,9 @@ pub fn run() {
                         Err(GrpcClientError::Grpc(ref s))
                             if s.code() == tonic::Code::Unauthenticated =>
                         {
+                            // FIXME: version mismatch toast (AC #5) cannot fire here
+                            // because the daemon requires auth and we have no token yet.
+                            // A post-authentication version check would be needed.
                             (true, None)
                         }
                         Err(_) => (false, None),
