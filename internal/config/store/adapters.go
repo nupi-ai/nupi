@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -252,9 +251,9 @@ func (s *Store) SetActiveAdapter(ctx context.Context, slot string, adapterID str
 		return fmt.Errorf("config: set active adapter: store opened read-only")
 	}
 
-	payload, err := encodeConfig(config)
+	payload, err := encodeJSON(config, nullWhenNilMap[string, any])
 	if err != nil {
-		return err
+		return fmt.Errorf("config: marshal adapter config: %w", err)
 	}
 
 	return s.withTx(ctx, func(tx *sql.Tx) error {
@@ -331,15 +330,4 @@ func (s *Store) UpdateAdapterBindingStatus(ctx context.Context, slot string, sta
 		}
 		return nil
 	})
-}
-
-func encodeConfig(config map[string]any) (any, error) {
-	if config == nil {
-		return nil, nil
-	}
-	data, err := json.Marshal(config)
-	if err != nil {
-		return nil, fmt.Errorf("config: marshal adapter config: %w", err)
-	}
-	return string(data), nil
 }

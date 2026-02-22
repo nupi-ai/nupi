@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -72,12 +71,12 @@ func (s *Store) ListAdapterEndpoints(ctx context.Context) ([]AdapterEndpoint, er
 		}
 		endp.TLSInsecure = tlsInsecure != 0
 
-		args, err := decodeStringSlice(argsRaw)
+		args, err := decodeJSON[[]string](argsRaw)
 		if err != nil {
 			return nil, fmt.Errorf("config: decode adapter endpoint args for %s: %w", endp.AdapterID, err)
 		}
 		endp.Args = args
-		env, err := decodeStringMap(envRaw)
+		env, err := decodeJSON[map[string]string](envRaw)
 		if err != nil {
 			return nil, fmt.Errorf("config: decode adapter endpoint env for %s: %w", endp.AdapterID, err)
 		}
@@ -132,12 +131,12 @@ func (s *Store) GetAdapterEndpoint(ctx context.Context, adapterID string) (Adapt
 	}
 	endp.TLSInsecure = tlsInsecure != 0
 
-	args, err := decodeStringSlice(argsRaw)
+	args, err := decodeJSON[[]string](argsRaw)
 	if err != nil {
 		return AdapterEndpoint{}, fmt.Errorf("config: decode adapter endpoint args for %s: %w", adapterID, err)
 	}
 	endp.Args = args
-	env, err := decodeStringMap(envRaw)
+	env, err := decodeJSON[map[string]string](envRaw)
 	if err != nil {
 		return AdapterEndpoint{}, fmt.Errorf("config: decode adapter endpoint env for %s: %w", adapterID, err)
 	}
@@ -161,12 +160,12 @@ func (s *Store) UpsertAdapterEndpoint(ctx context.Context, endpoint AdapterEndpo
 		return err
 	}
 
-	argsPayload, err := encodeStringSlice(endpoint.Args)
+	argsPayload, err := encodeJSON(endpoint.Args, nullWhenEmptySlice[string])
 	if err != nil {
 		return fmt.Errorf("config: marshal adapter args: %w", err)
 	}
 
-	envPayload, err := encodeStringMap(endpoint.Env)
+	envPayload, err := encodeJSON(endpoint.Env, nullWhenEmptyMap[string, string])
 	if err != nil {
 		return fmt.Errorf("config: marshal adapter env: %w", err)
 	}
@@ -231,48 +230,4 @@ func (s *Store) RemoveAdapterEndpoint(ctx context.Context, adapterID string) err
 		return fmt.Errorf("config: delete adapter endpoint %q: %w", adapterID, err)
 	}
 	return nil
-}
-
-func decodeStringSlice(raw sql.NullString) ([]string, error) {
-	if !raw.Valid || strings.TrimSpace(raw.String) == "" {
-		return nil, nil
-	}
-	var out []string
-	if err := json.Unmarshal([]byte(raw.String), &out); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func encodeStringSlice(values []string) (any, error) {
-	if len(values) == 0 {
-		return nil, nil
-	}
-	data, err := json.Marshal(values)
-	if err != nil {
-		return nil, err
-	}
-	return string(data), nil
-}
-
-func decodeStringMap(raw sql.NullString) (map[string]string, error) {
-	if !raw.Valid || strings.TrimSpace(raw.String) == "" {
-		return nil, nil
-	}
-	dst := make(map[string]string)
-	if err := json.Unmarshal([]byte(raw.String), &dst); err != nil {
-		return nil, err
-	}
-	return dst, nil
-}
-
-func encodeStringMap(values map[string]string) (any, error) {
-	if len(values) == 0 {
-		return nil, nil
-	}
-	data, err := json.Marshal(values)
-	if err != nil {
-		return nil, err
-	}
-	return string(data), nil
 }
