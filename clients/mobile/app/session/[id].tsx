@@ -58,14 +58,14 @@ export default function SessionTerminalScreen() {
     recordingStatus,
     confirmedText,
     pendingText,
-    modelError,
+    voiceError,
     downloadProgress,
     downloadStage,
     initModel,
     startRecording: voiceStartRecording,
     stopRecording: voiceStopRecording,
     clearTranscription,
-    clearModelError,
+    clearVoiceError,
   } = useVoice();
   const modelStatusRef = useRef(modelStatus);
   modelStatusRef.current = modelStatus;
@@ -296,9 +296,9 @@ export default function SessionTerminalScreen() {
     return () => {
       voiceStopRecording();
       clearTranscription();
-      clearModelError();
+      clearVoiceError();
     };
-  }, [voiceStopRecording, clearTranscription, clearModelError]);
+  }, [voiceStopRecording, clearTranscription, clearVoiceError]);
 
   // Auto-close download sheet when model becomes ready.
   useEffect(() => {
@@ -316,9 +316,9 @@ export default function SessionTerminalScreen() {
     if (sessionStopped) {
       voiceStopRecording();
       clearTranscription();
-      clearModelError();
+      clearVoiceError();
     }
-  }, [sessionStopped, voiceStopRecording, clearTranscription, clearModelError]);
+  }, [sessionStopped, voiceStopRecording, clearTranscription, clearVoiceError]);
 
   // Dismiss keyboard and stop recording when stream disconnects.
   // Without this, a disconnect while recording leaves the native audio stream
@@ -335,12 +335,12 @@ export default function SessionTerminalScreen() {
       // persists over the reconnect overlay (it has no streamStatus guard)
       // and becomes non-interactive due to overlay's pointerEvents="box-only".
       clearTranscription();
-      clearModelError();
+      clearVoiceError();
     }
     if (streamStatus === "error" || streamStatus === "connecting") {
       webViewReadyRef.current = false;
     }
-  }, [streamStatus, voiceStopRecording, clearTranscription, clearModelError]);
+  }, [streamStatus, voiceStopRecording, clearTranscription, clearVoiceError]);
 
   // Auto-dismiss recovery notice after 4 seconds.
   useEffect(() => {
@@ -523,7 +523,7 @@ export default function SessionTerminalScreen() {
 
       {!sessionStopped && streamStatus === "connected" && (
         <RNView style={styles.voiceRow}>
-          {modelError && !showDownloadSheet && (
+          {voiceError && !showDownloadSheet && (
             <Text
               style={[styles.voiceErrorText, { color: Colors[colorScheme].danger }]}
               numberOfLines={2}
@@ -531,7 +531,7 @@ export default function SessionTerminalScreen() {
               accessibilityLiveRegion="polite"
               testID="voice-error-text"
             >
-              {modelError}
+              {voiceError}
             </Text>
           )}
           <VoiceButton
@@ -560,7 +560,7 @@ export default function SessionTerminalScreen() {
           downloadStage={downloadStage}
           onDownload={initModel}
           onCancel={handleDownloadSheetCancel}
-          error={modelStatus !== "ready" ? modelError : null}
+          error={modelStatus !== "ready" ? voiceError : null}
         />
       )}
 

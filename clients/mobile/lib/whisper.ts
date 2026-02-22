@@ -26,6 +26,29 @@ function createStallDetector(timeoutMs: number) {
   return { promise, reset, clear };
 }
 
+/**
+ * Race a promise against a timeout with unhandled-rejection safety.
+ * Attaches .catch(() => {}) to the input promise and cleans up the timer via .finally().
+ * @param errorMessage If provided, rejects with Error on timeout. Otherwise resolves silently.
+ */
+export async function raceTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  errorMessage?: string,
+): Promise<T | void> {
+  promise.catch(() => {});
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const timeout = errorMessage
+    ? new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(errorMessage)), ms);
+      })
+    : new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, ms);
+      });
+  return Promise.race([promise, timeout])
+    .finally(() => { if (timer) clearTimeout(timer); });
+}
+
 const MODEL_FILENAME = "ggml-medium-q8_0.bin";
 const GGML_MODEL_SIZE_MB = 500;
 // Minimum expected size in bytes (~490MB). Anything smaller is likely truncated/corrupt.
@@ -195,7 +218,8 @@ export function isCoreMLDownloaded(): boolean {
  * Downloads the zip from HuggingFace, extracts to models dir, deletes the zip.
  */
 export async function downloadCoreML(
-  onProgress?: DownloadProgressCallback
+  onProgress?: DownloadProgressCallback,
+  onExtracting?: () => void,
 ): Promise<void> {
   const dir = getModelDir();
   if (!dir.exists) {
@@ -260,6 +284,8 @@ export async function downloadCoreML(
     onProgress?.(100);
     downloadComplete = true;
 
+    onExtracting?.();
+
     // Extract zip to models directory — creates ggml-medium-encoder.mlmodelc/
     // Timeout-guarded: corrupt zip with valid size could cause native unzip
     // to loop/hang. 120s is generous for ~568MB extraction on lower-end devices.
@@ -268,23 +294,11 @@ export async function downloadCoreML(
     // the target directory. This race is benign — deletion failures are swallowed
     // by try/catch, and the orphaned unzip either fails (no target) or recreates
     // the directory (re-evaluated by isCoreMLDownloaded on next initModel).
-    // Attach .catch to unzip promise — if the timeout wins and unzip() later
-    // rejects, Hermes would emit unhandledRejection. Timer is tracked and
-    // cleared on success to avoid a 120s orphaned setTimeout.
-    const unzipPromise = unzip(toPath(zipUri), toPath(dir.uri));
-    unzipPromise.catch(() => {});
-    let unzipTimer: ReturnType<typeof setTimeout> | null = null;
-    const unzipTimeout = new Promise<never>((_, reject) => {
-      unzipTimer = setTimeout(
-        () => reject(new Error(`CoreML extraction timed out after ${UNZIP_TIMEOUT_MS / 1000}s`)),
-        UNZIP_TIMEOUT_MS,
-      );
-    });
-    try {
-      await Promise.race([unzipPromise, unzipTimeout]);
-    } finally {
-      if (unzipTimer) clearTimeout(unzipTimer);
-    }
+    await raceTimeout(
+      unzip(toPath(zipUri), toPath(dir.uri)),
+      UNZIP_TIMEOUT_MS,
+      `CoreML extraction timed out after ${UNZIP_TIMEOUT_MS / 1000}s`,
+    );
 
     // Verify extraction produced all required files — a truncated/corrupt zip
     // could extract partially, causing silent CPU fallback via WHISPER_COREML_ALLOW_FALLBACK.
@@ -350,7 +364,7 @@ export function deleteCoreML(): void {
 }
 
 async function initWhisperContext(
-  modelPath: string
+  modelUri: string
 ): Promise<WhisperContext> {
   // CoreML with Neural Engine on iOS — requires .mlmodelc assets downloaded
   // alongside the ggml model. useGpu must be false because Metal overrides CoreML.
@@ -362,7 +376,7 @@ async function initWhisperContext(
   // model file, the app would be stuck in "initializing" forever. A 30s timeout
   // ensures recovery — the caller deletes the model and prompts re-download.
   const initPromise = initWhisper({
-    filePath: toPath(modelPath),
+    filePath: toPath(modelUri),
     useGpu: false,
     useCoreMLIos: true,
   });
