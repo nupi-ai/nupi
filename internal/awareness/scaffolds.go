@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // scaffoldFile pairs a core memory filename with its default content.
@@ -16,6 +17,9 @@ type scaffoldFile struct {
 
 // coreScaffolds lists the identity files created on first startup.
 // These bootstrap the AI's personality and enable onboarding.
+// NOTE: BOOTSTRAP.md is intentionally NOT in coreMemoryFiles (core_memory.go).
+// It is an onboarding sentinel — consumed and deleted by Story 15.2 — and must
+// never be injected into the AI system prompt.
 var coreScaffolds = []scaffoldFile{
 	{filename: "SOUL.md", content: defaultSoulContent},
 	{filename: "IDENTITY.md", content: defaultIdentityContent},
@@ -27,7 +31,7 @@ var coreScaffolds = []scaffoldFile{
 // scaffoldCoreFiles creates default core memory files that do not yet exist.
 // It is idempotent: existing files are never overwritten.
 func (s *Service) scaffoldCoreFiles() error {
-	var created int
+	var created []string
 	for _, sf := range coreScaffolds {
 		path := filepath.Join(s.awarenessDir, sf.filename)
 
@@ -39,13 +43,13 @@ func (s *Service) scaffoldCoreFiles() error {
 			return fmt.Errorf("stat %s: %w", sf.filename, err)
 		}
 
-		if err := os.WriteFile(path, []byte(sf.content), 0o644); err != nil {
+		if err := os.WriteFile(path, []byte(sf.content), 0o600); err != nil {
 			return fmt.Errorf("write %s: %w", sf.filename, err)
 		}
-		created++
+		created = append(created, sf.filename)
 	}
-	if created > 0 {
-		log.Printf("[Awareness] scaffolded %d of %d core memory files", created, len(coreScaffolds))
+	if len(created) > 0 {
+		log.Printf("[Awareness] scaffolded %d of %d core memory files: %s", len(created), len(coreScaffolds), strings.Join(created, ", "))
 	}
 	return nil
 }

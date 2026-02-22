@@ -20,6 +20,8 @@ type coreMemoryFile struct {
 }
 
 // coreMemoryFiles lists the core memory files loaded in order.
+// NOTE: BOOTSTRAP.md is intentionally excluded — it is an onboarding sentinel
+// (see coreScaffolds in scaffolds.go), not AI system prompt content.
 var coreMemoryFiles = []coreMemoryFile{
 	{"SOUL", "SOUL.md"},
 	{"IDENTITY", "IDENTITY.md"},
