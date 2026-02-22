@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import * as AsciinemaPlayerLibrary from 'asciinema-player';
 import 'asciinema-player/dist/bundle/asciinema-player.css';
+import * as styles from './asciinemaPlayerStyles';
 
 interface AsciinemaPlayerProps {
   src?: string; // URL to .cast file
@@ -422,13 +423,7 @@ export function AsciinemaPlayer({
   return (
     <div
       ref={playerRef}
-      style={{
-        width: '100%',
-        height: '100%',
-        minHeight: '400px',
-        position: 'relative',
-        isolation: 'isolate'
-      }}
+      style={styles.playerRoot}
     />
   );
 }
