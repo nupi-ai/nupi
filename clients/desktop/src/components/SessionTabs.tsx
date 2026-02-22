@@ -1,6 +1,7 @@
 import { ToolIcon } from './ToolIcon';
 import type { Session } from '../types/session';
 import { isSessionActive, truncatePath, getSessionDisplayName, getFullCommand } from '../utils/sessionHelpers';
+import * as styles from './sessionTabsStyles';
 
 interface SessionTabsProps {
   sessions: Session[];
@@ -12,72 +13,24 @@ interface SessionTabsProps {
 
 export function SessionTabs({ sessions, activeSessionId, onSelectSession, onKillSession, onPlayRecording }: SessionTabsProps) {
   return (
-    <div style={{
-      display: 'flex',
-      borderBottom: '1px solid #333',
-      backgroundColor: '#2d2d2d', // Darker background for tab bar
-      minHeight: '48px', // Use minHeight to accommodate border
-      overflowX: 'auto',
-      overflowY: 'hidden', // Hide vertical scrollbar
-      padding: '8px 8px 0 8px',
-      gap: '4px',
-      alignItems: 'flex-end',
-    }}>
+    <div style={styles.tabsContainer}>
       {sessions.length === 0 ? (
-        <div style={{
-          padding: '0 16px',
-          color: '#666',
-          fontSize: '13px',
-          display: 'flex',
-          alignItems: 'center',
-          height: '100%'
-        }}>
+        <div style={styles.emptyStateText}>
           No active sessions - start with: ./nupi run &lt;command&gt;
         </div>
       ) : (
         sessions.map(session => {
           const active = isSessionActive(session);
+          const isSelected = activeSessionId === session.id;
           return (
             <div
               key={session.id}
               onClick={() => onSelectSession(session.id)}
               title={`Session ID: ${session.id}\nCommand: ${getFullCommand(session)}${session.work_dir ? `\nPath: ${session.work_dir}` : ''}`}
-              style={{
-                padding: '8px 16px',
-                boxSizing: 'border-box',
-                borderTop: active ? '3px solid #4ade80' : '3px solid #ef4444',
-                borderBottom: activeSessionId === session.id ? '1px solid #262626' : '1px solid #333',
-                borderLeft: '1px solid #333',
-                borderRight: '1px solid #333',
-                backgroundColor: activeSessionId === session.id ? '#262626' : '#1a1a1a',
-                color: activeSessionId === session.id ?
-                  (active ? '#fff' : '#999') : '#999',
-                cursor: 'pointer',
-                fontFamily: 'system-ui, -apple-system, sans-serif',
-                minWidth: '120px',
-                maxWidth: '250px',
-                height: 'fit-content',
-                position: 'relative',
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'flex-start',
-                textAlign: 'left',
-                opacity: active ? 1 : 0.6,
-                borderRadius: '6px 6px 0 0',
-                marginBottom: '-1px', // Overlap with container border
-                transition: 'all 0.2s ease',
-              }}
+              style={styles.sessionTab(active, isSelected)}
             >
               {/* First line: Tool icon + name or command + kill button */}
-              <div style={{
-                display: 'flex',
-                alignItems: 'center',
-                fontSize: '13px',
-                fontWeight: 500,
-                marginBottom: '2px',
-                width: '100%',
-                gap: '6px',
-              }}>
+              <div style={styles.tabHeaderRow}>
                 {session.tool && (
                   <ToolIcon
                     toolName={session.tool}
@@ -85,12 +38,7 @@ export function SessionTabs({ sessions, activeSessionId, onSelectSession, onKill
                     size={14}
                   />
                 )}
-                <span style={{
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                  flex: 1,
-                }}>
+                <span style={styles.tabLabel}>
                   {getSessionDisplayName(session)}
                   {!active && ' (inactive)'}
                 </span>
@@ -103,27 +51,12 @@ export function SessionTabs({ sessions, activeSessionId, onSelectSession, onKill
                       onKillSession(session.id, getSessionDisplayName(session));
                     }}
                     title="Kill session"
-                    style={{
-                      background: 'transparent',
-                      border: 'none',
-                      color: '#999',
-                      cursor: 'pointer',
-                      padding: '2px 4px',
-                      fontSize: '14px',
-                      lineHeight: '14px',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      borderRadius: '3px',
-                      transition: 'all 0.15s ease',
-                    }}
+                    style={styles.tabActionButton}
                     onMouseEnter={(e) => {
-                      e.currentTarget.style.background = 'rgba(239, 68, 68, 0.2)';
-                      e.currentTarget.style.color = '#ef4444';
+                      styles.highlightKillButton(e.currentTarget);
                     }}
                     onMouseLeave={(e) => {
-                      e.currentTarget.style.background = 'transparent';
-                      e.currentTarget.style.color = '#999';
+                      styles.resetTabActionButton(e.currentTarget);
                     }}
                   >
                     ✕
@@ -138,27 +71,12 @@ export function SessionTabs({ sessions, activeSessionId, onSelectSession, onKill
                       onPlayRecording(session.id);
                     }}
                     title="Play recording"
-                    style={{
-                      background: 'transparent',
-                      border: 'none',
-                      color: '#999',
-                      cursor: 'pointer',
-                      padding: '2px 4px',
-                      fontSize: '14px',
-                      lineHeight: '14px',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      borderRadius: '3px',
-                      transition: 'all 0.15s ease',
-                    }}
+                    style={styles.tabActionButton}
                     onMouseEnter={(e) => {
-                      e.currentTarget.style.background = 'rgba(74, 222, 128, 0.2)';
-                      e.currentTarget.style.color = '#4ade80';
+                      styles.highlightPlayButton(e.currentTarget);
                     }}
                     onMouseLeave={(e) => {
-                      e.currentTarget.style.background = 'transparent';
-                      e.currentTarget.style.color = '#999';
+                      styles.resetTabActionButton(e.currentTarget);
                     }}
                   >
                     ▶
@@ -168,14 +86,7 @@ export function SessionTabs({ sessions, activeSessionId, onSelectSession, onKill
 
               {/* Second line: Working directory */}
               {session.work_dir && (
-                <div style={{
-                  fontSize: '11px',
-                  opacity: 0.7,
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                  width: '100%',
-                }}>
+                <div style={styles.workingDirectoryText}>
                   {truncatePath(session.work_dir, 35)}
                 </div>
               )}

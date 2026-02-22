@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { AsciinemaPlayer } from './AsciinemaPlayer';
+import * as styles from './historyStyles';
 
 interface Recording {
   session_id: string;
@@ -71,49 +72,34 @@ export function History() {
 
   if (selectedRecording) {
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', height: '100%', width: '100%' }}>
+      <div style={styles.root}>
         {/* Header */}
-        <div style={{
-          padding: '12px 16px',
-          borderBottom: '1px solid #333',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          backgroundColor: '#1a1a1a'
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+        <div style={styles.selectedHeader}>
+          <div style={styles.headerLeadingSection}>
             <button
               onClick={() => { setSelectedRecording(null); setCastData(null); }}
-              style={{
-                padding: '6px 12px',
-                backgroundColor: '#333',
-                border: 'none',
-                borderRadius: '4px',
-                color: '#fff',
-                cursor: 'pointer',
-                fontSize: '14px'
-              }}
+              style={styles.backButton}
             >
               ← Back
             </button>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <h2 style={{ margin: 0, fontSize: '16px', fontFamily: 'monospace' }}>
+            <div style={styles.commandRow}>
+              <h2 style={styles.commandTitle}>
                 {selectedRecording.command}
               </h2>
               {selectedRecording.args && selectedRecording.args.length > 0 && (
-                <span style={{ fontSize: '15px', color: '#999', fontFamily: 'monospace' }}>
+                <span style={styles.commandArguments}>
                   {selectedRecording.args.join(' ')}
                 </span>
               )}
             </div>
           </div>
-          <div style={{ fontSize: '13px', color: '#999' }}>
+          <div style={styles.headerMetadata}>
             {selectedRecording.start_time ? formatDate(selectedRecording.start_time) : 'Unknown'} · {formatDuration(selectedRecording.duration)}
           </div>
         </div>
 
         {/* Player */}
-        <div style={{ flex: 1, padding: '16px', backgroundColor: '#0d1117', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={styles.playerContainer}>
           {castData ? (
             <AsciinemaPlayer
               data={castData}
@@ -126,7 +112,7 @@ export function History() {
               controls={true}
             />
           ) : (
-            <div style={{ color: '#999' }}>Loading recording...</div>
+            <div style={styles.loadingText}>Loading recording...</div>
           )}
         </div>
       </div>
@@ -134,91 +120,72 @@ export function History() {
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', width: '100%' }}>
+    <div style={styles.root}>
       {/* Header */}
-      <div style={{
-        padding: '12px 16px',
-        borderBottom: '1px solid #333',
-        backgroundColor: '#1a1a1a'
-      }}>
-        <h2 style={{ margin: 0, fontSize: '16px' }}>Session History</h2>
+      <div style={styles.listHeader}>
+        <h2 style={styles.listTitle}>Session History</h2>
       </div>
 
       {/* Content */}
-      <div style={{ flex: 1, overflow: 'auto', padding: '16px' }}>
+      <div style={styles.content}>
         {loading && (
-          <div style={{ textAlign: 'center', padding: '32px', color: '#999' }}>
+          <div style={styles.centeredMessage}>
             Loading recordings...
           </div>
         )}
 
         {error && (
-          <div style={{ textAlign: 'center', padding: '32px', color: '#f87171' }}>
+          <div style={styles.centeredErrorMessage}>
             {error}
           </div>
         )}
 
         {!loading && !error && recordings.length === 0 && (
-          <div style={{ textAlign: 'center', padding: '32px', color: '#999' }}>
+          <div style={styles.centeredMessage}>
             No recordings found. Start a new session to create recordings.
           </div>
         )}
 
         {!loading && !error && recordings.length > 0 && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          <div style={styles.recordingList}>
             {recordings.map((recording) => (
               <div
                 key={recording.session_id}
                 onClick={() => selectRecording(recording)}
-                style={{
-                  padding: '12px 16px',
-                  backgroundColor: '#1a1a1a',
-                  border: '1px solid #333',
-                  borderRadius: '6px',
-                  cursor: 'pointer',
-                  transition: 'all 0.2s',
-                }}
+                style={styles.recordingCard}
                 onMouseEnter={(e) => {
-                  e.currentTarget.style.backgroundColor = '#252525';
-                  e.currentTarget.style.borderColor = '#444';
+                  styles.highlightRecordingCard(e.currentTarget);
                 }}
                 onMouseLeave={(e) => {
-                  e.currentTarget.style.backgroundColor = '#1a1a1a';
-                  e.currentTarget.style.borderColor = '#333';
+                  styles.resetRecordingCard(e.currentTarget);
                 }}
               >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
-                      <span style={{ fontSize: '14px', fontWeight: 500, fontFamily: 'monospace' }}>
+                <div style={styles.recordingRow}>
+                  <div style={styles.recordingMainColumn}>
+                    <div style={styles.recordingHeadingRow}>
+                      <span style={styles.recordingCommand}>
                         {recording.command}
                       </span>
                       {recording.args && recording.args.length > 0 && (
-                        <span style={{ fontSize: '13px', color: '#999', fontFamily: 'monospace' }}>
+                        <span style={styles.recordingArgs}>
                           {recording.args.join(' ')}
                         </span>
                       )}
                       {recording.tool && (
-                        <span style={{
-                          fontSize: '11px',
-                          padding: '2px 6px',
-                          backgroundColor: '#333',
-                          borderRadius: '3px',
-                          color: '#4ade80'
-                        }}>
+                        <span style={styles.recordingToolBadge}>
                           {recording.tool}
                         </span>
                       )}
                     </div>
-                    <div style={{ fontSize: '12px', color: '#666' }}>
+                    <div style={styles.recordingSessionId}>
                       Session ID: {recording.session_id}
                     </div>
                   </div>
-                  <div style={{ textAlign: 'right' }}>
-                    <div style={{ fontSize: '13px', color: '#999' }}>
+                  <div style={styles.recordingMetaColumn}>
+                    <div style={styles.recordingStartTime}>
                       {recording.start_time ? formatDate(recording.start_time) : 'Unknown'}
                     </div>
-                    <div style={{ fontSize: '12px', color: '#666', marginTop: '2px' }}>
+                    <div style={styles.recordingDuration}>
                       Duration: {formatDuration(recording.duration)}
                     </div>
                   </div>
