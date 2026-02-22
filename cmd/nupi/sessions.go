@@ -181,60 +181,51 @@ func runCommand(cmd *cobra.Command, args []string) error {
 
 // listSessions lists all active sessions
 func listSessions(cmd *cobra.Command, args []string) error {
-	out := newOutputFormatter(cmd)
-
-	c, err := grpcclient.New()
-	if err != nil {
-		return out.Error("Failed to connect to daemon", err)
-	}
-	defer c.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	resp, err := c.ListSessions(ctx)
-	if err != nil {
-		return out.Error("Failed to list sessions", err)
-	}
-
-	sessions := resp.GetSessions()
-
-	if out.jsonMode {
-		// Build JSON-compatible list.
-		list := make([]map[string]interface{}, 0, len(sessions))
-		for _, sess := range sessions {
-			entry := map[string]interface{}{
-				"id":      sess.GetId(),
-				"status":  sess.GetStatus(),
-				"command": sess.GetCommand(),
-				"args":    sess.GetArgs(),
-			}
-			if sess.GetPid() != 0 {
-				entry["pid"] = sess.GetPid()
-			}
-			list = append(list, entry)
+	return withClientTimeout(cmd, 5*time.Second, func(ctx context.Context, c *grpcclient.Client, out *OutputFormatter) error {
+		resp, err := c.ListSessions(ctx)
+		if err != nil {
+			return out.Error("Failed to list sessions", err)
 		}
-		return out.Print(map[string]interface{}{"sessions": list})
-	}
 
-	if len(sessions) == 0 {
-		fmt.Println("No active sessions")
+		sessions := resp.GetSessions()
+
+		if out.jsonMode {
+			// Build JSON-compatible list.
+			list := make([]map[string]interface{}, 0, len(sessions))
+			for _, sess := range sessions {
+				entry := map[string]interface{}{
+					"id":      sess.GetId(),
+					"status":  sess.GetStatus(),
+					"command": sess.GetCommand(),
+					"args":    sess.GetArgs(),
+				}
+				if sess.GetPid() != 0 {
+					entry["pid"] = sess.GetPid()
+				}
+				list = append(list, entry)
+			}
+			return out.Print(map[string]interface{}{"sessions": list})
+		}
+
+		if len(sessions) == 0 {
+			fmt.Println("No active sessions")
+			return nil
+		}
+
+		fmt.Println("Active sessions:")
+		fmt.Println("ID\t\tStatus\t\tCommand")
+		fmt.Println("---\t\t---\t\t---")
+
+		for _, sess := range sessions {
+			fmt.Printf("%s\t%s\t\t%s %s\n",
+				sess.GetId(),
+				sess.GetStatus(),
+				sess.GetCommand(),
+				strings.Join(sess.GetArgs(), " "))
+		}
+
 		return nil
-	}
-
-	fmt.Println("Active sessions:")
-	fmt.Println("ID\t\tStatus\t\tCommand")
-	fmt.Println("---\t\t---\t\t---")
-
-	for _, sess := range sessions {
-		fmt.Printf("%s\t%s\t\t%s %s\n",
-			sess.GetId(),
-			sess.GetStatus(),
-			sess.GetCommand(),
-			strings.Join(sess.GetArgs(), " "))
-	}
-
-	return nil
+	})
 }
 
 // attachToSession attaches to an existing session
@@ -524,26 +515,17 @@ func inspectCommand(cmd *cobra.Command, args []string) error {
 // killSession kills a running session
 func killSession(cmd *cobra.Command, args []string) error {
 	sessionID := args[0]
-	out := newOutputFormatter(cmd)
-
-	c, err := grpcclient.New()
-	if err != nil {
-		return out.Error("Failed to connect to daemon", err)
-	}
-	defer c.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if _, err := c.KillSession(ctx, sessionID); err != nil {
-		errMsg := "Failed to kill session"
-		if st, ok := status.FromError(err); ok && st.Code() == codes.NotFound {
-			errMsg = fmt.Sprintf("Session %s not found", sessionID)
+	return withClientTimeout(cmd, 5*time.Second, func(ctx context.Context, c *grpcclient.Client, out *OutputFormatter) error {
+		if _, err := c.KillSession(ctx, sessionID); err != nil {
+			errMsg := "Failed to kill session"
+			if st, ok := status.FromError(err); ok && st.Code() == codes.NotFound {
+				errMsg = fmt.Sprintf("Session %s not found", sessionID)
+			}
+			return out.Error(errMsg, err)
 		}
-		return out.Error(errMsg, err)
-	}
 
-	return out.Success(fmt.Sprintf("Session %s killed", sessionID), map[string]interface{}{
-		"session_id": sessionID,
+		return out.Success(fmt.Sprintf("Session %s killed", sessionID), map[string]interface{}{
+			"session_id": sessionID,
+		})
 	})
 }
