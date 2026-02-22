@@ -27,9 +27,6 @@ func newAuthService(api *APIServer) *authService {
 }
 
 func (a *authService) ListTokens(ctx context.Context, _ *apiv1.ListTokensRequest) (*apiv1.ListTokensResponse, error) {
-	if _, err := a.api.requireRoleGRPC(ctx, roleAdmin); err != nil {
-		return nil, err
-	}
 
 	tokens, err := a.api.loadAuthTokens(ctx)
 	if err != nil {
@@ -61,9 +58,6 @@ func (a *authService) ListTokens(ctx context.Context, _ *apiv1.ListTokensRequest
 }
 
 func (a *authService) CreateToken(ctx context.Context, req *apiv1.CreateTokenRequest) (*apiv1.CreateTokenResponse, error) {
-	if _, err := a.api.requireRoleGRPC(ctx, roleAdmin); err != nil {
-		return nil, err
-	}
 
 	a.api.tokenOpsMu.Lock()
 	defer a.api.tokenOpsMu.Unlock()
@@ -108,9 +102,6 @@ func (a *authService) CreateToken(ctx context.Context, req *apiv1.CreateTokenReq
 }
 
 func (a *authService) DeleteToken(ctx context.Context, req *apiv1.DeleteTokenRequest) (*emptypb.Empty, error) {
-	if _, err := a.api.requireRoleGRPC(ctx, roleAdmin); err != nil {
-		return nil, err
-	}
 
 	a.api.tokenOpsMu.Lock()
 	defer a.api.tokenOpsMu.Unlock()
@@ -149,9 +140,6 @@ func (a *authService) DeleteToken(ctx context.Context, req *apiv1.DeleteTokenReq
 }
 
 func (a *authService) ListPairings(ctx context.Context, _ *apiv1.ListPairingsRequest) (*apiv1.ListPairingsResponse, error) {
-	if _, err := a.api.requireRoleGRPC(ctx, roleAdmin); err != nil {
-		return nil, err
-	}
 
 	pairings, err := a.api.loadPairings(ctx)
 	if err != nil {
@@ -176,9 +164,6 @@ func (a *authService) ListPairings(ctx context.Context, _ *apiv1.ListPairingsReq
 }
 
 func (a *authService) CreatePairing(ctx context.Context, req *apiv1.CreatePairingRequest) (*apiv1.CreatePairingResponse, error) {
-	if _, err := a.api.requireRoleGRPC(ctx, roleAdmin); err != nil {
-		return nil, err
-	}
 
 	a.api.tokenOpsMu.Lock()
 	defer a.api.tokenOpsMu.Unlock()

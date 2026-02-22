@@ -115,10 +115,6 @@ func (u *grpcUTF8Accumulator) Take(data []byte) []byte {
 }
 
 func (s *sessionsService) AttachSession(stream apiv1.SessionsService_AttachSessionServer) error {
-	if _, err := s.api.requireRoleGRPC(stream.Context(), roleAdmin, roleReadOnly); err != nil {
-		return err
-	}
-
 	// Wait for the init message first.
 	initReq, err := stream.Recv()
 	if err != nil {

@@ -112,9 +112,6 @@ func newAudioService(api *APIServer) *audioService {
 }
 
 func (a *audioService) StreamAudioIn(stream apiv1.AudioService_StreamAudioInServer) error {
-	if _, err := a.api.requireRoleGRPC(stream.Context(), roleAdmin); err != nil {
-		return err
-	}
 	if a.api.audioIngress == nil {
 		return status.Error(codes.Unavailable, "audio ingress service unavailable")
 	}
@@ -239,9 +236,6 @@ func (a *audioService) StreamAudioIn(stream apiv1.AudioService_StreamAudioInServ
 }
 
 func (a *audioService) StreamAudioOut(req *apiv1.StreamAudioOutRequest, srv apiv1.AudioService_StreamAudioOutServer) error {
-	if _, err := a.api.requireRoleGRPC(srv.Context(), roleAdmin); err != nil {
-		return err
-	}
 	if req == nil {
 		return status.Error(codes.InvalidArgument, "request is required")
 	}
@@ -323,9 +317,6 @@ func (a *audioService) StreamAudioOut(req *apiv1.StreamAudioOutRequest, srv apiv
 }
 
 func (a *audioService) InterruptTTS(ctx context.Context, req *apiv1.InterruptTTSRequest) (*emptypb.Empty, error) {
-	if _, err := a.api.requireRoleGRPC(ctx, roleAdmin); err != nil {
-		return nil, err
-	}
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "request is required")
 	}
@@ -369,9 +360,6 @@ func (a *audioService) InterruptTTS(ctx context.Context, req *apiv1.InterruptTTS
 }
 
 func (a *audioService) GetAudioCapabilities(ctx context.Context, req *apiv1.GetAudioCapabilitiesRequest) (*apiv1.GetAudioCapabilitiesResponse, error) {
-	if _, err := a.api.requireRoleGRPC(ctx, roleAdmin, roleReadOnly); err != nil {
-		return nil, err
-	}
 	if req == nil {
 		req = &apiv1.GetAudioCapabilitiesRequest{}
 	}
@@ -427,9 +415,6 @@ func (a *audioService) GetAudioCapabilities(ctx context.Context, req *apiv1.GetA
 }
 
 func (s *sessionsService) ListSessions(ctx context.Context, _ *apiv1.ListSessionsRequest) (*apiv1.ListSessionsResponse, error) {
-	if _, err := s.api.requireRoleGRPC(ctx, roleAdmin, roleReadOnly); err != nil {
-		return nil, err
-	}
 
 	sessions := s.api.sessionManager.ListSessions()
 	dto := api.ToDTOList(sessions)
@@ -443,9 +428,6 @@ func (s *sessionsService) ListSessions(ctx context.Context, _ *apiv1.ListSession
 }
 
 func (s *sessionsService) CreateSession(ctx context.Context, req *apiv1.CreateSessionRequest) (*apiv1.CreateSessionResponse, error) {
-	if _, err := s.api.requireRoleGRPC(ctx, roleAdmin); err != nil {
-		return nil, err
-	}
 
 	payload := protocol.CreateSessionData{
 		Command:    strings.TrimSpace(req.GetCommand()),
@@ -472,9 +454,6 @@ func (s *sessionsService) CreateSession(ctx context.Context, req *apiv1.CreateSe
 }
 
 func (s *sessionsService) KillSession(ctx context.Context, req *apiv1.KillSessionRequest) (*apiv1.KillSessionResponse, error) {
-	if _, err := s.api.requireRoleGRPC(ctx, roleAdmin); err != nil {
-		return nil, err
-	}
 
 	sessionID := strings.TrimSpace(req.GetSessionId())
 	if sessionID == "" {
@@ -489,9 +468,6 @@ func (s *sessionsService) KillSession(ctx context.Context, req *apiv1.KillSessio
 }
 
 func (s *sessionsService) GetSession(ctx context.Context, req *apiv1.GetSessionRequest) (*apiv1.GetSessionResponse, error) {
-	if _, err := s.api.requireRoleGRPC(ctx, roleAdmin, roleReadOnly); err != nil {
-		return nil, err
-	}
 
 	sessionID := strings.TrimSpace(req.GetSessionId())
 	if sessionID == "" {
@@ -508,9 +484,6 @@ func (s *sessionsService) GetSession(ctx context.Context, req *apiv1.GetSessionR
 }
 
 func (s *sessionsService) SendInput(ctx context.Context, req *apiv1.SendInputRequest) (*apiv1.SendInputResponse, error) {
-	if _, err := s.api.requireRoleGRPC(ctx, roleAdmin); err != nil {
-		return nil, err
-	}
 
 	sessionID := strings.TrimSpace(req.GetSessionId())
 	if sessionID == "" {
@@ -538,9 +511,6 @@ func (s *sessionsService) SendInput(ctx context.Context, req *apiv1.SendInputReq
 }
 
 func (s *sessionsService) GetSessionMode(ctx context.Context, req *apiv1.GetSessionModeRequest) (*apiv1.GetSessionModeResponse, error) {
-	if _, err := s.api.requireRoleGRPC(ctx, roleAdmin, roleReadOnly); err != nil {
-		return nil, err
-	}
 
 	sessionID := strings.TrimSpace(req.GetSessionId())
 	if sessionID == "" {
@@ -560,9 +530,6 @@ func (s *sessionsService) GetSessionMode(ctx context.Context, req *apiv1.GetSess
 }
 
 func (s *sessionsService) SetSessionMode(ctx context.Context, req *apiv1.SetSessionModeRequest) (*apiv1.SetSessionModeResponse, error) {
-	if _, err := s.api.requireRoleGRPC(ctx, roleAdmin); err != nil {
-		return nil, err
-	}
 
 	sessionID := strings.TrimSpace(req.GetSessionId())
 	if sessionID == "" {
@@ -591,9 +558,6 @@ func (s *sessionsService) SetSessionMode(ctx context.Context, req *apiv1.SetSess
 }
 
 func (s *sessionsService) GetConversation(ctx context.Context, req *apiv1.GetConversationRequest) (*apiv1.GetConversationResponse, error) {
-	if _, err := s.api.requireRoleGRPC(ctx, roleAdmin, roleReadOnly); err != nil {
-		return nil, err
-	}
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "request is required")
 	}
@@ -679,9 +643,6 @@ func (s *sessionsService) GetConversation(ctx context.Context, req *apiv1.GetCon
 }
 
 func (s *sessionsService) GetGlobalConversation(ctx context.Context, req *apiv1.GetGlobalConversationRequest) (*apiv1.GetGlobalConversationResponse, error) {
-	if _, err := s.api.requireRoleGRPC(ctx, roleAdmin, roleReadOnly); err != nil {
-		return nil, err
-	}
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "request is required")
 	}
@@ -765,9 +726,6 @@ const maxVoiceCommandMetadataKeyLen = 256
 const maxVoiceCommandMetadataValueLen = 1024
 
 func (s *sessionsService) SendVoiceCommand(ctx context.Context, req *apiv1.SendVoiceCommandRequest) (*apiv1.SendVoiceCommandResponse, error) {
-	if _, err := s.api.requireRoleGRPC(ctx, roleAdmin); err != nil {
-		return nil, err
-	}
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "request is required")
 	}
@@ -945,9 +903,6 @@ func pcmDuration(format eventbus.AudioFormat, dataLen int) time.Duration {
 }
 
 func (c *configService) GetTransportConfig(ctx context.Context, _ *emptypb.Empty) (*apiv1.TransportConfig, error) {
-	if _, err := c.api.requireRoleGRPC(ctx, roleAdmin); err != nil {
-		return nil, err
-	}
 	if c.api.configStore == nil {
 		return nil, status.Error(codes.Unavailable, "configuration store unavailable")
 	}
@@ -959,9 +914,6 @@ func (c *configService) GetTransportConfig(ctx context.Context, _ *emptypb.Empty
 }
 
 func (c *configService) UpdateTransportConfig(ctx context.Context, req *apiv1.UpdateTransportConfigRequest) (*apiv1.TransportConfig, error) {
-	if _, err := c.api.requireRoleGRPC(ctx, roleAdmin); err != nil {
-		return nil, err
-	}
 	if c.api.configStore == nil {
 		return nil, status.Error(codes.Unavailable, "configuration store unavailable")
 	}
@@ -1001,9 +953,6 @@ func (c *configService) UpdateTransportConfig(ctx context.Context, req *apiv1.Up
 }
 
 func (c *configService) Migrate(ctx context.Context, _ *apiv1.ConfigMigrateRequest) (*apiv1.ConfigMigrateResponse, error) {
-	if _, err := c.api.requireRoleGRPC(ctx, roleAdmin); err != nil {
-		return nil, err
-	}
 	if c.api.configStore == nil {
 		return nil, status.Error(codes.Unavailable, "configuration store unavailable")
 	}
@@ -1066,11 +1015,11 @@ func (a *adaptersService) ListAdapterBindings(ctx context.Context, _ *emptypb.Em
 			adapterID = *binding.AdapterID
 		}
 		resp.Bindings = append(resp.Bindings, &apiv1.AdapterBinding{
-			Slot:      binding.Slot,
-			AdapterId: adapterID,
-			Status:    binding.Status,
+			Slot:       binding.Slot,
+			AdapterId:  adapterID,
+			Status:     binding.Status,
 			ConfigJson: binding.Config,
-			UpdatedAt: parseTimestampString(binding.UpdatedAt),
+			UpdatedAt:  parseTimestampString(binding.UpdatedAt),
 		})
 	}
 	return resp, nil
@@ -1134,11 +1083,11 @@ func (a *adaptersService) bindingForSlot(ctx context.Context, slot string) (*api
 			adapterID = *binding.AdapterID
 		}
 		return &apiv1.AdapterBinding{
-			Slot:      binding.Slot,
-			AdapterId: adapterID,
-			Status:    binding.Status,
+			Slot:       binding.Slot,
+			AdapterId:  adapterID,
+			Status:     binding.Status,
 			ConfigJson: binding.Config,
-			UpdatedAt: parseTimestampString(binding.UpdatedAt),
+			UpdatedAt:  parseTimestampString(binding.UpdatedAt),
 		}, nil
 	}
 	return nil, status.Errorf(codes.NotFound, "binding for slot %s not found", slot)
@@ -1244,9 +1193,6 @@ func (q *quickstartService) fetchStatus(ctx context.Context) (*apiv1.QuickstartS
 }
 
 func (m *adapterRuntimeService) Overview(ctx context.Context, _ *emptypb.Empty) (*apiv1.AdaptersOverviewResponse, error) {
-	if _, err := m.api.requireRoleGRPC(ctx, roleAdmin, roleReadOnly); err != nil {
-		return nil, err
-	}
 	if m.api.adapters == nil {
 		return nil, status.Error(codes.Unavailable, "adapter service unavailable")
 	}
@@ -1266,9 +1212,6 @@ func (m *adapterRuntimeService) Overview(ctx context.Context, _ *emptypb.Empty) 
 }
 
 func (m *adapterRuntimeService) BindAdapter(ctx context.Context, req *apiv1.BindAdapterRequest) (*apiv1.AdapterActionResponse, error) {
-	if _, err := m.api.requireRoleGRPC(ctx, roleAdmin); err != nil {
-		return nil, err
-	}
 	if m.api.configStore == nil {
 		return nil, status.Error(codes.Unavailable, "configuration store unavailable")
 	}
@@ -1312,9 +1255,6 @@ func (m *adapterRuntimeService) BindAdapter(ctx context.Context, req *apiv1.Bind
 }
 
 func (m *adapterRuntimeService) StartAdapter(ctx context.Context, req *apiv1.AdapterSlotRequest) (*apiv1.AdapterActionResponse, error) {
-	if _, err := m.api.requireRoleGRPC(ctx, roleAdmin); err != nil {
-		return nil, err
-	}
 	if m.api.adapters == nil {
 		return nil, status.Error(codes.Unavailable, "adapter service unavailable")
 	}
@@ -1335,9 +1275,6 @@ func (m *adapterRuntimeService) StartAdapter(ctx context.Context, req *apiv1.Ada
 }
 
 func (m *adapterRuntimeService) StopAdapter(ctx context.Context, req *apiv1.AdapterSlotRequest) (*apiv1.AdapterActionResponse, error) {
-	if _, err := m.api.requireRoleGRPC(ctx, roleAdmin); err != nil {
-		return nil, err
-	}
 	if m.api.adapters == nil {
 		return nil, status.Error(codes.Unavailable, "adapter service unavailable")
 	}
@@ -1402,16 +1339,16 @@ func runtimeStatusToProto(rt *adapters.RuntimeStatus) *apiv1.AdapterRuntime {
 // dtoToSessionProto converts a SessionDTO to a proto Session message, populating all fields.
 func dtoToSessionProto(dto api.SessionDTO, apiServer *APIServer) *apiv1.Session {
 	pb := &apiv1.Session{
-		Id:      dto.ID,
-		Command: dto.Command,
-		Args:    append([]string(nil), dto.Args...),
-		Status:  dto.Status,
-		Pid:     int32(dto.PID),
-		WorkDir: dto.WorkDir,
-		Tool:      dto.Tool,
-		ToolIcon:  dto.ToolIcon,
+		Id:           dto.ID,
+		Command:      dto.Command,
+		Args:         append([]string(nil), dto.Args...),
+		Status:       dto.Status,
+		Pid:          int32(dto.PID),
+		WorkDir:      dto.WorkDir,
+		Tool:         dto.Tool,
+		ToolIcon:     dto.ToolIcon,
 		ToolIconData: dto.ToolIconData,
-		Mode:      dto.Mode,
+		Mode:         dto.Mode,
 	}
 	if !dto.StartTime.IsZero() {
 		pb.StartTime = timestamppb.New(dto.StartTime.UTC())
