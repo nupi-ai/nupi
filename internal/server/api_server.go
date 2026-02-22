@@ -16,6 +16,7 @@ import (
 
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
+	nupiversion "github.com/nupi-ai/nupi/internal/version"
 	adapters "github.com/nupi-ai/nupi/internal/plugins/adapters"
 	"github.com/nupi-ai/nupi/internal/protocol"
 	"github.com/nupi-ai/nupi/internal/pty"
@@ -1046,7 +1047,7 @@ func (s *APIServer) daemonStatus(ctx context.Context) (daemonStatusSnapshot, err
 	}
 
 	snapshot := daemonStatusSnapshot{
-		Version:       "0.2.0",
+		Version:       nupiversion.String(),
 		SessionsCount: sessionsCount,
 		AuthRequired:  s.isAuthRequired(),
 	}

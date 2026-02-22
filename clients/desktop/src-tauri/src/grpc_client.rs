@@ -28,6 +28,9 @@ use crate::settings;
 const INSTANCE_NAME: &str = "default";
 const PROFILE_NAME: &str = "default";
 const MAX_AUDIO_FILE_SIZE: u64 = 500 * 1024 * 1024;
+
+/// App version injected at compile time from Cargo.toml.
+pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const DEFAULT_CAPTURE_STREAM_ID: &str = "mic";
 const DEFAULT_PLAYBACK_STREAM_ID: &str = "tts";
 const SLOT_STT: &str = "stt";

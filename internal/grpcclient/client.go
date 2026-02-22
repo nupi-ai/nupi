@@ -4,15 +4,18 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	apiv1 "github.com/nupi-ai/nupi/internal/api/grpc/v1"
 	"github.com/nupi-ai/nupi/internal/bootstrap"
 	"github.com/nupi-ai/nupi/internal/config"
+	nupiversion "github.com/nupi-ai/nupi/internal/version"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
@@ -35,6 +38,14 @@ type Client struct {
 	auth           apiv1.AuthServiceClient
 	recordings     apiv1.RecordingsServiceClient
 	token          string
+	versionMu       sync.Mutex
+	versionChecked  bool
+	versionChecking bool // guards against duplicate concurrent RPCs
+	// skipVersionCheck disables the automatic daemon version check.
+	// Set via DisableVersionCheck() when the caller handles version
+	// reporting itself (e.g. `nupi version`, `nupi daemon status`).
+	skipVersionCheck bool
+	warningWriter    io.Writer
 }
 
 func New() (*Client, error) {
@@ -207,6 +218,7 @@ func newClientFromConn(conn *grpc.ClientConn, token string) *Client {
 		auth:           apiv1.NewAuthServiceClient(conn),
 		recordings:     apiv1.NewRecordingsServiceClient(conn),
 		token:          strings.TrimSpace(token),
+		warningWriter:  os.Stderr,
 	}
 }
 
@@ -222,6 +234,48 @@ func (c *Client) Close() error {
 func (c *Client) DaemonStatus(ctx context.Context) (*apiv1.DaemonStatusResponse, error) {
 	ctx = c.attachToken(ctx)
 	return c.daemon.Status(ctx, &apiv1.DaemonStatusRequest{})
+}
+
+// ensureVersionChecked fetches the daemon version and prints a mismatch warning
+// at most once per Client lifetime. Called from attachToken so that any CLI
+// command that communicates with the daemon triggers the check (AC #2).
+// If the check fails (daemon unreachable), it will retry on the next call
+// instead of permanently giving up.
+// DisableVersionCheck prevents the automatic daemon version check on this
+// client. Use when the caller handles version comparison itself to avoid a
+// redundant DaemonStatus RPC.
+func (c *Client) DisableVersionCheck() {
+	c.versionMu.Lock()
+	c.skipVersionCheck = true
+	c.versionMu.Unlock()
+}
+
+func (c *Client) ensureVersionChecked() {
+	c.versionMu.Lock()
+	if c.skipVersionCheck || c.versionChecked || c.versionChecking {
+		c.versionMu.Unlock()
+		return
+	}
+	c.versionChecking = true
+	c.versionMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	ctx = c.withToken(ctx)
+	resp, err := c.daemon.Status(ctx, &apiv1.DaemonStatusRequest{})
+
+	c.versionMu.Lock()
+	c.versionChecking = false
+	if err != nil {
+		c.versionMu.Unlock()
+		return // daemon unreachable — will retry on next call
+	}
+	c.versionChecked = true
+	c.versionMu.Unlock()
+
+	if w := nupiversion.CheckVersionMismatch(resp.GetVersion()); w != "" {
+		fmt.Fprintln(c.warningWriter, w)
+	}
 }
 
 func (c *Client) Shutdown(ctx context.Context) (*apiv1.ShutdownResponse, error) {
@@ -446,6 +500,12 @@ func (c *Client) GetRecording(ctx context.Context, req *apiv1.GetRecordingReques
 // ─── internal helpers ───
 
 func (c *Client) attachToken(ctx context.Context) context.Context {
+	c.ensureVersionChecked()
+	return c.withToken(ctx)
+}
+
+// withToken appends the bearer token to outgoing gRPC metadata.
+func (c *Client) withToken(ctx context.Context) context.Context {
 	token := strings.TrimSpace(c.token)
 	if token == "" {
 		return ctx

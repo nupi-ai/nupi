@@ -159,6 +159,7 @@ func main() {
 		newPairRootCommand(),
 		newPromptsCommand(),
 		newMarketplaceCommand(),
+		newVersionCommand(),
 	)
 
 	// Execute
