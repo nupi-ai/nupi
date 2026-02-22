@@ -42,6 +42,7 @@ func newHeartbeatTestService(t *testing.T, bindings []Binding, heartbeatInterval
 		PluginDir: t.TempDir(),
 	})
 
+	// store=nil: heartbeat tests don't need config watching (startWatcher is skipped).
 	svc := NewService(manager, nil, bus,
 		WithEnsureInterval(0),
 		WithHeartbeatInterval(heartbeatInterval),
