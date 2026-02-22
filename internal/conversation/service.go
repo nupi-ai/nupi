@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"sort"
 	"strconv"
 	"strings"
@@ -532,11 +533,7 @@ func (s *Service) clearSession(sessionID string) {
 		for i, turn := range exportTurns {
 			copied[i] = turn
 			if turn.Meta != nil {
-				meta := make(map[string]string, len(turn.Meta))
-				for k, v := range turn.Meta {
-					meta[k] = v
-				}
-				copied[i].Meta = meta
+				copied[i].Meta = maps.Clone(turn.Meta)
 			}
 		}
 		exportEvent = &eventbus.SessionExportRequestEvent{
@@ -1046,11 +1043,7 @@ func (m *metadataAccumulator) result() map[string]string {
 	if len(m.entries) == 0 {
 		return nil
 	}
-	out := make(map[string]string, len(m.entries))
-	for k, v := range m.entries {
-		out[k] = v
-	}
-	return out
+	return maps.Clone(m.entries)
 }
 
 func sanitizeKey(key string) string {

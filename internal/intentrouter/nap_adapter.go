@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"maps"
 	"net"
 	"sync"
 	"time"
@@ -317,11 +318,7 @@ func copyStringMap(src map[string]string) map[string]string {
 	if len(src) == 0 {
 		return nil
 	}
-	dst := make(map[string]string, len(src))
-	for k, v := range src {
-		dst[k] = v
-	}
-	return dst
+	return maps.Clone(src)
 }
 
 // timestampOrNil converts time.Time to protobuf timestamp, returning nil for zero time.

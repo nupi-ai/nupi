@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"sort"
 	"strings"
 	"sync"
@@ -497,10 +498,7 @@ func convertRuntimeStatus(in runtimeStatus) RuntimeStatus {
 	}
 	var extra map[string]string
 	if len(in.event.Extra) > 0 {
-		extra = make(map[string]string, len(in.event.Extra))
-		for k, v := range in.event.Extra {
-			extra[k] = v
-		}
+		extra = maps.Clone(in.event.Extra)
 	}
 	return RuntimeStatus{
 		AdapterID: in.event.AdapterID,
@@ -515,11 +513,7 @@ func convertRuntimeStatus(in runtimeStatus) RuntimeStatus {
 func cloneAdapterStatusEvent(evt eventbus.AdapterStatusEvent) eventbus.AdapterStatusEvent {
 	cloned := evt
 	if len(evt.Extra) > 0 {
-		extra := make(map[string]string, len(evt.Extra))
-		for k, v := range evt.Extra {
-			extra[k] = v
-		}
-		cloned.Extra = extra
+		cloned.Extra = maps.Clone(evt.Extra)
 	}
 	return cloned
 }

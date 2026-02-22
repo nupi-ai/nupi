@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"math"
 	"sync"
 	"sync/atomic"
@@ -350,11 +351,7 @@ func copyMetadata(src map[string]string) map[string]string {
 	if len(src) == 0 {
 		return nil
 	}
-	dst := make(map[string]string, len(src))
-	for k, v := range src {
-		dst[k] = v
-	}
-	return dst
+	return maps.Clone(src)
 }
 
 // Metrics reports aggregated ingress statistics.

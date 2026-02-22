@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
@@ -109,8 +110,8 @@ type Manager struct {
 }
 
 type adapterInstance struct {
-	binding     Binding
-	handle      ProcessHandle
+	binding         Binding
+	handle          ProcessHandle
 	stdout          *adapterLogWriter
 	stderr          *adapterLogWriter
 	fingerprint     string
@@ -407,7 +408,6 @@ func (m *Manager) StopSlot(ctx context.Context, slot Slot) error {
 	delete(m.instances, slot)
 	return nil
 }
-
 
 func (m *Manager) startAdapter(ctx context.Context, plan bindingPlan) (*adapterInstance, error) {
 	// Handle builtin mock adapters without launching a process.
@@ -1365,11 +1365,7 @@ func cloneStringMap(in map[string]string) map[string]string {
 	if len(in) == 0 {
 		return nil
 	}
-	out := make(map[string]string, len(in))
-	for k, v := range in {
-		out[k] = v
-	}
-	return out
+	return maps.Clone(in)
 }
 
 // SetReadinessChecker allows tests to override the adapter readiness check function.

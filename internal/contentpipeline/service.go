@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -690,11 +691,7 @@ func copyStringMap(src map[string]string) map[string]string {
 	if len(src) == 0 {
 		return map[string]string{}
 	}
-	dup := make(map[string]string, len(src))
-	for k, v := range src {
-		dup[k] = v
-	}
-	return dup
+	return maps.Clone(src)
 }
 
 type toolMetadata struct {
