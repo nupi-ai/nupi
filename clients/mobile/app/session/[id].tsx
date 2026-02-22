@@ -13,9 +13,12 @@ import { WebView, type WebViewMessageEvent } from "react-native-webview";
 import { useHeaderHeight } from "@react-navigation/elements";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { ModelDownloadSheet } from "@/components/ModelDownloadSheet";
 import { SpecialKeysToolbar } from "@/components/SpecialKeysToolbar";
 import { Text } from "@/components/Themed";
+import { TranscriptionBubble } from "@/components/TranscriptionBubble";
 import { useColorScheme } from "@/components/useColorScheme";
+import { VoiceButton } from "@/components/VoiceButton";
 import Colors from "@/constants/Colors";
 import { arrayBufferToBase64 } from "@/lib/base64";
 import { getTerminalHtml } from "@/lib/terminal-html";
@@ -23,6 +26,7 @@ import {
   useSessionStream,
   type WsEvent,
 } from "@/lib/useSessionStream";
+import { useVoice } from "@/lib/VoiceContext";
 
 /** Reusable encoder — TextEncoder is stateless, no need to allocate per-call. */
 const textEncoder = new TextEncoder();
@@ -48,6 +52,23 @@ export default function SessionTerminalScreen() {
   const [ctrlActive, setCtrlActive] = useState(false);
   const ctrlActiveRef = useRef(false);
   const [recoveryCrashCount, setRecoveryCrashCount] = useState(0);
+  const [showDownloadSheet, setShowDownloadSheet] = useState(false);
+  const {
+    modelStatus,
+    recordingStatus,
+    confirmedText,
+    pendingText,
+    modelError,
+    downloadProgress,
+    downloadStage,
+    initModel,
+    startRecording: voiceStartRecording,
+    stopRecording: voiceStopRecording,
+    clearTranscription,
+    clearModelError,
+  } = useVoice();
+  const modelStatusRef = useRef(modelStatus);
+  modelStatusRef.current = modelStatus;
   // Queue output received before the WebView is ready.
   const pendingOutputRef = useRef<string[]>([]);
   const pendingResizeRef = useRef<{ cols: number; rows: number } | null>(null);
@@ -247,6 +268,17 @@ export default function SessionTerminalScreen() {
     setCtrlActive(next);
   }, []);
 
+  const handleVoicePress = useCallback(() => {
+    const status = modelStatusRef.current;
+    if (status === "not_downloaded" || status === "downloading" || status === "initializing") {
+      setShowDownloadSheet(true);
+    }
+  }, []);
+
+  const handleDownloadSheetCancel = useCallback(() => {
+    setShowDownloadSheet(false);
+  }, []);
+
   const handleWebViewCrash = useCallback(() => {
     console.warn("[WebView] process terminated — reloading");
     webViewReadyRef.current = false;
@@ -256,18 +288,59 @@ export default function SessionTerminalScreen() {
     webViewRef.current?.reload();
   }, []);
 
-  // Dismiss keyboard when stream disconnects (reconnecting/error).
+  // Stop recording and clear transcript when leaving the session screen.
+  // VoiceProvider is app-scoped, so without this the native audio stream
+  // would keep recording in the background and transcript text would
+  // carry over to a different session screen.
+  useEffect(() => {
+    return () => {
+      voiceStopRecording();
+      clearTranscription();
+      clearModelError();
+    };
+  }, [voiceStopRecording, clearTranscription, clearModelError]);
+
+  // Auto-close download sheet when model becomes ready.
+  useEffect(() => {
+    if (modelStatus === "ready" && showDownloadSheet) {
+      setShowDownloadSheet(false);
+    }
+  }, [modelStatus, showDownloadSheet]);
+
+  // Stop recording and clear transcription when session ends. The "stopped" event
+  // sets sessionStopped which unmounts the voiceRow (hiding VoiceButton), but
+  // the WebSocket may still be "connected" so the disconnect effect below won't fire.
+  // clearTranscription prevents the orphaned TranscriptionBubble from floating
+  // over the "Session ended" banner.
+  useEffect(() => {
+    if (sessionStopped) {
+      voiceStopRecording();
+      clearTranscription();
+      clearModelError();
+    }
+  }, [sessionStopped, voiceStopRecording, clearTranscription, clearModelError]);
+
+  // Dismiss keyboard and stop recording when stream disconnects.
+  // Without this, a disconnect while recording leaves the native audio stream
+  // capturing in the background with no visible VoiceButton to stop it
+  // (voiceRow unmounts when streamStatus !== "connected").
   // Also reset WebView ready state when WebView will be unmounted (error/connecting
   // early returns) so that output arriving before the new WebView initializes gets
   // queued in pendingOutputRef instead of being sent to a stale/loading WebView.
   useEffect(() => {
     if (streamStatus === "reconnecting" || streamStatus === "error") {
       Keyboard.dismiss();
+      voiceStopRecording();
+      // Clear transcription and errors — without this, TranscriptionBubble
+      // persists over the reconnect overlay (it has no streamStatus guard)
+      // and becomes non-interactive due to overlay's pointerEvents="box-only".
+      clearTranscription();
+      clearModelError();
     }
     if (streamStatus === "error" || streamStatus === "connecting") {
       webViewReadyRef.current = false;
     }
-  }, [streamStatus]);
+  }, [streamStatus, voiceStopRecording, clearTranscription, clearModelError]);
 
   // Auto-dismiss recovery notice after 4 seconds.
   useEffect(() => {
@@ -439,11 +512,55 @@ export default function SessionTerminalScreen() {
         onRenderProcessGone={handleWebViewCrash}
       />
 
+      {(confirmedText || pendingText) && streamStatus === "connected" && (recordingStatus === "recording" || recordingStatus === "result") && (
+        <TranscriptionBubble
+          confirmedText={confirmedText}
+          pendingText={pendingText}
+          isLive={recordingStatus === "recording"}
+          onDismiss={clearTranscription}
+        />
+      )}
+
+      {!sessionStopped && streamStatus === "connected" && (
+        <RNView style={styles.voiceRow}>
+          {modelError && !showDownloadSheet && (
+            <Text
+              style={[styles.voiceErrorText, { color: Colors[colorScheme].danger }]}
+              numberOfLines={2}
+              ellipsizeMode="tail"
+              accessibilityLiveRegion="polite"
+              testID="voice-error-text"
+            >
+              {modelError}
+            </Text>
+          )}
+          <VoiceButton
+            modelStatus={modelStatus}
+            recordingStatus={recordingStatus}
+            onPressIn={voiceStartRecording}
+            onPressOut={voiceStopRecording}
+            onPress={handleVoicePress}
+          />
+        </RNView>
+      )}
+
       {keyboardVisible && !sessionStopped && streamStatus === "connected" && (
         <SpecialKeysToolbar
           onSendInput={handleSendInput}
           ctrlActive={ctrlActive}
           onCtrlToggle={handleCtrlToggle}
+        />
+      )}
+
+      {showDownloadSheet && (
+        <ModelDownloadSheet
+          isDownloading={modelStatus === "downloading"}
+          isInitializing={modelStatus === "initializing"}
+          downloadProgress={downloadProgress}
+          downloadStage={downloadStage}
+          onDownload={initModel}
+          onCancel={handleDownloadSheetCancel}
+          error={modelStatus !== "ready" ? modelError : null}
         />
       )}
 
@@ -614,5 +731,17 @@ const styles = StyleSheet.create({
   },
   headerButtonText: {
     fontSize: 20,
+  },
+  voiceRow: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    alignItems: "center",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  voiceErrorText: {
+    fontSize: 12,
+    marginRight: 8,
+    flexShrink: 1,
   },
 });
