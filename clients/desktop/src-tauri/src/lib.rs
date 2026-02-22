@@ -47,6 +47,9 @@ struct AppState {
 
 const CANCELLED_MESSAGE: &str = "Voice stream cancelled by user";
 const STALE_OPERATION_TIMEOUT: Duration = Duration::from_secs(3600);
+/// Tauri event name for version mismatch between app and daemon.
+/// Keep in sync with: clients/desktop/src/App.tsx (listen call).
+const EVENT_VERSION_MISMATCH: &str = "version-mismatch";
 
 struct VoiceOperation {
     sender: watch::Sender<bool>,
@@ -857,6 +860,59 @@ async fn install_binaries(app: tauri::AppHandle) -> Result<String, String> {
 
 
 
+/// Strips the `v` prefix and any trailing git-describe suffix (`-N-gHASH`)
+/// so that versions like "v0.3.0-5-gabcdef" and "0.3.0" compare as equal.
+fn normalize_version(v: &str) -> &str {
+    let v = v.strip_prefix('v').unwrap_or(v);
+    // Strip git-describe suffix: "-<digits>-g<hex>" at end of string.
+    if let Some(g_pos) = v.rfind("-g") {
+        let hash = &v[g_pos + 2..];
+        if !hash.is_empty() && hash.chars().all(|c| c.is_ascii_hexdigit()) {
+            if let Some(n_pos) = v[..g_pos].rfind('-') {
+                let num = &v[n_pos + 1..g_pos];
+                if !num.is_empty() && num.chars().all(|c| c.is_ascii_digit()) {
+                    return &v[..n_pos];
+                }
+            }
+        }
+    }
+    v
+}
+
+/// Returns true if app and daemon versions differ after normalization.
+/// Returns false when either version is empty or "dev".
+fn versions_mismatch(app_ver: &str, daemon_ver: &str) -> bool {
+    if app_ver.is_empty() || daemon_ver.is_empty() {
+        return false;
+    }
+    if app_ver == "dev" || daemon_ver == "dev" {
+        return false;
+    }
+    // 0.0.0 is the Cargo fallback when no git tags exist (see Makefile CARGO_SEMVER).
+    if app_ver == "0.0.0" || daemon_ver == "0.0.0" {
+        return false;
+    }
+    normalize_version(app_ver) != normalize_version(daemon_ver)
+}
+
+/// Emit a `version-mismatch` event if the app and daemon versions differ.
+/// Skips the check when either side reports "dev" (development builds).
+fn emit_version_mismatch_if_needed(handle: &impl Emitter, daemon_version: &Option<String>) {
+    let app_ver = grpc_client::APP_VERSION;
+    if let Some(ref dv) = daemon_version {
+        if versions_mismatch(app_ver, dv) {
+            eprintln!("[nupi-desktop] Version mismatch: app v{app_ver}, daemon v{dv}");
+            let _ = handle.emit(
+                EVENT_VERSION_MISMATCH,
+                json!({
+                    "app_version": app_ver,
+                    "daemon_version": dv,
+                }),
+            );
+        }
+    }
+}
+
 // Helper function to update tray menu with current daemon state
 fn update_tray_menu(
     app: &tauri::AppHandle,
@@ -966,7 +1022,7 @@ pub fn run() {
 
             tauri::async_runtime::spawn(async move {
                 // Small delay to ensure UI is ready
-                std::thread::sleep(std::time::Duration::from_millis(500));
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
                 // Check and install binaries if needed
                 if !installer::binaries_installed() {
@@ -995,44 +1051,72 @@ pub fn run() {
                     println!("✓ Binaries already installed in ~/.nupi/bin/");
                 }
 
-                // Check if daemon is already running
-                if let Ok(status) = daemon_status(app_handle.clone()).await {
-                    if !status {
-                        // Start daemon if not running
-                        println!("Starting daemon...");
-                        match start_daemon(app_handle.clone(), app_handle.state::<AppState>()).await
+                // Probe daemon with a single client discovery + RPC
+                let (is_running, daemon_version) = match GrpcClient::discover().await {
+                    Ok(client) => match client.daemon_status().await {
+                        Ok(status) => (true, status.version),
+                        Err(GrpcClientError::Grpc(ref s))
+                            if s.code() == tonic::Code::Unauthenticated =>
                         {
-                            Ok(_) => {
-                                println!("Daemon started successfully");
-                                // Update menu to reflect running state
-                                update_tray_menu(&app_handle, true).ok();
-                                let _ = app_handle.emit("daemon-started", ());
-                            }
-                            Err(e) => {
-                                eprintln!("Failed to start daemon: {}", e);
-                                // Show error in UI and menu
-                                let _ = app_handle
-                                    .emit("daemon-error", format!("Failed to start daemon: {}", e));
-                                update_tray_menu_with_status(
-                                    &app_handle,
-                                    "🔴 Nupi failed to start",
-                                )
-                                .ok();
-                            }
+                            (true, None)
                         }
-                    } else {
-                        // Update state if daemon is already running
-                        let state = app_handle.state::<AppState>();
-                        *state.daemon_running.lock().unwrap() = true;
-                        println!("Daemon already running");
-                        // Update menu to reflect running state
-                        update_tray_menu(&app_handle, true).ok();
-                        let _ = app_handle.emit("daemon-started", ());
+                        Err(_) => (false, None),
+                    },
+                    Err(err) => {
+                        println!("[nupi-desktop] daemon probe failed: {err}");
+                        (false, None)
                     }
+                };
+
+                if is_running {
+                    let state = app_handle.state::<AppState>();
+                    *state.daemon_running.lock().unwrap() = true;
+                    println!("Daemon already running");
+                    update_tray_menu(&app_handle, true).ok();
+                    let _ = app_handle.emit("daemon-started", ());
+
+                    // Version check — reuse the version from the single RPC above
+                    emit_version_mismatch_if_needed(&app_handle, &daemon_version);
                 } else {
-                    eprintln!("Failed to check daemon status");
-                    let _ = app_handle.emit("daemon-error", "Failed to check daemon status");
-                    update_tray_menu_with_status(&app_handle, "🔴 Nupi failed to start").ok();
+                    // Start daemon if not running
+                    println!("Starting daemon...");
+                    match start_daemon(app_handle.clone(), app_handle.state::<AppState>()).await
+                    {
+                        Ok(_) => {
+                            println!("Daemon started successfully");
+                            update_tray_menu(&app_handle, true).ok();
+                            let _ = app_handle.emit("daemon-started", ());
+
+                            // Post-start version check: wait for daemon readiness, then verify version
+                            let ah = app_handle.clone();
+                            tokio::spawn(async move {
+                                let mut checked = false;
+                                for _ in 0..10 {
+                                    tokio::time::sleep(Duration::from_millis(500)).await;
+                                    if let Ok(client) = GrpcClient::discover().await {
+                                        if let Ok(status) = client.daemon_status().await {
+                                            emit_version_mismatch_if_needed(&ah, &status.version);
+                                            checked = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if !checked {
+                                    eprintln!("[nupi-desktop] Post-start version check failed after 10 retries");
+                                }
+                            });
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to start daemon: {}", e);
+                            let _ = app_handle
+                                .emit("daemon-error", format!("Failed to start daemon: {}", e));
+                            update_tray_menu_with_status(
+                                &app_handle,
+                                "🔴 Nupi failed to start",
+                            )
+                            .ok();
+                        }
+                    }
                 }
             });
 
@@ -1141,4 +1225,72 @@ pub fn run() {
 
     // Now run the application
     app.run(|_app_handle, _event| {})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_versions_mismatch_same() {
+        assert!(!versions_mismatch("0.3.0", "0.3.0"));
+    }
+
+    #[test]
+    fn test_versions_mismatch_v_prefix_normalized() {
+        assert!(!versions_mismatch("v0.3.0", "0.3.0"));
+        assert!(!versions_mismatch("0.3.0", "v0.3.0"));
+        assert!(!versions_mismatch("v0.3.0", "v0.3.0"));
+    }
+
+    #[test]
+    fn test_versions_mismatch_dev_skipped() {
+        assert!(!versions_mismatch("dev", "0.3.0"));
+        assert!(!versions_mismatch("0.3.0", "dev"));
+        assert!(!versions_mismatch("dev", "dev"));
+    }
+
+    #[test]
+    fn test_versions_mismatch_different() {
+        assert!(versions_mismatch("0.3.0", "0.2.0"));
+        assert!(versions_mismatch("v0.3.0", "v0.2.0"));
+    }
+
+    #[test]
+    fn test_versions_mismatch_empty_skipped() {
+        assert!(!versions_mismatch("0.3.0", ""));
+        assert!(!versions_mismatch("", "0.3.0"));
+        assert!(!versions_mismatch("", ""));
+    }
+
+    #[test]
+    fn test_versions_mismatch_zero_sentinel_skipped() {
+        // 0.0.0 is the CARGO_SEMVER fallback when no git tags exist
+        assert!(!versions_mismatch("0.0.0", "0.3.0"));
+        assert!(!versions_mismatch("0.3.0", "0.0.0"));
+        assert!(!versions_mismatch("0.0.0", "abcdef1"));
+    }
+
+    #[test]
+    fn test_versions_mismatch_git_describe_suffix() {
+        // Same base version with git-describe suffix → match
+        assert!(!versions_mismatch("0.3.0-5-gabcdef", "0.3.0"));
+        assert!(!versions_mismatch("0.3.0", "v0.3.0-10-g1234567"));
+        assert!(!versions_mismatch("0.3.0-5-gabcdef", "0.3.0-10-g1234567"));
+        // Different base version with suffix → mismatch
+        assert!(versions_mismatch("0.3.0-5-gabcdef", "0.2.0"));
+    }
+
+    #[test]
+    fn test_normalize_version() {
+        assert_eq!(normalize_version("v0.3.0"), "0.3.0");
+        assert_eq!(normalize_version("0.3.0-5-gabcdef"), "0.3.0");
+        assert_eq!(normalize_version("v0.3.0-10-g1234567"), "0.3.0");
+        assert_eq!(normalize_version("0.3.0"), "0.3.0");
+        assert_eq!(normalize_version("dev"), "dev");
+        // semver pre-release should NOT be stripped
+        assert_eq!(normalize_version("0.3.0-rc1"), "0.3.0-rc1");
+        // semver pre-release + git-describe suffix — strip suffix, keep pre-release
+        assert_eq!(normalize_version("0.3.0-beta-5-gabcdef"), "0.3.0-beta");
+    }
 }

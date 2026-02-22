@@ -1,6 +1,6 @@
 [package]
 name = "nupi-desktop"
-version = "0.1.0"
+version = "0.0.0"
 description = "Nupi desktop app"
 authors = ["nupi.ai"]
 edition = "2024"

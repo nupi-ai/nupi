@@ -12,6 +12,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/config"
 	"github.com/nupi-ai/nupi/internal/grpcclient"
 	"github.com/nupi-ai/nupi/internal/procutil"
+	nupiversion "github.com/nupi-ai/nupi/internal/version"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
@@ -121,6 +122,7 @@ func daemonStatus(cmd *cobra.Command, args []string) error {
 		return out.Error("Failed to connect to daemon", err)
 	}
 	defer gc.Close()
+	gc.DisableVersionCheck() // this command displays version itself; avoid duplicate RPC
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -128,6 +130,11 @@ func daemonStatus(cmd *cobra.Command, args []string) error {
 	resp, err := gc.DaemonStatus(ctx)
 	if err != nil {
 		return out.Error("Failed to fetch daemon status", err)
+	}
+
+	// Manual mismatch check since auto-check is disabled (AC#2 compliance)
+	if w := nupiversion.CheckVersionMismatch(resp.GetVersion()); w != "" {
+		fmt.Fprintln(os.Stderr, w)
 	}
 
 	status := map[string]interface{}{
@@ -151,7 +158,7 @@ func daemonStatus(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Println("Daemon Status:")
-	fmt.Printf("  Version: %v\n", status["version"])
+	fmt.Printf("  Version: %s\n", nupiversion.FormatVersion(resp.GetVersion()))
 	fmt.Printf("  Sessions: %v\n", status["sessions_count"])
 	fmt.Printf("  Port: %v\n", status["port"])
 	fmt.Printf("  gRPC Port: %v\n", status["grpc_port"])

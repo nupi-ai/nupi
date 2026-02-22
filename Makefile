@@ -5,7 +5,13 @@
 BINARY_DIR := bin
 APP_DIR := clients/desktop
 TAURI_BINARY_DIR := $(APP_DIR)/src-tauri/binaries
-VERSION := $(shell git describe --tags --always 2>/dev/null || echo dev)
+VERSION := $(shell (git describe --tags --always 2>/dev/null || echo dev) | sed 's/^v//')
+# Extract valid semver from VERSION for Cargo.toml (Cargo requires MAJOR.MINOR.PATCH format).
+# VERSION already has v prefix stripped, so just extract the MAJOR.MINOR.PATCH part.
+CARGO_SEMVER := $(shell echo "$(VERSION)" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')
+ifeq ($(CARGO_SEMVER),)
+CARGO_SEMVER := 0.0.0
+endif
 GO_LDFLAGS := -ldflags "-X github.com/nupi-ai/nupi/internal/version.version=$(VERSION)"
 # BUN_VERSION is extracted from jsrunner package (single source of truth)
 BUN_VERSION := $(shell grep 'RuntimeVersion.*=' internal/jsrunner/provider.go | sed 's/.*"\(.*\)".*/\1/')
@@ -58,7 +64,7 @@ PLATFORMS := darwin-arm64 darwin-amd64 linux-amd64 linux-arm64 windows-amd64
 DIST_DIR := dist
 RELEASE_DIR := releases
 
-.PHONY: all clean cli daemon app dev test help install download-bun release release-all $(addprefix release-,$(PLATFORMS))
+.PHONY: all clean cli daemon app dev test help install download-bun release release-all sync-version $(addprefix release-,$(PLATFORMS))
 
 # Default target
 all: cli daemon app
@@ -92,8 +98,18 @@ download-bun:
 	@chmod +x $(BINARY_DIR)/bun
 	@echo "$(GREEN)✓ Bun $(BUN_VERSION) installed to $(BINARY_DIR)/bun$(NC)"
 
+# Sync VERSION into desktop config files before build
+sync-version:
+	@command -v jq >/dev/null 2>&1 || { echo "$(RED)✗ 'jq' is required for sync-version but not found. Install via: brew install jq$(NC)"; exit 1; }
+	@echo "$(VERSION)" | grep -qE '^[0-9a-zA-Z._-]+$$' || { echo "$(RED)✗ VERSION '$(VERSION)' contains invalid characters$(NC)"; exit 1; }
+	@echo "$(YELLOW)Syncing version $(CARGO_SEMVER) into desktop config files...$(NC)"
+	@jq '.version = "$(CARGO_SEMVER)"' $(APP_DIR)/src-tauri/tauri.conf.json > tmp.$$$$.json && mv tmp.$$$$.json $(APP_DIR)/src-tauri/tauri.conf.json
+	@jq '.version = "$(CARGO_SEMVER)"' $(APP_DIR)/package.json > tmp.$$$$.json && mv tmp.$$$$.json $(APP_DIR)/package.json
+	@sed -i.bak 's/^version = ".*"/version = "$(CARGO_SEMVER)"/' $(APP_DIR)/src-tauri/Cargo.toml && rm -f $(APP_DIR)/src-tauri/Cargo.toml.bak
+	@echo "$(GREEN)✓ Version synced to $(CARGO_SEMVER)$(NC)"
+
 # Build desktop app
-app: cli daemon
+app: cli daemon sync-version
 	@echo "$(YELLOW)Building Tauri desktop app...$(NC)"
 	@# Copy Go binaries to Tauri sidecar directory with correct naming
 	@mkdir -p $(TAURI_BINARY_DIR)

@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -52,6 +53,7 @@ func LoadTransportSettings() (configstore.TransportConfig, []string, error) {
 	}
 
 	tokens := parseTokens(security["auth.http_tokens"])
+	sort.Strings(tokens) // deterministic order — matches Rust client behaviour
 	return cfg, tokens, nil
 }
 

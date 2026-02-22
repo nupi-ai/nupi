@@ -16,6 +16,7 @@ function App() {
   const [viewMode, setViewMode] = useState<ViewMode>("sessions");
   const [playingRecording, setPlayingRecording] = useState<string | null>(null);
   const [playingCastData, setPlayingCastData] = useState<string | null>(null);
+  const [versionMismatch, setVersionMismatch] = useState<string | null>(null);
 
   async function checkDaemonStatus() {
     try {
@@ -50,17 +51,36 @@ function App() {
       setDaemonRunning(false);
     });
 
+    let dismissTimer: ReturnType<typeof setTimeout> | null = null;
+
+    // Event name must match EVENT_VERSION_MISMATCH in src-tauri/src/lib.rs
+    const unlistenVersionMismatch = listen<{ app_version: string; daemon_version: string }>(
+      "version-mismatch",
+      (event) => {
+        const { app_version, daemon_version } = event.payload;
+        setVersionMismatch(
+          `Version mismatch: app v${app_version}, daemon v${daemon_version} — please restart the daemon or reinstall`
+        );
+        // Auto-dismiss after 30 seconds
+        if (dismissTimer) clearTimeout(dismissTimer);
+        dismissTimer = setTimeout(() => setVersionMismatch(null), 30000);
+      }
+    );
+
     // Set up periodic status check
     const interval = setInterval(checkDaemonStatus, 5000); // Check every 5 seconds
 
     // Initial check after a short delay
-    setTimeout(checkDaemonStatus, 1000);
+    const initialCheck = setTimeout(checkDaemonStatus, 1000);
 
     return () => {
       unlistenStart.then((fn) => fn());
       unlistenStop.then((fn) => fn());
       unlistenError.then((fn) => fn());
+      unlistenVersionMismatch.then((fn) => fn());
       clearInterval(interval);
+      clearTimeout(initialCheck);
+      if (dismissTimer) clearTimeout(dismissTimer);
     };
   }, []);
 
@@ -204,6 +224,45 @@ function App() {
           </span>
         </span>
       </div>
+
+      {/* Version mismatch toast */}
+      {versionMismatch && (
+        <div
+          style={{
+            position: 'fixed',
+            top: '16px',
+            right: '16px',
+            backgroundColor: '#78350f',
+            color: '#fef3c7',
+            padding: '12px 16px',
+            borderRadius: '8px',
+            fontSize: '13px',
+            zIndex: 2000,
+            maxWidth: '400px',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+          }}
+        >
+          <span style={{ flexShrink: 0 }}>&#9888;</span>
+          <span style={{ flex: 1 }}>{versionMismatch}</span>
+          <button
+            onClick={() => setVersionMismatch(null)}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: '#fef3c7',
+              cursor: 'pointer',
+              fontSize: '16px',
+              padding: '0 4px',
+              flexShrink: 0,
+            }}
+          >
+            &#10005;
+          </button>
+        </div>
+      )}
 
       {/* Recording player modal */}
       {playingRecording && (
