@@ -214,6 +214,29 @@ func TestEveryCoreMemoryFileHasMatchingScaffold(t *testing.T) {
 	}
 }
 
+func TestNoScaffoldLeaksIntoCoreMemoryUnexpectedly(t *testing.T) {
+	// Reverse guard: every scaffold that is NOT in coreMemoryFiles must be
+	// explicitly known here. Catches accidental addition of BOOTSTRAP.md
+	// (or future onboarding-only files) to coreMemoryFiles.
+	memoryNames := make(map[string]bool, len(coreMemoryFiles))
+	for _, f := range coreMemoryFiles {
+		memoryNames[f.filename] = true
+	}
+
+	expectedExcluded := map[string]bool{
+		"BOOTSTRAP.md": true, // onboarding sentinel, not system prompt content
+	}
+
+	for _, sf := range coreScaffolds {
+		if memoryNames[sf.filename] {
+			continue
+		}
+		if !expectedExcluded[sf.filename] {
+			t.Errorf("scaffold %q is not in coreMemoryFiles and not in expectedExcluded — was it accidentally added to coreScaffolds without updating this test?", sf.filename)
+		}
+	}
+}
+
 func TestScaffoldCoreFilesStatError(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix-specific permission test")

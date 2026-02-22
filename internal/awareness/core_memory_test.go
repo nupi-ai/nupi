@@ -93,6 +93,16 @@ func TestCoreMemoryMissingFilesScaffolded(t *testing.T) {
 			t.Errorf("%s section should be present (scaffolded)", section)
 		}
 	}
+	// Verify actual scaffold default content is loaded, not just headers.
+	if !strings.Contains(cm, "Fill this in during your first conversation") {
+		t.Error("IDENTITY scaffold default content should appear in CoreMemory")
+	}
+	if !strings.Contains(cm, "Learn about the person") {
+		t.Error("USER scaffold default content should appear in CoreMemory")
+	}
+	if !strings.Contains(cm, "Cross-project rules") {
+		t.Error("GLOBAL scaffold default content should appear in CoreMemory")
+	}
 }
 
 func TestCoreMemoryEmptyFiles(t *testing.T) {
