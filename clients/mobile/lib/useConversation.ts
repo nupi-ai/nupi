@@ -36,6 +36,9 @@ const SLOW_INTERVAL = 2000;
 /** Phase boundary durations from polling start (ms). */
 const FAST_PHASE_MS = 15_000;
 const SLOW_PHASE_MS = 60_000;
+/** Per-request timeout for poll ticks (ms). Prevents a single stuck RPC
+ * from blocking the entire polling window (fetchingRef stays true). */
+const POLL_REQUEST_TIMEOUT = 5_000;
 /** Limits for initial fetch and delta polls. */
 const INITIAL_LIMIT = 20;
 const POLL_LIMIT = 10;
@@ -113,10 +116,14 @@ export function useConversation(
       fetchingRef.current = true;
 
       // M3 fix: use AbortController so cleanup can cancel in-flight polls.
+      // H1 fix (Review 11): per-request timeout prevents a stuck RPC from
+      // blocking all subsequent polls (fetchingRef stays true indefinitely).
       const controller = new AbortController();
       abortRef.current = controller;
+      const pollTimeout = setTimeout(() => controller.abort(), POLL_REQUEST_TIMEOUT);
       const offset = serverTotalRef.current;
       const result = await fetchTurns(offset, POLL_LIMIT, controller.signal);
+      clearTimeout(pollTimeout);
       abortRef.current = null;
       fetchingRef.current = false;
 
