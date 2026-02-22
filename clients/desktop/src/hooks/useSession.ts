@@ -1,8 +1,8 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
-import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { api } from '../api';
 import type { Session } from '../types/session';
 import { isSessionActive } from '../utils/sessionHelpers';
 
@@ -152,7 +152,7 @@ export function useSession() {
 
   const refreshSessions = useCallback(async () => {
     try {
-      const list = await invoke<Session[]>('list_sessions');
+      const list = await api.sessions.list();
       const sorted = [...list].sort((a: Session, b: Session) =>
         (a.start_time ? new Date(a.start_time).getTime() : 0) -
         (b.start_time ? new Date(b.start_time).getTime() : 0)
@@ -168,7 +168,7 @@ export function useSession() {
 
   const killSession = useCallback(async (sessionId: string) => {
     try {
-      await invoke('kill_session', { sessionId });
+      await api.sessions.kill(sessionId);
     } catch (err) {
       console.error('[IPC] Failed to kill session:', err);
     }
@@ -206,7 +206,7 @@ export function useSession() {
 
         case 'session_status_changed': {
           // Refresh the specific session to get new status
-          invoke<Session>('get_session', { sessionId: session_id })
+          api.sessions.get(session_id)
             .then(updated => {
               setSessions(prev => prev.map(s =>
                 s.id === session_id ? { ...s, status: updated.status } : s
@@ -442,7 +442,7 @@ export function useSession() {
       attachedSessionId.current = activeSessionId; // Set BEFORE invoking attach
 
       try {
-        await invoke('attach_session', { sessionId: activeSessionId });
+        await api.sessions.attach(activeSessionId);
       } catch (err) {
         console.error('[IPC] Failed to attach to session:', err);
         return;
@@ -468,13 +468,13 @@ export function useSession() {
       const encoder = new TextEncoder();
       term.onData((data) => {
         const bytes = Array.from(encoder.encode(data));
-        invoke('send_input', { sessionId: activeSessionId, input: bytes })
+        api.sessions.sendInput(activeSessionId, bytes)
           .catch(err => console.error('[IPC] send_input failed:', err));
       });
 
       // Forward terminal resize to daemon so PTY dimensions stay in sync
       term.onResize(({ cols, rows }) => {
-        invoke('resize_session', { sessionId: activeSessionId, cols, rows })
+        api.sessions.resize(activeSessionId, cols, rows)
           .catch(err => console.error('[IPC] resize_session failed:', err));
       });
     };
@@ -483,7 +483,7 @@ export function useSession() {
     if (attachedSessionId.current && attachedSessionId.current !== activeSessionId) {
       const prevId = attachedSessionId.current;
       cleanupTerminal();
-      invoke('detach_session', { sessionId: prevId })
+      api.sessions.detach(prevId)
         .catch(err => console.error('[IPC] detach failed:', err));
       attachedSessionId.current = null; // Clear immediately after detach
 
@@ -517,7 +517,7 @@ export function useSession() {
   useEffect(() => {
     return () => {
       if (attachedSessionId.current) {
-        invoke('detach_session', { sessionId: attachedSessionId.current })
+        api.sessions.detach(attachedSessionId.current)
           .catch(err => console.error('[IPC] cleanup detach failed:', err));
       }
       cleanupTerminal();

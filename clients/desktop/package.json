@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "generate:proto": "sh ./scripts/generate-proto.sh",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri"

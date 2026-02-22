@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { api, toErrorMessage } from "./api";
 import { Sessions } from "./components/Sessions";
 import { History } from "./components/History";
 import { AsciinemaPlayer } from "./components/AsciinemaPlayer";
@@ -20,7 +20,7 @@ function App() {
 
   async function checkDaemonStatus() {
     try {
-      const running = await invoke<boolean>("daemon_status");
+      const running = await api.daemon.status();
       setDaemonRunning(running);
       setDaemonStatus(running ? "Daemon is running ✓" : "Daemon is starting...");
       if (running) {
@@ -88,10 +88,10 @@ function App() {
     setPlayingRecording(sessionId);
     setPlayingCastData(null);
     try {
-      const data = await invoke<string>("get_recording", { sessionId });
+      const data = await api.recordings.get(sessionId);
       setPlayingCastData(data);
     } catch (err) {
-      console.error("[App] Failed to load recording:", err);
+      console.error("[App] Failed to load recording:", toErrorMessage(err));
       setPlayingRecording(null);
     }
   }

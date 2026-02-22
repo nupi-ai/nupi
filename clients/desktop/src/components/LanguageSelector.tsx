@@ -1,8 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  useLanguagePreference,
-  type LanguageInfo,
-} from "../hooks/useLanguagePreference";
+import type { LanguageInfo } from "../api";
+import { useLanguagePreference } from "../hooks/useLanguagePreference";
 import * as styles from "./voicePanelStyles";
 
 export function LanguageSelector() {

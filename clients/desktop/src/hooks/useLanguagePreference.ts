@@ -1,12 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-
-export interface LanguageInfo {
-  iso1: string;
-  bcp47: string;
-  english_name: string;
-  native_name: string;
-}
+import { api, toErrorMessage, type LanguageInfo } from "../api";
 
 export function useLanguagePreference() {
   const [languages, setLanguages] = useState<LanguageInfo[]>([]);
@@ -16,7 +9,7 @@ export function useLanguagePreference() {
 
   // Load persisted language on mount
   useEffect(() => {
-    invoke<string | null>("get_language")
+    api.language.get()
       .then((lang) => setLanguageState(lang ?? null))
       .catch((err) => console.error("Failed to load language:", err));
   }, []);
@@ -25,11 +18,10 @@ export function useLanguagePreference() {
     setLoading(true);
     setError(null);
     try {
-      const result = await invoke<LanguageInfo[]>("list_languages");
+      const result = await api.language.list();
       setLanguages(result);
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      setError(message);
+      setError(toErrorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -38,11 +30,10 @@ export function useLanguagePreference() {
   const setLanguage = useCallback(async (iso1: string | null) => {
     setError(null);
     try {
-      await invoke("set_language", { language: iso1 });
+      await api.language.set(iso1);
       setLanguageState(iso1 ? iso1.trim().toLowerCase() || null : null);
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      setError(message);
+      setError(toErrorMessage(err));
     }
   }, []);
 

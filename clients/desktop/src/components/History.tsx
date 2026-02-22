@@ -1,22 +1,7 @@
 import { useState, useEffect } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { api, toErrorMessage, type Recording } from '../api';
 import { AsciinemaPlayer } from './AsciinemaPlayer';
 import * as styles from './historyStyles';
-
-interface Recording {
-  session_id: string;
-  filename: string;
-  command: string;
-  args: string[];
-  work_dir?: string;
-  start_time?: string;
-  duration: number;
-  rows: number;
-  cols: number;
-  title: string;
-  tool?: string;
-  recording_path: string;
-}
 
 export function History() {
   const [recordings, setRecordings] = useState<Recording[]>([]);
@@ -33,11 +18,11 @@ export function History() {
     try {
       setLoading(true);
       setError(null);
-      const data = await invoke<Recording[]>('list_recordings', {});
+      const data = await api.recordings.list();
       setRecordings(data || []);
     } catch (err) {
       console.error('[History] Failed to load recordings:', err);
-      setError(err instanceof Error ? err.message : String(err));
+      setError(toErrorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -46,11 +31,11 @@ export function History() {
   async function loadCastData(sessionId: string) {
     try {
       setCastData(null);
-      const data = await invoke<string>('get_recording', { sessionId });
+      const data = await api.recordings.get(sessionId);
       setCastData(data);
     } catch (err) {
       console.error('[History] Failed to load cast data:', err);
-      setError(err instanceof Error ? err.message : String(err));
+      setError(toErrorMessage(err));
     }
   }
 
