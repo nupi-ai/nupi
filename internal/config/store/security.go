@@ -2,11 +2,8 @@ package store
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
-	"strings"
-
-	storecrypto "github.com/nupi-ai/nupi/internal/config/store/crypto"
+	"log"
 )
 
 // SaveSecuritySettings upserts secret entries for the active profile.
@@ -14,76 +11,86 @@ func (s *Store) SaveSecuritySettings(ctx context.Context, values map[string]stri
 	if s.readOnly {
 		return fmt.Errorf("config: save security settings: store opened read-only")
 	}
-	if s.encryptionKey == nil {
-		return fmt.Errorf("config: save security settings: encryption key not available")
+	if s.secretBackend == nil {
+		return fmt.Errorf("config: save security settings: secret backend not available")
 	}
 	if len(values) == 0 {
 		return nil
 	}
 
-	return s.withTx(ctx, func(tx *sql.Tx) error {
-		stmt, err := tx.PrepareContext(ctx, `
-            INSERT INTO security_settings (instance_name, profile_name, key, value, updated_at)
-            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(instance_name, profile_name, key) DO UPDATE SET
-                value = excluded.value,
-                updated_at = CURRENT_TIMESTAMP
-        `)
-		if err != nil {
-			return fmt.Errorf("config: prepare save security: %w", err)
-		}
-		defer stmt.Close()
-
-		for key, value := range values {
-			encrypted, err := storecrypto.EncryptValue(s.encryptionKey, value)
-			if err != nil {
-				return fmt.Errorf("config: encrypt security %q: %w", key, err)
-			}
-			if _, err := stmt.ExecContext(ctx, s.instanceName, s.profileName, key, encrypted); err != nil {
-				return fmt.Errorf("config: exec save security %q: %w", key, err)
-			}
-		}
-		return nil
-	})
+	if err := s.secretBackend.SetBatch(ctx, values); err != nil {
+		return fmt.Errorf("config: save security settings: %w", err)
+	}
+	return nil
 }
 
 // LoadSecuritySettings returns secrets for the active profile.
 func (s *Store) LoadSecuritySettings(ctx context.Context, keys ...string) (map[string]string, error) {
-	query := `SELECT key, value FROM security_settings WHERE instance_name = ? AND profile_name = ?`
-	args := []any{s.instanceName, s.profileName}
-
-	if len(keys) > 0 {
-		placeholders := strings.TrimRight(strings.Repeat("?,", len(keys)), ",")
-		query += fmt.Sprintf(" AND key IN (%s)", placeholders)
-		for _, key := range keys {
-			args = append(args, key)
-		}
+	if s.secretBackend == nil {
+		return nil, fmt.Errorf("config: load security settings: secret backend not available")
 	}
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	if len(keys) == 0 {
+		// Load all keys: query DB for key names, then batch-retrieve via backend.
+		return s.loadAllSecuritySettings(ctx)
+	}
+
+	// Batch-retrieve requested keys. GetBatch silently skips keys that
+	// don't exist (no ErrSecretNotFound for individual missing keys),
+	// matching the legacy per-key skip behavior.
+	result, err := s.secretBackend.GetBatch(ctx, keys)
 	if err != nil {
-		return nil, fmt.Errorf("config: load security: %w", err)
+		return nil, fmt.Errorf("config: load security settings: %w", err)
+	}
+	return result, nil
+}
+
+// loadAllSecuritySettings discovers all secret keys from the DB and loads
+// them via the backend's batch operation (single SQL query for AES, with
+// keychain overlay when available).
+//
+// Note: this issues two DB queries in the AES-only path (key enumeration +
+// value retrieval). A single query would suffice for AES-only, but the
+// two-step design lets FallbackBackend try the keychain first for values,
+// avoiding the second DB round-trip when the keychain has all keys.
+func (s *Store) loadAllSecuritySettings(ctx context.Context) (map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT key FROM security_settings WHERE instance_name = ? AND profile_name = ?`,
+		s.instanceName, s.profileName,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("config: list security keys: %w", err)
 	}
 	defer rows.Close()
 
-	result := make(map[string]string)
+	var dbKeys []string
 	for rows.Next() {
-		var key, value string
-		if err := rows.Scan(&key, &value); err != nil {
-			return nil, fmt.Errorf("config: scan security row: %w", err)
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, fmt.Errorf("config: scan security key: %w", err)
 		}
-		if s.encryptionKey == nil {
-			return nil, fmt.Errorf("config: load security settings: encryption key not available")
-		}
-		decrypted, err := storecrypto.DecryptValue(s.encryptionKey, value)
-		if err != nil {
-			return nil, fmt.Errorf("config: decrypt security %q: %w", key, err)
-		}
-		value = decrypted
-		result[key] = value
+		dbKeys = append(dbKeys, key)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("config: iterate security rows: %w", err)
+		return nil, fmt.Errorf("config: iterate security keys: %w", err)
+	}
+
+	if len(dbKeys) == 0 {
+		return make(map[string]string), nil
+	}
+
+	result, err := s.secretBackend.GetBatch(ctx, dbKeys)
+	if err != nil {
+		return nil, fmt.Errorf("config: load all security settings: %w", err)
+	}
+	if len(result) < len(dbKeys) {
+		var missing []string
+		for _, k := range dbKeys {
+			if _, ok := result[k]; !ok {
+				missing = append(missing, k)
+			}
+		}
+		log.Printf("[Config] WARNING: %d/%d security settings unavailable (degraded backend mode): %v", len(missing), len(dbKeys), missing)
 	}
 	return result, nil
 }
