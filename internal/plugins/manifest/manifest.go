@@ -533,30 +533,83 @@ func NormalizeAdapterOptionValue(opt AdapterOption, value any) (any, error) {
 	}
 }
 
-func inferOptionType(value any) string {
+type supportedSignedInteger interface {
+	~int | ~int32 | ~int64
+}
+
+type supportedUnsignedInteger interface {
+	~uint | ~uint32 | ~uint64
+}
+
+type supportedFloat interface {
+	~float32 | ~float64
+}
+
+type supportedNumeric interface {
+	supportedSignedInteger | supportedUnsignedInteger | supportedFloat
+}
+
+func toInt64[T supportedSignedInteger](v T) int64 {
+	return int64(v)
+}
+
+func toUint64[T supportedUnsignedInteger](v T) uint64 {
+	return uint64(v)
+}
+
+func toFloat64[T supportedNumeric](v T) float64 {
+	return float64(v)
+}
+
+type numericKind uint8
+
+const (
+	numericKindUnsupported numericKind = iota
+	numericKindSignedInteger
+	numericKindUnsignedInteger
+	numericKindFloat
+)
+
+func classifyNumeric(value any) (numericKind, int64, uint64, float64, bool) {
 	switch v := value.(type) {
+	case int:
+		return numericKindSignedInteger, toInt64(v), 0, 0, true
+	case int32:
+		return numericKindSignedInteger, toInt64(v), 0, 0, true
+	case int64:
+		return numericKindSignedInteger, toInt64(v), 0, 0, true
+	case uint:
+		return numericKindUnsignedInteger, 0, toUint64(v), 0, true
+	case uint32:
+		return numericKindUnsignedInteger, 0, toUint64(v), 0, true
+	case uint64:
+		return numericKindUnsignedInteger, 0, toUint64(v), 0, true
+	case float32:
+		return numericKindFloat, 0, 0, toFloat64(v), true
+	case float64:
+		return numericKindFloat, 0, 0, toFloat64(v), true
+	default:
+		return numericKindUnsupported, 0, 0, 0, false
+	}
+}
+
+func inferOptionType(value any) string {
+	switch value.(type) {
 	case nil:
 		return ""
 	case bool:
 		return "boolean"
-	case int, int32, int64:
-		return "integer"
-	case uint, uint32, uint64:
-		return "integer"
-	case float32:
-		if isFloatIntegral(float64(v)) {
-			return "integer"
-		}
-		return "number"
-	case float64:
-		if isFloatIntegral(v) {
-			return "integer"
-		}
-		return "number"
 	case string:
 		return "string"
 	default:
-		return ""
+		kind, _, _, floatVal, ok := classifyNumeric(value)
+		if !ok {
+			return ""
+		}
+		if kind != numericKindFloat || isFloatIntegral(floatVal) {
+			return "integer"
+		}
+		return "number"
 	}
 }
 
@@ -580,31 +633,6 @@ func coerceBool(value any) (any, error) {
 
 func coerceInt(value any) (any, error) {
 	switch v := value.(type) {
-	case int:
-		return v, nil
-	case int32:
-		return int(v), nil
-	case int64:
-		return intFromInt64(v)
-	case uint:
-		return intFromInt64(int64(v))
-	case uint32:
-		return intFromInt64(int64(v))
-	case uint64:
-		if v > uint64(math.MaxInt64) {
-			return nil, fmt.Errorf("integer value out of range: %d", v)
-		}
-		return intFromInt64(int64(v))
-	case float32:
-		if !isFloatIntegral(float64(v)) {
-			return nil, fmt.Errorf("expected integer, got %v", v)
-		}
-		return intFromInt64(int64(v))
-	case float64:
-		if !isFloatIntegral(v) {
-			return nil, fmt.Errorf("expected integer, got %v", v)
-		}
-		return intFromInt64(int64(v))
 	case string:
 		trimmed := strings.TrimSpace(v)
 		if trimmed == "" {
@@ -616,28 +644,31 @@ func coerceInt(value any) (any, error) {
 		}
 		return intFromInt64(parsed)
 	default:
-		return nil, fmt.Errorf("expected integer, got %T", value)
+		kind, signed, unsigned, floatVal, ok := classifyNumeric(value)
+		if !ok {
+			return nil, fmt.Errorf("expected integer, got %T", value)
+		}
+		switch kind {
+		case numericKindSignedInteger:
+			return intFromInt64(signed)
+		case numericKindUnsignedInteger:
+			if unsigned > uint64(math.MaxInt64) {
+				return nil, fmt.Errorf("integer value out of range: %d", unsigned)
+			}
+			return intFromInt64(int64(unsigned))
+		case numericKindFloat:
+			if !isFloatIntegral(floatVal) {
+				return nil, fmt.Errorf("expected integer, got %v", floatVal)
+			}
+			return intFromInt64(int64(floatVal))
+		default:
+			return nil, fmt.Errorf("expected integer, got %T", value)
+		}
 	}
 }
 
 func coerceNumber(value any) (any, error) {
 	switch v := value.(type) {
-	case float32:
-		return float64(v), nil
-	case float64:
-		return v, nil
-	case int:
-		return float64(v), nil
-	case int32:
-		return float64(v), nil
-	case int64:
-		return float64(v), nil
-	case uint:
-		return float64(v), nil
-	case uint32:
-		return float64(v), nil
-	case uint64:
-		return float64(v), nil
 	case string:
 		trimmed := strings.TrimSpace(v)
 		if trimmed == "" {
@@ -649,7 +680,20 @@ func coerceNumber(value any) (any, error) {
 		}
 		return parsed, nil
 	default:
-		return nil, fmt.Errorf("expected number, got %T", value)
+		kind, signed, unsigned, floatVal, ok := classifyNumeric(value)
+		if !ok {
+			return nil, fmt.Errorf("expected number, got %T", value)
+		}
+		switch kind {
+		case numericKindSignedInteger:
+			return float64(signed), nil
+		case numericKindUnsignedInteger:
+			return float64(unsigned), nil
+		case numericKindFloat:
+			return floatVal, nil
+		default:
+			return nil, fmt.Errorf("expected number, got %T", value)
+		}
 	}
 }
 
