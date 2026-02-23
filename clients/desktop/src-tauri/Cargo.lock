@@ -2318,6 +2318,7 @@ dependencies = [
  "dirs 5.0.1",
  "hound",
  "once_cell",
+ "parking_lot",
  "prost",
  "prost-types",
  "rusqlite",
