@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	apihttp "github.com/nupi-ai/nupi/internal/api/http"
 	"github.com/spf13/cobra"
 )
 
@@ -419,4 +420,252 @@ func TestFinalizeClientResult(t *testing.T) {
 			t.Fatalf("unexpected stdout output: %q", output)
 		}
 	})
+}
+
+func TestOutputFormatterError_WritesToErrW(t *testing.T) {
+	t.Run("json error lands in errW buffer", func(t *testing.T) {
+		var errBuf bytes.Buffer
+		f := &OutputFormatter{jsonMode: true, errW: &errBuf}
+		retErr := f.Error("connection failed", io.EOF)
+
+		if retErr == nil {
+			t.Fatal("expected non-nil error")
+		}
+
+		output := strings.TrimSpace(errBuf.String())
+		var parsed map[string]interface{}
+		if err := json.Unmarshal([]byte(output), &parsed); err != nil {
+			t.Fatalf("expected valid JSON in errW buffer, got %q: %v", output, err)
+		}
+		if parsed["error"] != "connection failed" {
+			t.Errorf("expected error='connection failed', got %v", parsed["error"])
+		}
+		if _, ok := parsed["details"]; !ok {
+			t.Errorf("expected 'details' field in JSON error output")
+		}
+	})
+
+	t.Run("text error lands in errW buffer", func(t *testing.T) {
+		var errBuf bytes.Buffer
+		f := &OutputFormatter{jsonMode: false, errW: &errBuf}
+		retErr := f.Error("not found", fmt.Errorf("missing resource"))
+
+		if retErr == nil {
+			t.Fatal("expected non-nil error")
+		}
+
+		output := errBuf.String()
+		if !strings.Contains(output, "not found") {
+			t.Errorf("expected errW to contain 'not found', got %q", output)
+		}
+		if !strings.Contains(output, "missing resource") {
+			t.Errorf("expected errW to contain 'missing resource', got %q", output)
+		}
+	})
+
+	t.Run("nil errW falls back to os.Stderr", func(t *testing.T) {
+		// Verify that a directly constructed formatter without errW doesn't panic.
+		oldStderr := os.Stderr
+		r, w, _ := os.Pipe()
+		os.Stderr = w
+
+		f := &OutputFormatter{jsonMode: false}
+		_ = f.Error("fallback test", nil)
+
+		w.Close()
+		os.Stderr = oldStderr
+
+		var buf bytes.Buffer
+		io.Copy(&buf, r)
+		if !strings.Contains(buf.String(), "fallback test") {
+			t.Errorf("expected os.Stderr fallback to contain message, got %q", buf.String())
+		}
+	})
+}
+
+func TestOutputFormatterSuccess_WritesToW(t *testing.T) {
+	var outBuf bytes.Buffer
+	f := &OutputFormatter{jsonMode: true, w: &outBuf}
+	if err := f.Success("adapter bound", map[string]interface{}{"slot": "stt"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := strings.TrimSpace(outBuf.String())
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(output), &parsed); err != nil {
+		t.Fatalf("expected valid JSON in w buffer, got %q: %v", output, err)
+	}
+	if parsed["message"] != "adapter bound" {
+		t.Errorf("expected message='adapter bound', got %v", parsed["message"])
+	}
+	if parsed["slot"] != "stt" {
+		t.Errorf("expected slot='stt', got %v", parsed["slot"])
+	}
+}
+
+func TestOutputFormatterWriter(t *testing.T) {
+	t.Run("returns w when set", func(t *testing.T) {
+		var buf bytes.Buffer
+		f := &OutputFormatter{w: &buf}
+		w := f.Writer()
+		fmt.Fprintln(w, "test")
+		if !strings.Contains(buf.String(), "test") {
+			t.Fatalf("expected output in w buffer, got %q", buf.String())
+		}
+	})
+
+	t.Run("falls back to os.Stdout when nil", func(t *testing.T) {
+		f := &OutputFormatter{}
+		w := f.Writer()
+		if w != os.Stdout {
+			t.Fatalf("expected os.Stdout fallback, got %T", w)
+		}
+	})
+}
+
+func TestOutputFormatterErrWriter(t *testing.T) {
+	t.Run("returns errW when set", func(t *testing.T) {
+		var buf bytes.Buffer
+		f := &OutputFormatter{errW: &buf}
+		w := f.ErrWriter()
+		fmt.Fprintln(w, "test")
+		if !strings.Contains(buf.String(), "test") {
+			t.Fatalf("expected output in errW buffer, got %q", buf.String())
+		}
+	})
+
+	t.Run("falls back to os.Stderr when nil", func(t *testing.T) {
+		f := &OutputFormatter{}
+		w := f.ErrWriter()
+		if w != os.Stderr {
+			t.Fatalf("expected os.Stderr fallback, got %T", w)
+		}
+	})
+}
+
+func TestPrintMissingReferenceAdapters_WritesToWriter(t *testing.T) {
+	t.Parallel()
+
+	t.Run("writes warning and help to provided writer", func(t *testing.T) {
+		var buf bytes.Buffer
+		printMissingReferenceAdapters(&buf, []string{"stt-adapter", "tts-adapter"}, true)
+		output := buf.String()
+		if !strings.Contains(output, "stt-adapter") {
+			t.Fatalf("expected adapter name in output, got %q", output)
+		}
+		if !strings.Contains(output, "tts-adapter") {
+			t.Fatalf("expected adapter name in output, got %q", output)
+		}
+		if !strings.Contains(output, "Install the recommended") {
+			t.Fatalf("expected help text in output, got %q", output)
+		}
+	})
+
+	t.Run("no output for empty list", func(t *testing.T) {
+		var buf bytes.Buffer
+		printMissingReferenceAdapters(&buf, nil, true)
+		if buf.Len() != 0 {
+			t.Fatalf("expected no output for empty list, got %q", buf.String())
+		}
+	})
+
+	t.Run("omits help when showHelp is false", func(t *testing.T) {
+		var buf bytes.Buffer
+		printMissingReferenceAdapters(&buf, []string{"stt-adapter"}, false)
+		output := buf.String()
+		if !strings.Contains(output, "stt-adapter") {
+			t.Fatalf("expected adapter name in output, got %q", output)
+		}
+		if strings.Contains(output, "Install the recommended") {
+			t.Fatalf("expected no help text when showHelp=false, got %q", output)
+		}
+	})
+}
+
+func TestPrintPluginsTable_WritesToWriter(t *testing.T) {
+	t.Parallel()
+
+	t.Run("renders table to provided writer", func(t *testing.T) {
+		var buf bytes.Buffer
+		rows := []pluginRow{
+			{Type: "adapter", Namespace: "nupi", Slug: "stt-whisper", Name: "Whisper STT", Slot: "stt", Status: "bound", Health: "ready"},
+			{Type: "adapter", Namespace: "nupi", Slug: "tts-piper", Name: "Piper TTS", Slot: "tts", Status: "unbound", Health: "-"},
+		}
+		printPluginsTable(&buf, rows)
+		output := buf.String()
+		if !strings.Contains(output, "TYPE") || !strings.Contains(output, "NAMESPACE/SLUG") {
+			t.Fatalf("expected table headers in output, got %q", output)
+		}
+		if !strings.Contains(output, "nupi/stt-whisper") {
+			t.Fatalf("expected adapter entry in output, got %q", output)
+		}
+		if !strings.Contains(output, "nupi/tts-piper") {
+			t.Fatalf("expected second adapter entry in output, got %q", output)
+		}
+	})
+
+	t.Run("empty rows produces header only", func(t *testing.T) {
+		var buf bytes.Buffer
+		printPluginsTable(&buf, nil)
+		output := buf.String()
+		if !strings.Contains(output, "TYPE") {
+			t.Fatalf("expected header even for empty rows, got %q", output)
+		}
+	})
+}
+
+func TestPrintAdapterTable_WritesToWriter(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	id := "whisper-stt"
+	entries := []apihttp.AdapterEntry{
+		{Slot: "stt", AdapterID: &id, Status: "bound", UpdatedAt: "2026-02-23"},
+	}
+	printAdapterTable(&buf, entries)
+	output := buf.String()
+	if !strings.Contains(output, "SLOT") || !strings.Contains(output, "ADAPTER") {
+		t.Fatalf("expected table headers in output, got %q", output)
+	}
+	if !strings.Contains(output, "whisper-stt") {
+		t.Fatalf("expected adapter entry in output, got %q", output)
+	}
+}
+
+func TestPrintAdapterSummary_WritesToWriter(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	id := "whisper"
+	entry := apihttp.AdapterEntry{Slot: "stt", AdapterID: &id, Status: "started"}
+	printAdapterSummary(&buf, "Started", entry)
+	output := buf.String()
+	if !strings.Contains(output, "Started") {
+		t.Fatalf("expected action in output, got %q", output)
+	}
+	if !strings.Contains(output, "stt") {
+		t.Fatalf("expected slot in output, got %q", output)
+	}
+}
+
+func TestPrintAdapterRuntimeMessages_WritesToWriter(t *testing.T) {
+	t.Parallel()
+
+	msg := "adapter unhealthy"
+	var buf bytes.Buffer
+	id1 := "whisper"
+	id2 := "piper"
+	entries := []apihttp.AdapterEntry{
+		{Slot: "stt", AdapterID: &id1, Runtime: &apihttp.AdapterRuntime{Message: msg}},
+		{Slot: "tts", AdapterID: &id2},
+	}
+	printAdapterRuntimeMessages(&buf, entries)
+	output := buf.String()
+	if !strings.Contains(output, msg) {
+		t.Fatalf("expected runtime message in output, got %q", output)
+	}
+	// Entry without runtime message should not appear.
+	if strings.Contains(output, "tts") {
+		t.Fatalf("expected no output for entry without runtime message, got %q", output)
+	}
 }
