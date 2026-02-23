@@ -17,22 +17,7 @@ func (s *Store) Profiles(ctx context.Context) ([]Profile, error) {
 	if err != nil {
 		return nil, fmt.Errorf("config: list profiles: %w", err)
 	}
-	defer rows.Close()
-
-	var profiles []Profile
-	for rows.Next() {
-		profile, err := scanProfile(rows)
-		if err != nil {
-			return nil, fmt.Errorf("config: scan profile: %w", err)
-		}
-		profiles = append(profiles, profile)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("config: iterate profiles: %w", err)
-	}
-
-	return profiles, nil
+	return scanList(rows, scanProfile, "config: scan profile", "config: iterate profiles")
 }
 
 // ActivateProfile marks the provided profile as the default one for the instance.

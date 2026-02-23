@@ -90,18 +90,5 @@ func (s *Store) PendingQuickstartSlots(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("config: quickstart pending slots: %w", err)
 	}
-	defer rows.Close()
-
-	var slots []string
-	for rows.Next() {
-		slot, err := scanString(rows)
-		if err != nil {
-			return nil, fmt.Errorf("config: scan quickstart slot: %w", err)
-		}
-		slots = append(slots, slot)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("config: iterate quickstart slots: %w", err)
-	}
-	return slots, nil
+	return scanList(rows, scanString, "config: scan quickstart slot", "config: iterate quickstart slots")
 }

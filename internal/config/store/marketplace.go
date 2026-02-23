@@ -55,17 +55,7 @@ func (s *Store) ListMarketplaces(ctx context.Context) ([]Marketplace, error) {
 	if err != nil {
 		return nil, fmt.Errorf("config: list marketplaces: %w", err)
 	}
-	defer rows.Close()
-
-	var result []Marketplace
-	for rows.Next() {
-		m, err := scanMarketplace(rows)
-		if err != nil {
-			return nil, fmt.Errorf("config: scan marketplace: %w", err)
-		}
-		result = append(result, m)
-	}
-	return result, rows.Err()
+	return scanList(rows, scanMarketplace, "config: scan marketplace", "config: iterate marketplaces")
 }
 
 // GetMarketplaceByNamespace retrieves a marketplace by its namespace.
@@ -159,20 +149,15 @@ func (s *Store) RemoveMarketplace(ctx context.Context, namespace string) error {
 	if err != nil {
 		return fmt.Errorf("config: check installed plugins: %w", err)
 	}
-	var slugs []string
-	for rows.Next() {
-		slug, err := scanString(rows)
-		if err != nil {
-			rows.Close()
-			return fmt.Errorf("config: scan plugin slug: %w", err)
-		}
+	slugsRaw, err := scanList(rows, scanString, "config: scan plugin slug", "config: iterate plugin slugs")
+	if err != nil {
+		return err
+	}
+
+	slugs := make([]string, 0, len(slugsRaw))
+	for _, slug := range slugsRaw {
 		slugs = append(slugs, namespace+"/"+slug)
 	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return fmt.Errorf("config: iterate plugin slugs: %w", err)
-	}
-	rows.Close()
 	if len(slugs) > 0 {
 		return fmt.Errorf("cannot remove marketplace %q: %d plugins still installed. Uninstall them first: %s",
 			namespace, len(slugs), strings.Join(slugs, ", "))
@@ -221,17 +206,7 @@ func (s *Store) ListInstalledPlugins(ctx context.Context) ([]InstalledPluginWith
 	if err != nil {
 		return nil, fmt.Errorf("config: list installed plugins: %w", err)
 	}
-	defer rows.Close()
-
-	var result []InstalledPluginWithNamespace
-	for rows.Next() {
-		p, err := scanInstalledPluginWithNamespace(rows)
-		if err != nil {
-			return nil, fmt.Errorf("config: scan installed plugin: %w", err)
-		}
-		result = append(result, p)
-	}
-	return result, rows.Err()
+	return scanList(rows, scanInstalledPluginWithNamespace, "config: scan installed plugin", "config: iterate installed plugins")
 }
 
 // GetInstalledPlugin retrieves an installed plugin by namespace and slug.

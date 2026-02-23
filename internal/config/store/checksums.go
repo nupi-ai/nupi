@@ -94,18 +94,10 @@ func (s *Store) GetPluginChecksumsByPlugin(ctx context.Context, namespace, slug 
 	if err != nil {
 		return nil, fmt.Errorf("config: get plugin checksums by plugin: %s/%s: %w", namespace, slug, err)
 	}
-	defer rows.Close()
 
-	var result []PluginChecksum
-	for rows.Next() {
-		pc, err := scanPluginChecksum(rows)
-		if err != nil {
-			return nil, fmt.Errorf("config: get plugin checksums by plugin: scan: %w", err)
-		}
-		result = append(result, pc)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("config: get plugin checksums by plugin: iterate: %w", err)
+	result, err := scanList(rows, scanPluginChecksum, "config: get plugin checksums by plugin: scan", "config: get plugin checksums by plugin: iterate")
+	if err != nil {
+		return nil, err
 	}
 	if result == nil {
 		result = []PluginChecksum{}
@@ -127,18 +119,10 @@ func (s *Store) GetPluginChecksumsByID(ctx context.Context, pluginID int64) ([]P
 	if err != nil {
 		return nil, fmt.Errorf("config: get plugin checksums by id: plugin %d: %w", pluginID, err)
 	}
-	defer rows.Close()
 
-	var result []PluginChecksum
-	for rows.Next() {
-		pc, err := scanPluginChecksum(rows)
-		if err != nil {
-			return nil, fmt.Errorf("config: get plugin checksums by id: scan: %w", err)
-		}
-		result = append(result, pc)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("config: get plugin checksums by id: iterate: %w", err)
+	result, err := scanList(rows, scanPluginChecksum, "config: get plugin checksums by id: scan", "config: get plugin checksums by id: iterate")
+	if err != nil {
+		return nil, err
 	}
 	if result == nil {
 		result = []PluginChecksum{}

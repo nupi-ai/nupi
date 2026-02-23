@@ -41,23 +41,7 @@ func (s *Store) ListAdapterEndpoints(ctx context.Context) ([]AdapterEndpoint, er
 	if err != nil {
 		return nil, fmt.Errorf("config: list adapter endpoints: %w", err)
 	}
-	defer rows.Close()
-
-	var endpoints []AdapterEndpoint
-	for rows.Next() {
-		endp, err := scanAdapterEndpoint(rows)
-		if err != nil {
-			return nil, fmt.Errorf("config: scan adapter endpoint: %w", err)
-		}
-
-		endpoints = append(endpoints, endp)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("config: iterate adapter endpoints: %w", err)
-	}
-
-	return endpoints, nil
+	return scanList(rows, scanAdapterEndpoint, "config: scan adapter endpoint", "config: iterate adapter endpoints")
 }
 
 // GetAdapterEndpoint retrieves the endpoint definition for a given adapter.
