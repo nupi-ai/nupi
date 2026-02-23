@@ -1,13 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Pressable, RefreshControl, ScrollView, StyleSheet, View as RNView } from "react-native";
+import { RefreshControl, ScrollView, StyleSheet, Switch, View as RNView } from "react-native";
 import { router } from "expo-router";
 import Constants from "expo-constants";
 
+import { Button } from "@/components/Button";
 import Colors from "@/constants/Colors";
 import { useColorScheme } from "@/components/useColorScheme";
 import { Text, View } from "@/components/Themed";
 import { useConnection } from "@/lib/ConnectionContext";
+import { useNotifications } from "@/lib/NotificationContext";
 import { mapConnectionError } from "@/lib/errorMessages";
+import {
+  getNotificationPreferences,
+  saveNotificationPreferences,
+  type NotificationPreferences,
+} from "@/lib/storage";
+import { registerPushToken } from "@/lib/notifications";
 
 interface DaemonInfo {
   version: string;
@@ -74,6 +82,34 @@ export default function SettingsScreen() {
   const [daemonInfo, setDaemonInfo] = useState<DaemonInfo | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+
+  const { permissionGranted, requestPermission } = useNotifications();
+  const [notifPrefs, setNotifPrefs] = useState<NotificationPreferences>({
+    completion: true,
+    inputNeeded: true,
+    error: true,
+  });
+
+  // Load notification preferences on mount.
+  useEffect(() => {
+    (async () => {
+      const prefs = await getNotificationPreferences();
+      if (mountedRef.current) setNotifPrefs(prefs);
+    })();
+  }, []);
+
+  const updateNotifPref = useCallback(
+    async (key: keyof NotificationPreferences, value: boolean) => {
+      const next = { ...notifPrefs, [key]: value };
+      setNotifPrefs(next);
+      await saveNotificationPreferences(next);
+      // Re-register push token with updated preferences so daemon respects them.
+      if (connection.client && connection.status === "connected") {
+        registerPushToken(connection.client);
+      }
+    },
+    [notifPrefs, connection.client, connection.status]
+  );
 
   const isConnected = connection.status === "connected";
   const isReconnecting = connection.reconnecting;
@@ -242,6 +278,94 @@ export default function SettingsScreen() {
           </Text>
         )}
 
+        {/* NOTIFICATIONS section */}
+        <Text
+          style={[styles.sectionHeader, { color: colors.text, opacity: 0.5 }]}
+          accessibilityRole="header"
+        >
+          NOTIFICATIONS
+        </Text>
+        <RNView style={[styles.section, { backgroundColor: colors.surface }]}>
+          <RNView
+            style={[
+              styles.infoRow,
+              { borderBottomColor: colors.separator },
+            ]}
+          >
+            <Text style={[styles.infoLabel, { color: colors.text, opacity: 0.7 }]}>
+              Permission
+            </Text>
+            <RNView style={styles.infoValueRow}>
+              <Text style={[styles.infoValue, { color: colors.text }]}>
+                {permissionGranted ? "Granted" : "Not granted"}
+              </Text>
+              <RNView
+                style={[
+                  styles.statusDot,
+                  { backgroundColor: permissionGranted ? colors.success : colors.danger },
+                ]}
+              />
+            </RNView>
+          </RNView>
+          {!permissionGranted && (
+            <Button
+              variant="unstyled"
+              style={[
+                styles.infoRow,
+                { borderBottomColor: colors.separator },
+              ]}
+              onPress={requestPermission}
+              accessibilityLabel="Request notification permission"
+            >
+              <Text style={[styles.infoLabel, { color: colors.tint }]}>
+                Request Permission
+              </Text>
+            </Button>
+          )}
+          <RNView
+            style={[styles.toggleRow, { borderBottomColor: colors.separator }]}
+          >
+            <Text style={[styles.infoLabel, { color: colors.text, opacity: 0.7 }]}>
+              Task completed
+            </Text>
+            <Switch
+              value={notifPrefs.completion}
+              onValueChange={(v) => updateNotifPref("completion", v)}
+              trackColor={{ true: colors.tint }}
+              accessibilityLabel="Enable task completion notifications"
+              testID="settings-notif-completion"
+            />
+          </RNView>
+          <RNView
+            style={[styles.toggleRow, { borderBottomColor: colors.separator }]}
+          >
+            <Text style={[styles.infoLabel, { color: colors.text, opacity: 0.7 }]}>
+              Input needed
+            </Text>
+            <Switch
+              value={notifPrefs.inputNeeded}
+              onValueChange={(v) => updateNotifPref("inputNeeded", v)}
+              trackColor={{ true: colors.tint }}
+              accessibilityLabel="Enable input needed notifications"
+              testID="settings-notif-input-needed"
+            />
+          </RNView>
+          <RNView
+            style={[styles.toggleRow, { borderBottomWidth: 0 }]}
+          >
+            <Text style={[styles.infoLabel, { color: colors.text, opacity: 0.7 }]}>
+              Errors
+            </Text>
+            <Switch
+              value={notifPrefs.error}
+              onValueChange={(v) => updateNotifPref("error", v)}
+              trackColor={{ true: colors.tint }}
+              accessibilityLabel="Enable error notifications"
+              testID="settings-notif-error"
+            />
+          </RNView>
+        </RNView>
+
         {/* ACTIONS section */}
         <Text
           style={[styles.sectionHeader, { color: colors.text, opacity: 0.5 }]}
@@ -250,13 +374,11 @@ export default function SettingsScreen() {
           ACTIONS
         </Text>
         <RNView style={styles.actionsSection}>
-          <Pressable
-            style={({ pressed }) => [
-              styles.actionButton,
-              { backgroundColor: colors.tint, opacity: pressed ? 0.7 : 1 },
-            ]}
+          <Button
+            style={styles.actionButton}
+            variant="primary"
+            color={colors.tint}
             onPress={() => router.push("/scan")}
-            accessibilityRole="button"
             accessibilityLabel="Re-pair by scanning QR code"
             accessibilityHint="Opens camera to scan a QR code for pairing with nupid"
             testID="settings-re-pair-button"
@@ -264,19 +386,14 @@ export default function SettingsScreen() {
             <Text style={[styles.actionButtonText, { color: colors.background }]}>
               Re-pair (scan QR)
             </Text>
-          </Pressable>
+          </Button>
 
           {isConnected && (
-            <Pressable
-              style={({ pressed }) => [
-                styles.actionButton,
-                {
-                  backgroundColor: colors.danger,
-                  opacity: pressed ? 0.7 : 1,
-                },
-              ]}
+            <Button
+              style={styles.actionButton}
+              variant="danger"
+              color={colors.danger}
               onPress={connection.disconnect}
-              accessibilityRole="button"
               accessibilityLabel="Disconnect from nupid"
               accessibilityHint="Clears stored credentials and disconnects from the paired daemon"
               testID="settings-disconnect-button"
@@ -284,7 +401,7 @@ export default function SettingsScreen() {
               <Text style={[styles.actionButtonText, { color: colors.onDanger }]}>
                 Disconnect
               </Text>
-            </Pressable>
+            </Button>
           )}
         </RNView>
 
@@ -355,6 +472,14 @@ const styles = StyleSheet.create({
   },
   actionsSection: {
     gap: 12,
+  },
+  toggleRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
   },
   actionButton: {
     paddingVertical: 14,

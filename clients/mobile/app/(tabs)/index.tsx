@@ -1,6 +1,7 @@
-import { StyleSheet, Pressable, View as RNView } from "react-native";
+import { StyleSheet, View as RNView } from "react-native";
 import { router } from "expo-router";
 
+import { Button } from "@/components/Button";
 import Colors from "@/constants/Colors";
 import { useColorScheme } from "@/components/useColorScheme";
 import { Text, View } from "@/components/Themed";
@@ -68,31 +69,25 @@ export default function HomeScreen() {
       )}
 
       {showRetryButton && (
-        <Pressable
-          style={({ pressed }) => [
-            styles.retryButton,
-            { backgroundColor: colors.tint, opacity: pressed ? 0.7 : 1 },
-          ]}
+        <Button
+          style={styles.retryButton}
+          variant="primary"
+          color={colors.tint}
           onPress={connection.retryConnection}
-          accessibilityRole="button"
           accessibilityLabel="Retry connection"
           accessibilityHint="Attempts to reconnect to nupid"
           testID="retry-connection-button"
         >
           <Text style={[styles.buttonText, { color: colors.background }]}>Retry</Text>
-        </Pressable>
+        </Button>
       )}
 
       {showScanButton && (
-        <Pressable
-          style={({ pressed }) => [
-            showRetryButton ? styles.scanButtonOutline : styles.scanButton,
-            showRetryButton
-              ? { borderColor: colors.tint, opacity: pressed ? 0.7 : 1 }
-              : { backgroundColor: colors.tint, opacity: pressed ? 0.7 : 1 },
-          ]}
+        <Button
+          style={showRetryButton ? styles.scanButtonOutline : styles.scanButton}
+          variant={showRetryButton ? "outline" : "primary"}
+          color={colors.tint}
           onPress={() => router.push("/scan")}
-          accessibilityRole="button"
           accessibilityLabel={connection.error ? "Re-scan QR Code" : "Scan QR to Connect"}
           accessibilityHint="Opens camera to scan a QR code for pairing with nupid"
           testID="scan-qr-button"
@@ -105,17 +100,15 @@ export default function HomeScreen() {
           >
             {connection.error ? "Re-scan QR Code" : "Scan QR to Connect"}
           </Text>
-        </Pressable>
+        </Button>
       )}
 
       {showScanButton && connection.error && (
-        <Pressable
-          style={({ pressed }) => [
-            styles.settingsButton,
-            { borderColor: colors.tint, opacity: pressed ? 0.7 : 1 },
-          ]}
+        <Button
+          style={styles.settingsButton}
+          variant="outline"
+          color={colors.tint}
           onPress={() => router.push("/(tabs)/settings")}
-          accessibilityRole="button"
           accessibilityLabel="Go to settings"
           accessibilityHint="View connection details and manage pairing"
           testID="home-go-to-settings-button"
@@ -123,17 +116,15 @@ export default function HomeScreen() {
           <Text style={[styles.settingsButtonText, { color: colors.tint }]}>
             Go to Settings
           </Text>
-        </Pressable>
+        </Button>
       )}
 
       {connection.status === "connected" && (
-        <Pressable
-          style={({ pressed }) => [
-            styles.disconnectButton,
-            { borderColor: colors.danger, opacity: pressed ? 0.7 : 1 },
-          ]}
+        <Button
+          style={styles.disconnectButton}
+          variant="outline"
+          color={colors.danger}
           onPress={connection.disconnect}
-          accessibilityRole="button"
           accessibilityLabel="Disconnect"
           accessibilityHint="Disconnects from the paired nupid daemon"
           testID="disconnect-button"
@@ -141,7 +132,7 @@ export default function HomeScreen() {
           <Text style={[styles.disconnectText, { color: colors.danger }]}>
             Disconnect
           </Text>
-        </Pressable>
+        </Button>
       )}
     </View>
   );

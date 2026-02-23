@@ -2,13 +2,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
-  Pressable,
   RefreshControl,
   StyleSheet,
   View as RNView,
 } from "react-native";
 import { router } from "expo-router";
 
+import { Button } from "@/components/Button";
 import type { Session } from "@/lib/gen/nupi_pb";
 import Colors from "@/constants/Colors";
 import { useColorScheme } from "@/components/useColorScheme";
@@ -110,13 +110,11 @@ export default function SessionsScreen() {
           {error}
         </Text>
         {status === "connected" ? (
-          <Pressable
-            style={({ pressed }) => [
-              styles.retryButton,
-              { backgroundColor: colors.tint, opacity: pressed ? 0.7 : 1 },
-            ]}
+          <Button
+            style={styles.retryButton}
+            variant="primary"
+            color={colors.tint}
             onPress={handleRetry}
-            accessibilityRole="button"
             accessibilityLabel="Retry loading sessions"
             accessibilityHint="Attempts to fetch the session list again"
             testID="retry-sessions-button"
@@ -124,7 +122,7 @@ export default function SessionsScreen() {
             <Text style={[styles.retryButtonText, { color: colors.background }]}>
               Retry
             </Text>
-          </Pressable>
+          </Button>
         ) : (
           <Text style={styles.emptyText}>
             Reconnect on the Home tab to retry.

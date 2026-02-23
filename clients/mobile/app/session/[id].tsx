@@ -15,6 +15,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { ConversationPanel } from "@/components/ConversationPanel";
 import { ModelDownloadSheet } from "@/components/ModelDownloadSheet";
+import { Button } from "@/components/Button";
 import { SpecialKeysToolbar } from "@/components/SpecialKeysToolbar";
 import { Text } from "@/components/Themed";
 import { TranscriptionBubble } from "@/components/TranscriptionBubble";
@@ -588,58 +589,50 @@ export default function SessionTerminalScreen() {
         <Text style={[styles.errorText, { color: Colors[colorScheme].danger }]}>
           {streamError ?? "Connection failed"}
         </Text>
-        <Pressable
+        <Button
           onPress={handleRetryStream}
-          style={({ pressed }) => [
-            styles.button,
-            { backgroundColor: Colors[colorScheme].tint, opacity: pressed ? 0.7 : 1 },
-          ]}
-          accessibilityRole="button"
+          style={styles.button}
+          variant="primary"
+          color={Colors[colorScheme].tint}
           accessibilityLabel="Retry connection"
           accessibilityHint="Attempts to reconnect the WebSocket stream"
           testID="retry-stream-button"
         >
           <Text style={[styles.buttonText, { color: Colors[colorScheme].background }]}>Retry</Text>
-        </Pressable>
-        <Pressable
+        </Button>
+        <Button
           onPress={() => router.push("/scan")}
-          style={({ pressed }) => [
-            styles.goBackButton,
-            { borderColor: Colors[colorScheme].tint, opacity: pressed ? 0.7 : 1 },
-          ]}
-          accessibilityRole="button"
+          style={styles.goBackButton}
+          variant="outline"
+          color={Colors[colorScheme].tint}
           accessibilityLabel="Re-pair by scanning QR code"
           accessibilityHint="Opens camera to scan a new QR code for pairing with nupid"
           testID="re-pair-stream-button"
         >
           <Text style={[styles.buttonText, { color: Colors[colorScheme].tint }]}>Re-pair (scan QR)</Text>
-        </Pressable>
-        <Pressable
+        </Button>
+        <Button
           onPress={() => router.push("/(tabs)/settings")}
-          style={({ pressed }) => [
-            styles.goBackButton,
-            { borderColor: Colors[colorScheme].tint, opacity: pressed ? 0.7 : 1 },
-          ]}
-          accessibilityRole="button"
+          style={styles.goBackButton}
+          variant="outline"
+          color={Colors[colorScheme].tint}
           accessibilityLabel="Go to settings"
           accessibilityHint="View connection details and manage pairing"
           testID="session-go-to-settings-button"
         >
           <Text style={[styles.buttonText, { color: Colors[colorScheme].tint }]}>Go to Settings</Text>
-        </Pressable>
-        <Pressable
+        </Button>
+        <Button
           onPress={handleGoBack}
-          style={({ pressed }) => [
-            styles.goBackButton,
-            { borderColor: Colors[colorScheme].tint, opacity: pressed ? 0.7 : 1 },
-          ]}
-          accessibilityRole="button"
+          style={styles.goBackButton}
+          variant="outline"
+          color={Colors[colorScheme].tint}
           accessibilityLabel="Go back to session list"
           accessibilityHint="Returns to the session list screen"
           testID="go-back-button"
         >
           <Text style={[styles.buttonText, { color: Colors[colorScheme].tint }]}>Go Back</Text>
-        </Pressable>
+        </Button>
       </RNView>
     );
   }
