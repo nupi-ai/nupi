@@ -25,6 +25,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/jsrunner"
 	"github.com/nupi-ai/nupi/internal/napdial"
 	"github.com/nupi-ai/nupi/internal/plugins/manifest"
+	"github.com/nupi-ai/nupi/internal/sanitize"
 	maputil "github.com/nupi-ai/nupi/internal/util/maps"
 	"github.com/nupi-ai/nupi/internal/voice/slots"
 )
@@ -1160,60 +1161,32 @@ func (m *Manager) clearSlotError(slot Slot) {
 func sanitizeAdapterSlug(manifest *manifest.Manifest, fallback string) string {
 	if manifest != nil {
 		if slug := strings.TrimSpace(manifest.Metadata.Slug); slug != "" {
-			if sanitized := sanitizeIdentifier(slug); sanitized != "" {
-				if sanitized != strings.ToLower(strings.ReplaceAll(slug, " ", "-")) {
-					log.Printf("[Adapters] sanitized slug %q -> %q", slug, sanitized)
-				} else if sanitized != slug {
-					log.Printf("[Adapters] sanitized slug %q -> %q", slug, sanitized)
-				}
-				return sanitized
+			sanitized := sanitize.SafeSlug(slug)
+			if sanitized != strings.ToLower(strings.ReplaceAll(slug, " ", "-")) {
+				log.Printf("[Adapters] sanitized slug %q -> %q", slug, sanitized)
+			} else if sanitized != slug {
+				log.Printf("[Adapters] sanitized slug %q -> %q", slug, sanitized)
 			}
+			return sanitized
 		}
 		if name := strings.TrimSpace(manifest.Metadata.Name); name != "" {
-			if sanitized := sanitizeIdentifier(name); sanitized != "" {
-				if sanitized != strings.ToLower(strings.ReplaceAll(name, " ", "-")) {
-					log.Printf("[Adapters] sanitized name %q -> %q", name, sanitized)
-				} else if sanitized != name {
-					log.Printf("[Adapters] sanitized name %q -> %q", name, sanitized)
-				}
-				return sanitized
-			}
-		}
-	}
-	if fallback = strings.TrimSpace(fallback); fallback != "" {
-		if sanitized := sanitizeIdentifier(fallback); sanitized != "" {
-			if sanitized != fallback {
-				log.Printf("[Adapters] sanitized fallback %q -> %q", fallback, sanitized)
+			sanitized := sanitize.SafeSlug(name)
+			if sanitized != strings.ToLower(strings.ReplaceAll(name, " ", "-")) {
+				log.Printf("[Adapters] sanitized name %q -> %q", name, sanitized)
+			} else if sanitized != name {
+				log.Printf("[Adapters] sanitized name %q -> %q", name, sanitized)
 			}
 			return sanitized
 		}
 	}
-	return "adapter"
-}
-
-func sanitizeIdentifier(value string) string {
-	value = strings.ToLower(value)
-	var b strings.Builder
-	for _, r := range value {
-		switch {
-		case r >= 'a' && r <= 'z':
-			b.WriteRune(r)
-		case r >= '0' && r <= '9':
-			b.WriteRune(r)
-		case r == '-' || r == '_':
-			b.WriteRune(r)
-		case r == ' ' || r == '.' || r == '/':
-			b.WriteRune('-')
+	if fallback = strings.TrimSpace(fallback); fallback != "" {
+		sanitized := sanitize.SafeSlug(fallback)
+		if sanitized != fallback {
+			log.Printf("[Adapters] sanitized fallback %q -> %q", fallback, sanitized)
 		}
+		return sanitized
 	}
-	res := strings.Trim(b.String(), "-_")
-	if res == "" {
-		return "adapter"
-	}
-	if len(res) > 64 {
-		return res[:64]
-	}
-	return res
+	return "adapter"
 }
 
 func mergeManifestEndpoint(manifest *manifest.Manifest, adapterID string, endpoint configstore.AdapterEndpoint) (configstore.AdapterEndpoint, error) {

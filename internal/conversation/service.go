@@ -11,11 +11,11 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
+	"github.com/nupi-ai/nupi/internal/sanitize"
 )
 
 type summaryRequest struct {
@@ -1049,31 +1049,9 @@ func (m *metadataAccumulator) result() map[string]string {
 }
 
 func sanitizeKey(key string) string {
-	key = strings.TrimSpace(key)
-	if key == "" {
-		return ""
-	}
-	if utf8.RuneCountInString(key) <= maxMetadataKeyRunes {
-		return key
-	}
-	runes := []rune(key)
-	if len(runes) > maxMetadataKeyRunes {
-		runes = runes[:maxMetadataKeyRunes]
-	}
-	return string(runes)
+	return sanitize.TrimToRunes(key, maxMetadataKeyRunes)
 }
 
 func sanitizeValue(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return ""
-	}
-	if utf8.RuneCountInString(value) <= maxMetadataValueRunes {
-		return value
-	}
-	runes := []rune(value)
-	if len(runes) > maxMetadataValueRunes {
-		runes = runes[:maxMetadataValueRunes]
-	}
-	return string(runes)
+	return sanitize.TrimToRunes(value, maxMetadataValueRunes)
 }
