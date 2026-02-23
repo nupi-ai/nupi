@@ -5,6 +5,7 @@ package awareness
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -47,8 +48,11 @@ type Service struct {
 
 	shuttingDown atomic.Bool
 
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	onboardingMu        sync.Mutex
+	onboardingSessionID string // session that claimed onboarding
+
+	lifecycleSub *eventbus.TypedSubscription[eventbus.SessionLifecycleEvent]
+	lifecycle    eventbus.ServiceLifecycle
 }
 
 // NewService creates a new awareness service for the given instance directory.
@@ -123,6 +127,8 @@ func (s *Service) Start(ctx context.Context) error {
 
 	// Start flush consumer goroutines if event bus is available.
 	if s.bus != nil {
+		s.lifecycle.Start(ctx)
+
 		if s.flushTimeout == 0 {
 			s.flushTimeout = eventbus.DefaultFlushTimeout
 		}
@@ -131,19 +137,18 @@ func (s *Service) Start(ctx context.Context) error {
 		s.flushReplySub = eventbus.Subscribe[eventbus.ConversationReplyEvent](s.bus, eventbus.TopicConversationReply, eventbus.WithSubscriptionName("awareness_flush_reply"))
 		s.exportSub = eventbus.Subscribe[eventbus.SessionExportRequestEvent](s.bus, eventbus.TopicSessionExportRequest, eventbus.WithSubscriptionName("awareness_export_request"))
 		s.exportReplySub = eventbus.Subscribe[eventbus.ConversationReplyEvent](s.bus, eventbus.TopicConversationReply, eventbus.WithSubscriptionName("awareness_export_reply"))
+		s.lifecycleSub = eventbus.Subscribe[eventbus.SessionLifecycleEvent](s.bus, eventbus.TopicSessionsLifecycle, eventbus.WithSubscriptionName("awareness_lifecycle"))
 
 		if s.slugTimeout == 0 {
 			s.slugTimeout = defaultSlugTimeout
 		}
 
-		var derivedCtx context.Context
-		derivedCtx, s.cancel = context.WithCancel(ctx)
-
-		s.wg.Add(4)
-		go s.consumeFlushRequests(derivedCtx)
-		go s.consumeFlushReplies(derivedCtx)
-		go s.consumeExportRequests(derivedCtx)
-		go s.consumeExportReplies(derivedCtx)
+		s.lifecycle.AddSubscriptions(s.flushSub, s.flushReplySub, s.exportSub, s.exportReplySub, s.lifecycleSub)
+		s.lifecycle.Go(s.consumeFlushRequests)
+		s.lifecycle.Go(s.consumeFlushReplies)
+		s.lifecycle.Go(s.consumeExportRequests)
+		s.lifecycle.Go(s.consumeExportReplies)
+		s.lifecycle.Go(s.consumeLifecycleEvents)
 	}
 
 	log.Printf("[Awareness] Service started (core memory: %d chars)", utf8.RuneCountInString(s.CoreMemory()))
@@ -160,12 +165,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	// This must happen BEFORE closing the indexer so that in-flight
 	// handleFlushReply calls (which may call writeFlushContent → indexer.Sync)
 	// finish before the indexer is closed.
-	if s.flushSub != nil {
-		s.flushSub.Close()
-	}
-	if s.flushReplySub != nil {
-		s.flushReplySub.Close()
-	}
+	s.lifecycle.Stop()
 
 	// Clear pending flush entries. Timers are fire-and-forget: the
 	// shuttingDown flag (set above) makes callbacks no-op.
@@ -174,14 +174,6 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		return true
 	})
 
-	// Close export subscriptions.
-	if s.exportSub != nil {
-		s.exportSub.Close()
-	}
-	if s.exportReplySub != nil {
-		s.exportReplySub.Close()
-	}
-
 	// Clear pending export entries. Timers are fire-and-forget: the
 	// shuttingDown flag (set above) makes callbacks no-op.
 	s.pendingExport.Range(func(key, _ any) bool {
@@ -189,20 +181,8 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		return true
 	})
 
-	if s.cancel != nil {
-		s.cancel()
-	}
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		s.wg.Wait()
-	}()
-
-	select {
-	case <-done:
-	case <-ctx.Done():
-		return ctx.Err()
+	if err := s.lifecycle.Wait(ctx); err != nil {
+		return err
 	}
 
 	// Close the indexer after goroutines have stopped to prevent
@@ -302,6 +282,107 @@ func (s *Service) CoreMemory() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.coreMemory
+}
+
+// IsOnboarding returns true if BOOTSTRAP.md exists in the awareness directory,
+// indicating the AI has not yet completed its first-time setup conversation.
+// Thread-safe: called once per prompt; file I/O is negligible at prompt frequency.
+func (s *Service) IsOnboarding() bool {
+	_, err := os.Stat(filepath.Join(s.awarenessDir, "BOOTSTRAP.md"))
+	return err == nil
+}
+
+// BootstrapContent reads and returns the content of BOOTSTRAP.md.
+// Returns "" if the file is missing or unreadable (graceful degradation).
+func (s *Service) BootstrapContent() string {
+	data, err := os.ReadFile(filepath.Join(s.awarenessDir, "BOOTSTRAP.md"))
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+// CompleteOnboarding deletes BOOTSTRAP.md and creates a persistent
+// .onboarding_done marker so that scaffoldCoreFiles never recreates it.
+// Also clears the in-memory session lock.
+// Returns (true, nil) if BOOTSTRAP.md was removed, (false, nil) if already done (idempotent).
+func (s *Service) CompleteOnboarding() (bool, error) {
+	s.onboardingMu.Lock()
+	defer s.onboardingMu.Unlock()
+
+	bootstrapRemoved := true
+	err := os.Remove(filepath.Join(s.awarenessDir, "BOOTSTRAP.md"))
+	if errors.Is(err, os.ErrNotExist) {
+		bootstrapRemoved = false
+	} else if err != nil {
+		return false, fmt.Errorf("remove BOOTSTRAP.md: %w", err)
+	}
+
+	markerPath := filepath.Join(s.awarenessDir, ".onboarding_done")
+	if err := os.WriteFile(markerPath, []byte("done\n"), 0o600); err != nil {
+		return false, fmt.Errorf("write .onboarding_done: %w", err)
+	}
+
+	s.onboardingSessionID = ""
+	if bootstrapRemoved {
+		log.Printf("[Awareness] onboarding complete, BOOTSTRAP.md removed, marker created")
+	} else {
+		log.Printf("[Awareness] onboarding already complete, marker ensured")
+	}
+	return bootstrapRemoved, nil
+}
+
+// IsOnboardingSession checks whether the given session should enter onboarding.
+// The first session to call this while onboarding is active claims the lock;
+// subsequent sessions with a different ID are rejected. This prevents multiple
+// concurrent sessions from running onboarding simultaneously.
+//
+// The file check (IsOnboarding) is performed inside the mutex to prevent a race
+// with CompleteOnboarding, which deletes BOOTSTRAP.md under the same lock.
+func (s *Service) IsOnboardingSession(sessionID string) bool {
+	if sessionID == "" {
+		return false
+	}
+	s.onboardingMu.Lock()
+	defer s.onboardingMu.Unlock()
+
+	if !s.IsOnboarding() {
+		return false
+	}
+
+	if s.onboardingSessionID == "" {
+		s.onboardingSessionID = sessionID
+		log.Printf("[Awareness] onboarding claimed by session %s", sessionID)
+		return true
+	}
+	return s.onboardingSessionID == sessionID
+}
+
+// ReleaseOnboardingSession clears the onboarding lock if it is held by the given
+// session. This allows another session to claim onboarding when the original
+// session disconnects before completing onboarding (AC #4).
+func (s *Service) ReleaseOnboardingSession(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	s.onboardingMu.Lock()
+	defer s.onboardingMu.Unlock()
+
+	if s.onboardingSessionID == sessionID {
+		s.onboardingSessionID = ""
+		log.Printf("[Awareness] onboarding lock released for disconnected session %s", sessionID)
+	}
+}
+
+// consumeLifecycleEvents listens for session stop/detach events and releases
+// the onboarding lock if the owning session disconnects mid-onboarding.
+func (s *Service) consumeLifecycleEvents(ctx context.Context) {
+	eventbus.Consume(ctx, s.lifecycleSub, nil, func(event eventbus.SessionLifecycleEvent) {
+		switch event.State {
+		case eventbus.SessionStateStopped, eventbus.SessionStateDetached:
+			s.ReleaseOnboardingSession(event.SessionID)
+		}
+	})
 }
 
 // ensureDirectories creates the awareness directory structure if it doesn't exist,

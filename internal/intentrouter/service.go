@@ -54,9 +54,8 @@ type Service struct {
 	coreMemoryProvider CoreMemoryProvider
 	onboardingProvider OnboardingProvider
 
-	mu     sync.RWMutex
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	mu        sync.RWMutex
+	lifecycle eventbus.ServiceLifecycle
 
 	promptSub     *eventbus.TypedSubscription[eventbus.ConversationPromptEvent]
 	toolSub       *eventbus.TypedSubscription[eventbus.SessionToolEvent]
@@ -97,19 +96,18 @@ func (s *Service) Start(ctx context.Context) error {
 		return nil
 	}
 
-	derivedCtx, cancel := context.WithCancel(ctx)
-	s.cancel = cancel
+	s.lifecycle.Start(ctx)
 
 	s.promptSub = eventbus.Subscribe[eventbus.ConversationPromptEvent](s.bus, eventbus.TopicConversationPrompt, eventbus.WithSubscriptionName("intent_router_prompt"))
 	s.toolSub = eventbus.Subscribe[eventbus.SessionToolEvent](s.bus, eventbus.TopicSessionsTool, eventbus.WithSubscriptionName("intent_router_tool"))
 	s.toolChangeSub = eventbus.Subscribe[eventbus.SessionToolChangedEvent](s.bus, eventbus.TopicSessionsToolChanged, eventbus.WithSubscriptionName("intent_router_tool_changed"))
 	s.lifecycleSub = eventbus.Subscribe[eventbus.SessionLifecycleEvent](s.bus, eventbus.TopicSessionsLifecycle, eventbus.WithSubscriptionName("intent_router_lifecycle"))
 
-	s.wg.Add(4)
-	go s.consumePrompts(derivedCtx)
-	go s.consumeToolEvents(derivedCtx)
-	go s.consumeToolChangeEvents(derivedCtx)
-	go s.consumeLifecycleEvents(derivedCtx)
+	s.lifecycle.AddSubscriptions(s.promptSub, s.toolSub, s.toolChangeSub, s.lifecycleSub)
+	s.lifecycle.Go(s.consumePrompts)
+	s.lifecycle.Go(s.consumeToolEvents)
+	s.lifecycle.Go(s.consumeToolChangeEvents)
+	s.lifecycle.Go(s.consumeLifecycleEvents)
 
 	s.mu.RLock()
 	adapterConfigured := s.adapter != nil
@@ -125,36 +123,10 @@ func (s *Service) Start(ctx context.Context) error {
 
 // Shutdown stops the service gracefully.
 func (s *Service) Shutdown(ctx context.Context) error {
-	if s.cancel != nil {
-		s.cancel()
+	if err := s.lifecycle.Shutdown(ctx); err != nil {
+		return err
 	}
-
-	if s.promptSub != nil {
-		s.promptSub.Close()
-	}
-	if s.toolSub != nil {
-		s.toolSub.Close()
-	}
-	if s.toolChangeSub != nil {
-		s.toolChangeSub.Close()
-	}
-	if s.lifecycleSub != nil {
-		s.lifecycleSub.Close()
-	}
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		s.wg.Wait()
-	}()
-
-	select {
-	case <-done:
-		log.Printf("[IntentRouter] Service shutdown complete")
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-
+	log.Printf("[IntentRouter] Service shutdown complete")
 	return nil
 }
 
@@ -213,19 +185,19 @@ func (s *Service) SetCoreMemoryProvider(provider CoreMemoryProvider) {
 }
 
 func (s *Service) consumePrompts(ctx context.Context) {
-	eventbus.Consume(ctx, s.promptSub, &s.wg, func(prompt eventbus.ConversationPromptEvent) {
+	eventbus.Consume(ctx, s.promptSub, nil, func(prompt eventbus.ConversationPromptEvent) {
 		s.handlePrompt(ctx, prompt)
 	})
 }
 
 func (s *Service) consumeToolEvents(ctx context.Context) {
-	eventbus.Consume(ctx, s.toolSub, &s.wg, func(event eventbus.SessionToolEvent) {
+	eventbus.Consume(ctx, s.toolSub, nil, func(event eventbus.SessionToolEvent) {
 		s.updateToolCache(event.SessionID, event.ToolName)
 	})
 }
 
 func (s *Service) consumeToolChangeEvents(ctx context.Context) {
-	eventbus.Consume(ctx, s.toolChangeSub, &s.wg, func(event eventbus.SessionToolChangedEvent) {
+	eventbus.Consume(ctx, s.toolChangeSub, nil, func(event eventbus.SessionToolChangedEvent) {
 		s.updateToolCache(event.SessionID, event.NewTool)
 		log.Printf("[IntentRouter] Tool changed for session %s: %s -> %s",
 			event.SessionID, event.PreviousTool, event.NewTool)
@@ -323,7 +295,7 @@ func (s *Service) selectTargetSession(prompt eventbus.ConversationPromptEvent, p
 }
 
 func (s *Service) consumeLifecycleEvents(ctx context.Context) {
-	eventbus.Consume(ctx, s.lifecycleSub, &s.wg, func(event eventbus.SessionLifecycleEvent) {
+	eventbus.Consume(ctx, s.lifecycleSub, nil, func(event eventbus.SessionLifecycleEvent) {
 		// Clean up tool cache when session stops or detaches
 		switch event.State {
 		case eventbus.SessionStateStopped, eventbus.SessionStateDetached:

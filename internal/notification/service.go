@@ -33,8 +33,8 @@ type Service struct {
 	bus   *eventbus.Bus
 	expo  *ExpoClient
 
-	cancel       context.CancelFunc
-	wg           sync.WaitGroup
+	lifecycle    eventbus.ServiceLifecycle
+	asyncWG      sync.WaitGroup
 	lifecycleSub *eventbus.TypedSubscription[eventbus.SessionLifecycleEvent]
 	speakSub     *eventbus.TypedSubscription[eventbus.ConversationSpeakEvent]
 	pipelineSub  *eventbus.TypedSubscription[eventbus.PipelineMessageEvent]
@@ -49,6 +49,12 @@ type Service struct {
 
 	// sendSem bounds concurrent sendNotification goroutines.
 	sendSem chan struct{}
+
+	// Counters for observability (logged on shutdown).
+	metricSent    atomic.Int64
+	metricFailed  atomic.Int64
+	metricDeduped atomic.Int64
+	metricCleaned atomic.Int64
 }
 
 // NewService creates a notification service.
@@ -64,8 +70,7 @@ func NewService(store TokenStore, bus *eventbus.Bus, opts ...ExpoClientOption) *
 
 // Start subscribes to event bus topics and begins consuming events.
 func (s *Service) Start(ctx context.Context) error {
-	derived, cancel := context.WithCancel(ctx)
-	s.cancel = cancel
+	s.lifecycle.Start(ctx)
 
 	s.lifecycleSub = eventbus.Subscribe[eventbus.SessionLifecycleEvent](
 		s.bus,
@@ -81,6 +86,8 @@ func (s *Service) Start(ctx context.Context) error {
 		eventbus.WithSubscriptionBuffer(notificationQueue),
 	)
 
+	// TODO: Pipeline events are high-volume; consider a dedicated notification
+	// topic so the service doesn't have to filter the full pipeline.cleaned stream.
 	s.pipelineSub = eventbus.Subscribe[eventbus.PipelineMessageEvent](
 		s.bus,
 		eventbus.TopicPipelineCleaned,
@@ -88,10 +95,10 @@ func (s *Service) Start(ctx context.Context) error {
 		eventbus.WithSubscriptionBuffer(notificationQueue),
 	)
 
-	s.wg.Add(3)
-	go s.consumeLifecycleEvents(derived)
-	go s.consumeSpeakEvents(derived)
-	go s.consumePipelineEvents(derived)
+	s.lifecycle.AddSubscriptions(s.lifecycleSub, s.speakSub, s.pipelineSub)
+	s.lifecycle.Go(s.consumeLifecycleEvents)
+	s.lifecycle.Go(s.consumeSpeakEvents)
+	s.lifecycle.Go(s.consumePipelineEvents)
 
 	return nil
 }
@@ -101,63 +108,52 @@ func (s *Service) Start(ctx context.Context) error {
 // killing all sessions during graceful shutdown.
 func (s *Service) Shutdown(ctx context.Context) error {
 	s.shuttingDown.Store(true)
-	if s.cancel != nil {
-		s.cancel()
+	s.lifecycle.Stop()
+	if err := s.lifecycle.Wait(ctx); err != nil {
+		return err
 	}
-	if s.lifecycleSub != nil {
-		s.lifecycleSub.Close()
-	}
-	if s.speakSub != nil {
-		s.speakSub.Close()
-	}
-	if s.pipelineSub != nil {
-		s.pipelineSub.Close()
-	}
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		s.wg.Wait()
-	}()
-
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	err := eventbus.WaitForWorkers(ctx, &s.asyncWG)
+	log.Printf("[Notification] shutdown: sent=%d failed=%d deduped=%d cleaned=%d",
+		s.metricSent.Load(), s.metricFailed.Load(), s.metricDeduped.Load(), s.metricCleaned.Load())
+	return err
 }
 
 func (s *Service) consumeLifecycleEvents(ctx context.Context) {
-	eventbus.Consume(ctx, s.lifecycleSub, &s.wg, func(evt eventbus.SessionLifecycleEvent) {
+	eventbus.Consume(ctx, s.lifecycleSub, nil, func(evt eventbus.SessionLifecycleEvent) {
 		s.dispatchAsync(ctx, func() { s.handleLifecycleEvent(ctx, evt) })
 	})
 }
 
 func (s *Service) consumeSpeakEvents(ctx context.Context) {
-	eventbus.Consume(ctx, s.speakSub, &s.wg, func(evt eventbus.ConversationSpeakEvent) {
+	eventbus.Consume(ctx, s.speakSub, nil, func(evt eventbus.ConversationSpeakEvent) {
 		s.dispatchAsync(ctx, func() { s.handleSpeakEvent(ctx, evt) })
 	})
 }
 
 func (s *Service) consumePipelineEvents(ctx context.Context) {
-	eventbus.Consume(ctx, s.pipelineSub, &s.wg, func(evt eventbus.PipelineMessageEvent) {
+	eventbus.Consume(ctx, s.pipelineSub, nil, func(evt eventbus.PipelineMessageEvent) {
 		s.dispatchAsync(ctx, func() { s.handlePipelineEvent(ctx, evt) })
 	})
 }
 
 // dispatchAsync runs fn in a goroutine, bounded by sendSem to limit
-// concurrent push notification IO.
+// concurrent push notification IO. Panics in fn are recovered to prevent
+// the notification service from crashing the daemon.
 func (s *Service) dispatchAsync(ctx context.Context, fn func()) {
 	select {
 	case s.sendSem <- struct{}{}:
 	case <-ctx.Done():
 		return
 	}
-	s.wg.Add(1)
+	s.asyncWG.Add(1)
 	go func() {
-		defer s.wg.Done()
+		defer s.asyncWG.Done()
 		defer func() { <-s.sendSem }()
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[Notification] recovered panic in dispatch: %v", r)
+			}
+		}()
 		fn()
 	}()
 }
@@ -170,6 +166,12 @@ func (s *Service) handleLifecycleEvent(ctx context.Context, evt eventbus.Session
 	// Suppress notifications during daemon shutdown to avoid spamming ERROR
 	// notifications for every session being killed as part of graceful stop.
 	if s.shuttingDown.Load() {
+		return
+	}
+
+	// Suppress notification for user-initiated kills (KillSession RPC).
+	// The user already knows they killed the session.
+	if evt.Reason == "session_killed" {
 		return
 	}
 
@@ -259,6 +261,7 @@ func (s *Service) handleSpeakEvent(ctx context.Context, evt eventbus.Conversatio
 func (s *Service) sendNotification(ctx context.Context, sessionID, eventType, title, body string) {
 	dk := dedupKey(sessionID, eventType, body)
 	if s.isDuplicate(dk) {
+		s.metricDeduped.Add(1)
 		return
 	}
 
@@ -301,11 +304,14 @@ func (s *Service) sendNotification(ctx context.Context, sessionID, eventType, ti
 
 	result, err := s.expo.Send(ctx, messages)
 	if err != nil {
+		s.metricFailed.Add(1)
 		log.Printf("[Notification] send push: %v", err)
 		// Don't mark as dedup — allow retry on next event.
 		s.clearDedup(dk)
 		return
 	}
+
+	s.metricSent.Add(1)
 
 	// Auto-cleanup stale tokens.
 	for _, staleToken := range result.DeviceNotRegistered {
@@ -358,6 +364,7 @@ func (s *Service) cleanupStaleToken(ctx context.Context, token string, tokens []
 			if err := s.store.DeletePushToken(ctx, pt.DeviceID); err != nil {
 				log.Printf("[Notification] cleanup stale token for device %q: %v", pt.DeviceID, err)
 			} else {
+				s.metricCleaned.Add(1)
 				log.Printf("[Notification] removed stale push token for device %q (DeviceNotRegistered)", pt.DeviceID)
 			}
 		}

@@ -113,8 +113,7 @@ type Service struct {
 	flushResponseSub *eventbus.TypedSubscription[eventbus.MemoryFlushResponseEvent]
 	shuttingDown     atomic.Bool
 
-	cancel        context.CancelFunc
-	wg            sync.WaitGroup
+	lifecycle     eventbus.ServiceLifecycle
 	cleanedSub    *eventbus.TypedSubscription[eventbus.PipelineMessageEvent]
 	lifecycleSub  *eventbus.TypedSubscription[eventbus.SessionLifecycleEvent]
 	replySub      *eventbus.TypedSubscription[eventbus.ConversationReplyEvent]
@@ -181,8 +180,7 @@ func (s *Service) Start(ctx context.Context) error {
 	// Shutdown → Start restart cycle.
 	s.shuttingDown.Store(false)
 
-	derivedCtx, cancel := context.WithCancel(ctx)
-	s.cancel = cancel
+	s.lifecycle.Start(ctx)
 
 	s.cleanedSub = eventbus.Subscribe[eventbus.PipelineMessageEvent](s.bus, eventbus.TopicPipelineCleaned, eventbus.WithSubscriptionName("conversation_pipeline"))
 	s.lifecycleSub = eventbus.Subscribe[eventbus.SessionLifecycleEvent](s.bus, eventbus.TopicSessionsLifecycle, eventbus.WithSubscriptionName("conversation_lifecycle"))
@@ -192,14 +190,14 @@ func (s *Service) Start(ctx context.Context) error {
 	s.toolChangeSub = eventbus.Subscribe[eventbus.SessionToolChangedEvent](s.bus, eventbus.TopicSessionsToolChanged, eventbus.WithSubscriptionName("conversation_tool_changed"))
 	s.flushResponseSub = eventbus.Subscribe[eventbus.MemoryFlushResponseEvent](s.bus, eventbus.TopicMemoryFlushResponse, eventbus.WithSubscriptionName("conversation_flush_response"))
 
-	s.wg.Add(7)
-	go s.consumePipeline(derivedCtx)
-	go s.consumeLifecycle(derivedCtx)
-	go s.consumeReplies(derivedCtx)
-	go s.consumeBarge(derivedCtx)
-	go s.consumeToolEvents(derivedCtx)
-	go s.consumeToolChangeEvents(derivedCtx)
-	go s.consumeFlushResponses(derivedCtx)
+	s.lifecycle.AddSubscriptions(s.cleanedSub, s.lifecycleSub, s.replySub, s.bargeSub, s.toolSub, s.toolChangeSub, s.flushResponseSub)
+	s.lifecycle.Go(s.consumePipeline)
+	s.lifecycle.Go(s.consumeLifecycle)
+	s.lifecycle.Go(s.consumeReplies)
+	s.lifecycle.Go(s.consumeBarge)
+	s.lifecycle.Go(s.consumeToolEvents)
+	s.lifecycle.Go(s.consumeToolChangeEvents)
+	s.lifecycle.Go(s.consumeFlushResponses)
 	return nil
 }
 
@@ -212,27 +210,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	// Close subscriptions first to unblock consumer goroutines.
 	// This ensures in-flight message processing completes before
 	// goroutines exit (matches awareness service shutdown pattern).
-	if s.cleanedSub != nil {
-		s.cleanedSub.Close()
-	}
-	if s.lifecycleSub != nil {
-		s.lifecycleSub.Close()
-	}
-	if s.replySub != nil {
-		s.replySub.Close()
-	}
-	if s.bargeSub != nil {
-		s.bargeSub.Close()
-	}
-	if s.toolSub != nil {
-		s.toolSub.Close()
-	}
-	if s.toolChangeSub != nil {
-		s.toolChangeSub.Close()
-	}
-	if s.flushResponseSub != nil {
-		s.flushResponseSub.Close()
-	}
+	s.lifecycle.Stop()
 
 	// Stop all pending summary timers to prevent goroutine leaks
 	s.pendingSummary.Range(func(key, val any) bool {
@@ -252,32 +230,17 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		return true
 	})
 
-	if s.cancel != nil {
-		s.cancel()
-	}
-
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		s.wg.Wait()
-	}()
-
-	select {
-	case <-done:
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-	return nil
+	return s.lifecycle.Wait(ctx)
 }
 
 func (s *Service) consumePipeline(ctx context.Context) {
-	eventbus.ConsumeEnvelope(ctx, s.cleanedSub, &s.wg, func(env eventbus.TypedEnvelope[eventbus.PipelineMessageEvent]) {
+	eventbus.ConsumeEnvelope(ctx, s.cleanedSub, nil, func(env eventbus.TypedEnvelope[eventbus.PipelineMessageEvent]) {
 		s.handlePipelineMessage(env.Timestamp, env.Payload)
 	})
 }
 
 func (s *Service) consumeLifecycle(ctx context.Context) {
-	eventbus.Consume(ctx, s.lifecycleSub, &s.wg, func(msg eventbus.SessionLifecycleEvent) {
+	eventbus.Consume(ctx, s.lifecycleSub, nil, func(msg eventbus.SessionLifecycleEvent) {
 		switch msg.State {
 		case eventbus.SessionStateStopped:
 			s.clearSession(msg.SessionID)
@@ -293,23 +256,23 @@ func (s *Service) consumeLifecycle(ctx context.Context) {
 }
 
 func (s *Service) consumeReplies(ctx context.Context) {
-	eventbus.ConsumeEnvelope(ctx, s.replySub, &s.wg, func(env eventbus.TypedEnvelope[eventbus.ConversationReplyEvent]) {
+	eventbus.ConsumeEnvelope(ctx, s.replySub, nil, func(env eventbus.TypedEnvelope[eventbus.ConversationReplyEvent]) {
 		s.handleReplyMessage(env.Timestamp, env.Payload)
 	})
 }
 
 func (s *Service) consumeBarge(ctx context.Context) {
-	eventbus.Consume(ctx, s.bargeSub, &s.wg, s.handleBargeEvent)
+	eventbus.Consume(ctx, s.bargeSub, nil, s.handleBargeEvent)
 }
 
 func (s *Service) consumeToolEvents(ctx context.Context) {
-	eventbus.Consume(ctx, s.toolSub, &s.wg, func(event eventbus.SessionToolEvent) {
+	eventbus.Consume(ctx, s.toolSub, nil, func(event eventbus.SessionToolEvent) {
 		s.updateToolCache(event.SessionID, event.ToolName)
 	})
 }
 
 func (s *Service) consumeToolChangeEvents(ctx context.Context) {
-	eventbus.Consume(ctx, s.toolChangeSub, &s.wg, func(event eventbus.SessionToolChangedEvent) {
+	eventbus.Consume(ctx, s.toolChangeSub, nil, func(event eventbus.SessionToolChangedEvent) {
 		s.updateToolCache(event.SessionID, event.NewTool)
 	})
 }
@@ -701,7 +664,7 @@ func (s *Service) proceedWithSummary(sessionID string, oldest []eventbus.Convers
 
 // consumeFlushResponses listens for memory flush responses from the awareness service.
 func (s *Service) consumeFlushResponses(ctx context.Context) {
-	eventbus.Consume(ctx, s.flushResponseSub, &s.wg, s.handleFlushResponse)
+	eventbus.Consume(ctx, s.flushResponseSub, nil, s.handleFlushResponse)
 }
 
 // handleFlushResponse processes a memory flush response, then proceeds with summary.
