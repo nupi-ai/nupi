@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./events": {
+      "types": "./events.d.ts",
+      "import": "./events.js"
+    },
     "./design-tokens": {
       "types": "./dist/designTokens.d.ts",
       "import": "./dist/designTokens.js"

@@ -1,4 +1,5 @@
 import { isJsonRecord, parseStringRecordLenient } from '@nupi/shared/json';
+import { createEventParser, parseSessionId } from '@nupi/shared/events';
 
 export const SESSION_EVENT_TYPES = [
   'session_created',
@@ -11,7 +12,7 @@ export const SESSION_EVENT_TYPES = [
 
 export type SessionEventType = (typeof SESSION_EVENT_TYPES)[number];
 
-const SESSION_EVENT_TYPE_SET: ReadonlySet<string> = new Set(SESSION_EVENT_TYPES);
+const parseEventType = createEventParser(SESSION_EVENT_TYPES);
 
 export interface SessionEventPayload {
   event_type: SessionEventType;
@@ -19,19 +20,13 @@ export interface SessionEventPayload {
   data: Record<string, string>;
 }
 
-function parseEventType(value: unknown): SessionEventType | null {
-  if (typeof value !== 'string') {
-    return null;
-  }
-  return SESSION_EVENT_TYPE_SET.has(value) ? (value as SessionEventType) : null;
-}
-
 export function parseSessionEventPayload(raw: unknown): SessionEventPayload | null {
   if (!isJsonRecord(raw)) {
     return null;
   }
 
-  if (typeof raw.session_id !== 'string' || raw.session_id.length === 0) {
+  const session_id = parseSessionId(raw.session_id);
+  if (session_id === null) {
     return null;
   }
 
@@ -42,7 +37,7 @@ export function parseSessionEventPayload(raw: unknown): SessionEventPayload | nu
 
   return {
     event_type,
-    session_id: raw.session_id,
+    session_id,
     data: parseStringRecordLenient(raw.data),
   };
 }
