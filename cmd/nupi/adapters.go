@@ -93,6 +93,7 @@ func newAdaptersCommand() *cobra.Command {
 	adaptersInstallLocalCmd.Flags().StringArray("endpoint-env", nil, "Environment variable KEY=VALUE passed to the adapter (repeatable)")
 	adaptersInstallLocalCmd.Flags().String("slot", "", "Optional slot to bind after registration (e.g. stt)")
 	adaptersInstallLocalCmd.Flags().String("config", "", "Optional JSON configuration payload for slot binding")
+	adaptersInstallLocalCmd.Flags().String("build-timeout", "5m", "Maximum duration for the build step (e.g. 30s, 2m, 5m)")
 
 	adaptersLogsCmd := &cobra.Command{
 		Use:           "logs",
@@ -286,6 +287,11 @@ func adaptersRegister(cmd *cobra.Command, _ []string) error {
 func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 	out := newOutputFormatter(cmd)
 
+	var cleanupWriter io.Writer = cmd.ErrOrStderr()
+	if out.jsonMode {
+		cleanupWriter = io.Discard
+	}
+
 	manifestPath, _ := cmd.Flags().GetString("manifest-file")
 	manifestPath = strings.TrimSpace(manifestPath)
 	if manifestPath == "" {
@@ -376,12 +382,23 @@ func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 
 	var command string
 	if buildFlag {
+		buildTimeoutStr, _ := cmd.Flags().GetString("build-timeout")
+		buildTimeout, err := time.ParseDuration(buildTimeoutStr)
+		if err != nil {
+			return out.Error("invalid --build-timeout: must be a Go duration like 30s, 2m, 5m", err)
+		}
+		if buildTimeout <= 0 {
+			return out.Error("invalid --build-timeout: must be positive", fmt.Errorf("got %s", buildTimeoutStr))
+		}
+
 		outputDir := filepath.Join(sourceDir, "dist")
+		distExisted := dirExists(outputDir)
 		if err := os.MkdirAll(outputDir, 0o755); err != nil {
 			return out.Error("Failed to create dist directory", err)
 		}
 		outputPath := filepath.Join(outputDir, slug)
-		buildCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		outputFileExisted := fileExists(outputPath)
+		buildCtx, cancel := context.WithTimeout(context.Background(), buildTimeout)
 		defer cancel()
 		buildCmd := exec.CommandContext(buildCtx, "go", "build", "-o", outputPath, "./cmd/adapter")
 		buildCmd.Dir = sourceDir
@@ -390,6 +407,10 @@ func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 			buildErr := err
 			if trimmed := strings.TrimSpace(string(output)); trimmed != "" {
 				buildErr = fmt.Errorf("%w: %s", err, trimmed)
+			}
+			cleanupBuildArtifacts(cleanupWriter, outputDir, outputPath, distExisted, outputFileExisted)
+			if buildCtx.Err() == context.DeadlineExceeded {
+				return out.Error(fmt.Sprintf("build timed out after %s", buildTimeout), buildErr)
 			}
 			return out.Error("Failed to build adapter", buildErr)
 		}
@@ -464,6 +485,14 @@ func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
+	var (
+		adapterHome       string
+		destPath          string
+		adapterDirExisted bool
+		destFileExisted   bool
+		binaryCopied      bool
+	)
+
 	if copyBinary {
 		if command == "" {
 			return out.Error("--binary or --build required when --copy-binary is set", errors.New("missing adapter binary"))
@@ -480,7 +509,8 @@ func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 		if err != nil {
 			return out.Error("Failed to prepare instance directories", err)
 		}
-		adapterHome := filepath.Join(paths.Home, "plugins", slug)
+		adapterHome = filepath.Join(paths.Home, "plugins", slug)
+		adapterDirExisted = dirExists(adapterHome)
 		binDir := filepath.Join(adapterHome, "bin")
 		if err := os.MkdirAll(binDir, 0o755); err != nil {
 			return out.Error("Failed to create adapter bin directory", err)
@@ -489,13 +519,16 @@ func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 		if destName == "" {
 			destName = slug
 		}
-		destPath := filepath.Join(binDir, destName)
+		destPath = filepath.Join(binDir, destName)
 		if rel, err := filepath.Rel(adapterHome, destPath); err != nil || strings.HasPrefix(rel, "..") || strings.HasPrefix(filepath.ToSlash(rel), "../") {
 			return out.Error("Resolved destination escapes adapter directory", errors.New("invalid destination path"))
 		}
+		destFileExisted = fileExists(destPath)
 		if err := copyFile(srcPath, destPath, 0o755); err != nil {
+			cleanupAdapterDir(cleanupWriter, adapterHome, destPath, adapterDirExisted, destFileExisted)
 			return out.Error("Failed to copy adapter binary", err)
 		}
+		binaryCopied = true
 		command = destPath
 	}
 
@@ -516,6 +549,9 @@ func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 
 	resp, err := adaptersRegisterGRPC(out, regReq)
 	if err != nil {
+		if binaryCopied {
+			cleanupAdapterDir(cleanupWriter, adapterHome, destPath, adapterDirExisted, destFileExisted)
+		}
 		return err
 	}
 
@@ -1233,3 +1269,51 @@ func copyFile(src, dst string, perm fs.FileMode) error {
 	closed = true
 	return dstFile.Close()
 }
+
+func dirExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
+func cleanupBuildArtifacts(w io.Writer, distDir, outputPath string, distExisted, outputFileExisted bool) {
+	if distExisted {
+		if outputFileExisted {
+			// Output file pre-existed — do not delete it (preserve pre-install state).
+			return
+		}
+		if err := os.Remove(outputPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			fmt.Fprintf(w, "warning: failed to clean up build artifact %s: %v\n", outputPath, err)
+		} else if err == nil {
+			fmt.Fprintf(w, "cleaned up build artifacts: %s\n", outputPath)
+		}
+	} else {
+		if err := os.RemoveAll(distDir); err != nil {
+			fmt.Fprintf(w, "warning: failed to clean up build directory %s: %v\n", distDir, err)
+		} else {
+			fmt.Fprintf(w, "cleaned up build artifacts: %s\n", distDir)
+		}
+	}
+}
+
+func cleanupAdapterDir(w io.Writer, adapterHome, destPath string, adapterDirExisted, destFileExisted bool) {
+	if adapterDirExisted {
+		if destFileExisted {
+			// Destination binary pre-existed — do not delete it (preserve pre-install state).
+			return
+		}
+		if err := os.Remove(destPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			fmt.Fprintf(w, "warning: failed to clean up adapter binary %s: %v\n", destPath, err)
+		} else if err == nil {
+			fmt.Fprintf(w, "cleaned up adapter binary: %s\n", destPath)
+		}
+		// Remove bin/ directory if now empty (may have been created by this install attempt).
+		_ = os.Remove(filepath.Dir(destPath))
+	} else {
+		if err := os.RemoveAll(adapterHome); err != nil {
+			fmt.Fprintf(w, "warning: failed to clean up adapter directory %s: %v\n", adapterHome, err)
+		} else {
+			fmt.Fprintf(w, "cleaned up adapter directory: %s\n", adapterHome)
+		}
+	}
+}
+
