@@ -120,33 +120,35 @@ func promptsList(cmd *cobra.Command, args []string) error {
 
 	descriptions := configstore.PromptEventDescriptions()
 
-	if formatter.jsonMode {
-		result := make([]map[string]interface{}, 0, len(templates))
-		for _, t := range templates {
-			result = append(result, map[string]interface{}{
-				"event_type":  t.EventType,
-				"is_custom":   t.IsCustom,
-				"updated_at":  t.UpdatedAt,
-				"description": descriptions[t.EventType],
-			})
-		}
-		return formatter.Print(map[string]interface{}{
-			"templates": result,
+	result := make([]map[string]interface{}, 0, len(templates))
+	for _, t := range templates {
+		result = append(result, map[string]interface{}{
+			"event_type":  t.EventType,
+			"is_custom":   t.IsCustom,
+			"updated_at":  t.UpdatedAt,
+			"description": descriptions[t.EventType],
 		})
 	}
 
-	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "TEMPLATE\tSTATUS\tDESCRIPTION")
-	for _, t := range templates {
-		status := "default"
-		if t.IsCustom {
-			status = "custom"
-		}
-		desc := descriptions[t.EventType]
-		fmt.Fprintf(tw, "%s\t%s\t%s\n", t.EventType, status, desc)
-	}
-	tw.Flush()
-	return nil
+	return formatter.Render(CommandResult{
+		Data: map[string]interface{}{
+			"templates": result,
+		},
+		HumanReadable: func() error {
+			tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+			fmt.Fprintln(tw, "TEMPLATE\tSTATUS\tDESCRIPTION")
+			for _, t := range templates {
+				status := "default"
+				if t.IsCustom {
+					status = "custom"
+				}
+				desc := descriptions[t.EventType]
+				fmt.Fprintf(tw, "%s\t%s\t%s\n", t.EventType, status, desc)
+			}
+			tw.Flush()
+			return nil
+		},
+	})
 }
 
 func promptsShow(cmd *cobra.Command, args []string) error {
@@ -172,24 +174,25 @@ func promptsShow(cmd *cobra.Command, args []string) error {
 		return formatter.Error("Failed to get template", err)
 	}
 
-	if formatter.jsonMode {
-		return formatter.Print(map[string]interface{}{
+	return formatter.Render(CommandResult{
+		Data: map[string]interface{}{
 			"template":  pt.EventType,
 			"is_custom": pt.IsCustom,
 			"content":   pt.Content,
-		})
-	}
-
-	status := "default"
-	if pt.IsCustom {
-		status = "custom"
-	}
-	fmt.Printf("# Template: %s (%s)\n\n", pt.EventType, status)
-	fmt.Print(pt.Content)
-	if !strings.HasSuffix(pt.Content, "\n") {
-		fmt.Println()
-	}
-	return nil
+		},
+		HumanReadable: func() error {
+			status := "default"
+			if pt.IsCustom {
+				status = "custom"
+			}
+			fmt.Printf("# Template: %s (%s)\n\n", pt.EventType, status)
+			fmt.Print(pt.Content)
+			if !strings.HasSuffix(pt.Content, "\n") {
+				fmt.Println()
+			}
+			return nil
+		},
+	})
 }
 
 func promptsEdit(cmd *cobra.Command, args []string) error {
@@ -299,16 +302,17 @@ func promptsReset(cmd *cobra.Command, args []string) error {
 		reset = append(reset, name)
 	}
 
-	if formatter.jsonMode {
-		return formatter.Print(map[string]interface{}{
+	return formatter.Render(CommandResult{
+		Data: map[string]interface{}{
 			"reset":   reset,
 			"message": "Templates reset to defaults",
-		})
-	}
-
-	if len(reset) > 0 {
-		fmt.Printf("Reset templates: %s\n", strings.Join(reset, ", "))
-		fmt.Println("Note: Restart the daemon for changes to take effect.")
-	}
-	return nil
+		},
+		HumanReadable: func() error {
+			if len(reset) > 0 {
+				fmt.Printf("Reset templates: %s\n", strings.Join(reset, ", "))
+				fmt.Println("Note: Restart the daemon for changes to take effect.")
+			}
+			return nil
+		},
+	})
 }

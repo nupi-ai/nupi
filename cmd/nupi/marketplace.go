@@ -88,36 +88,39 @@ func marketplaceList(cmd *cobra.Command, _ []string) error {
 	}
 
 	if len(marketplaces) == 0 {
-		if out.jsonMode {
-			return out.Print([]interface{}{})
-		}
-		fmt.Println("No marketplaces registered.")
-		return nil
+		return out.Render(CommandResult{
+			Data: []interface{}{},
+			HumanReadable: func() error {
+				fmt.Println("No marketplaces registered.")
+				return nil
+			},
+		})
 	}
 
-	if out.jsonMode {
-		return out.Print(marketplaces)
-	}
-
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "NAMESPACE\tURL\tBUILTIN\tLAST REFRESHED")
-	for _, m := range marketplaces {
-		builtin := ""
-		if m.IsBuiltin {
-			builtin = "yes"
-		}
-		url := m.URL
-		if url == "" {
-			url = "(local)"
-		}
-		lastRefreshed := m.LastRefreshed
-		if lastRefreshed == "" {
-			lastRefreshed = "never"
-		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", m.Namespace, url, builtin, lastRefreshed)
-	}
-	w.Flush()
-	return nil
+	return out.Render(CommandResult{
+		Data: marketplaces,
+		HumanReadable: func() error {
+			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+			fmt.Fprintln(w, "NAMESPACE\tURL\tBUILTIN\tLAST REFRESHED")
+			for _, m := range marketplaces {
+				builtin := ""
+				if m.IsBuiltin {
+					builtin = "yes"
+				}
+				url := m.URL
+				if url == "" {
+					url = "(local)"
+				}
+				lastRefreshed := m.LastRefreshed
+				if lastRefreshed == "" {
+					lastRefreshed = "never"
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", m.Namespace, url, builtin, lastRefreshed)
+			}
+			w.Flush()
+			return nil
+		},
+	})
 }
 
 func marketplaceAdd(cmd *cobra.Command, args []string) error {
@@ -142,12 +145,13 @@ func marketplaceAdd(cmd *cobra.Command, args []string) error {
 		return out.Error("Failed to add marketplace", err)
 	}
 
-	if out.jsonMode {
-		return out.Print(m)
-	}
-
-	fmt.Printf("Added marketplace %q from %s\n", m.Namespace, m.URL)
-	return nil
+	return out.Render(CommandResult{
+		Data: m,
+		HumanReadable: func() error {
+			fmt.Printf("Added marketplace %q from %s\n", m.Namespace, m.URL)
+			return nil
+		},
+	})
 }
 
 func marketplaceRemove(cmd *cobra.Command, args []string) error {

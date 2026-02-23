@@ -189,42 +189,44 @@ func listSessions(cmd *cobra.Command, args []string) error {
 
 		sessions := resp.GetSessions()
 
-		if out.jsonMode {
-			// Build JSON-compatible list.
-			list := make([]map[string]interface{}, 0, len(sessions))
-			for _, sess := range sessions {
-				entry := map[string]interface{}{
-					"id":      sess.GetId(),
-					"status":  sess.GetStatus(),
-					"command": sess.GetCommand(),
-					"args":    sess.GetArgs(),
-				}
-				if sess.GetPid() != 0 {
-					entry["pid"] = sess.GetPid()
-				}
-				list = append(list, entry)
-			}
-			return out.Print(map[string]interface{}{"sessions": list})
-		}
-
-		if len(sessions) == 0 {
-			fmt.Println("No active sessions")
-			return nil
-		}
-
-		fmt.Println("Active sessions:")
-		fmt.Println("ID\t\tStatus\t\tCommand")
-		fmt.Println("---\t\t---\t\t---")
-
+		// Build JSON-compatible list.
+		list := make([]map[string]interface{}, 0, len(sessions))
 		for _, sess := range sessions {
-			fmt.Printf("%s\t%s\t\t%s %s\n",
-				sess.GetId(),
-				sess.GetStatus(),
-				sess.GetCommand(),
-				strings.Join(sess.GetArgs(), " "))
+			entry := map[string]interface{}{
+				"id":      sess.GetId(),
+				"status":  sess.GetStatus(),
+				"command": sess.GetCommand(),
+				"args":    sess.GetArgs(),
+			}
+			if sess.GetPid() != 0 {
+				entry["pid"] = sess.GetPid()
+			}
+			list = append(list, entry)
 		}
 
-		return nil
+		return out.Render(CommandResult{
+			Data: map[string]interface{}{"sessions": list},
+			HumanReadable: func() error {
+				if len(sessions) == 0 {
+					fmt.Println("No active sessions")
+					return nil
+				}
+
+				fmt.Println("Active sessions:")
+				fmt.Println("ID\t\tStatus\t\tCommand")
+				fmt.Println("---\t\t---\t\t---")
+
+				for _, sess := range sessions {
+					fmt.Printf("%s\t%s\t\t%s %s\n",
+						sess.GetId(),
+						sess.GetStatus(),
+						sess.GetCommand(),
+						strings.Join(sess.GetArgs(), " "))
+				}
+
+				return nil
+			},
+		})
 	})
 }
 
@@ -504,9 +506,9 @@ func inspectCommand(cmd *cobra.Command, args []string) error {
 	}
 
 	// Show inspection mode notice in human-readable mode only
-	if !out.jsonMode {
+	out.PrintText(func() {
 		fmt.Printf("\033[33mInspection mode enabled. Raw output will be saved to ~/.nupi/inspect/%s.raw\033[0m\n", session.GetId())
-	}
+	})
 
 	// Attach to the session
 	return attachToExistingSession(c, session.GetId(), true)

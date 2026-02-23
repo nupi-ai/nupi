@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -200,6 +201,102 @@ func TestOutputFormatterSuccess(t *testing.T) {
 		// Must NOT have "success" field
 		if _, ok := parsed["success"]; ok {
 			t.Errorf("JSON output should not have 'success' field: %s", output)
+		}
+	})
+}
+
+func TestOutputFormatterRender(t *testing.T) {
+	t.Run("json mode uses payload", func(t *testing.T) {
+		oldStdout := os.Stdout
+		r, w, _ := os.Pipe()
+		os.Stdout = w
+
+		called := false
+		f := &OutputFormatter{jsonMode: true}
+		err := f.Render(CommandResult{
+			Data: map[string]any{"key": "value"},
+			HumanReadable: func() error {
+				called = true
+				return nil
+			},
+		})
+
+		w.Close()
+		os.Stdout = oldStdout
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if called {
+			t.Fatalf("human-readable callback should not be called in JSON mode")
+		}
+
+		var buf bytes.Buffer
+		io.Copy(&buf, r)
+		output := strings.TrimSpace(buf.String())
+		var parsed map[string]any
+		if jsonErr := json.Unmarshal([]byte(output), &parsed); jsonErr != nil {
+			t.Fatalf("expected valid JSON, got %q: %v", output, jsonErr)
+		}
+		if parsed["key"] != "value" {
+			t.Fatalf("expected key=value in JSON output, got %+v", parsed)
+		}
+	})
+
+	t.Run("text mode uses callback", func(t *testing.T) {
+		oldStdout := os.Stdout
+		r, w, _ := os.Pipe()
+		os.Stdout = w
+
+		called := false
+		f := &OutputFormatter{jsonMode: false}
+		err := f.Render(CommandResult{
+			Data: map[string]any{"key": "value"},
+			HumanReadable: func() error {
+				called = true
+				fmt.Println("plain output")
+				return nil
+			},
+		})
+
+		w.Close()
+		os.Stdout = oldStdout
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !called {
+			t.Fatalf("human-readable callback should be called in text mode")
+		}
+
+		var buf bytes.Buffer
+		io.Copy(&buf, r)
+		if got := strings.TrimSpace(buf.String()); got != "plain output" {
+			t.Fatalf("unexpected text output: %q", got)
+		}
+	})
+}
+
+func TestOutputFormatterPrintText(t *testing.T) {
+	t.Run("json mode skips callback", func(t *testing.T) {
+		called := false
+		f := &OutputFormatter{jsonMode: true}
+		f.PrintText(func() {
+			called = true
+		})
+		if called {
+			t.Fatalf("callback should not run in JSON mode")
+		}
+	})
+
+	t.Run("text mode runs callback", func(t *testing.T) {
+		called := false
+		f := &OutputFormatter{jsonMode: false}
+		f.PrintText(func() {
+			called = true
+		})
+		if !called {
+			t.Fatalf("callback should run in text mode")
 		}
 	})
 }

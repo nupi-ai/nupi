@@ -217,51 +217,51 @@ func quickstartStatus(cmd *cobra.Command, args []string) error {
 		return out.Error("Failed to fetch quickstart status", err)
 	}
 
-	if out.jsonMode {
-		status := map[string]interface{}{
-			"completed":     payload.GetCompleted(),
-			"pending_slots": payload.GetPendingSlots(),
-		}
-		if payload.GetCompletedAt() != nil {
-			status["completed_at"] = payload.GetCompletedAt().AsTime().UTC().Format(time.RFC3339)
-		}
-		if len(payload.GetMissingReferenceAdapters()) > 0 {
-			status["missing_reference_adapters"] = payload.GetMissingReferenceAdapters()
-		}
-		adapters := quickstartAdaptersFromProto(payload.GetAdapters())
-		if len(adapters) > 0 {
-			status["adapters"] = adapters
-		}
-		return out.Print(status)
+	status := map[string]interface{}{
+		"completed":     payload.GetCompleted(),
+		"pending_slots": payload.GetPendingSlots(),
 	}
-
-	fmt.Printf("Quickstart completed: %v\n", payload.GetCompleted())
 	if payload.GetCompletedAt() != nil {
-		fmt.Printf("Completed at: %s\n", payload.GetCompletedAt().AsTime().UTC().Format(time.RFC3339))
+		status["completed_at"] = payload.GetCompletedAt().AsTime().UTC().Format(time.RFC3339)
 	}
-	if len(payload.GetPendingSlots()) == 0 {
-		fmt.Println("Pending slots: none")
-	} else {
-		fmt.Println("Pending slots:")
-		for _, slot := range payload.GetPendingSlots() {
-			fmt.Printf("  - %s\n", slot)
-		}
-	}
-
 	if len(payload.GetMissingReferenceAdapters()) > 0 {
-		printMissingReferenceAdapters(payload.GetMissingReferenceAdapters(), true)
+		status["missing_reference_adapters"] = payload.GetMissingReferenceAdapters()
 	}
-
 	adapters := quickstartAdaptersFromProto(payload.GetAdapters())
-	if len(adapters) == 0 {
-		fmt.Println("Adapters: none reported")
-	} else {
-		fmt.Println("\nAdapters:")
-		printAdapterTable(adapters)
-		printAdapterRuntimeMessages(adapters)
+	if len(adapters) > 0 {
+		status["adapters"] = adapters
 	}
 
-	return nil
+	return out.Render(CommandResult{
+		Data: status,
+		HumanReadable: func() error {
+			fmt.Printf("Quickstart completed: %v\n", payload.GetCompleted())
+			if payload.GetCompletedAt() != nil {
+				fmt.Printf("Completed at: %s\n", payload.GetCompletedAt().AsTime().UTC().Format(time.RFC3339))
+			}
+			if len(payload.GetPendingSlots()) == 0 {
+				fmt.Println("Pending slots: none")
+			} else {
+				fmt.Println("Pending slots:")
+				for _, slot := range payload.GetPendingSlots() {
+					fmt.Printf("  - %s\n", slot)
+				}
+			}
+
+			if len(payload.GetMissingReferenceAdapters()) > 0 {
+				printMissingReferenceAdapters(payload.GetMissingReferenceAdapters(), true)
+			}
+
+			if len(adapters) == 0 {
+				fmt.Println("Adapters: none reported")
+			} else {
+				fmt.Println("\nAdapters:")
+				printAdapterTable(adapters)
+				printAdapterRuntimeMessages(adapters)
+			}
+			return nil
+		},
+	})
 }
 
 func quickstartComplete(cmd *cobra.Command, args []string) error {
@@ -325,44 +325,44 @@ func quickstartComplete(cmd *cobra.Command, args []string) error {
 		return out.Error("Failed to update quickstart status", err)
 	}
 
-	if out.jsonMode {
-		status := map[string]interface{}{
-			"completed":     result.GetCompleted(),
-			"pending_slots": result.GetPendingSlots(),
-		}
-		if result.GetCompletedAt() != nil {
-			status["completed_at"] = result.GetCompletedAt().AsTime().UTC().Format(time.RFC3339)
-		}
-		adapters := quickstartAdaptersFromProto(result.GetAdapters())
-		if len(adapters) > 0 {
-			status["adapters"] = adapters
-		}
-		return out.Print(status)
+	status := map[string]interface{}{
+		"completed":     result.GetCompleted(),
+		"pending_slots": result.GetPendingSlots(),
 	}
-
-	fmt.Printf("Quickstart completed: %v\n", result.GetCompleted())
 	if result.GetCompletedAt() != nil {
-		fmt.Printf("Completed at: %s\n", result.GetCompletedAt().AsTime().UTC().Format(time.RFC3339))
+		status["completed_at"] = result.GetCompletedAt().AsTime().UTC().Format(time.RFC3339)
 	}
-	if len(result.GetPendingSlots()) == 0 {
-		fmt.Println("Pending slots: none")
-	} else {
-		fmt.Println("Pending slots:")
-		for _, slot := range result.GetPendingSlots() {
-			fmt.Printf("  - %s\n", slot)
-		}
-	}
-
 	adapters := quickstartAdaptersFromProto(result.GetAdapters())
-	if len(adapters) == 0 {
-		fmt.Println("Adapters: none reported")
-	} else {
-		fmt.Println("\nAdapters:")
-		printAdapterTable(adapters)
-		printAdapterRuntimeMessages(adapters)
+	if len(adapters) > 0 {
+		status["adapters"] = adapters
 	}
 
-	return nil
+	return out.Render(CommandResult{
+		Data: status,
+		HumanReadable: func() error {
+			fmt.Printf("Quickstart completed: %v\n", result.GetCompleted())
+			if result.GetCompletedAt() != nil {
+				fmt.Printf("Completed at: %s\n", result.GetCompletedAt().AsTime().UTC().Format(time.RFC3339))
+			}
+			if len(result.GetPendingSlots()) == 0 {
+				fmt.Println("Pending slots: none")
+			} else {
+				fmt.Println("Pending slots:")
+				for _, slot := range result.GetPendingSlots() {
+					fmt.Printf("  - %s\n", slot)
+				}
+			}
+
+			if len(adapters) == 0 {
+				fmt.Println("Adapters: none reported")
+			} else {
+				fmt.Println("\nAdapters:")
+				printAdapterTable(adapters)
+				printAdapterRuntimeMessages(adapters)
+			}
+			return nil
+		},
+	})
 }
 
 // quickstartAdaptersFromProto converts proto AdapterEntry slice to the display type.

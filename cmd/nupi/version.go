@@ -44,42 +44,43 @@ func runVersion(cmd *cobra.Command, _ []string) error {
 		daemonErr = err
 	}
 
-	if out.jsonMode {
-		data := map[string]any{
-			"client": clientVersion,
-		}
-		if daemonReachable {
-			if daemonVersion != "" {
-				data["daemon"] = daemonVersion
-			} else {
-				data["daemon"] = "unknown"
-			}
-			if w := nupiversion.CheckVersionMismatch(daemonVersion); w != "" {
-				data["mismatch"] = true
-				data["warning"] = w
-			}
-		} else {
-			data["daemon"] = nil
-			if daemonErr != nil {
-				data["daemon_error"] = daemonErr.Error()
-			}
-		}
-		return out.Print(data)
+	data := map[string]any{
+		"client": clientVersion,
 	}
-
-	fmt.Printf("Client: %s\n", nupiversion.FormatVersion(clientVersion))
 	if daemonReachable {
 		if daemonVersion != "" {
-			fmt.Printf("Daemon: %s\n", nupiversion.FormatVersion(daemonVersion))
+			data["daemon"] = daemonVersion
 		} else {
-			fmt.Println("Daemon: running (version unknown)")
+			data["daemon"] = "unknown"
 		}
 		if w := nupiversion.CheckVersionMismatch(daemonVersion); w != "" {
-			fmt.Println(w)
+			data["mismatch"] = true
+			data["warning"] = w
 		}
 	} else {
-		fmt.Printf("Daemon: unavailable (%v)\n", daemonErr)
+		data["daemon"] = nil
+		if daemonErr != nil {
+			data["daemon_error"] = daemonErr.Error()
+		}
 	}
 
-	return nil
+	return out.Render(CommandResult{
+		Data: data,
+		HumanReadable: func() error {
+			fmt.Printf("Client: %s\n", nupiversion.FormatVersion(clientVersion))
+			if daemonReachable {
+				if daemonVersion != "" {
+					fmt.Printf("Daemon: %s\n", nupiversion.FormatVersion(daemonVersion))
+				} else {
+					fmt.Println("Daemon: running (version unknown)")
+				}
+				if w := nupiversion.CheckVersionMismatch(daemonVersion); w != "" {
+					fmt.Println(w)
+				}
+			} else {
+				fmt.Printf("Daemon: unavailable (%v)\n", daemonErr)
+			}
+			return nil
+		},
+	})
 }

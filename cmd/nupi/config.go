@@ -92,32 +92,34 @@ func configTransport(cmd *cobra.Command, args []string) error {
 			return out.Error("Failed to fetch transport configuration", err)
 		}
 
-		if out.jsonMode {
-			return out.Print(map[string]interface{}{
-				"config": map[string]interface{}{
-					"binding":       cfg.GetBinding(),
-					"tls_cert_path": cfg.GetTlsCertPath(),
-					"tls_key_path":  cfg.GetTlsKeyPath(),
-					"grpc_port":     cfg.GetGrpcPort(),
-					"grpc_binding":  cfg.GetGrpcBinding(),
-					"auth_required": cfg.GetAuthRequired(),
-				},
-			})
+		payload := map[string]interface{}{
+			"config": map[string]interface{}{
+				"binding":       cfg.GetBinding(),
+				"tls_cert_path": cfg.GetTlsCertPath(),
+				"tls_key_path":  cfg.GetTlsKeyPath(),
+				"grpc_port":     cfg.GetGrpcPort(),
+				"grpc_binding":  cfg.GetGrpcBinding(),
+				"auth_required": cfg.GetAuthRequired(),
+			},
 		}
 
-		fmt.Println("Transport configuration:")
-		fmt.Printf("  Binding: %s\n", cfg.GetBinding())
-		fmt.Printf("  gRPC Binding: %s\n", cfg.GetGrpcBinding())
-		fmt.Printf("  gRPC Port: %d\n", cfg.GetGrpcPort())
-		if cfg.GetTlsCertPath() != "" {
-			fmt.Printf("  TLS Cert: %s\n", cfg.GetTlsCertPath())
-		}
-		if cfg.GetTlsKeyPath() != "" {
-			fmt.Printf("  TLS Key: %s\n", cfg.GetTlsKeyPath())
-		}
-		fmt.Printf("  Auth Required: %v\n", cfg.GetAuthRequired())
-
-		return nil
+		return out.Render(CommandResult{
+			Data: payload,
+			HumanReadable: func() error {
+				fmt.Println("Transport configuration:")
+				fmt.Printf("  Binding: %s\n", cfg.GetBinding())
+				fmt.Printf("  gRPC Binding: %s\n", cfg.GetGrpcBinding())
+				fmt.Printf("  gRPC Port: %d\n", cfg.GetGrpcPort())
+				if cfg.GetTlsCertPath() != "" {
+					fmt.Printf("  TLS Cert: %s\n", cfg.GetTlsCertPath())
+				}
+				if cfg.GetTlsKeyPath() != "" {
+					fmt.Printf("  TLS Key: %s\n", cfg.GetTlsKeyPath())
+				}
+				fmt.Printf("  Auth Required: %v\n", cfg.GetAuthRequired())
+				return nil
+			},
+		})
 	})
 }
 
@@ -128,39 +130,41 @@ func configMigrate(cmd *cobra.Command, _ []string) error {
 			return out.Error("Failed to run configuration migration", err)
 		}
 
-		if out.jsonMode {
-			return out.Print(map[string]interface{}{
-				"updated_slots":          resp.GetUpdatedSlots(),
-				"pending_slots":          resp.GetPendingSlots(),
-				"audio_settings_updated": resp.GetAudioSettingsUpdated(),
-			})
+		payload := map[string]interface{}{
+			"updated_slots":          resp.GetUpdatedSlots(),
+			"pending_slots":          resp.GetPendingSlots(),
+			"audio_settings_updated": resp.GetAudioSettingsUpdated(),
 		}
 
-		fmt.Println("Configuration migration summary:")
-		if len(resp.GetUpdatedSlots()) > 0 {
-			fmt.Println("  Updated slots:")
-			for _, slot := range resp.GetUpdatedSlots() {
-				fmt.Printf("    - %s\n", slot)
-			}
-		} else {
-			fmt.Println("  Updated slots: (none)")
-		}
+		return out.Render(CommandResult{
+			Data: payload,
+			HumanReadable: func() error {
+				fmt.Println("Configuration migration summary:")
+				if len(resp.GetUpdatedSlots()) > 0 {
+					fmt.Println("  Updated slots:")
+					for _, slot := range resp.GetUpdatedSlots() {
+						fmt.Printf("    - %s\n", slot)
+					}
+				} else {
+					fmt.Println("  Updated slots: (none)")
+				}
 
-		if len(resp.GetPendingSlots()) > 0 {
-			fmt.Println("  Pending quickstart slots:")
-			for _, slot := range resp.GetPendingSlots() {
-				fmt.Printf("    - %s\n", slot)
-			}
-		} else {
-			fmt.Println("  Pending quickstart slots: (none)")
-		}
+				if len(resp.GetPendingSlots()) > 0 {
+					fmt.Println("  Pending quickstart slots:")
+					for _, slot := range resp.GetPendingSlots() {
+						fmt.Printf("    - %s\n", slot)
+					}
+				} else {
+					fmt.Println("  Pending quickstart slots: (none)")
+				}
 
-		if resp.GetAudioSettingsUpdated() {
-			fmt.Println("  Audio settings: defaults reconciled")
-		} else {
-			fmt.Println("  Audio settings: already up-to-date")
-		}
-
-		return nil
+				if resp.GetAudioSettingsUpdated() {
+					fmt.Println("  Audio settings: defaults reconciled")
+				} else {
+					fmt.Println("  Audio settings: already up-to-date")
+				}
+				return nil
+			},
+		})
 	})
 }
