@@ -18,8 +18,10 @@ export const theme = {
     dangerButton: "#ef4444",
     transparent: "transparent",
     overlay: "rgba(0, 0, 0, 0.9)",
+    overlayDialog: "rgba(0, 0, 0, 0.7)",
     dangerHover: "rgba(239, 68, 68, 0.2)",
     successHover: "rgba(74, 222, 128, 0.2)",
+    languageSelected: "#1e3a5f",
   },
   text: {
     primary: "#fff",
@@ -34,6 +36,8 @@ export const theme = {
     checkbox: "#cbd5f5",
     success: "#4ade80",
     dangerStrong: "#ef4444",
+    light: "#ccc",
+    languageSelected: "#60a5fa",
   },
   border: {
     default: "#333",

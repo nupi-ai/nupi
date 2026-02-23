@@ -1,3 +1,5 @@
+import { theme } from "../designTokens";
+
 interface KillConfirmDialogProps {
   sessionName: string;
   onConfirm: () => void;
@@ -13,7 +15,7 @@ export function KillConfirmDialog({ sessionName, onConfirm, onCancel }: KillConf
         left: 0,
         right: 0,
         bottom: 0,
-        backgroundColor: 'rgba(0, 0, 0, 0.7)',
+        backgroundColor: theme.bg.overlayDialog,
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -23,8 +25,8 @@ export function KillConfirmDialog({ sessionName, onConfirm, onCancel }: KillConf
     >
       <div
         style={{
-          backgroundColor: '#1a1a1a',
-          border: '1px solid #333',
+          backgroundColor: theme.bg.nav,
+          border: `1px solid ${theme.border.default}`,
           borderRadius: '8px',
           padding: '24px',
           minWidth: '400px',
@@ -32,10 +34,10 @@ export function KillConfirmDialog({ sessionName, onConfirm, onCancel }: KillConf
         }}
         onClick={(e) => e.stopPropagation()}
       >
-        <h3 style={{ margin: '0 0 16px 0', color: '#fff', fontSize: '18px' }}>
+        <h3 style={{ margin: '0 0 16px 0', color: theme.text.primary, fontSize: '18px' }}>
           Kill Session?
         </h3>
-        <p style={{ margin: '0 0 24px 0', color: '#ccc', lineHeight: '1.5' }}>
+        <p style={{ margin: '0 0 24px 0', color: theme.text.light, lineHeight: '1.5' }}>
           Are you sure you want to kill session <strong>"{sessionName}"</strong>?
           <br /><br />
           The session will be stopped but remain visible in the list.
@@ -45,8 +47,8 @@ export function KillConfirmDialog({ sessionName, onConfirm, onCancel }: KillConf
             onClick={onCancel}
             style={{
               padding: '8px 16px',
-              backgroundColor: '#333',
-              color: '#fff',
+              backgroundColor: theme.bg.neutral,
+              color: theme.text.primary,
               border: 'none',
               borderRadius: '4px',
               cursor: 'pointer',
@@ -59,8 +61,8 @@ export function KillConfirmDialog({ sessionName, onConfirm, onCancel }: KillConf
             onClick={onConfirm}
             style={{
               padding: '8px 16px',
-              backgroundColor: '#ef4444',
-              color: '#fff',
+              backgroundColor: theme.bg.dangerButton,
+              color: theme.text.primary,
               border: 'none',
               borderRadius: '4px',
               cursor: 'pointer',
