@@ -1,17 +1,16 @@
 import { useCallback, useEffect, useRef } from "react";
 
 import { getConnectionConfig, getToken } from "./storage";
+import {
+  parseSessionStreamEvent,
+  type SessionStreamEvent,
+} from "./sessionStreamEvents";
 import { useSafeState } from "./useSafeState";
 import { useTimeout } from "./useTimeout";
 
 export type StreamStatus = "connecting" | "connected" | "reconnecting" | "closed" | "error";
 
-export interface WsEvent {
-  type: "event";
-  event_type: string;
-  session_id: string;
-  data?: Record<string, string>;
-}
+export type WsEvent = SessionStreamEvent;
 
 interface UseSessionStreamOptions {
   onOutput?: (data: ArrayBuffer) => void;
@@ -122,7 +121,7 @@ export function useSessionStream(
         } else if (typeof event.data === "string") {
           // Text frame — JSON event.
           try {
-            const parsed = JSON.parse(event.data) as WsEvent;
+            const parsed = parseSessionStreamEvent(event.data);
             onEventRef.current?.(parsed);
 
             // Terminal session ended — mark stream closed, no reconnect.
