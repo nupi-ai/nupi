@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +16,7 @@ import (
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/language"
+	"github.com/nupi-ai/nupi/internal/mapper"
 	"github.com/nupi-ai/nupi/internal/plugins/adapters"
 	"github.com/nupi-ai/nupi/internal/protocol"
 	maputil "github.com/nupi-ai/nupi/internal/util/maps"
@@ -165,7 +165,7 @@ func (a *audioService) StreamAudioIn(stream apiv1.AudioService_StreamAudioInServ
 			}
 			fmtProto := req.GetFormat()
 			var err error
-			format, err = audioFormatFromProto(fmtProto)
+			format, err = mapper.ParseProtoAudioFormat(fmtProto)
 			if err != nil {
 				return status.Errorf(codes.InvalidArgument, "invalid audio format: %v", err)
 			}
@@ -206,7 +206,7 @@ func (a *audioService) StreamAudioIn(stream apiv1.AudioService_StreamAudioInServ
 				return status.Error(codes.InvalidArgument, "stream_id mismatch")
 			}
 			if reqFmt := req.GetFormat(); reqFmt != nil {
-				candidate, err := audioFormatFromProto(reqFmt)
+				candidate, err := mapper.ParseProtoAudioFormat(reqFmt)
 				if err != nil {
 					return status.Errorf(codes.InvalidArgument, "invalid audio format: %v", err)
 				}
@@ -300,7 +300,7 @@ func (a *audioService) StreamAudioOut(req *apiv1.StreamAudioOutRequest, srv apiv
 
 			chunkDuration := playbackDuration(evt)
 			resp := &apiv1.StreamAudioOutResponse{
-				Format: audioFormatToProto(evt.Format),
+				Format: mapper.ToProtoAudioFormat(evt.Format),
 				Chunk: &apiv1.AudioChunk{
 					Data:       append([]byte(nil), evt.Data...),
 					Sequence:   evt.Sequence,
@@ -395,7 +395,7 @@ func (a *audioService) GetAudioCapabilities(ctx context.Context, req *apiv1.GetA
 		}
 		resp.Capture = append(resp.Capture, &apiv1.AudioCapability{
 			StreamId: DefaultCaptureStreamID,
-			Format:   audioFormatToProto(defaultCaptureFormat),
+			Format:   mapper.ToProtoAudioFormat(defaultCaptureFormat),
 			Metadata: meta,
 		})
 	}
@@ -411,7 +411,7 @@ func (a *audioService) GetAudioCapabilities(ctx context.Context, req *apiv1.GetA
 		}
 		resp.Playback = append(resp.Playback, &apiv1.AudioCapability{
 			StreamId: a.api.audioEgress.DefaultStreamID(),
-			Format:   audioFormatToProto(a.api.audioEgress.PlaybackFormat()),
+			Format:   mapper.ToProtoAudioFormat(a.api.audioEgress.PlaybackFormat()),
 			Metadata: meta,
 		})
 	}
@@ -763,86 +763,13 @@ var defaultCaptureFormat = eventbus.AudioFormat{
 // DefaultCaptureFormat returns a copy of the default audio capture format.
 func DefaultCaptureFormat() eventbus.AudioFormat { return defaultCaptureFormat }
 
-func audioFormatFromProto(pb *apiv1.AudioFormat) (eventbus.AudioFormat, error) {
-	if pb == nil {
-		return eventbus.AudioFormat{}, fmt.Errorf("audio format is required")
-	}
-	encoding := strings.TrimSpace(strings.ToLower(pb.GetEncoding()))
-	if encoding == "" {
-		encoding = string(eventbus.AudioEncodingPCM16)
-	}
-	if encoding != string(eventbus.AudioEncodingPCM16) {
-		return eventbus.AudioFormat{}, fmt.Errorf("unsupported encoding %q", pb.GetEncoding())
-	}
-	format := eventbus.AudioFormat{
-		Encoding:      eventbus.AudioEncodingPCM16,
-		SampleRate:    int(pb.GetSampleRate()),
-		Channels:      int(pb.GetChannels()),
-		BitDepth:      int(pb.GetBitDepth()),
-		FrameDuration: time.Duration(pb.GetFrameDurationMs()) * time.Millisecond,
-	}
-	if format.SampleRate <= 0 {
-		return eventbus.AudioFormat{}, fmt.Errorf("sample_rate must be positive")
-	}
-	if format.Channels <= 0 {
-		return eventbus.AudioFormat{}, fmt.Errorf("channels must be positive")
-	}
-	if format.BitDepth <= 0 || format.BitDepth%8 != 0 {
-		return eventbus.AudioFormat{}, fmt.Errorf("bit_depth must be divisible by 8")
-	}
-	return format, nil
-}
-
 func normalizeAndValidateAudioChunkMetadata(raw map[string]string) (map[string]string, error) {
-	if len(raw) == 0 {
-		return nil, nil
-	}
-
-	keys := make([]string, 0, len(raw))
-	for key := range raw {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-
-	normalized := make(map[string]string, len(raw))
-	totalBytes := 0
-
-	for _, rawKey := range keys {
-		key := strings.TrimSpace(rawKey)
-		if key == "" {
-			continue
-		}
-
-		value := strings.TrimSpace(raw[rawKey])
-
-		if utf8.RuneCountInString(key) > maxAudioChunkMetadataKeyRunes {
-			return nil, fmt.Errorf("metadata key %q exceeds maximum length of %d characters", key, maxAudioChunkMetadataKeyRunes)
-		}
-		if utf8.RuneCountInString(value) > maxAudioChunkMetadataValueRunes {
-			return nil, fmt.Errorf("metadata value for key %q exceeds maximum length of %d characters", key, maxAudioChunkMetadataValueRunes)
-		}
-
-		if _, exists := normalized[key]; !exists && len(normalized) >= maxAudioChunkMetadataEntries {
-			return nil, fmt.Errorf("metadata exceeds maximum of %d entries", maxAudioChunkMetadataEntries)
-		}
-
-		entryBytes := len(key) + len(value)
-		if previous, exists := normalized[key]; exists {
-			totalBytes -= len(key) + len(previous)
-		}
-		if maxAudioChunkMetadataTotalBytes > 0 && totalBytes+entryBytes > maxAudioChunkMetadataTotalBytes {
-			return nil, fmt.Errorf("metadata total size exceeds %d bytes", maxAudioChunkMetadataTotalBytes)
-		}
-
-		normalized[key] = value
-		totalBytes += entryBytes
-	}
-
-	if len(normalized) == 0 {
-		return nil, nil
-	}
-
-	return normalized, nil
+	return mapper.NormalizeAndValidateMetadata(raw, mapper.MetadataLimits{
+		MaxEntries:    maxAudioChunkMetadataEntries,
+		MaxKeyRunes:   maxAudioChunkMetadataKeyRunes,
+		MaxValueRunes: maxAudioChunkMetadataValueRunes,
+		MaxTotalBytes: maxAudioChunkMetadataTotalBytes,
+	})
 }
 
 func audioFormatsEqual(a, b eventbus.AudioFormat) bool {
@@ -852,21 +779,11 @@ func audioFormatsEqual(a, b eventbus.AudioFormat) bool {
 		a.BitDepth == b.BitDepth
 }
 
-func audioFormatToProto(format eventbus.AudioFormat) *apiv1.AudioFormat {
-	return &apiv1.AudioFormat{
-		Encoding:        string(format.Encoding),
-		SampleRate:      uint32(maxInt(format.SampleRate)),
-		Channels:        uint32(maxInt(format.Channels)),
-		BitDepth:        uint32(maxInt(format.BitDepth)),
-		FrameDurationMs: durationToMillis(format.FrameDuration),
+func playbackDuration(evt eventbus.AudioEgressPlaybackEvent) time.Duration {
+	if evt.Duration > 0 {
+		return evt.Duration
 	}
-}
-
-func maxInt(v int) int {
-	if v < 0 {
-		return 0
-	}
-	return v
+	return pcmDuration(evt.Format, len(evt.Data))
 }
 
 func durationToMillis(d time.Duration) uint32 {
@@ -874,13 +791,6 @@ func durationToMillis(d time.Duration) uint32 {
 		return 0
 	}
 	return uint32(d / time.Millisecond)
-}
-
-func playbackDuration(evt eventbus.AudioEgressPlaybackEvent) time.Duration {
-	if evt.Duration > 0 {
-		return evt.Duration
-	}
-	return pcmDuration(evt.Format, len(evt.Data))
 }
 
 func pcmDuration(format eventbus.AudioFormat, dataLen int) time.Duration {

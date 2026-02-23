@@ -19,6 +19,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/grpcclient"
+	"github.com/nupi-ai/nupi/internal/mapper"
 	"github.com/nupi-ai/nupi/internal/voice/slots"
 	"github.com/spf13/cobra"
 )
@@ -215,7 +216,7 @@ func voiceStart(cmd *cobra.Command, _ []string) error {
 				playbackChunks++
 				playbackBytes += int64(len(chunk.GetData()))
 
-				chunkFormat := audioFormatFromProto(resp.GetFormat())
+				chunkFormat := mapper.FromProtoAudioFormat(resp.GetFormat())
 
 				if outputPath != "" && len(chunk.GetData()) > 0 {
 					if wavWriter == nil {
@@ -450,20 +451,6 @@ func hasPlaybackEnabled(caps *apiv1.GetAudioCapabilitiesResponse) bool {
 	return false
 }
 
-// audioFormatFromProto converts a proto AudioFormat to an eventbus.AudioFormat.
-func audioFormatFromProto(f *apiv1.AudioFormat) eventbus.AudioFormat {
-	if f == nil {
-		return eventbus.AudioFormat{}
-	}
-	return eventbus.AudioFormat{
-		Encoding:      eventbus.AudioEncoding(f.GetEncoding()),
-		SampleRate:    int(f.GetSampleRate()),
-		Channels:      int(f.GetChannels()),
-		BitDepth:      int(f.GetBitDepth()),
-		FrameDuration: time.Duration(f.GetFrameDurationMs()) * time.Millisecond,
-	}
-}
-
 // uploadAudioGRPC streams PCM data to the daemon via gRPC client-streaming.
 func uploadAudioGRPC(ctx context.Context, gc *grpcclient.Client, sessionID, streamID string, format eventbus.AudioFormat, metadata map[string]string, reader io.Reader) error {
 	stream, err := gc.StreamAudioIn(ctx)
@@ -487,13 +474,7 @@ func uploadAudioGRPC(ctx context.Context, gc *grpcclient.Client, sessionID, stre
 				},
 			}
 			if first {
-				req.Format = &apiv1.AudioFormat{
-					Encoding:        string(format.Encoding),
-					SampleRate:      uint32(format.SampleRate),
-					Channels:        uint32(format.Channels),
-					BitDepth:        uint32(format.BitDepth),
-					FrameDurationMs: uint32(format.FrameDuration / time.Millisecond),
-				}
+				req.Format = mapper.ToProtoAudioFormat(format)
 				req.Chunk.Metadata = metadata
 				req.Chunk.First = true
 				first = false
