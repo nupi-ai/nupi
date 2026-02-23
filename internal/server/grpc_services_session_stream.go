@@ -124,13 +124,9 @@ func (s *sessionsService) AttachSession(stream apiv1.SessionsService_AttachSessi
 		return status.Error(codes.InvalidArgument, "first message must be AttachInit")
 	}
 
-	sessionID := strings.TrimSpace(init.GetSessionId())
-	if sessionID == "" {
-		return status.Error(codes.InvalidArgument, "session_id is required")
-	}
-
-	if _, err := s.api.sessionManager.GetSession(sessionID); err != nil {
-		return status.Errorf(codes.NotFound, "session %s not found", sessionID)
+	_, sessionID, err := s.api.validateAndGetSession(init.GetSessionId())
+	if err != nil {
+		return err
 	}
 
 	// Generate a unique client ID for this gRPC stream.
