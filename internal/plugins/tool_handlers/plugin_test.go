@@ -2,12 +2,14 @@ package toolhandlers
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/jsrunner"
 	"github.com/nupi-ai/nupi/internal/jsruntime"
 )
@@ -46,7 +48,7 @@ func TestJSPlugin_DetectIdleState(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	pluginPath := filepath.Join(tmpDir, "idle-handler.js")
-	pluginCode := `
+	pluginCode := fmt.Sprintf(`
 module.exports = {
   name: "idle-handler",
   commands: ["test"],
@@ -59,20 +61,20 @@ module.exports = {
         is_idle: true,
         reason: "prompt",
         prompt_text: ">>> ",
-        waiting_for: "user_input"
+        waiting_for: "%s"
       };
     }
     if (buffer.includes("[y/n]")) {
       return {
         is_idle: true,
         reason: "question",
-        waiting_for: "confirmation"
+        waiting_for: "%s"
       };
     }
     return null;
   }
 };
-`
+`, constants.PipelineWaitingForUserInput, constants.PipelineWaitingForConfirmation)
 	if err := os.WriteFile(pluginPath, []byte(pluginCode), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
@@ -107,8 +109,8 @@ module.exports = {
 	if state.PromptText != ">>> " {
 		t.Errorf("PromptText = %q, want %q", state.PromptText, ">>> ")
 	}
-	if state.WaitingFor != "user_input" {
-		t.Errorf("WaitingFor = %q, want %q", state.WaitingFor, "user_input")
+	if state.WaitingFor != constants.PipelineWaitingForUserInput {
+		t.Errorf("WaitingFor = %q, want %q", state.WaitingFor, constants.PipelineWaitingForUserInput)
 	}
 
 	// Test question detection
@@ -122,8 +124,8 @@ module.exports = {
 	if state.Reason != "question" {
 		t.Errorf("Reason = %q, want %q", state.Reason, "question")
 	}
-	if state.WaitingFor != "confirmation" {
-		t.Errorf("WaitingFor = %q, want %q", state.WaitingFor, "confirmation")
+	if state.WaitingFor != constants.PipelineWaitingForConfirmation {
+		t.Errorf("WaitingFor = %q, want %q", state.WaitingFor, constants.PipelineWaitingForConfirmation)
 	}
 
 	// Test no match

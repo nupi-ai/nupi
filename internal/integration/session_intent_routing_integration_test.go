@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/conversation"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/intentrouter"
@@ -861,8 +862,8 @@ func TestIntentClarificationFlow(t *testing.T) {
 	if !strings.Contains(speak.Text, "Which session") {
 		t.Errorf("expected clarification question, got %q", speak.Text)
 	}
-	if speak.Metadata["type"] != "clarification" {
-		t.Errorf("expected speak metadata type=clarification, got %q", speak.Metadata["type"])
+	if speak.Metadata[constants.SpeakMetadataTypeKey] != constants.SpeakTypeClarification {
+		t.Errorf("expected speak metadata type=clarification, got %q", speak.Metadata[constants.SpeakMetadataTypeKey])
 	}
 
 	// Verify reply does NOT have error=true (clarification is not an error)
@@ -870,7 +871,7 @@ func TestIntentClarificationFlow(t *testing.T) {
 	if reply.Metadata["error"] == "true" {
 		t.Error("clarification reply should not have error=true")
 	}
-	if reply.Metadata["status"] != "clarification" {
+	if reply.Metadata["status"] != constants.PromptEventClarification {
 		t.Errorf("expected reply status=clarification, got %q", reply.Metadata["status"])
 	}
 

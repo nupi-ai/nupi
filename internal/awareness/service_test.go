@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 )
 
@@ -510,8 +511,8 @@ func TestHandleFlushRequest(t *testing.T) {
 		if prompt.SessionID != "test-session" {
 			t.Fatalf("expected session test-session, got %s", prompt.SessionID)
 		}
-		if prompt.Metadata["event_type"] != "memory_flush" {
-			t.Fatalf("expected event_type=memory_flush, got %s", prompt.Metadata["event_type"])
+		if prompt.Metadata[constants.MetadataKeyEventType] != constants.PromptEventMemoryFlush {
+			t.Fatalf("expected event_type=memory_flush, got %s", prompt.Metadata[constants.MetadataKeyEventType])
 		}
 		if prompt.PromptID == "" {
 			t.Fatal("expected non-empty PromptID")
@@ -556,7 +557,7 @@ func TestHandleFlushReplyWithContent(t *testing.T) {
 		SessionID: "content-session",
 		PromptID:  promptID,
 		Text:      "User decided to use PostgreSQL for the database.",
-		Metadata:  map[string]string{"event_type": "memory_flush"},
+		Metadata:  map[string]string{constants.MetadataKeyEventType: constants.PromptEventMemoryFlush},
 	})
 
 	// Verify file was written (use UTC to match production code in flush.go:199)
@@ -621,7 +622,7 @@ func TestHandleFlushReplyNoReply(t *testing.T) {
 		SessionID: "noreply-session",
 		PromptID:  promptID,
 		Text:      "NO_REPLY",
-		Metadata:  map[string]string{"event_type": "memory_flush"},
+		Metadata:  map[string]string{constants.MetadataKeyEventType: constants.PromptEventMemoryFlush},
 	})
 
 	// Verify NO file was written (use UTC to match production code in flush.go:199)
@@ -829,7 +830,7 @@ func TestHandleFlushReplyWriteError(t *testing.T) {
 		SessionID: "write-error-session",
 		PromptID:  promptID,
 		Text:      "Content that should fail to write",
-		Metadata:  map[string]string{"event_type": "memory_flush"},
+		Metadata:  map[string]string{constants.MetadataKeyEventType: constants.PromptEventMemoryFlush},
 	})
 
 	// Verify flush response published with Saved=false
@@ -969,8 +970,8 @@ func TestFlushSubscriptionEndToEnd(t *testing.T) {
 	// Verify the awareness service processed it and published a ConversationPromptEvent.
 	select {
 	case env := <-promptSub.C():
-		if env.Payload.Metadata["event_type"] != "memory_flush" {
-			t.Fatalf("expected event_type=memory_flush, got %s", env.Payload.Metadata["event_type"])
+		if env.Payload.Metadata[constants.MetadataKeyEventType] != constants.PromptEventMemoryFlush {
+			t.Fatalf("expected event_type=memory_flush, got %s", env.Payload.Metadata[constants.MetadataKeyEventType])
 		}
 		if env.Payload.SessionID != "sub-e2e" {
 			t.Fatalf("expected session sub-e2e, got %s", env.Payload.SessionID)
@@ -1012,7 +1013,7 @@ func TestFlushReplySubscriptionFiltersNonFlush(t *testing.T) {
 		SessionID: "filter-test",
 		PromptID:  fakePromptID,
 		Text:      "This should be ignored by awareness",
-		Metadata:  map[string]string{"event_type": "user_intent"},
+		Metadata:  map[string]string{constants.MetadataKeyEventType: constants.PromptEventUserIntent},
 	})
 
 	// Give the consumer goroutine time to process the message.
@@ -1116,7 +1117,7 @@ func TestHandleFlushReplyNoReplySubstring(t *testing.T) {
 		SessionID: "substring-session",
 		PromptID:  promptID,
 		Text:      "NO_REPLY is not needed. Here is the important context:\n- User chose PostgreSQL.",
-		Metadata:  map[string]string{"event_type": "memory_flush"},
+		Metadata:  map[string]string{constants.MetadataKeyEventType: constants.PromptEventMemoryFlush},
 	})
 
 	// Verify file was written (content was saved, not treated as NO_REPLY)
@@ -1241,7 +1242,7 @@ func TestFlushReplyWriteEndToEnd(t *testing.T) {
 		SessionID: "e2e-reply-session",
 		PromptID:  promptID,
 		Text:      "User decided to use SQLite for config storage.",
-		Metadata:  map[string]string{"event_type": "memory_flush"},
+		Metadata:  map[string]string{constants.MetadataKeyEventType: constants.PromptEventMemoryFlush},
 	})
 
 	// Verify MemoryFlushResponseEvent published with Saved=true.
@@ -1506,8 +1507,8 @@ func TestHandleExportRequest(t *testing.T) {
 		if prompt.SessionID != "export-test" {
 			t.Fatalf("expected session export-test, got %s", prompt.SessionID)
 		}
-		if prompt.Metadata["event_type"] != "session_slug" {
-			t.Fatalf("expected event_type=session_slug, got %s", prompt.Metadata["event_type"])
+		if prompt.Metadata[constants.MetadataKeyEventType] != constants.PromptEventSessionSlug {
+			t.Fatalf("expected event_type=session_slug, got %s", prompt.Metadata[constants.MetadataKeyEventType])
 		}
 		if prompt.PromptID == "" {
 			t.Fatal("expected non-empty PromptID")
@@ -1605,7 +1606,7 @@ func TestHandleExportReplyWithContent(t *testing.T) {
 		SessionID: "reply-session",
 		PromptID:  promptID,
 		Text:      "SLUG: docker-setup\n\nSUMMARY:\nUser configured Docker for local development.",
-		Metadata:  map[string]string{"event_type": "session_slug"},
+		Metadata:  map[string]string{constants.MetadataKeyEventType: constants.PromptEventSessionSlug},
 	})
 
 	// Verify file was written in sessions/ directory.
@@ -1669,7 +1670,7 @@ func TestHandleExportReplyNoReply(t *testing.T) {
 		SessionID: "trivial-session",
 		PromptID:  promptID,
 		Text:      "NO_REPLY",
-		Metadata:  map[string]string{"event_type": "session_slug"},
+		Metadata:  map[string]string{constants.MetadataKeyEventType: constants.PromptEventSessionSlug},
 	})
 
 	// Verify NO file was written.
@@ -1713,7 +1714,7 @@ func TestHandleExportReplyEmptySlugFallback(t *testing.T) {
 		SessionID: "empty-slug-session",
 		PromptID:  promptID,
 		Text:      "SLUG: !!!@@@\n\nSUMMARY:\nSome summary.",
-		Metadata:  map[string]string{"event_type": "session_slug"},
+		Metadata:  map[string]string{constants.MetadataKeyEventType: constants.PromptEventSessionSlug},
 	})
 
 	// Verify a file was still written using fallback timestamp slug.
@@ -1911,8 +1912,8 @@ func TestExportSubscriptionEndToEnd(t *testing.T) {
 	// Verify the awareness service processed it and published a ConversationPromptEvent.
 	select {
 	case env := <-promptSub.C():
-		if env.Payload.Metadata["event_type"] != "session_slug" {
-			t.Fatalf("expected event_type=session_slug, got %s", env.Payload.Metadata["event_type"])
+		if env.Payload.Metadata[constants.MetadataKeyEventType] != constants.PromptEventSessionSlug {
+			t.Fatalf("expected event_type=session_slug, got %s", env.Payload.Metadata[constants.MetadataKeyEventType])
 		}
 		if env.Payload.SessionID != "e2e-export" {
 			t.Fatalf("expected session e2e-export, got %s", env.Payload.SessionID)
@@ -1951,7 +1952,7 @@ func TestExportReplySubscriptionFiltersNonExport(t *testing.T) {
 		SessionID: "filter-export",
 		PromptID:  fakePromptID,
 		Text:      "This should be ignored by export consumer",
-		Metadata:  map[string]string{"event_type": "user_intent"},
+		Metadata:  map[string]string{constants.MetadataKeyEventType: constants.PromptEventUserIntent},
 	})
 
 	// Wait long enough for the consumer goroutine to process (and ignore) the message.
@@ -2002,7 +2003,7 @@ func TestExportReplyWriteEndToEnd(t *testing.T) {
 		SessionID: "e2e-export-session",
 		PromptID:  promptID,
 		Text:      "SLUG: staging-deploy\n\nSUMMARY:\nDeployed application to staging environment.",
-		Metadata:  map[string]string{"event_type": "session_slug"},
+		Metadata:  map[string]string{constants.MetadataKeyEventType: constants.PromptEventSessionSlug},
 	})
 
 	// Poll until the consumer goroutine processes the event and writes the file.
@@ -2138,7 +2139,7 @@ func TestHandleFlushReplyNoReply_CaseInsensitive(t *testing.T) {
 			SessionID: "noreply-ci",
 			PromptID:  promptID,
 			Text:      text,
-			Metadata:  map[string]string{"event_type": "memory_flush"},
+			Metadata:  map[string]string{constants.MetadataKeyEventType: constants.PromptEventMemoryFlush},
 		})
 
 		select {
@@ -2181,7 +2182,7 @@ func TestHandleExportReplyNoReply_CaseInsensitive(t *testing.T) {
 			SessionID: "noreply-export-ci",
 			PromptID:  promptID,
 			Text:      text,
-			Metadata:  map[string]string{"event_type": "session_slug"},
+			Metadata:  map[string]string{constants.MetadataKeyEventType: constants.PromptEventSessionSlug},
 		})
 
 		// Verify no file was written (trivial session — no export).
@@ -2229,7 +2230,7 @@ func TestHandleExportReplyEmptyReplySessionID(t *testing.T) {
 		SessionID: "", // empty
 		PromptID:  promptID,
 		Text:      "SLUG: empty-sid-test\n\nSUMMARY:\nTest summary.",
-		Metadata:  map[string]string{"event_type": "session_slug"},
+		Metadata:  map[string]string{constants.MetadataKeyEventType: constants.PromptEventSessionSlug},
 	})
 
 	sessionsDir := filepath.Join(dir, "awareness", "memory", "sessions")
@@ -2285,7 +2286,7 @@ func TestHandleExportReplySessionIDMismatch(t *testing.T) {
 		SessionID: "wrong-session",
 		PromptID:  promptID,
 		Text:      "SLUG: mismatch-test\n\nSUMMARY:\nMismatch summary.",
-		Metadata:  map[string]string{"event_type": "session_slug"},
+		Metadata:  map[string]string{constants.MetadataKeyEventType: constants.PromptEventSessionSlug},
 	})
 
 	sessionsDir := filepath.Join(dir, "awareness", "memory", "sessions")
@@ -2388,7 +2389,7 @@ func TestHandleExportReplyDuplicate(t *testing.T) {
 		SessionID: "dup-session",
 		PromptID:  promptID,
 		Text:      "SLUG: dup-test\n\nSUMMARY:\nDuplicate test.",
-		Metadata:  map[string]string{"event_type": "session_slug"},
+		Metadata:  map[string]string{constants.MetadataKeyEventType: constants.PromptEventSessionSlug},
 	}
 
 	// First reply — should write file and clean up pendingExport.

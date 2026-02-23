@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/nupi-ai/nupi/internal/config/store"
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 )
 
@@ -556,8 +557,8 @@ func TestConversation_SessionOutputRateLimiting(t *testing.T) {
 	select {
 	case env := <-promptSub.C():
 		prompt := env.Payload
-		if prompt.Metadata["event_type"] != "session_output" {
-			t.Fatalf("expected event_type=session_output, got %q", prompt.Metadata["event_type"])
+		if prompt.Metadata[constants.MetadataKeyEventType] != constants.PromptEventSessionOutput {
+			t.Fatalf("expected event_type=session_output, got %q", prompt.Metadata[constants.MetadataKeyEventType])
 		}
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("timeout waiting for first prompt (should trigger)")
@@ -640,8 +641,8 @@ func TestConversation_NotableTriggersAI(t *testing.T) {
 	select {
 	case env := <-promptSub.C():
 		prompt := env.Payload
-		if prompt.Metadata["event_type"] != "session_output" {
-			t.Fatalf("expected event_type=session_output, got %q", prompt.Metadata["event_type"])
+		if prompt.Metadata[constants.MetadataKeyEventType] != constants.PromptEventSessionOutput {
+			t.Fatalf("expected event_type=session_output, got %q", prompt.Metadata[constants.MetadataKeyEventType])
 		}
 		if prompt.Metadata["notable"] != "true" {
 			t.Fatalf("expected notable=true in metadata")
@@ -675,12 +676,12 @@ func TestConversation_SessionOutputMetadataPropagation(t *testing.T) {
 		Origin:    eventbus.OriginTool,
 		Text:      "tool output text",
 		Annotations: map[string]string{
-			"notable":      "true",
-			"tool":         "TestTool",
-			"tool_id":      "test-tool",
-			"tool_changed": "true",
-			"idle_state":   "prompt",
-			"waiting_for":  "user_input",
+			"notable":                       "true",
+			"tool":                          "TestTool",
+			"tool_id":                       "test-tool",
+			"tool_changed":                  "true",
+			"idle_state":                    "prompt",
+			constants.MetadataKeyWaitingFor: constants.PipelineWaitingForUserInput,
 		},
 	})
 
@@ -689,13 +690,13 @@ func TestConversation_SessionOutputMetadataPropagation(t *testing.T) {
 		prompt := env.Payload
 
 		// Verify event_type
-		if prompt.Metadata["event_type"] != "session_output" {
-			t.Errorf("expected event_type=session_output, got %q", prompt.Metadata["event_type"])
+		if prompt.Metadata[constants.MetadataKeyEventType] != constants.PromptEventSessionOutput {
+			t.Errorf("expected event_type=session_output, got %q", prompt.Metadata[constants.MetadataKeyEventType])
 		}
 
 		// Verify session_output field contains the turn text
-		if prompt.Metadata["session_output"] != "tool output text" {
-			t.Errorf("expected session_output=%q, got %q", "tool output text", prompt.Metadata["session_output"])
+		if prompt.Metadata[constants.MetadataKeySessionOutput] != "tool output text" {
+			t.Errorf("expected session_output=%q, got %q", "tool output text", prompt.Metadata[constants.MetadataKeySessionOutput])
 		}
 
 		// Verify tool_changed propagation
@@ -713,8 +714,8 @@ func TestConversation_SessionOutputMetadataPropagation(t *testing.T) {
 		if prompt.Metadata["idle_state"] != "prompt" {
 			t.Errorf("expected idle_state=prompt, got %q", prompt.Metadata["idle_state"])
 		}
-		if prompt.Metadata["waiting_for"] != "user_input" {
-			t.Errorf("expected waiting_for=user_input, got %q", prompt.Metadata["waiting_for"])
+		if prompt.Metadata[constants.MetadataKeyWaitingFor] != constants.PipelineWaitingForUserInput {
+			t.Errorf("expected waiting_for=user_input, got %q", prompt.Metadata[constants.MetadataKeyWaitingFor])
 		}
 
 	case <-time.After(500 * time.Millisecond):
@@ -810,7 +811,7 @@ func TestSummaryTrigger(t *testing.T) {
 		select {
 		case env := <-promptSub.C():
 			prompt := env.Payload
-			if prompt.Metadata["event_type"] == "history_summary" {
+			if prompt.Metadata[constants.MetadataKeyEventType] == constants.PromptEventHistorySummary {
 				summaryPrompt = &prompt
 			}
 		case <-deadline:
@@ -880,7 +881,7 @@ func TestSummaryReplyReplacesTurns(t *testing.T) {
 		SessionID: "summary-replace",
 		PromptID:  promptID,
 		Text:      "Summary: user discussed turns 0-2",
-		Metadata:  map[string]string{"event_type": "history_summary"},
+		Metadata:  map[string]string{constants.MetadataKeyEventType: constants.PromptEventHistorySummary},
 	})
 
 	// Verify history was replaced
@@ -1057,7 +1058,7 @@ func TestSummaryPromptIDMismatch(t *testing.T) {
 		SessionID: "mismatch",
 		PromptID:  "wrong-prompt-id",
 		Text:      "bogus summary",
-		Metadata:  map[string]string{"event_type": "history_summary"},
+		Metadata:  map[string]string{constants.MetadataKeyEventType: constants.PromptEventHistorySummary},
 	})
 
 	// History should be unchanged (6 turns)
@@ -1530,7 +1531,7 @@ func TestMemoryFlushReplyNotStoredInHistory(t *testing.T) {
 		SessionID: "no-flush-in-history",
 		PromptID:  "flush-prompt-1",
 		Text:      "Extracted: user said hello",
-		Metadata:  map[string]string{"event_type": "memory_flush"},
+		Metadata:  map[string]string{constants.MetadataKeyEventType: constants.PromptEventMemoryFlush},
 	})
 
 	// Verify history still has only 1 turn (flush reply was NOT stored)
@@ -1600,7 +1601,7 @@ func TestFlushThenSummaryEndToEnd(t *testing.T) {
 	for summaryPrompt == nil {
 		select {
 		case env := <-promptSub.C():
-			if env.Payload.Metadata["event_type"] == "history_summary" {
+			if env.Payload.Metadata[constants.MetadataKeyEventType] == constants.PromptEventHistorySummary {
 				summaryPrompt = &env.Payload
 			}
 		case <-deadline:
@@ -1623,7 +1624,7 @@ func TestFlushThenSummaryEndToEnd(t *testing.T) {
 		SessionID: "e2e-session",
 		PromptID:  req.promptID,
 		Text:      "Summary: messages 0-2 discussed greetings",
-		Metadata:  map[string]string{"event_type": "history_summary"},
+		Metadata:  map[string]string{constants.MetadataKeyEventType: constants.PromptEventHistorySummary},
 	})
 
 	// Phase 5: Verify history is compacted (1 summary + 2 remaining = 3 turns)
@@ -1868,7 +1869,7 @@ func TestClearSessionNoAITurnsNoExport(t *testing.T) {
 		SessionID:   "no-ai-session",
 		Origin:      eventbus.OriginUser,
 		Text:        "hello",
-		Annotations: map[string]string{"event_type": "user_intent"},
+		Annotations: map[string]string{constants.MetadataKeyEventType: constants.PromptEventUserIntent},
 	})
 	svc.handlePipelineMessage(now.Add(time.Second), eventbus.PipelineMessageEvent{
 		SessionID:   "no-ai-session",
@@ -1928,7 +1929,7 @@ func TestExportSurvivesFIFOTrim(t *testing.T) {
 			SessionID:   sid,
 			Origin:      eventbus.OriginUser,
 			Text:        "user msg " + strconv.Itoa(i),
-			Annotations: map[string]string{"event_type": "session_output"},
+			Annotations: map[string]string{constants.MetadataKeyEventType: constants.PromptEventSessionOutput},
 		})
 	}
 
@@ -2000,7 +2001,7 @@ func TestSessionSlugReplyNotStoredInHistory(t *testing.T) {
 		SessionID: "slug-reply-session",
 		PromptID:  "slug-prompt-1",
 		Text:      "SLUG: docker-setup\n\nSUMMARY:\nConfigured Docker.",
-		Metadata:  map[string]string{"event_type": "session_slug"},
+		Metadata:  map[string]string{constants.MetadataKeyEventType: constants.PromptEventSessionSlug},
 	})
 
 	// Verify history still has only 1 turn (session_slug reply was NOT stored)
