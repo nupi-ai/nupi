@@ -10,6 +10,7 @@ import (
 
 	"github.com/nupi-ai/nupi/internal/audio/streammanager"
 	"github.com/nupi-ai/nupi/internal/eventbus"
+	"github.com/nupi-ai/nupi/internal/mapper"
 	"github.com/nupi-ai/nupi/internal/voice/slots"
 )
 
@@ -744,21 +745,7 @@ func (s *Service) publishPlayback(evt eventbus.AudioEgressPlaybackEvent) {
 }
 
 func mergeMetadata(base map[string]string, chunk map[string]string, req map[string]string) map[string]string {
-	size := len(base) + len(chunk) + len(req)
-	if size == 0 {
-		return nil
-	}
-	out := make(map[string]string, size)
-	for k, v := range base {
-		out[k] = v
-	}
-	for k, v := range req {
-		out[k] = v
-	}
-	for k, v := range chunk {
-		out[k] = v
-	}
-	return out
+	return mapper.MergeStringMaps(base, req, chunk)
 }
 
 func reasonOrDefault(reason string) string {

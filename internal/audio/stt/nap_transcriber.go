@@ -13,12 +13,12 @@ import (
 	napv1 "github.com/nupi-ai/nupi/api/nap/v1"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
+	"github.com/nupi-ai/nupi/internal/mapper"
 	"github.com/nupi-ai/nupi/internal/napdial"
 	maputil "github.com/nupi-ai/nupi/internal/util/maps"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type napTranscriber struct {
@@ -144,8 +144,8 @@ func (t *napTranscriber) OnSegment(ctx context.Context, segment eventbus.AudioIn
 			Last:       segment.Last,
 			Metadata:   maputil.Clone(segment.Metadata),
 			DurationMs: uint32(segment.Duration / time.Millisecond),
-			StartedAt:  timestampOrNil(segment.StartedAt),
-			EndedAt:    timestampOrNil(segment.EndedAt),
+			StartedAt:  mapper.ToProtoTimestampChecked(segment.StartedAt),
+			EndedAt:    mapper.ToProtoTimestampChecked(segment.EndedAt),
 		},
 	}
 
@@ -286,17 +286,6 @@ func marshalFormat(format eventbus.AudioFormat) *napv1.AudioFormat {
 		BitDepth:        uint32(format.BitDepth),
 		FrameDurationMs: uint32(format.FrameDuration / time.Millisecond),
 	}
-}
-
-func timestampOrNil(t time.Time) *timestamppb.Timestamp {
-	if t.IsZero() {
-		return nil
-	}
-	ts := timestamppb.New(t)
-	if err := ts.CheckValid(); err != nil {
-		return nil
-	}
-	return ts
 }
 
 // ContextWithDialer attaches a custom dialer to the context.

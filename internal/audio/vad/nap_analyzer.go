@@ -14,11 +14,11 @@ import (
 	"github.com/nupi-ai/nupi/internal/audio/streammanager"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
+	"github.com/nupi-ai/nupi/internal/mapper"
 	"github.com/nupi-ai/nupi/internal/napdial"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type napAnalyzer struct {
@@ -126,7 +126,7 @@ func (a *napAnalyzer) OnSegment(_ context.Context, segment eventbus.AudioIngress
 		StreamId:  a.params.StreamID,
 		PcmData:   segment.Data,
 		Format:    marshalAudioFormat(segment.Format),
-		Timestamp: timestampOrNil(segment.EndedAt),
+		Timestamp: mapper.ToProtoTimestampChecked(segment.EndedAt),
 	}
 
 	if err := a.stream.Send(req); err != nil {
@@ -274,17 +274,6 @@ func marshalAudioFormat(format eventbus.AudioFormat) *napv1.AudioFormat {
 		BitDepth:        uint32(format.BitDepth),
 		FrameDurationMs: uint32(format.FrameDuration / time.Millisecond),
 	}
-}
-
-func timestampOrNil(t time.Time) *timestamppb.Timestamp {
-	if t.IsZero() {
-		return nil
-	}
-	ts := timestamppb.New(t)
-	if err := ts.CheckValid(); err != nil {
-		return nil
-	}
-	return ts
 }
 
 // ContextWithDialer attaches a custom dialer to the context.
