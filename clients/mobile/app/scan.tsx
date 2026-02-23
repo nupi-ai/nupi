@@ -3,12 +3,12 @@ import { router } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
-  Pressable,
   StyleSheet,
   useWindowDimensions,
   View as RNView,
 } from "react-native";
 
+import { Button } from "@/components/Button";
 import Colors from "@/constants/Colors";
 import { useColorScheme } from "@/components/useColorScheme";
 import { Text, View } from "@/components/Themed";
@@ -109,17 +109,15 @@ export default function ScanScreen() {
         <Text style={styles.permissionText}>
           Camera permission is required to scan QR codes for pairing.
         </Text>
-        <Pressable
-          style={({ pressed }) => [
-            styles.button,
-            { backgroundColor: colors.tint, opacity: pressed ? 0.7 : 1 },
-          ]}
+        <Button
+          style={styles.button}
+          variant="primary"
+          color={colors.tint}
           onPress={requestPermission}
-          accessibilityRole="button"
           accessibilityLabel="Grant Camera Permission"
         >
           <Text style={styles.buttonText}>Grant Camera Permission</Text>
-        </Pressable>
+        </Button>
       </View>
     );
   }
@@ -154,17 +152,15 @@ export default function ScanScreen() {
               <Text style={[styles.errorText, { color: colors.danger }]}>
                 {error}
               </Text>
-              <Pressable
-                style={({ pressed }) => [
-                  styles.button,
-                  { backgroundColor: colors.tint, opacity: pressed ? 0.7 : 1 },
-                ]}
+              <Button
+                style={styles.button}
+                variant="primary"
+                color={colors.tint}
                 onPress={handleRetry}
-                accessibilityRole="button"
                 accessibilityLabel="Try Again"
               >
                 <Text style={styles.buttonText}>Try Again</Text>
-              </Pressable>
+              </Button>
             </>
           ) : (
             <Text style={styles.instructionText}>
