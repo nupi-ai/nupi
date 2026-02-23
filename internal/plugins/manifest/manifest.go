@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/nupi-ai/nupi/internal/constants"
 	"gopkg.in/yaml.v3"
 )
 
@@ -707,11 +708,7 @@ func locateManifestFile(dir string) (string, error) {
 	return "", fs.ErrNotExist
 }
 
-var allowedTransports = map[string]struct{}{
-	"process": {},
-	"grpc":    {},
-	"http":    {},
-}
+var allowedTransports = constants.StringSet(constants.AllowedAdapterTransports)
 
 var allowedRuntimes = map[string]struct{}{
 	"":       {}, // empty = default (binary)
@@ -740,24 +737,24 @@ func validateAdapterSpec(spec *AdapterSpec, file string) error {
 
 	// Validate transport value
 	if _, ok := allowedTransports[transport]; !ok {
-		return fmt.Errorf("adapter manifest %s has invalid transport %q (allowed: process, grpc, http)", file, transport)
+		return fmt.Errorf("adapter manifest %s has invalid transport %q (allowed: %s)", file, transport, strings.Join(constants.AllowedAdapterTransports, ", "))
 	}
 
 	// Runtime-transport combination validation
 	// runtime:js requires transport:process (JS adapters run via Nupi-provided runtime)
 	if runtime == "js" {
-		if transport != "process" {
+		if transport != constants.AdapterTransportProcess {
 			return fmt.Errorf("adapter manifest %s: runtime=js requires transport=process (got %q)", file, transport)
 		}
 	}
 
 	// Transport-specific validation
 	switch transport {
-	case "process":
+	case constants.AdapterTransportProcess:
 		if command == "" {
 			return fmt.Errorf("adapter manifest %s with transport=process requires entrypoint.command", file)
 		}
-	case "grpc", "http":
+	case constants.AdapterTransportGRPC, constants.AdapterTransportHTTP:
 		// For network transports, command is optional but should be validated if present
 		// The actual network address will be provided via endpoint configuration
 	}

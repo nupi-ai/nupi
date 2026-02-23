@@ -10,6 +10,7 @@ import (
 
 	apiv1 "github.com/nupi-ai/nupi/internal/api/grpc/v1"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/language"
 	maputil "github.com/nupi-ai/nupi/internal/util/maps"
@@ -150,18 +151,18 @@ func (m *adapterRuntimeService) RegisterAdapter(ctx context.Context, req *apiv1.
 			address := strings.TrimSpace(ep.GetAddress())
 			command := strings.TrimSpace(ep.GetCommand())
 			switch transport {
-			case "grpc":
+			case constants.AdapterTransportGRPC:
 				if address == "" {
 					return nil, status.Error(codes.InvalidArgument, "endpoint address required for grpc transport")
 				}
-			case "http":
+			case constants.AdapterTransportHTTP:
 				if address == "" {
 					return nil, status.Error(codes.InvalidArgument, "endpoint address required for http transport")
 				}
 				if command != "" || len(ep.GetArgs()) > 0 {
 					return nil, status.Error(codes.InvalidArgument, "endpoint command/args not allowed for http transport")
 				}
-			case "process":
+			case constants.AdapterTransportProcess:
 				if command == "" {
 					return nil, status.Error(codes.InvalidArgument, "endpoint command required for process transport")
 				}

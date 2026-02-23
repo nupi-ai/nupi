@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/spf13/cobra"
 )
 
@@ -21,25 +22,19 @@ var (
 )
 
 var (
-	allowedAdapterSlots = map[string]struct{}{
-		"stt":              {},
-		"tts":              {},
-		"ai":               {},
-		"vad":              {},
-		"tunnel":           {},
-		"tool-handler":     {},
-		"pipeline-cleaner": {},
-	}
-	allowedEndpointTransports = map[string]struct{}{
-		"grpc":    {},
-		"http":    {},
-		"process": {},
-	}
+	allowedAdapterSlots       = constants.StringSet(constants.AllowedAdapterSlots)
+	allowedEndpointTransports = constants.StringSet(constants.AllowedAdapterTransports)
 )
 
 // OutputFormatter handles output in JSON or human-readable format
 type OutputFormatter struct {
 	jsonMode bool
+}
+
+// CommandResult captures command output for both JSON and human-readable modes.
+type CommandResult struct {
+	Data          any
+	HumanReadable func() error
 }
 
 // newOutputFormatter creates a new formatter based on the command's --json flag
@@ -72,6 +67,25 @@ func (f *OutputFormatter) Print(data interface{}) error {
 		}
 	}
 	return nil
+}
+
+// Render prints command output using the active formatter mode.
+func (f *OutputFormatter) Render(result CommandResult) error {
+	if f.jsonMode {
+		return f.Print(result.Data)
+	}
+	if result.HumanReadable == nil {
+		return nil
+	}
+	return result.HumanReadable()
+}
+
+// PrintText executes the provided function only in human-readable mode.
+func (f *OutputFormatter) PrintText(printFn func()) {
+	if f.jsonMode || printFn == nil {
+		return
+	}
+	printFn()
 }
 
 // Success outputs a success message

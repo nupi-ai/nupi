@@ -15,6 +15,7 @@ import (
 	"time"
 
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	adapters "github.com/nupi-ai/nupi/internal/plugins/adapters"
 	"github.com/nupi-ai/nupi/internal/protocol"
@@ -51,8 +52,8 @@ type PrometheusExporter interface {
 type tokenRole string
 
 const (
-	roleAdmin    tokenRole = "admin"
-	roleReadOnly tokenRole = "read-only"
+	roleAdmin    tokenRole = constants.TokenRoleAdmin
+	roleReadOnly tokenRole = constants.TokenRoleReadOnly
 )
 
 const conversationMaxPageLimit = 500
@@ -67,26 +68,11 @@ const (
 	maxAdapterManifestBytes = 64 * 1024
 )
 
-var allowedAdapterTypes = map[string]struct{}{
-	"stt":              {},
-	"tts":              {},
-	"ai":               {},
-	"vad":              {},
-	"tunnel":           {},
-	"tool-handler":     {},
-	"pipeline-cleaner": {},
-}
+var allowedAdapterTypes = constants.StringSet(constants.AllowedAdapterSlots)
 
-var allowedAdapterTransports = map[string]struct{}{
-	"grpc":    {},
-	"http":    {},
-	"process": {},
-}
+var allowedAdapterTransports = constants.StringSet(constants.AllowedAdapterTransports)
 
-var allowedRoles = map[string]struct{}{
-	string(roleAdmin):    {},
-	string(roleReadOnly): {},
-}
+var allowedRoles = constants.StringSet(constants.AllowedTokenRoles)
 
 var errAdaptersServiceUnavailable = fmt.Errorf("adapter service unavailable")
 
