@@ -151,6 +151,27 @@ func withOutputClientTimeout(
 	})
 }
 
+func withPlainClient(connectErrorMessage string, fn func(client *grpcclient.Client) error) error {
+	client, err := grpcclient.New()
+	if err != nil {
+		return fmt.Errorf("%s: %w", connectErrorMessage, err)
+	}
+	defer client.Close()
+	return fn(client)
+}
+
+func withPlainClientTimeout(
+	timeout time.Duration,
+	connectErrorMessage string,
+	fn func(ctx context.Context, client *grpcclient.Client) error,
+) error {
+	return withPlainClient(connectErrorMessage, func(client *grpcclient.Client) error {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		return fn(ctx, client)
+	})
+}
+
 func printMissingReferenceAdapters(missing []string, showHelp bool) {
 	if len(missing) == 0 {
 		return

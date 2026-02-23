@@ -60,309 +60,294 @@ func quickstartInit(cmd *cobra.Command, args []string) error {
 		return out.Error("Quickstart wizard is interactive and does not support --json", nil)
 	}
 
-	gc, err := grpcclient.New()
-	if err != nil {
-		return out.Error("Failed to connect to daemon", err)
-	}
-	defer gc.Close()
+	return withOutputClient(out, daemonConnectErrorMessage, func(gc *grpcclient.Client) error {
+		statusCtx, statusCancel := context.WithTimeout(context.Background(), constants.Duration10Seconds)
+		defer statusCancel()
 
-	statusCtx, statusCancel := context.WithTimeout(context.Background(), constants.Duration10Seconds)
-	defer statusCancel()
-
-	status, err := gc.QuickstartStatus(statusCtx)
-	if err != nil {
-		return out.Error("Failed to fetch quickstart status", err)
-	}
-
-	adaptersFromProto := quickstartAdaptersFromProto(status.GetAdapters())
-	if len(adaptersFromProto) > 0 {
-		fmt.Println("Current adapter status:")
-		printAdapterTable(adaptersFromProto)
-		printAdapterRuntimeMessages(adaptersFromProto)
-		fmt.Println()
-	}
-
-	missingRefs := status.GetMissingReferenceAdapters()
-	printMissingReferenceAdapters(missingRefs, true)
-
-	if status.GetCompleted() && len(status.GetPendingSlots()) == 0 {
-		fmt.Println("Quickstart is already completed. Nothing to do.")
-		return nil
-	}
-
-	// Fetch available adapters for the wizard.
-	listCtx, listCancel := context.WithTimeout(context.Background(), constants.Duration10Seconds)
-	defer listCancel()
-
-	listResp, err := gc.ListAdapters(listCtx)
-	if err != nil {
-		return out.Error("Failed to fetch adapters", err)
-	}
-	adapters := adaptersFromListResponse(listResp)
-
-	if len(adapters) == 0 {
-		fmt.Println("No adapters are installed yet. Install adapters before running the wizard.")
-		return nil
-	}
-
-	reader := bufio.NewReader(os.Stdin)
-	var bindings []*apiv1.QuickstartBinding
-
-	fmt.Println("=== Quickstart Wizard ===")
-	if status.GetCompleted() {
-		fmt.Println("Quickstart was marked complete previously, but some slots are pending.")
-	}
-
-	for _, slot := range status.GetPendingSlots() {
-		fmt.Printf("\nSlot %s requires an adapter.\n", slot)
-		slotAdapters := printAvailableAdaptersForSlot(slot, adapters)
-
-		for {
-			fmt.Printf("Select adapter for %s (enter number/id, blank to skip): ", slot)
-			choice, err := reader.ReadString('\n')
-			if err != nil {
-				return out.Error("Failed to read input", err)
-			}
-			choice = strings.TrimSpace(choice)
-
-			if choice == "" {
-				fmt.Printf("Skipping %s. You can assign it later.\n", slot)
-				break
-			}
-
-			if id, ok := resolveAdapterChoice(choice, slotAdapters, adapters); ok {
-				bindings = append(bindings, &apiv1.QuickstartBinding{Slot: slot, AdapterId: id})
-				fmt.Printf("  -> Assigned %s to %s\n", id, slot)
-				break
-			}
-
-			fmt.Println("Invalid selection. Please try again.")
+		status, err := gc.QuickstartStatus(statusCtx)
+		if err != nil {
+			return out.Error("Failed to fetch quickstart status", err)
 		}
-	}
 
-	if len(bindings) == 0 {
-		fmt.Println("\nNo bindings were selected. Quickstart remains unchanged.")
-		return nil
-	}
+		adaptersFromProto := quickstartAdaptersFromProto(status.GetAdapters())
+		if len(adaptersFromProto) > 0 {
+			fmt.Println("Current adapter status:")
+			printAdapterTable(adaptersFromProto)
+			printAdapterRuntimeMessages(adaptersFromProto)
+			fmt.Println()
+		}
 
-	allowComplete := len(missingRefs) == 0
-	complete := false
-	if len(bindings) == len(status.GetPendingSlots()) {
-		if !allowComplete {
-			fmt.Println("\nAll pending slots are assigned, but reference adapters are still missing. Quickstart will remain incomplete.")
+		missingRefs := status.GetMissingReferenceAdapters()
+		printMissingReferenceAdapters(missingRefs, true)
+
+		if status.GetCompleted() && len(status.GetPendingSlots()) == 0 {
+			fmt.Println("Quickstart is already completed. Nothing to do.")
+			return nil
+		}
+
+		// Fetch available adapters for the wizard.
+		listCtx, listCancel := context.WithTimeout(context.Background(), constants.Duration10Seconds)
+		defer listCancel()
+
+		listResp, err := gc.ListAdapters(listCtx)
+		if err != nil {
+			return out.Error("Failed to fetch adapters", err)
+		}
+		adapters := adaptersFromListResponse(listResp)
+
+		if len(adapters) == 0 {
+			fmt.Println("No adapters are installed yet. Install adapters before running the wizard.")
+			return nil
+		}
+
+		reader := bufio.NewReader(os.Stdin)
+		var bindings []*apiv1.QuickstartBinding
+
+		fmt.Println("=== Quickstart Wizard ===")
+		if status.GetCompleted() {
+			fmt.Println("Quickstart was marked complete previously, but some slots are pending.")
+		}
+
+		for _, slot := range status.GetPendingSlots() {
+			fmt.Printf("\nSlot %s requires an adapter.\n", slot)
+			slotAdapters := printAvailableAdaptersForSlot(slot, adapters)
+
+			for {
+				fmt.Printf("Select adapter for %s (enter number/id, blank to skip): ", slot)
+				choice, err := reader.ReadString('\n')
+				if err != nil {
+					return out.Error("Failed to read input", err)
+				}
+				choice = strings.TrimSpace(choice)
+
+				if choice == "" {
+					fmt.Printf("Skipping %s. You can assign it later.\n", slot)
+					break
+				}
+
+				if id, ok := resolveAdapterChoice(choice, slotAdapters, adapters); ok {
+					bindings = append(bindings, &apiv1.QuickstartBinding{Slot: slot, AdapterId: id})
+					fmt.Printf("  -> Assigned %s to %s\n", id, slot)
+					break
+				}
+
+				fmt.Println("Invalid selection. Please try again.")
+			}
+		}
+
+		if len(bindings) == 0 {
+			fmt.Println("\nNo bindings were selected. Quickstart remains unchanged.")
+			return nil
+		}
+
+		allowComplete := len(missingRefs) == 0
+		complete := false
+		if len(bindings) == len(status.GetPendingSlots()) {
+			if !allowComplete {
+				fmt.Println("\nAll pending slots are assigned, but reference adapters are still missing. Quickstart will remain incomplete.")
+			} else {
+				fmt.Print("\nAll pending slots have assignments. Mark quickstart as complete? [Y/n]: ")
+				answer, _ := reader.ReadString('\n')
+				answer = strings.TrimSpace(strings.ToLower(answer))
+				complete = answer == "" || answer == "y" || answer == "yes"
+			}
+		}
+
+		updateCtx, updateCancel := context.WithTimeout(context.Background(), constants.Duration10Seconds)
+		defer updateCancel()
+
+		req := &apiv1.UpdateQuickstartRequest{
+			Bindings: bindings,
+		}
+		if complete {
+			req.Complete = wrapperspb.Bool(true)
+		}
+
+		result, err := gc.UpdateQuickstart(updateCtx, req)
+		if err != nil {
+			return out.Error("Failed to submit quickstart bindings", err)
+		}
+
+		fmt.Println("\nQuickstart updated.")
+		if complete && result.GetCompleted() {
+			fmt.Println("Quickstart marked as completed.")
 		} else {
-			fmt.Print("\nAll pending slots have assignments. Mark quickstart as complete? [Y/n]: ")
-			answer, _ := reader.ReadString('\n')
-			answer = strings.TrimSpace(strings.ToLower(answer))
-			complete = answer == "" || answer == "y" || answer == "yes"
+			fmt.Printf("Quickstart completed: %v\n", result.GetCompleted())
 		}
-	}
 
-	updateCtx, updateCancel := context.WithTimeout(context.Background(), constants.Duration10Seconds)
-	defer updateCancel()
-
-	req := &apiv1.UpdateQuickstartRequest{
-		Bindings: bindings,
-	}
-	if complete {
-		req.Complete = wrapperspb.Bool(true)
-	}
-
-	result, err := gc.UpdateQuickstart(updateCtx, req)
-	if err != nil {
-		return out.Error("Failed to submit quickstart bindings", err)
-	}
-
-	fmt.Println("\nQuickstart updated.")
-	if complete && result.GetCompleted() {
-		fmt.Println("Quickstart marked as completed.")
-	} else {
-		fmt.Printf("Quickstart completed: %v\n", result.GetCompleted())
-	}
-
-	if len(result.GetPendingSlots()) > 0 {
-		fmt.Println("Pending slots remaining:")
-		for _, slot := range result.GetPendingSlots() {
-			fmt.Printf("  - %s\n", slot)
+		if len(result.GetPendingSlots()) > 0 {
+			fmt.Println("Pending slots remaining:")
+			for _, slot := range result.GetPendingSlots() {
+				fmt.Printf("  - %s\n", slot)
+			}
+		} else {
+			fmt.Println("No pending slots remaining.")
 		}
-	} else {
-		fmt.Println("No pending slots remaining.")
-	}
 
-	resultAdapters := quickstartAdaptersFromProto(result.GetAdapters())
-	if len(resultAdapters) > 0 {
-		fmt.Println("\nUpdated adapter status:")
-		printAdapterTable(resultAdapters)
-		printAdapterRuntimeMessages(resultAdapters)
-	}
+		resultAdapters := quickstartAdaptersFromProto(result.GetAdapters())
+		if len(resultAdapters) > 0 {
+			fmt.Println("\nUpdated adapter status:")
+			printAdapterTable(resultAdapters)
+			printAdapterRuntimeMessages(resultAdapters)
+		}
 
-	printMissingReferenceAdapters(result.GetMissingReferenceAdapters(), true)
+		printMissingReferenceAdapters(result.GetMissingReferenceAdapters(), true)
 
-	return nil
+		return nil
+	})
 }
 
 func quickstartStatus(cmd *cobra.Command, args []string) error {
 	out := newOutputFormatter(cmd)
 
-	gc, err := grpcclient.New()
-	if err != nil {
-		return out.Error("Failed to connect to daemon", err)
-	}
-	defer gc.Close()
+	return withOutputClientTimeout(out, constants.Duration5Seconds, daemonConnectErrorMessage, func(ctx context.Context, gc *grpcclient.Client) (any, error) {
+		payload, err := gc.QuickstartStatus(ctx)
+		if err != nil {
+			return nil, clientCallFailed("Failed to fetch quickstart status", err)
+		}
 
-	ctx, cancel := context.WithTimeout(context.Background(), constants.Duration5Seconds)
-	defer cancel()
+		status := map[string]interface{}{
+			"completed":     payload.GetCompleted(),
+			"pending_slots": payload.GetPendingSlots(),
+		}
+		if payload.GetCompletedAt() != nil {
+			status["completed_at"] = payload.GetCompletedAt().AsTime().UTC().Format(time.RFC3339)
+		}
+		if len(payload.GetMissingReferenceAdapters()) > 0 {
+			status["missing_reference_adapters"] = payload.GetMissingReferenceAdapters()
+		}
+		adapters := quickstartAdaptersFromProto(payload.GetAdapters())
+		if len(adapters) > 0 {
+			status["adapters"] = adapters
+		}
 
-	payload, err := gc.QuickstartStatus(ctx)
-	if err != nil {
-		return out.Error("Failed to fetch quickstart status", err)
-	}
-
-	status := map[string]interface{}{
-		"completed":     payload.GetCompleted(),
-		"pending_slots": payload.GetPendingSlots(),
-	}
-	if payload.GetCompletedAt() != nil {
-		status["completed_at"] = payload.GetCompletedAt().AsTime().UTC().Format(time.RFC3339)
-	}
-	if len(payload.GetMissingReferenceAdapters()) > 0 {
-		status["missing_reference_adapters"] = payload.GetMissingReferenceAdapters()
-	}
-	adapters := quickstartAdaptersFromProto(payload.GetAdapters())
-	if len(adapters) > 0 {
-		status["adapters"] = adapters
-	}
-
-	return out.Render(CommandResult{
-		Data: status,
-		HumanReadable: func() error {
-			fmt.Printf("Quickstart completed: %v\n", payload.GetCompleted())
-			if payload.GetCompletedAt() != nil {
-				fmt.Printf("Completed at: %s\n", payload.GetCompletedAt().AsTime().UTC().Format(time.RFC3339))
-			}
-			if len(payload.GetPendingSlots()) == 0 {
-				fmt.Println("Pending slots: none")
-			} else {
-				fmt.Println("Pending slots:")
-				for _, slot := range payload.GetPendingSlots() {
-					fmt.Printf("  - %s\n", slot)
+		return CommandResult{
+			Data: status,
+			HumanReadable: func() error {
+				fmt.Printf("Quickstart completed: %v\n", payload.GetCompleted())
+				if payload.GetCompletedAt() != nil {
+					fmt.Printf("Completed at: %s\n", payload.GetCompletedAt().AsTime().UTC().Format(time.RFC3339))
 				}
-			}
+				if len(payload.GetPendingSlots()) == 0 {
+					fmt.Println("Pending slots: none")
+				} else {
+					fmt.Println("Pending slots:")
+					for _, slot := range payload.GetPendingSlots() {
+						fmt.Printf("  - %s\n", slot)
+					}
+				}
 
-			if len(payload.GetMissingReferenceAdapters()) > 0 {
-				printMissingReferenceAdapters(payload.GetMissingReferenceAdapters(), true)
-			}
+				if len(payload.GetMissingReferenceAdapters()) > 0 {
+					printMissingReferenceAdapters(payload.GetMissingReferenceAdapters(), true)
+				}
 
-			if len(adapters) == 0 {
-				fmt.Println("Adapters: none reported")
-			} else {
-				fmt.Println("\nAdapters:")
-				printAdapterTable(adapters)
-				printAdapterRuntimeMessages(adapters)
-			}
-			return nil
-		},
+				if len(adapters) == 0 {
+					fmt.Println("Adapters: none reported")
+				} else {
+					fmt.Println("\nAdapters:")
+					printAdapterTable(adapters)
+					printAdapterRuntimeMessages(adapters)
+				}
+				return nil
+			},
+		}, nil
 	})
 }
 
 func quickstartComplete(cmd *cobra.Command, args []string) error {
 	out := newOutputFormatter(cmd)
 
-	gc, err := grpcclient.New()
-	if err != nil {
-		return out.Error("Failed to connect to daemon", err)
-	}
-	defer gc.Close()
+	return withOutputClient(out, daemonConnectErrorMessage, func(gc *grpcclient.Client) error {
+		flags := cmd.Flags()
+		bindingPairs, _ := flags.GetStringSlice("binding")
+		completeFlag, _ := flags.GetBool("complete")
 
-	flags := cmd.Flags()
-	bindingPairs, _ := flags.GetStringSlice("binding")
-	completeFlag, _ := flags.GetBool("complete")
+		if completeFlag {
+			ctx, cancel := context.WithTimeout(context.Background(), constants.Duration5Seconds)
+			defer cancel()
 
-	if completeFlag {
-		ctx, cancel := context.WithTimeout(context.Background(), constants.Duration5Seconds)
+			status, err := gc.QuickstartStatus(ctx)
+			if err != nil {
+				return out.Error("Failed to fetch quickstart status", err)
+			}
+			if missing := status.GetMissingReferenceAdapters(); len(missing) > 0 {
+				return out.Error(
+					"Cannot complete quickstart",
+					fmt.Errorf("missing reference adapters: %s (install the recommended packages before completing quickstart)", strings.Join(missing, ", ")),
+				)
+			}
+		}
+
+		var bindings []*apiv1.QuickstartBinding
+		for _, pair := range bindingPairs {
+			parts := strings.SplitN(pair, "=", 2)
+			if len(parts) != 2 {
+				return out.Error("Invalid binding format (expected slot=adapter)", fmt.Errorf("%s", pair))
+			}
+			slot := strings.TrimSpace(parts[0])
+			adapter := strings.TrimSpace(parts[1])
+			if slot == "" {
+				return out.Error("Binding slot cannot be empty", nil)
+			}
+			if adapter == "" {
+				return out.Error("Binding adapter cannot be empty", nil)
+			}
+			bindings = append(bindings, &apiv1.QuickstartBinding{Slot: slot, AdapterId: adapter})
+		}
+
+		req := &apiv1.UpdateQuickstartRequest{
+			Bindings: bindings,
+		}
+		if completeFlag {
+			req.Complete = wrapperspb.Bool(true)
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), constants.Duration10Seconds)
 		defer cancel()
 
-		status, err := gc.QuickstartStatus(ctx)
+		result, err := gc.UpdateQuickstart(ctx, req)
 		if err != nil {
-			return out.Error("Failed to fetch quickstart status", err)
+			return out.Error("Failed to update quickstart status", err)
 		}
-		if missing := status.GetMissingReferenceAdapters(); len(missing) > 0 {
-			return out.Error(
-				"Cannot complete quickstart",
-				fmt.Errorf("missing reference adapters: %s (install the recommended packages before completing quickstart)", strings.Join(missing, ", ")),
-			)
+
+		status := map[string]interface{}{
+			"completed":     result.GetCompleted(),
+			"pending_slots": result.GetPendingSlots(),
 		}
-	}
-
-	var bindings []*apiv1.QuickstartBinding
-	for _, pair := range bindingPairs {
-		parts := strings.SplitN(pair, "=", 2)
-		if len(parts) != 2 {
-			return out.Error("Invalid binding format (expected slot=adapter)", fmt.Errorf("%s", pair))
+		if result.GetCompletedAt() != nil {
+			status["completed_at"] = result.GetCompletedAt().AsTime().UTC().Format(time.RFC3339)
 		}
-		slot := strings.TrimSpace(parts[0])
-		adapter := strings.TrimSpace(parts[1])
-		if slot == "" {
-			return out.Error("Binding slot cannot be empty", nil)
+		adapters := quickstartAdaptersFromProto(result.GetAdapters())
+		if len(adapters) > 0 {
+			status["adapters"] = adapters
 		}
-		if adapter == "" {
-			return out.Error("Binding adapter cannot be empty", nil)
-		}
-		bindings = append(bindings, &apiv1.QuickstartBinding{Slot: slot, AdapterId: adapter})
-	}
 
-	req := &apiv1.UpdateQuickstartRequest{
-		Bindings: bindings,
-	}
-	if completeFlag {
-		req.Complete = wrapperspb.Bool(true)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), constants.Duration10Seconds)
-	defer cancel()
-
-	result, err := gc.UpdateQuickstart(ctx, req)
-	if err != nil {
-		return out.Error("Failed to update quickstart status", err)
-	}
-
-	status := map[string]interface{}{
-		"completed":     result.GetCompleted(),
-		"pending_slots": result.GetPendingSlots(),
-	}
-	if result.GetCompletedAt() != nil {
-		status["completed_at"] = result.GetCompletedAt().AsTime().UTC().Format(time.RFC3339)
-	}
-	adapters := quickstartAdaptersFromProto(result.GetAdapters())
-	if len(adapters) > 0 {
-		status["adapters"] = adapters
-	}
-
-	return out.Render(CommandResult{
-		Data: status,
-		HumanReadable: func() error {
-			fmt.Printf("Quickstart completed: %v\n", result.GetCompleted())
-			if result.GetCompletedAt() != nil {
-				fmt.Printf("Completed at: %s\n", result.GetCompletedAt().AsTime().UTC().Format(time.RFC3339))
-			}
-			if len(result.GetPendingSlots()) == 0 {
-				fmt.Println("Pending slots: none")
-			} else {
-				fmt.Println("Pending slots:")
-				for _, slot := range result.GetPendingSlots() {
-					fmt.Printf("  - %s\n", slot)
+		return out.Render(CommandResult{
+			Data: status,
+			HumanReadable: func() error {
+				fmt.Printf("Quickstart completed: %v\n", result.GetCompleted())
+				if result.GetCompletedAt() != nil {
+					fmt.Printf("Completed at: %s\n", result.GetCompletedAt().AsTime().UTC().Format(time.RFC3339))
 				}
-			}
+				if len(result.GetPendingSlots()) == 0 {
+					fmt.Println("Pending slots: none")
+				} else {
+					fmt.Println("Pending slots:")
+					for _, slot := range result.GetPendingSlots() {
+						fmt.Printf("  - %s\n", slot)
+					}
+				}
 
-			if len(adapters) == 0 {
-				fmt.Println("Adapters: none reported")
-			} else {
-				fmt.Println("\nAdapters:")
-				printAdapterTable(adapters)
-				printAdapterRuntimeMessages(adapters)
-			}
-			return nil
-		},
+				if len(adapters) == 0 {
+					fmt.Println("Adapters: none reported")
+				} else {
+					fmt.Println("\nAdapters:")
+					printAdapterTable(adapters)
+					printAdapterRuntimeMessages(adapters)
+				}
+				return nil
+			},
+		})
 	})
 }
 

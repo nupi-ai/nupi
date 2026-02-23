@@ -23,8 +23,8 @@ import (
 	"github.com/nupi-ai/nupi/internal/config"
 	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/grpcclient"
-	"github.com/nupi-ai/nupi/internal/sanitize"
 	manifestpkg "github.com/nupi-ai/nupi/internal/plugins/manifest"
+	"github.com/nupi-ai/nupi/internal/sanitize"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -622,50 +622,46 @@ func adaptersLogs(cmd *cobra.Command, _ []string) error {
 	slot = strings.TrimSpace(slot)
 	adapter = strings.TrimSpace(adapter)
 
-	gc, err := grpcclient.New()
-	if err != nil {
-		return out.Error("Failed to connect to daemon via gRPC", err)
-	}
-	defer gc.Close()
+	return withOutputClient(out, daemonConnectGRPCErrorMessage, func(gc *grpcclient.Client) error {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, os.Interrupt)
-	defer signal.Stop(sigs)
-	go func() {
-		select {
-		case <-sigs:
-			cancel()
-		case <-ctx.Done():
-		}
-	}()
-
-	stream, err := gc.StreamAdapterLogs(ctx, &apiv1.StreamAdapterLogsRequest{
-		Slot:    slot,
-		Adapter: adapter,
-	})
-	if err != nil {
-		return out.Error("Failed to stream adapter logs", err)
-	}
-
-	for {
-		entry, err := stream.Recv()
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return nil
+		sigs := make(chan os.Signal, 1)
+		signal.Notify(sigs, os.Interrupt)
+		defer signal.Stop(sigs)
+		go func() {
+			select {
+			case <-sigs:
+				cancel()
+			case <-ctx.Done():
 			}
-			return out.Error("Adapter log stream ended with error", err)
+		}()
+
+		stream, err := gc.StreamAdapterLogs(ctx, &apiv1.StreamAdapterLogsRequest{
+			Slot:    slot,
+			Adapter: adapter,
+		})
+		if err != nil {
+			return out.Error("Failed to stream adapter logs", err)
 		}
 
-		if out.jsonMode {
-			printAdapterLogEntryJSON(entry)
-			continue
-		}
+		for {
+			entry, err := stream.Recv()
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					return nil
+				}
+				return out.Error("Adapter log stream ended with error", err)
+			}
 
-		printAdapterLogEntry(entry)
-	}
+			if out.jsonMode {
+				printAdapterLogEntryJSON(entry)
+				continue
+			}
+
+			printAdapterLogEntry(entry)
+		}
+	})
 }
 
 func printAdapterLogEntry(entry *apiv1.AdapterLogStreamEntry) {

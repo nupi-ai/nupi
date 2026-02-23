@@ -223,42 +223,35 @@ func pairClaim(cmd *cobra.Command, _ []string) error {
 	}
 	name, _ := cmd.Flags().GetString("name")
 
-	gc, err := grpcclient.New()
-	if err != nil {
-		return out.Error("Failed to connect to daemon via gRPC", err)
-	}
-	defer gc.Close()
+	return withOutputClientTimeout(out, constants.Duration10Seconds, daemonConnectGRPCErrorMessage, func(ctx context.Context, gc *grpcclient.Client) (any, error) {
+		resp, err := gc.ClaimPairing(ctx, &apiv1.ClaimPairingRequest{
+			Code:       strings.ToUpper(code),
+			ClientName: strings.TrimSpace(name),
+		})
+		if err != nil {
+			return nil, clientCallFailed("Failed to claim pairing code", err)
+		}
 
-	ctx, cancel := context.WithTimeout(context.Background(), constants.Duration10Seconds)
-	defer cancel()
+		result := map[string]interface{}{
+			"token": resp.GetToken(),
+			"name":  resp.GetName(),
+			"role":  resp.GetRole(),
+		}
+		if resp.GetCreatedAt() != nil {
+			result["created_at"] = resp.GetCreatedAt().AsTime().Format(time.RFC3339)
+		}
 
-	resp, err := gc.ClaimPairing(ctx, &apiv1.ClaimPairingRequest{
-		Code:       strings.ToUpper(code),
-		ClientName: strings.TrimSpace(name),
-	})
-	if err != nil {
-		return out.Error("Failed to claim pairing code", err)
-	}
-
-	result := map[string]interface{}{
-		"token": resp.GetToken(),
-		"name":  resp.GetName(),
-		"role":  resp.GetRole(),
-	}
-	if resp.GetCreatedAt() != nil {
-		result["created_at"] = resp.GetCreatedAt().AsTime().Format(time.RFC3339)
-	}
-
-	return out.Render(CommandResult{
-		Data: result,
-		HumanReadable: func() error {
-			fmt.Println("Pairing successful. Store this token securely:")
-			fmt.Printf("  Token: %s\n", resp.GetToken())
-			if strings.TrimSpace(resp.GetName()) != "" {
-				fmt.Printf("  Name:  %s\n", resp.GetName())
-			}
-			fmt.Printf("  Role:  %s\n", resp.GetRole())
-			return nil
-		},
+		return CommandResult{
+			Data: result,
+			HumanReadable: func() error {
+				fmt.Println("Pairing successful. Store this token securely:")
+				fmt.Printf("  Token: %s\n", resp.GetToken())
+				if strings.TrimSpace(resp.GetName()) != "" {
+					fmt.Printf("  Name:  %s\n", resp.GetName())
+				}
+				fmt.Printf("  Role:  %s\n", resp.GetRole())
+				return nil
+			},
+		}, nil
 	})
 }

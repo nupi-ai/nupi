@@ -147,170 +147,166 @@ func voiceStart(cmd *cobra.Command, _ []string) error {
 		}
 	}()
 
-	gc, err := grpcclient.New()
-	if err != nil {
-		return out.Error("Failed to connect to daemon", err)
-	}
-	defer gc.Close()
-
-	caps, err := gc.AudioCapabilities(ctx, &apiv1.GetAudioCapabilitiesRequest{
-		SessionId: sessionID,
-	})
-	if err != nil {
-		return out.Error("Failed to fetch audio capabilities", err)
-	}
-	captureEnabled := hasCaptureEnabled(caps)
-	playbackEnabled := hasPlaybackEnabled(caps)
-	if !captureEnabled {
-		return out.Error("Voice capture unavailable", errors.New("voice capture disabled"))
-	}
-	if !noPlayback && !playbackEnabled {
-		return out.Error("Voice playback unavailable", errors.New("voice playback disabled"))
-	}
-
-	var playbackWG sync.WaitGroup
-	var playbackErr error
-	var playbackBytes int64
-	var playbackChunks int
-
-	if !noPlayback {
-		targetStream := playbackStream
-		if targetStream == "" {
-			targetStream = slots.TTS
-		}
-		playbackSrv, err := gc.StreamAudioOut(ctx, &apiv1.StreamAudioOutRequest{
+	return withOutputClient(out, daemonConnectErrorMessage, func(gc *grpcclient.Client) error {
+		caps, err := gc.AudioCapabilities(ctx, &apiv1.GetAudioCapabilitiesRequest{
 			SessionId: sessionID,
-			StreamId:  targetStream,
 		})
 		if err != nil {
-			cancel()
-			return out.Error("Failed to subscribe to playback", err)
+			return out.Error("Failed to fetch audio capabilities", err)
+		}
+		captureEnabled := hasCaptureEnabled(caps)
+		playbackEnabled := hasPlaybackEnabled(caps)
+		if !captureEnabled {
+			return out.Error("Voice capture unavailable", errors.New("voice capture disabled"))
+		}
+		if !noPlayback && !playbackEnabled {
+			return out.Error("Voice playback unavailable", errors.New("voice playback disabled"))
 		}
 
-		playbackWG.Add(1)
-		go func() {
-			defer playbackWG.Done()
+		var playbackWG sync.WaitGroup
+		var playbackErr error
+		var playbackBytes int64
+		var playbackChunks int
 
-			var wavWriter *audioio.Writer
-			var writerErr error
-			defer func() {
-				if wavWriter != nil {
-					_ = wavWriter.Close()
+		if !noPlayback {
+			targetStream := playbackStream
+			if targetStream == "" {
+				targetStream = slots.TTS
+			}
+			playbackSrv, err := gc.StreamAudioOut(ctx, &apiv1.StreamAudioOutRequest{
+				SessionId: sessionID,
+				StreamId:  targetStream,
+			})
+			if err != nil {
+				cancel()
+				return out.Error("Failed to subscribe to playback", err)
+			}
+
+			playbackWG.Add(1)
+			go func() {
+				defer playbackWG.Done()
+
+				var wavWriter *audioio.Writer
+				var writerErr error
+				defer func() {
+					if wavWriter != nil {
+						_ = wavWriter.Close()
+					}
+				}()
+				for {
+					resp, err := playbackSrv.Recv()
+					if err != nil {
+						if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) {
+							return
+						}
+						playbackErr = err
+						return
+					}
+
+					chunk := resp.GetChunk()
+					if chunk == nil {
+						continue
+					}
+
+					playbackChunks++
+					playbackBytes += int64(len(chunk.GetData()))
+
+					chunkFormat := mapper.FromProtoAudioFormat(resp.GetFormat())
+
+					if outputPath != "" && len(chunk.GetData()) > 0 {
+						if wavWriter == nil {
+							file, err := os.Create(outputPath)
+							if err != nil {
+								playbackErr = fmt.Errorf("open playback file: %w", err)
+								return
+							}
+							format := chunkFormat
+							if format.SampleRate == 0 {
+								format.SampleRate = input.format.SampleRate
+							}
+							if format.Channels == 0 {
+								format.Channels = input.format.Channels
+							}
+							if format.BitDepth == 0 {
+								format.BitDepth = input.format.BitDepth
+							}
+							wavWriter, err = audioio.NewWriter(file, format)
+							if err != nil {
+								_ = file.Close()
+								playbackErr = fmt.Errorf("initialise playback WAV writer: %w", err)
+								return
+							}
+						}
+						if _, err := wavWriter.Write(chunk.GetData()); err != nil {
+							playbackErr = fmt.Errorf("write playback chunk: %w", err)
+							return
+						}
+					}
+
+					if chunk.GetLast() {
+						if wavWriter != nil {
+							if err := wavWriter.Close(); err != nil {
+								writerErr = fmt.Errorf("finalise playback WAV: %w", err)
+							}
+						}
+						if writerErr != nil && playbackErr == nil {
+							playbackErr = writerErr
+						}
+						return
+					}
 				}
 			}()
-			for {
-				resp, err := playbackSrv.Recv()
-				if err != nil {
-					if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) {
-						return
-					}
-					playbackErr = err
-					return
-				}
-
-				chunk := resp.GetChunk()
-				if chunk == nil {
-					continue
-				}
-
-				playbackChunks++
-				playbackBytes += int64(len(chunk.GetData()))
-
-				chunkFormat := mapper.FromProtoAudioFormat(resp.GetFormat())
-
-				if outputPath != "" && len(chunk.GetData()) > 0 {
-					if wavWriter == nil {
-						file, err := os.Create(outputPath)
-						if err != nil {
-							playbackErr = fmt.Errorf("open playback file: %w", err)
-							return
-						}
-						format := chunkFormat
-						if format.SampleRate == 0 {
-							format.SampleRate = input.format.SampleRate
-						}
-						if format.Channels == 0 {
-							format.Channels = input.format.Channels
-						}
-						if format.BitDepth == 0 {
-							format.BitDepth = input.format.BitDepth
-						}
-						wavWriter, err = audioio.NewWriter(file, format)
-						if err != nil {
-							_ = file.Close()
-							playbackErr = fmt.Errorf("initialise playback WAV writer: %w", err)
-							return
-						}
-					}
-					if _, err := wavWriter.Write(chunk.GetData()); err != nil {
-						playbackErr = fmt.Errorf("write playback chunk: %w", err)
-						return
-					}
-				}
-
-				if chunk.GetLast() {
-					if wavWriter != nil {
-						if err := wavWriter.Close(); err != nil {
-							writerErr = fmt.Errorf("finalise playback WAV: %w", err)
-						}
-					}
-					if writerErr != nil && playbackErr == nil {
-						playbackErr = writerErr
-					}
-					return
-				}
-			}
-		}()
-	}
-
-	// Upload audio via gRPC client-streaming.
-	counter := &countingReader{reader: input.reader}
-	uploadErr := uploadAudioGRPC(ctx, gc, sessionID, streamID, input.format, meta, counter)
-
-	if !noPlayback {
-		playbackWG.Wait()
-	}
-
-	var errs []error
-	if uploadErr != nil {
-		label := "upload failed"
-		if errors.Is(uploadErr, context.Canceled) {
-			label = "upload cancelled"
 		}
-		errs = append(errs, fmt.Errorf("%s: %w", label, uploadErr))
-	}
-	if playbackErr != nil {
-		errs = append(errs, fmt.Errorf("playback failed: %w", playbackErr))
-	}
-	if len(errs) > 0 {
-		return out.Error("Voice streaming failed", errors.Join(errs...))
-	}
 
-	payload := map[string]any{
-		"session_id":      sessionID,
-		"stream_id":       streamID,
-		"bytes_uploaded":  counter.n,
-		"ingress_source":  input.description,
-		"playback_chunks": playbackChunks,
-		"playback_bytes":  playbackBytes,
-	}
+		// Upload audio via gRPC client-streaming.
+		counter := &countingReader{reader: input.reader}
+		uploadErr := uploadAudioGRPC(ctx, gc, sessionID, streamID, input.format, meta, counter)
 
-	return out.Render(CommandResult{
-		Data: payload,
-		HumanReadable: func() error {
-			fmt.Fprintf(os.Stdout, "Uploaded %d bytes from %s to session %s/%s\n", counter.n, input.description, sessionID, streamID)
-			if !noPlayback {
-				if playbackBytes > 0 {
-					fmt.Fprintf(os.Stdout, "Received %d playback chunks (%d bytes)\n", playbackChunks, playbackBytes)
-					if outputPath != "" {
-						fmt.Fprintf(os.Stdout, "Saved playback audio to %s\n", outputPath)
-					}
-				} else {
-					fmt.Fprintln(os.Stdout, "Playback stream completed with no audio data")
-				}
+		if !noPlayback {
+			playbackWG.Wait()
+		}
+
+		var errs []error
+		if uploadErr != nil {
+			label := "upload failed"
+			if errors.Is(uploadErr, context.Canceled) {
+				label = "upload cancelled"
 			}
-			return nil
-		},
+			errs = append(errs, fmt.Errorf("%s: %w", label, uploadErr))
+		}
+		if playbackErr != nil {
+			errs = append(errs, fmt.Errorf("playback failed: %w", playbackErr))
+		}
+		if len(errs) > 0 {
+			return out.Error("Voice streaming failed", errors.Join(errs...))
+		}
+
+		payload := map[string]any{
+			"session_id":      sessionID,
+			"stream_id":       streamID,
+			"bytes_uploaded":  counter.n,
+			"ingress_source":  input.description,
+			"playback_chunks": playbackChunks,
+			"playback_bytes":  playbackBytes,
+		}
+
+		return out.Render(CommandResult{
+			Data: payload,
+			HumanReadable: func() error {
+				fmt.Fprintf(os.Stdout, "Uploaded %d bytes from %s to session %s/%s\n", counter.n, input.description, sessionID, streamID)
+				if !noPlayback {
+					if playbackBytes > 0 {
+						fmt.Fprintf(os.Stdout, "Received %d playback chunks (%d bytes)\n", playbackChunks, playbackBytes)
+						if outputPath != "" {
+							fmt.Fprintf(os.Stdout, "Saved playback audio to %s\n", outputPath)
+						}
+					} else {
+						fmt.Fprintln(os.Stdout, "Playback stream completed with no audio data")
+					}
+				}
+				return nil
+			},
+		})
 	})
 }
 

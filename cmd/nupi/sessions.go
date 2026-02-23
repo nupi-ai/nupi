@@ -128,55 +128,49 @@ func runCommand(cmd *cobra.Command, args []string) error {
 	}
 
 	out := &OutputFormatter{jsonMode: jsonOutput}
-
-	// Connect to daemon via gRPC
-	c, err := grpcclient.New()
-	if err != nil {
-		return out.Error("Failed to connect to daemon", err)
-	}
-	defer c.Close()
-
-	// Get terminal size
-	var rows, cols uint32 = 24, 80
-	if term.IsTerminal(0) {
-		if w, h, err := term.GetSize(0); err == nil {
-			cols = uint32(w)
-			rows = uint32(h)
+	return withOutputClient(out, daemonConnectErrorMessage, func(c *grpcclient.Client) error {
+		// Get terminal size
+		var rows, cols uint32 = 24, 80
+		if term.IsTerminal(0) {
+			if w, h, err := term.GetSize(0); err == nil {
+				cols = uint32(w)
+				rows = uint32(h)
+			}
 		}
-	}
 
-	// Create session
-	createCtx, createCancel := context.WithTimeout(context.Background(), constants.Duration10Seconds)
-	defer createCancel()
+		// Create session
+		createCtx, createCancel := context.WithTimeout(context.Background(), constants.Duration10Seconds)
+		defer createCancel()
 
-	resp, err := c.CreateSession(createCtx, &apiv1.CreateSessionRequest{
-		Command:    command,
-		Args:       commandArgs,
-		WorkingDir: localWorkDir,
-		Env:        os.Environ(),
-		Detached:   localDetached,
-		Rows:       rows,
-		Cols:       cols,
-	})
-	if err != nil {
-		return out.Error("Failed to create session", err)
-	}
-
-	session := resp.GetSession()
-	if session == nil {
-		return out.Error("Failed to create session", fmt.Errorf("empty response"))
-	}
-
-	if localDetached {
-		return out.Success("Session created and running in background", map[string]interface{}{
-			"session_id": session.GetId(),
-			"command":    command,
-			"args":       commandArgs,
+		resp, err := c.CreateSession(createCtx, &apiv1.CreateSessionRequest{
+			Command:    command,
+			Args:       commandArgs,
+			WorkingDir: localWorkDir,
+			Env:        os.Environ(),
+			Detached:   localDetached,
+			Rows:       rows,
+			Cols:       cols,
 		})
-	}
+		if err != nil {
+			return out.Error("Failed to create session", err)
+		}
 
-	// Attach to the session
-	return attachToExistingSession(c, session.GetId(), true)
+		session := resp.GetSession()
+		if session == nil {
+			return out.Error("Failed to create session", fmt.Errorf("empty response"))
+		}
+
+		if localDetached {
+			return out.Success("Session created and running in background", map[string]interface{}{
+				"session_id": session.GetId(),
+				"command":    command,
+				"args":       commandArgs,
+			})
+		}
+
+		// Attach to the session
+		return attachToExistingSession(c, session.GetId(), true)
+	})
 }
 
 // listSessions lists all active sessions
@@ -234,16 +228,11 @@ func listSessions(cmd *cobra.Command, args []string) error {
 func attachToSession(cmd *cobra.Command, args []string) error {
 	sessionID := args[0]
 
-	c, err := grpcclient.New()
-	if err != nil {
-		return fmt.Errorf("failed to connect to daemon: %w", err)
-	}
-	defer c.Close()
-
-	fmt.Printf("Attaching to session %s...\n", sessionID)
-	fmt.Println("Press Ctrl+C to detach")
-
-	return attachToExistingSession(c, sessionID, true)
+	return withPlainClient("failed to connect to daemon", func(c *grpcclient.Client) error {
+		fmt.Printf("Attaching to session %s...\n", sessionID)
+		fmt.Println("Press Ctrl+C to detach")
+		return attachToExistingSession(c, sessionID, true)
+	})
 }
 
 // attachToExistingSession handles the actual attachment via gRPC bidirectional streaming.
@@ -455,63 +444,57 @@ func inspectCommand(cmd *cobra.Command, args []string) error {
 	}
 
 	out := &OutputFormatter{jsonMode: jsonOutput}
-
-	// Connect to daemon via gRPC
-	c, err := grpcclient.New()
-	if err != nil {
-		return out.Error("Failed to connect to daemon", err)
-	}
-	defer c.Close()
-
-	// Get terminal size
-	var rows, cols uint32 = 24, 80
-	if term.IsTerminal(0) {
-		if w, h, err := term.GetSize(0); err == nil {
-			cols = uint32(w)
-			rows = uint32(h)
+	return withOutputClient(out, daemonConnectErrorMessage, func(c *grpcclient.Client) error {
+		// Get terminal size
+		var rows, cols uint32 = 24, 80
+		if term.IsTerminal(0) {
+			if w, h, err := term.GetSize(0); err == nil {
+				cols = uint32(w)
+				rows = uint32(h)
+			}
 		}
-	}
 
-	// Create session with inspect mode enabled
-	createCtx, createCancel := context.WithTimeout(context.Background(), constants.Duration10Seconds)
-	defer createCancel()
+		// Create session with inspect mode enabled
+		createCtx, createCancel := context.WithTimeout(context.Background(), constants.Duration10Seconds)
+		defer createCancel()
 
-	resp, err := c.CreateSession(createCtx, &apiv1.CreateSessionRequest{
-		Command:    command,
-		Args:       commandArgs,
-		WorkingDir: localWorkDir,
-		Env:        os.Environ(),
-		Detached:   localDetached,
-		Rows:       rows,
-		Cols:       cols,
-		Inspect:    true,
-	})
-	if err != nil {
-		return out.Error("Failed to create session", err)
-	}
-
-	session := resp.GetSession()
-	if session == nil {
-		return out.Error("Failed to create session", fmt.Errorf("empty response"))
-	}
-
-	if localDetached {
-		return out.Success("Session created in inspection mode", map[string]interface{}{
-			"session_id":  session.GetId(),
-			"command":     command,
-			"args":        commandArgs,
-			"inspect":     true,
-			"output_file": fmt.Sprintf("~/.nupi/inspect/%s.raw", session.GetId()),
+		resp, err := c.CreateSession(createCtx, &apiv1.CreateSessionRequest{
+			Command:    command,
+			Args:       commandArgs,
+			WorkingDir: localWorkDir,
+			Env:        os.Environ(),
+			Detached:   localDetached,
+			Rows:       rows,
+			Cols:       cols,
+			Inspect:    true,
 		})
-	}
+		if err != nil {
+			return out.Error("Failed to create session", err)
+		}
 
-	// Show inspection mode notice in human-readable mode only
-	out.PrintText(func() {
-		fmt.Printf("\033[33mInspection mode enabled. Raw output will be saved to ~/.nupi/inspect/%s.raw\033[0m\n", session.GetId())
+		session := resp.GetSession()
+		if session == nil {
+			return out.Error("Failed to create session", fmt.Errorf("empty response"))
+		}
+
+		if localDetached {
+			return out.Success("Session created in inspection mode", map[string]interface{}{
+				"session_id":  session.GetId(),
+				"command":     command,
+				"args":        commandArgs,
+				"inspect":     true,
+				"output_file": fmt.Sprintf("~/.nupi/inspect/%s.raw", session.GetId()),
+			})
+		}
+
+		// Show inspection mode notice in human-readable mode only
+		out.PrintText(func() {
+			fmt.Printf("\033[33mInspection mode enabled. Raw output will be saved to ~/.nupi/inspect/%s.raw\033[0m\n", session.GetId())
+		})
+
+		// Attach to the session
+		return attachToExistingSession(c, session.GetId(), true)
 	})
-
-	// Attach to the session
-	return attachToExistingSession(c, session.GetId(), true)
 }
 
 // killSession kills a running session
