@@ -26,9 +26,6 @@ var (
 
 const (
 	defaultSegmentBuffer = serviceutil.DefaultWorkerBuffer
-	defaultFlushTimeout  = constants.Duration2Seconds
-	defaultRetryInitial  = serviceutil.DefaultRetryInitial
-	defaultRetryMax      = serviceutil.DefaultRetryMax
 	maxPendingSegments   = serviceutil.DefaultMaxPending
 )
 
@@ -124,9 +121,9 @@ func New(bus *eventbus.Bus, opts ...Option) *Service {
 		bus:           bus,
 		logger:        log.Default(),
 		segmentBuffer: defaultSegmentBuffer,
-		flushTimeout:  defaultFlushTimeout,
-		retryInitial:  defaultRetryInitial,
-		retryMax:      defaultRetryMax,
+		flushTimeout:  constants.Duration2Seconds,
+		retryInitial:  serviceutil.DefaultRetryInitial,
+		retryMax:      serviceutil.DefaultRetryMax,
 		factory: FactoryFunc(func(context.Context, SessionParams) (Transcriber, error) {
 			return nil, ErrFactoryUnavailable
 		}),
