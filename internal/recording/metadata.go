@@ -2,6 +2,7 @@ package recording
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -55,7 +56,7 @@ func NewStore() (*Store, error) {
 // SaveMetadata saves metadata for a recording.
 func (s *Store) SaveMetadata(meta Metadata) error {
 	metadata, err := s.LoadAll()
-	if err != nil && !os.IsNotExist(err) {
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("failed to load existing metadata: %w", err)
 	}
 
@@ -91,7 +92,7 @@ func (s *Store) SaveMetadata(meta Metadata) error {
 func (s *Store) LoadAll() ([]Metadata, error) {
 	data, err := os.ReadFile(s.metadataFile)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return []Metadata{}, nil
 		}
 		return nil, fmt.Errorf("failed to read metadata file: %w", err)

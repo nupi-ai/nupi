@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -344,7 +345,7 @@ func TestSocketCleanup(t *testing.T) {
 	}
 
 	// Socket file should be removed after shutdown.
-	if _, err := os.Stat(socketPath); !os.IsNotExist(err) {
+	if _, err := os.Stat(socketPath); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("socket file should be removed after shutdown, got err = %v", err)
 	}
 }

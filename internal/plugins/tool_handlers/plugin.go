@@ -3,6 +3,7 @@ package toolhandlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -347,7 +348,7 @@ type PluginIndex map[string][]string
 func LoadIndex(indexPath string) (PluginIndex, error) {
 	data, err := os.ReadFile(indexPath)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return make(PluginIndex), nil
 		}
 		return nil, err

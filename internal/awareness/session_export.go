@@ -294,7 +294,7 @@ func (s *Service) writeSessionExport(ctx context.Context, sessionID, slug, aiSum
 
 	// Atomic write via temp file + rename.
 	tmpPath := filename + ".tmp"
-	if err := os.WriteFile(tmpPath, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(tmpPath, []byte(content), 0o600); err != nil {
 		os.Remove(tmpPath)
 		return fmt.Errorf("write temp file: %w", err)
 	}

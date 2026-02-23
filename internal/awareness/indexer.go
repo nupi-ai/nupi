@@ -33,7 +33,11 @@ func NewIndexer(memoryDir string) *Indexer {
 }
 
 // SetEventBus wires the event bus for publishing AwarenessSyncEvent notifications.
+// Must be called before Open.
 func (ix *Indexer) SetEventBus(bus *eventbus.Bus) {
+	if ix.db != nil {
+		panic("awareness: Indexer.SetEventBus called after Open")
+	}
 	ix.bus = bus
 }
 

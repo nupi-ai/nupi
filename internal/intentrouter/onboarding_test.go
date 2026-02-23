@@ -2,10 +2,13 @@ package intentrouter
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/nupi-ai/nupi/internal/awareness"
 	"github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
@@ -14,9 +17,9 @@ import (
 
 // mockOnboardingProvider implements OnboardingProvider for testing.
 type mockOnboardingProvider struct {
-	onboarding        bool
-	onboardingSession string // if set, only this session gets onboarding
-	bootstrap         string
+	onboarding      bool
+	lockedToSession string // if set, only this session gets onboarding; empty = accept all sessions
+	bootstrap       string
 }
 
 func (m *mockOnboardingProvider) IsOnboardingSession(sessionID string) bool {
@@ -26,11 +29,10 @@ func (m *mockOnboardingProvider) IsOnboardingSession(sessionID string) bool {
 	if !m.onboarding {
 		return false
 	}
-	if m.onboardingSession == "" {
-		// No lock configured — accept all (for existing tests).
+	if m.lockedToSession == "" {
 		return true
 	}
-	return m.onboardingSession == sessionID
+	return m.lockedToSession == sessionID
 }
 func (m *mockOnboardingProvider) BootstrapContent() string { return m.bootstrap }
 
@@ -121,11 +123,14 @@ func TestBootstrapContentInjectedInSystemPrompt(t *testing.T) {
 
 	result := injectBootstrapContent("base prompt", provider)
 
-	if !strings.Contains(result, "## ONBOARDING") {
-		t.Fatal("should contain '## ONBOARDING' section")
+	if !strings.Contains(result, "<onboarding>") {
+		t.Fatal("should contain <onboarding> tag")
 	}
-	if strings.Contains(result, "# Welcome") {
-		t.Fatal("should NOT contain H1 heading (should be stripped)")
+	if !strings.Contains(result, "</onboarding>") {
+		t.Fatal("should contain </onboarding> closing tag")
+	}
+	if !strings.Contains(result, "# Welcome") {
+		t.Fatal("should preserve H1 heading inside tag (no stripping)")
 	}
 	if !strings.Contains(result, "Test bootstrap instructions") {
 		t.Fatal("should contain bootstrap body content")
@@ -135,28 +140,37 @@ func TestBootstrapContentInjectedInSystemPrompt(t *testing.T) {
 	}
 }
 
-func TestInjectBootstrapContentH1Only(t *testing.T) {
-	// BOOTSTRAP.md with only an H1 heading and no body — injection should be skipped.
-	provider := &mockOnboardingProvider{
-		onboarding: true,
-		bootstrap:  "# Welcome\n",
-	}
-
-	result := injectBootstrapContent("base prompt", provider)
-
-	if strings.Contains(result, "## ONBOARDING") {
-		t.Fatal("should NOT inject ONBOARDING section when content is H1-only")
-	}
-	if result != "base prompt" {
-		t.Fatalf("expected unchanged prompt, got %q", result)
-	}
-}
-
 func TestInjectBootstrapContentNilProvider(t *testing.T) {
 	result := injectBootstrapContent("base prompt", nil)
 
 	if result != "base prompt" {
 		t.Fatalf("expected unchanged prompt with nil provider, got %q", result)
+	}
+}
+
+func TestInjectBootstrapContentEmptyContent(t *testing.T) {
+	provider := &mockOnboardingProvider{
+		onboarding: true,
+		bootstrap:  "",
+	}
+
+	result := injectBootstrapContent("base prompt", provider)
+
+	if result != "base prompt" {
+		t.Fatalf("expected unchanged prompt with empty bootstrap, got %q", result)
+	}
+}
+
+func TestInjectBootstrapContentWhitespaceOnly(t *testing.T) {
+	provider := &mockOnboardingProvider{
+		onboarding: true,
+		bootstrap:  "   \n  \n  ",
+	}
+
+	result := injectBootstrapContent("base prompt", provider)
+
+	if result != "base prompt" {
+		t.Fatalf("expected unchanged prompt with whitespace-only bootstrap, got %q", result)
 	}
 }
 
@@ -209,86 +223,6 @@ func TestPromptAdapterMapsOnboardingEventType(t *testing.T) {
 	// The user_intent template does NOT. This distinguishes correct mapping from fallback.
 	if !strings.Contains(resp.SystemPrompt, "onboarding_complete") {
 		t.Fatalf("onboarding SystemPrompt should contain 'onboarding_complete' (got user_intent fallback?)\nSystemPrompt: %s", resp.SystemPrompt)
-	}
-}
-
-func TestInjectBootstrapContentNoH1(t *testing.T) {
-	// Content without an H1 heading — should be injected as-is.
-	provider := &mockOnboardingProvider{
-		onboarding: true,
-		bootstrap:  "Just plain instructions without a heading.",
-	}
-
-	result := injectBootstrapContent("base prompt", provider)
-
-	if !strings.Contains(result, "## ONBOARDING") {
-		t.Fatal("should contain '## ONBOARDING' section")
-	}
-	if !strings.Contains(result, "Just plain instructions without a heading.") {
-		t.Fatal("should contain the bootstrap content verbatim")
-	}
-}
-
-func TestInjectBootstrapContentH1NoNewline(t *testing.T) {
-	// H1-only without trailing newline — must not cause hierarchy inversion.
-	provider := &mockOnboardingProvider{
-		onboarding: true,
-		bootstrap:  "# Welcome",
-	}
-
-	result := injectBootstrapContent("base prompt", provider)
-
-	if strings.Contains(result, "# Welcome") {
-		t.Fatal("should NOT inject H1 heading without body (hierarchy inversion)")
-	}
-	if result != "base prompt" {
-		t.Fatalf("expected unchanged prompt, got %q", result)
-	}
-}
-
-func TestInjectBootstrapContentBareHash(t *testing.T) {
-	// Bare "#" (empty H1 per CommonMark) should be stripped.
-	provider := &mockOnboardingProvider{
-		onboarding: true,
-		bootstrap:  "#\nContent after empty heading",
-	}
-
-	result := injectBootstrapContent("base prompt", provider)
-
-	if strings.Contains(result, "\n#\n") {
-		t.Fatal("bare '#' should be stripped as empty H1")
-	}
-	if !strings.Contains(result, "Content after empty heading") {
-		t.Fatal("should contain body content after bare H1")
-	}
-	if !strings.Contains(result, "## ONBOARDING") {
-		t.Fatal("should contain ONBOARDING section header")
-	}
-}
-
-func TestInjectBootstrapContentMultipleH1(t *testing.T) {
-	// Multiple H1 headings — ALL must be stripped to prevent hierarchy inversion.
-	provider := &mockOnboardingProvider{
-		onboarding: true,
-		bootstrap:  "# Welcome\nContent here\n# Another Section\nMore content",
-	}
-
-	result := injectBootstrapContent("base prompt", provider)
-
-	if strings.Contains(result, "# Welcome") {
-		t.Fatal("should NOT contain first H1 heading")
-	}
-	if strings.Contains(result, "# Another Section") {
-		t.Fatal("should NOT contain second H1 heading")
-	}
-	if !strings.Contains(result, "Content here") {
-		t.Fatal("should contain body after first H1")
-	}
-	if !strings.Contains(result, "More content") {
-		t.Fatal("should contain body after second H1")
-	}
-	if !strings.Contains(result, "## ONBOARDING") {
-		t.Fatal("should contain ONBOARDING section header")
 	}
 }
 
@@ -351,12 +285,118 @@ func TestEmptySessionIDDoesNotGetOnboarding(t *testing.T) {
 	}
 }
 
+func TestHandlePromptOnboardingFullFlow(t *testing.T) {
+	// Integration test: verifies the full handlePrompt path for onboarding:
+	// 1. Event type override from user_intent → onboarding
+	// 2. Bootstrap content injected in system prompt via <onboarding> tag
+	// 3. Tool filtering limits tools to onboarding set
+	// 4. Adapter receives correct request
+	bus := eventbus.New()
+	defer bus.Shutdown()
+
+	provider := &mockOnboardingProvider{
+		onboarding: true,
+		bootstrap:  "# Welcome to Nupi\nAsk the user their name and preferences.",
+	}
+
+	adapter := &testAdapter{
+		name:  "test",
+		ready: true,
+		response: &IntentResponse{
+			PromptID: "p-onboard",
+			Actions:  []IntentAction{{Type: ActionSpeak, Text: "Hello! What's your name?"}},
+		},
+	}
+
+	coreMemProvider := &mockCoreMemoryProvider{memory: "## SOUL\nBe helpful."}
+
+	reg := NewToolRegistry()
+	reg.Register(newMockHandler("core_memory_update", "Update core memory"))
+	reg.Register(newMockHandler("onboarding_complete", "Complete onboarding"))
+	reg.Register(newMockHandler("memory_search", "Search memory"))
+
+	svc := NewService(bus,
+		WithAdapter(adapter),
+		WithOnboardingProvider(provider),
+		WithCoreMemoryProvider(coreMemProvider),
+		WithToolRegistry(reg),
+	)
+
+	replySub := eventbus.SubscribeTo(bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("test_reply"))
+	defer replySub.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(ctx)
+
+	// Publish a user_intent prompt — should be overridden to onboarding.
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+		PromptID:  "p-onboard",
+		SessionID: "s1",
+		NewMessage: eventbus.ConversationMessage{
+			Text:   "hi there",
+			Origin: eventbus.OriginUser,
+		},
+		Metadata: map[string]string{
+			constants.MetadataKeyEventType: constants.PromptEventUserIntent,
+		},
+	})
+
+	// Wait for reply.
+	select {
+	case <-replySub.C():
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout waiting for reply")
+	}
+
+	// Verify adapter received onboarding event type.
+	req := adapter.GetLastRequest()
+	if req.EventType != EventTypeOnboarding {
+		t.Fatalf("adapter EventType = %q, want %q", req.EventType, EventTypeOnboarding)
+	}
+
+	// Verify bootstrap content was injected via <onboarding> tag.
+	if !strings.Contains(req.SystemPrompt, "<onboarding>") {
+		t.Fatal("system prompt should contain <onboarding> tag")
+	}
+	if !strings.Contains(req.SystemPrompt, "# Welcome to Nupi") {
+		t.Fatal("system prompt should preserve H1 inside <onboarding> tag")
+	}
+	if !strings.Contains(req.SystemPrompt, "Ask the user their name") {
+		t.Fatal("system prompt should contain bootstrap body content")
+	}
+
+	// Verify core memory was prepended via <core-memory> tag.
+	if !strings.Contains(req.SystemPrompt, "<core-memory>") {
+		t.Fatal("system prompt should contain <core-memory> tag")
+	}
+	if !strings.Contains(req.SystemPrompt, "Be helpful.") {
+		t.Fatal("system prompt should contain core memory")
+	}
+
+	// Verify only onboarding tools were offered (not memory_search).
+	toolNames := make(map[string]bool)
+	for _, td := range req.AvailableTools {
+		toolNames[td.Name] = true
+	}
+	if !toolNames["core_memory_update"] || !toolNames["onboarding_complete"] {
+		t.Fatalf("expected onboarding tools, got %v", toolNames)
+	}
+	if toolNames["memory_search"] {
+		t.Fatal("memory_search should NOT be available during onboarding")
+	}
+}
+
 func TestOnboardingSessionLockInBuildRequest(t *testing.T) {
 	// Session A owns onboarding; session B should stay as user_intent.
 	provider := &mockOnboardingProvider{
-		onboarding:        true,
-		onboardingSession: "session-A",
-		bootstrap:         "test",
+		onboarding:      true,
+		lockedToSession: "session-A",
+		bootstrap:       "test",
 	}
 
 	svc := NewService(nil, WithOnboardingProvider(provider))
@@ -389,5 +429,94 @@ func TestOnboardingSessionLockInBuildRequest(t *testing.T) {
 	reqB := svc.buildIntentRequest(promptB, nil, nil, svc.onboardingProvider)
 	if reqB.EventType != EventTypeUserIntent {
 		t.Fatalf("session B: EventType = %q, want %q (should NOT get onboarding)", reqB.EventType, EventTypeUserIntent)
+	}
+}
+
+// TestRealAwarenessOnboardingIntegration uses a real awareness.Service (not mock)
+// to verify the full onboarding lifecycle through the intent router:
+// scaffold → onboarding detected → event type override → complete → normal flow.
+func TestRealAwarenessOnboardingIntegration(t *testing.T) {
+	dir := t.TempDir()
+	awarenessService := awareness.NewService(dir)
+	ctx := context.Background()
+
+	if err := awarenessService.Start(ctx); err != nil {
+		t.Fatalf("awareness Start: %v", err)
+	}
+	defer awarenessService.Shutdown(ctx)
+
+	// Verify BOOTSTRAP.md was scaffolded (onboarding active).
+	bootstrapPath := filepath.Join(dir, "awareness", "BOOTSTRAP.md")
+	if _, err := os.Stat(bootstrapPath); err != nil {
+		t.Fatalf("expected BOOTSTRAP.md to exist after fresh Start: %v", err)
+	}
+
+	routerSvc := NewService(nil, WithOnboardingProvider(awarenessService))
+
+	makePrompt := func(sessionID string) eventbus.ConversationPromptEvent {
+		return eventbus.ConversationPromptEvent{
+			PromptID:  "p-" + sessionID,
+			SessionID: sessionID,
+			NewMessage: eventbus.ConversationMessage{
+				Text:   "hello",
+				Origin: eventbus.OriginUser,
+			},
+			Metadata: map[string]string{constants.MetadataKeyEventType: constants.PromptEventUserIntent},
+		}
+	}
+
+	// Phase 1: First prompt should be overridden to onboarding.
+	req1 := routerSvc.buildIntentRequest(makePrompt("sess-1"), nil, nil, routerSvc.onboardingProvider)
+	if req1.EventType != EventTypeOnboarding {
+		t.Fatalf("phase 1: EventType = %q, want %q", req1.EventType, EventTypeOnboarding)
+	}
+
+	// Phase 2: Bootstrap content should be injectable via <onboarding> tag.
+	bc := awarenessService.BootstrapContent()
+	if bc == "" {
+		t.Fatal("phase 2: BootstrapContent() should be non-empty")
+	}
+
+	injected := injectBootstrapContent("base prompt", awarenessService)
+	if !strings.Contains(injected, "<onboarding>") {
+		t.Fatal("phase 2: injected content should contain <onboarding> tag")
+	}
+
+	// Phase 3: Complete onboarding.
+	removed, err := awarenessService.CompleteOnboarding()
+	if err != nil {
+		t.Fatalf("phase 3: CompleteOnboarding: %v", err)
+	}
+	if !removed {
+		t.Fatal("phase 3: expected removed=true")
+	}
+
+	// Verify BOOTSTRAP.md is gone.
+	if _, err := os.Stat(bootstrapPath); err == nil {
+		t.Fatal("phase 3: BOOTSTRAP.md should be deleted after CompleteOnboarding")
+	}
+
+	// Phase 4: Next prompt should stay as user_intent (onboarding done).
+	req2 := routerSvc.buildIntentRequest(makePrompt("sess-1"), nil, nil, routerSvc.onboardingProvider)
+	if req2.EventType != EventTypeUserIntent {
+		t.Fatalf("phase 4: EventType = %q, want %q (onboarding should be done)", req2.EventType, EventTypeUserIntent)
+	}
+
+	// Phase 5: Bootstrap injection should be no-op after completion.
+	notInjected := injectBootstrapContent("base prompt", awarenessService)
+	if strings.Contains(notInjected, "<onboarding>") {
+		t.Fatal("phase 5: should not inject bootstrap after completion")
+	}
+
+	// Phase 6: Restart awareness — BOOTSTRAP.md should NOT be recreated.
+	awarenessService.Shutdown(ctx)
+	awarenessService2 := awareness.NewService(dir)
+	if err := awarenessService2.Start(ctx); err != nil {
+		t.Fatalf("phase 6: second Start: %v", err)
+	}
+	defer awarenessService2.Shutdown(ctx)
+
+	if _, err := os.Stat(bootstrapPath); err == nil {
+		t.Fatal("phase 6: BOOTSTRAP.md should not be recreated after restart (marker prevents recreation)")
 	}
 }

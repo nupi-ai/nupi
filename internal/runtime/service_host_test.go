@@ -324,7 +324,7 @@ func TestPIDFileLifecycle(t *testing.T) {
 	}
 
 	RemovePIDFile(pidPath)
-	if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
+	if _, err := os.Stat(pidPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected pid file removed, got err=%v", err)
 	}
 }

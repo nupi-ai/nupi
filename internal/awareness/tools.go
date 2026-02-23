@@ -3,6 +3,7 @@ package awareness
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -54,6 +55,7 @@ func (s *Service) ToolSpecs() []ToolSpec {
 		memoryGetSpec(s),
 		memoryWriteSpec(s),
 		coreMemoryUpdateSpec(s),
+		onboardingCompleteSpec(s),
 	}
 }
 
@@ -221,7 +223,7 @@ func (s *Service) GetFile(path string) (string, error) {
 	}
 	realPath, err := filepath.EvalSymlinks(fullPath)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return "", fmt.Errorf("file not found: %s", path)
 		}
 		return "", fmt.Errorf("invalid path: %w", err)
@@ -232,7 +234,7 @@ func (s *Service) GetFile(path string) (string, error) {
 
 	data, err := os.ReadFile(realPath)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return "", fmt.Errorf("file not found: %s", path)
 		}
 		return "", fmt.Errorf("read file: %w", err)
@@ -402,7 +404,7 @@ func (s *Service) WriteMemory(ctx context.Context, opts WriteOptions) (string, e
 		var data []byte
 		if err == nil {
 			data = append(existing, []byte(section)...)
-		} else if os.IsNotExist(err) {
+		} else if errors.Is(err, os.ErrNotExist) {
 			data = []byte(fmt.Sprintf("# Daily Log %s%s", date, section))
 		} else {
 			return "", fmt.Errorf("read existing daily file: %w", err)
@@ -410,7 +412,7 @@ func (s *Service) WriteMemory(ctx context.Context, opts WriteOptions) (string, e
 
 		// Atomic write.
 		tmpPath := fullPath + ".tmp"
-		if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
+		if err := os.WriteFile(tmpPath, data, 0o600); err != nil {
 			os.Remove(tmpPath)
 			return "", fmt.Errorf("write temp file: %w", err)
 		}
@@ -442,7 +444,7 @@ func (s *Service) WriteMemory(ctx context.Context, opts WriteOptions) (string, e
 		var data []byte
 		if err == nil {
 			data = append(existing, []byte("\n\n"+opts.Content)...)
-		} else if os.IsNotExist(err) {
+		} else if errors.Is(err, os.ErrNotExist) {
 			data = []byte(opts.Content)
 		} else {
 			return "", fmt.Errorf("read existing topic file: %w", err)
@@ -450,7 +452,7 @@ func (s *Service) WriteMemory(ctx context.Context, opts WriteOptions) (string, e
 
 		// Atomic write.
 		tmpPath := fullPath + ".tmp"
-		if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
+		if err := os.WriteFile(tmpPath, data, 0o600); err != nil {
 			os.Remove(tmpPath)
 			return "", fmt.Errorf("write temp file: %w", err)
 		}
@@ -555,7 +557,7 @@ func (s *Service) UpdateCoreMemory(ctx context.Context, fileName, content, mode 
 		data = []byte(content)
 	case "append":
 		existing, err := os.ReadFile(filePath)
-		if err != nil && !os.IsNotExist(err) {
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("read existing file: %w", err)
 		}
 		if len(existing) > 0 {
@@ -567,7 +569,7 @@ func (s *Service) UpdateCoreMemory(ctx context.Context, fileName, content, mode 
 
 	// Atomic write via tmp + rename.
 	tmpPath := filePath + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
+	if err := os.WriteFile(tmpPath, data, 0o600); err != nil {
 		os.Remove(tmpPath)
 		return fmt.Errorf("write temp file: %w", err)
 	}
@@ -583,4 +585,30 @@ func (s *Service) UpdateCoreMemory(ctx context.Context, fileName, content, mode 
 	s.loadCoreMemory("")
 
 	return nil
+}
+
+// --- onboarding_complete ---
+
+func onboardingCompleteSpec(s *Service) ToolSpec {
+	return ToolSpec{
+		Name:           "onboarding_complete",
+		Description:    "Mark onboarding as complete. Call this after you've gathered the user's preferences and updated IDENTITY.md, USER.md, and SOUL.md.",
+		ParametersJSON: `{"type":"object","properties":{},"additionalProperties":false}`,
+		Handler: func(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
+			removed, err := s.CompleteOnboarding()
+			if err != nil {
+				return nil, fmt.Errorf("onboarding_complete: %w", err)
+			}
+			if !removed {
+				return json.Marshal(map[string]string{
+					"status":  "ok",
+					"message": "Onboarding was already complete.",
+				})
+			}
+			return json.Marshal(map[string]string{
+				"status":  "ok",
+				"message": "Onboarding complete. BOOTSTRAP.md removed.",
+			})
+		},
+	}
 }

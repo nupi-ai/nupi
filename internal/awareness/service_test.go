@@ -2,6 +2,7 @@ package awareness
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -90,7 +91,7 @@ func TestServiceSearch(t *testing.T) {
 	if err := os.MkdirAll(dailyDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dailyDir, "2026-02-19.md"), []byte("## Test\n\nSearchable content here."), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dailyDir, "2026-02-19.md"), []byte("## Test\n\nSearchable content here."), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -149,7 +150,7 @@ func TestServiceStartFailureRecovery(t *testing.T) {
 	// may succeed in sql.Open but fail during schema health check or
 	// pragma application; either way, Start should clean up s.indexer.
 	dbPath := filepath.Join(memDir, "index.db")
-	if err := os.WriteFile(dbPath, []byte("corrupt data here"), 0o644); err != nil {
+	if err := os.WriteFile(dbPath, []byte("corrupt data here"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -176,7 +177,7 @@ func TestServiceSearchVectorWithProvider(t *testing.T) {
 	if err := os.MkdirAll(dailyDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dailyDir, "2026-02-19.md"), []byte("## Test\n\nVector searchable content here."), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dailyDir, "2026-02-19.md"), []byte("## Test\n\nVector searchable content here."), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -241,7 +242,7 @@ func TestServiceHasEmbeddingsWithProvider(t *testing.T) {
 	if err := os.MkdirAll(dailyDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dailyDir, "test.md"), []byte("## Test\n\nContent."), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dailyDir, "test.md"), []byte("## Test\n\nContent."), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -289,7 +290,7 @@ func TestServiceSearchVectorProviderError(t *testing.T) {
 	if err := os.MkdirAll(dailyDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dailyDir, "test.md"), []byte("## Test\n\nContent."), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dailyDir, "test.md"), []byte("## Test\n\nContent."), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -323,7 +324,7 @@ func TestServiceSearchHybrid(t *testing.T) {
 	if err := os.MkdirAll(dailyDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dailyDir, "2026-02-19.md"), []byte("## Test\n\nHybrid searchable content about databases."), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dailyDir, "2026-02-19.md"), []byte("## Test\n\nHybrid searchable content about databases."), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -358,7 +359,7 @@ func TestServiceSearchHybridFTSFallback(t *testing.T) {
 	if err := os.MkdirAll(dailyDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dailyDir, "2026-02-19.md"), []byte("## Test\n\nFTS fallback content."), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dailyDir, "2026-02-19.md"), []byte("## Test\n\nFTS fallback content."), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -387,7 +388,7 @@ func TestServiceSearchHybridProviderError(t *testing.T) {
 	if err := os.MkdirAll(dailyDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dailyDir, "2026-02-19.md"), []byte("## Test\n\nProvider error content."), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dailyDir, "2026-02-19.md"), []byte("## Test\n\nProvider error content."), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -427,7 +428,7 @@ func TestServiceSearchHybridQueryDefaulting(t *testing.T) {
 	if err := os.MkdirAll(dailyDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dailyDir, "2026-02-19.md"), []byte("## Test\n\nSearchable query defaulting content."), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dailyDir, "2026-02-19.md"), []byte("## Test\n\nSearchable query defaulting content."), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1364,7 +1365,7 @@ func TestEnsureDirectoriesCleansStaleTemp(t *testing.T) {
 		t.Fatal(err)
 	}
 	staleTmp := filepath.Join(dailyDir, "2026-02-19.md.tmp")
-	if err := os.WriteFile(staleTmp, []byte("partial write"), 0o644); err != nil {
+	if err := os.WriteFile(staleTmp, []byte("partial write"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1376,7 +1377,7 @@ func TestEnsureDirectoriesCleansStaleTemp(t *testing.T) {
 	defer svc.Shutdown(ctx)
 
 	// Verify the stale .tmp file was cleaned up.
-	if _, err := os.Stat(staleTmp); !os.IsNotExist(err) {
+	if _, err := os.Stat(staleTmp); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected stale .tmp file to be removed, got err: %v", err)
 	}
 }
@@ -2071,7 +2072,7 @@ func TestEnsureDirectoriesCleansStaleSessionsTemp(t *testing.T) {
 		t.Fatal(err)
 	}
 	staleTmp := filepath.Join(sessionsDir, "2026-02-20-test.md.tmp")
-	if err := os.WriteFile(staleTmp, []byte("partial write"), 0o644); err != nil {
+	if err := os.WriteFile(staleTmp, []byte("partial write"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2082,7 +2083,7 @@ func TestEnsureDirectoriesCleansStaleSessionsTemp(t *testing.T) {
 	}
 	defer svc.Shutdown(ctx)
 
-	if _, err := os.Stat(staleTmp); !os.IsNotExist(err) {
+	if _, err := os.Stat(staleTmp); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected stale .tmp file in sessions/ to be removed, got err: %v", err)
 	}
 }

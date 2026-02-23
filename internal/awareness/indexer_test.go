@@ -2,6 +2,7 @@ package awareness
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -21,7 +22,7 @@ func TestIndexerOpenClose(t *testing.T) {
 
 	// Verify index.db was created.
 	dbPath := filepath.Join(dir, "index.db")
-	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+	if _, err := os.Stat(dbPath); errors.Is(err, os.ErrNotExist) {
 		t.Fatal("index.db was not created")
 	}
 
@@ -84,7 +85,7 @@ func TestIndexerSyncNewFiles(t *testing.T) {
 
 	// Write a markdown file.
 	content := "## Today\n\nDid some work on the project."
-	if err := os.WriteFile(filepath.Join(dailyDir, "2026-02-19.md"), []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dailyDir, "2026-02-19.md"), []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -129,7 +130,7 @@ func TestIndexerSyncModifiedFiles(t *testing.T) {
 	}
 
 	filePath := filepath.Join(dailyDir, "2026-02-19.md")
-	if err := os.WriteFile(filePath, []byte("## Morning\n\nOriginal content."), 0o644); err != nil {
+	if err := os.WriteFile(filePath, []byte("## Morning\n\nOriginal content."), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -148,7 +149,7 @@ func TestIndexerSyncModifiedFiles(t *testing.T) {
 	// Modify the file and ensure mtime changes. Set an explicit future mtime
 	// since filesystem mtime resolution can be too coarse on some platforms.
 	newContent := []byte("## Morning\n\nUpdated content.\n\n## Evening\n\nNew section.")
-	if err := os.WriteFile(filePath, newContent, 0o644); err != nil {
+	if err := os.WriteFile(filePath, newContent, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	futureTime := time.Now().Add(2 * time.Second)
@@ -189,7 +190,7 @@ func TestIndexerSyncDeletedFiles(t *testing.T) {
 	}
 
 	filePath := filepath.Join(topicsDir, "golang.md")
-	if err := os.WriteFile(filePath, []byte("# Go\n\nGreat language."), 0o644); err != nil {
+	if err := os.WriteFile(filePath, []byte("# Go\n\nGreat language."), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -268,7 +269,7 @@ func TestIndexerRebuildIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := os.WriteFile(filepath.Join(dailyDir, "2026-02-19.md"), []byte("## Test\n\nContent here."), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dailyDir, "2026-02-19.md"), []byte("## Test\n\nContent here."), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -322,13 +323,13 @@ func TestIndexerCorruptIndexRecovery(t *testing.T) {
 	if err := os.MkdirAll(dailyDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dailyDir, "test.md"), []byte("Recovery test content."), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dailyDir, "test.md"), []byte("Recovery test content."), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	// Create a corrupt index.db.
 	dbPath := filepath.Join(dir, "index.db")
-	if err := os.WriteFile(dbPath, []byte("this is not a valid database"), 0o644); err != nil {
+	if err := os.WriteFile(dbPath, []byte("this is not a valid database"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -378,7 +379,7 @@ func TestIndexerProjectSlugExtraction(t *testing.T) {
 	if err := os.MkdirAll(projDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(projDir, "2026-02-19-test.md"), []byte("Session content."), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(projDir, "2026-02-19-test.md"), []byte("Session content."), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -418,7 +419,7 @@ func TestIndexerSyncCancelledContext(t *testing.T) {
 	// Create several files so the sync loop has work to do.
 	for i := 0; i < 20; i++ {
 		name := filepath.Join(dailyDir, fmt.Sprintf("file-%03d.md", i))
-		if err := os.WriteFile(name, []byte(fmt.Sprintf("## Entry %d\n\nContent for file %d.", i, i)), 0o644); err != nil {
+		if err := os.WriteFile(name, []byte(fmt.Sprintf("## Entry %d\n\nContent for file %d.", i, i)), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}

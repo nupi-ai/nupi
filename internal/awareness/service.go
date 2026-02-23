@@ -50,6 +50,7 @@ type Service struct {
 
 	onboardingMu        sync.Mutex
 	onboardingSessionID string // session that claimed onboarding
+	onboardingActive    bool   // cached: true while BOOTSTRAP.md exists (avoids I/O under lock)
 
 	lifecycleSub *eventbus.TypedSubscription[eventbus.SessionLifecycleEvent]
 	lifecycle    eventbus.ServiceLifecycle
@@ -64,7 +65,11 @@ func NewService(instanceDir string) *Service {
 }
 
 // SetEventBus wires the event bus for publish/subscribe.
+// Must be called before Start.
 func (s *Service) SetEventBus(bus *eventbus.Bus) {
+	if s.indexer != nil {
+		panic("awareness: SetEventBus called after Start")
+	}
 	s.bus = bus
 }
 
@@ -284,19 +289,30 @@ func (s *Service) CoreMemory() string {
 	return s.coreMemory
 }
 
-// IsOnboarding returns true if BOOTSTRAP.md exists in the awareness directory,
+// isOnboarding returns true if BOOTSTRAP.md exists in the awareness directory,
 // indicating the AI has not yet completed its first-time setup conversation.
-// Thread-safe: called once per prompt; file I/O is negligible at prompt frequency.
-func (s *Service) IsOnboarding() bool {
+//
+// NOTE: This performs a raw os.Stat without holding onboardingMu. For concurrent
+// use within the service, prefer the cached onboardingActive field (under
+// onboardingMu). The intent router uses IsOnboardingSession() (which reads the
+// cache) instead.
+func (s *Service) isOnboarding() bool {
 	_, err := os.Stat(filepath.Join(s.awarenessDir, "BOOTSTRAP.md"))
 	return err == nil
 }
 
 // BootstrapContent reads and returns the content of BOOTSTRAP.md.
 // Returns "" if the file is missing or unreadable (graceful degradation).
+// As a side effect, clears the onboardingActive cache when the file is gone,
+// handling manual deletion without requiring a daemon restart.
 func (s *Service) BootstrapContent() string {
 	data, err := os.ReadFile(filepath.Join(s.awarenessDir, "BOOTSTRAP.md"))
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			s.onboardingMu.Lock()
+			s.onboardingActive = false
+			s.onboardingMu.Unlock()
+		}
 		return ""
 	}
 	return string(data)
@@ -323,6 +339,7 @@ func (s *Service) CompleteOnboarding() (bool, error) {
 		return false, fmt.Errorf("write .onboarding_done: %w", err)
 	}
 
+	s.onboardingActive = false
 	s.onboardingSessionID = ""
 	if bootstrapRemoved {
 		log.Printf("[Awareness] onboarding complete, BOOTSTRAP.md removed, marker created")
@@ -337,8 +354,9 @@ func (s *Service) CompleteOnboarding() (bool, error) {
 // subsequent sessions with a different ID are rejected. This prevents multiple
 // concurrent sessions from running onboarding simultaneously.
 //
-// The file check (IsOnboarding) is performed inside the mutex to prevent a race
-// with CompleteOnboarding, which deletes BOOTSTRAP.md under the same lock.
+// Uses the cached onboardingActive flag (set during Start, cleared by
+// CompleteOnboarding). When the cache says active, a stat check confirms
+// BOOTSTRAP.md still exists — handling manual deletion without a restart.
 func (s *Service) IsOnboardingSession(sessionID string) bool {
 	if sessionID == "" {
 		return false
@@ -346,7 +364,16 @@ func (s *Service) IsOnboardingSession(sessionID string) bool {
 	s.onboardingMu.Lock()
 	defer s.onboardingMu.Unlock()
 
-	if !s.IsOnboarding() {
+	if !s.onboardingActive {
+		return false
+	}
+
+	// Guard against stale cache: if BOOTSTRAP.md was manually deleted,
+	// clear the flag so we stop routing to onboarding.
+	if _, err := os.Stat(filepath.Join(s.awarenessDir, "BOOTSTRAP.md")); errors.Is(err, os.ErrNotExist) {
+		s.onboardingActive = false
+		s.onboardingSessionID = ""
+		log.Printf("[Awareness] BOOTSTRAP.md gone (manual deletion?), clearing onboarding state")
 		return false
 	}
 

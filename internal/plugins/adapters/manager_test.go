@@ -1945,10 +1945,10 @@ spec:
 		t.Fatalf("expected startAdapter to fail")
 	}
 	adapterHome := filepath.Join(pluginDir, "adapterclean")
-	if _, err := os.Stat(adapterHome); !os.IsNotExist(err) {
+	if _, err := os.Stat(adapterHome); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected adapter home cleaned up, got err=%v", err)
 	}
-	if _, err := os.Stat(filepath.Join(adapterHome, "data")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(adapterHome, "data")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected data dir cleaned up, got err=%v", err)
 	}
 }

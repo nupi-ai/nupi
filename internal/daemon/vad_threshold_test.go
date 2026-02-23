@@ -52,6 +52,19 @@ func TestLoadVADLatencyThreshold_StringValue(t *testing.T) {
 	}
 }
 
+func TestLoadVADLatencyThreshold_DurationStringValue(t *testing.T) {
+	store := openTestStore(t)
+	saveAudioMetadata(t, store, `{"vad_latency_p99_threshold_ms": "150ms"}`)
+
+	d, ok := loadVADLatencyThreshold(store)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if d != 150*time.Millisecond {
+		t.Fatalf("expected 150ms, got %v", d)
+	}
+}
+
 func TestLoadVADLatencyThreshold_ZeroValue(t *testing.T) {
 	store := openTestStore(t)
 	saveAudioMetadata(t, store, `{"vad_latency_p99_threshold_ms": 0}`)

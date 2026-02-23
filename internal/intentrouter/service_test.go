@@ -2508,12 +2508,12 @@ func TestServiceCoreMemoryPrependedToSystemPrompt(t *testing.T) {
 		t.Fatal("Timeout waiting for reply")
 	}
 
-	expectedPrefix := coreMemory.memory + "\n\n"
+	expectedPrefix := "<core-memory>\n" + coreMemory.memory + "\n</core-memory>\n\n"
 	if !strings.HasPrefix(capturedSystemPrompt, expectedPrefix) {
-		t.Errorf("Expected SystemPrompt to start with core memory, got %q", capturedSystemPrompt)
+		t.Errorf("Expected SystemPrompt to start with <core-memory> tag, got %q", capturedSystemPrompt)
 	}
 
-	expectedFull := coreMemory.memory + "\n\n" + "You are a helpful assistant"
+	expectedFull := "<core-memory>\n" + coreMemory.memory + "\n</core-memory>\n\n" + "You are a helpful assistant"
 	if capturedSystemPrompt != expectedFull {
 		t.Errorf("Expected SystemPrompt=%q, got %q", expectedFull, capturedSystemPrompt)
 	}

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -24,7 +25,7 @@ func TestCleanupInstallerTempFiles(t *testing.T) {
 	cleanupInstallerTempFiles()
 
 	for _, path := range []string{staleA, staleB} {
-		if _, err := os.Stat(path); !os.IsNotExist(err) {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("expected stale temp file to be removed: %s (err=%v)", path, err)
 		}
 	}

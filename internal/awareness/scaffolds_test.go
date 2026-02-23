@@ -43,10 +43,10 @@ func TestScaffoldCoreFilesIdempotent(t *testing.T) {
 	// Pre-create SOUL.md and IDENTITY.md with custom content.
 	customSoul := "# My Custom Soul\n"
 	customIdentity := "# My Custom Identity\n"
-	if err := os.WriteFile(filepath.Join(svc.awarenessDir, "SOUL.md"), []byte(customSoul), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(svc.awarenessDir, "SOUL.md"), []byte(customSoul), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(svc.awarenessDir, "IDENTITY.md"), []byte(customIdentity), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(svc.awarenessDir, "IDENTITY.md"), []byte(customIdentity), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -100,10 +100,10 @@ func TestScaffoldCoreFilesPartialRecovery(t *testing.T) {
 	}
 
 	// Pre-create only SOUL.md and GLOBAL.md.
-	if err := os.WriteFile(filepath.Join(svc.awarenessDir, "SOUL.md"), []byte("existing soul"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(svc.awarenessDir, "SOUL.md"), []byte("existing soul"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(svc.awarenessDir, "GLOBAL.md"), []byte("existing global"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(svc.awarenessDir, "GLOBAL.md"), []byte("existing global"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -261,6 +261,41 @@ func TestScaffoldCoreFilesStatError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "stat") {
 		t.Fatalf("error should mention 'stat', got: %v", err)
+	}
+}
+
+func TestScaffoldSkipsBootstrapWhenOnboardingDone(t *testing.T) {
+	dir := t.TempDir()
+	svc := NewService(dir)
+
+	if err := svc.ensureDirectories(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create .onboarding_done marker BEFORE scaffolding.
+	markerPath := filepath.Join(svc.awarenessDir, ".onboarding_done")
+	if err := os.WriteFile(markerPath, []byte("done\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := svc.scaffoldCoreFiles(); err != nil {
+		t.Fatal(err)
+	}
+
+	// BOOTSTRAP.md must NOT exist.
+	bootstrapPath := filepath.Join(svc.awarenessDir, "BOOTSTRAP.md")
+	if _, err := os.Stat(bootstrapPath); err == nil {
+		t.Fatal("BOOTSTRAP.md should NOT be created when .onboarding_done marker exists")
+	}
+
+	// Other scaffolds must exist.
+	for _, sf := range coreScaffolds {
+		if sf.filename == "BOOTSTRAP.md" {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(svc.awarenessDir, sf.filename)); err != nil {
+			t.Fatalf("%s should exist: %v", sf.filename, err)
+		}
 	}
 }
 

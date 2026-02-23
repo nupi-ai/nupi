@@ -35,7 +35,7 @@ func (execLauncher) Launch(ctx context.Context, binary string, args []string, en
 		return nil, ErrAdapterBinaryUnset
 	}
 	if _, err := os.Stat(binary); err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf("%w: %s", ErrAdapterBinaryMissing, binary)
 		}
 		return nil, fmt.Errorf("adapters: stat adapter binary: %w", err)
