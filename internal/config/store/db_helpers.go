@@ -20,9 +20,9 @@ func encodeJSON[T any](value T, nullIf func(T) bool) (any, error) {
 	return string(data), nil
 }
 
-// decodeJSON deserializes a nullable JSON SQL value into T.
+// DecodeJSON deserializes a nullable JSON SQL value into T.
 // For NULL/blank values it returns the zero value of T and nil error.
-func decodeJSON[T any](raw sql.NullString) (T, error) {
+func DecodeJSON[T any](raw sql.NullString) (T, error) {
 	var out T
 	if !raw.Valid || strings.TrimSpace(raw.String) == "" {
 		return out, nil

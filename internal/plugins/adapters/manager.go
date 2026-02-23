@@ -3,6 +3,7 @@ package adapters
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -365,13 +366,11 @@ func (m *Manager) loadActiveBindings(ctx context.Context) (map[Slot]Binding, err
 			AdapterID: id,
 			RawConfig: record.Config,
 		}
-		if strings.TrimSpace(record.Config) != "" {
-			var cfg map[string]any
-			if err := json.Unmarshal([]byte(record.Config), &cfg); err != nil {
-				return nil, fmt.Errorf("adapters: decode config for %s: %w", record.Slot, err)
-			}
-			binding.Config = cfg
+		cfg, err := configstore.DecodeJSON[map[string]any](sql.NullString{Valid: true, String: record.Config})
+		if err != nil {
+			return nil, fmt.Errorf("adapters: decode config for %s: %w", record.Slot, err)
 		}
+		binding.Config = cfg
 		active[slot] = binding
 	}
 	return active, nil

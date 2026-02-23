@@ -69,12 +69,12 @@ func (s *Store) ListAdapterEndpoints(ctx context.Context) ([]AdapterEndpoint, er
 		}
 		endp.TLSInsecure = tlsInsecure != 0
 
-		args, err := decodeJSON[[]string](argsRaw)
+		args, err := DecodeJSON[[]string](argsRaw)
 		if err != nil {
 			return nil, fmt.Errorf("config: decode adapter endpoint args for %s: %w", endp.AdapterID, err)
 		}
 		endp.Args = args
-		env, err := decodeJSON[map[string]string](envRaw)
+		env, err := DecodeJSON[map[string]string](envRaw)
 		if err != nil {
 			return nil, fmt.Errorf("config: decode adapter endpoint env for %s: %w", endp.AdapterID, err)
 		}
@@ -129,12 +129,12 @@ func (s *Store) GetAdapterEndpoint(ctx context.Context, adapterID string) (Adapt
 	}
 	endp.TLSInsecure = tlsInsecure != 0
 
-	args, err := decodeJSON[[]string](argsRaw)
+	args, err := DecodeJSON[[]string](argsRaw)
 	if err != nil {
 		return AdapterEndpoint{}, fmt.Errorf("config: decode adapter endpoint args for %s: %w", adapterID, err)
 	}
 	endp.Args = args
-	env, err := decodeJSON[map[string]string](envRaw)
+	env, err := DecodeJSON[map[string]string](envRaw)
 	if err != nil {
 		return AdapterEndpoint{}, fmt.Errorf("config: decode adapter endpoint env for %s: %w", adapterID, err)
 	}
