@@ -12,6 +12,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/mapper"
+	maputil "github.com/nupi-ai/nupi/internal/util/maps"
 	"github.com/nupi-ai/nupi/internal/voice/slots"
 )
 
@@ -32,9 +33,6 @@ const (
 
 	defaultStreamID = slots.TTS
 )
-
-// copyMetadata is a convenience alias for streammanager.CopyMetadata.
-var copyMetadata = streammanager.CopyMetadata
 
 // SessionParams is an alias for backward compatibility.
 type SessionParams = streammanager.SessionParams
@@ -257,7 +255,7 @@ func (s *Service) consumeReplies(ctx context.Context) {
 			StreamID:  s.streamID,
 			PromptID:  reply.PromptID,
 			Text:      reply.Text,
-			Metadata:  copyMetadata(reply.Metadata),
+			Metadata:  maputil.Clone(reply.Metadata),
 		})
 	})
 }
@@ -269,7 +267,7 @@ func (s *Service) consumeSpeak(ctx context.Context) {
 			StreamID:  s.streamID,
 			PromptID:  event.PromptID,
 			Text:      event.Text,
-			Metadata:  copyMetadata(event.Metadata),
+			Metadata:  maputil.Clone(event.Metadata),
 		})
 	})
 }
@@ -290,7 +288,7 @@ func (s *Service) handleBargeEvent(event eventbus.SpeechBargeInEvent) {
 	if event.SessionID == "" || event.StreamID == "" {
 		return
 	}
-	s.interruptStream(event.SessionID, event.StreamID, event.Reason, event.Timestamp, copyMetadata(event.Metadata))
+	s.interruptStream(event.SessionID, event.StreamID, event.Reason, event.Timestamp, maputil.Clone(event.Metadata))
 }
 
 type speakRequest struct {
@@ -319,7 +317,7 @@ func (s *Service) handleSpeakRequest(req speakRequest) {
 				SessionID: req.SessionID,
 				StreamID:  req.StreamID,
 				Format:    s.format,
-				Metadata:  copyMetadata(req.Metadata),
+				Metadata:  maputil.Clone(req.Metadata),
 			}, req)
 		}
 		return
@@ -329,7 +327,7 @@ func (s *Service) handleSpeakRequest(req speakRequest) {
 		SessionID: req.SessionID,
 		StreamID:  req.StreamID,
 		Format:    s.format,
-		Metadata:  copyMetadata(req.Metadata),
+		Metadata:  maputil.Clone(req.Metadata),
 	}
 
 	h, err := s.manager.CreateStream(key, params)
@@ -381,7 +379,7 @@ func (s *Service) onEnqueueError(key string, item speakRequest, err error) (hand
 			SessionID: item.SessionID,
 			StreamID:  item.StreamID,
 			Format:    s.format,
-			Metadata:  copyMetadata(item.Metadata),
+			Metadata:  maputil.Clone(item.Metadata),
 		}, item)
 		return true
 	}
@@ -423,7 +421,7 @@ func (s *Service) onStreamClosed(key string, st *stream) {
 		SessionID: st.sessionID,
 		StreamID:  st.streamID,
 		Format:    st.format,
-		Metadata:  copyMetadata(st.metadata),
+		Metadata:  maputil.Clone(st.metadata),
 	}
 	for {
 		select {
@@ -473,7 +471,7 @@ func newStream(key string, svc *Service, params SessionParams, synth Synthesizer
 		sessionID:   params.SessionID,
 		streamID:    params.StreamID,
 		format:      params.Format,
-		metadata:    copyMetadata(params.Metadata),
+		metadata:    maputil.Clone(params.Metadata),
 		synthesizer: synth,
 		requestCh:   make(chan speakRequest, defaultRequestBuffer),
 		ctx:         ctx,
@@ -490,7 +488,7 @@ func (st *stream) interrupt(reason string, ts time.Time, metadata map[string]str
 	st.interrupted = true
 	st.interruptReason = reason
 	st.interruptTimestamp = ts
-	st.interruptMeta = copyMetadata(metadata)
+	st.interruptMeta = maputil.Clone(metadata)
 	st.mu.Unlock()
 	st.cancel()
 }
@@ -500,7 +498,7 @@ func (st *stream) decorateMetadata(meta map[string]string) map[string]string {
 	interrupted := st.interrupted
 	reason := st.interruptReason
 	ts := st.interruptTimestamp
-	extras := copyMetadata(st.interruptMeta)
+	extras := maputil.Clone(st.interruptMeta)
 	st.mu.RUnlock()
 
 	if !interrupted {
@@ -654,7 +652,7 @@ func (st *stream) handleRequest(req speakRequest) bool {
 
 func (st *stream) publishFinal() {
 	st.seq++
-	metadata := copyMetadata(st.metadata)
+	metadata := maputil.Clone(st.metadata)
 	metadata = st.decorateMetadata(metadata)
 	evt := eventbus.AudioEgressPlaybackEvent{
 		SessionID: st.sessionID,
@@ -678,7 +676,7 @@ func (st *stream) rebufferPending(failedReq speakRequest) {
 		SessionID: st.sessionID,
 		StreamID:  st.streamID,
 		Format:    st.format,
-		Metadata:  copyMetadata(st.metadata),
+		Metadata:  maputil.Clone(st.metadata),
 	}
 	st.service.manager.BufferPending(st.key, params, failedReq)
 

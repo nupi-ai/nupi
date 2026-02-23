@@ -7,7 +7,6 @@ import (
 
 	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
-	maputil "github.com/nupi-ai/nupi/internal/util/maps"
 )
 
 // SessionParams describes context for establishing an audio stream.
@@ -33,12 +32,6 @@ func SplitStreamKey(key string) (string, string) {
 		return key[:idx], key[idx+len(sep):]
 	}
 	return key, ""
-}
-
-// CopyMetadata returns a shallow copy of the metadata map.
-// Returns nil for empty/nil input.
-func CopyMetadata(src map[string]string) map[string]string {
-	return maputil.Clone(src)
 }
 
 // RetryConfig holds backoff parameters for pending stream retries.

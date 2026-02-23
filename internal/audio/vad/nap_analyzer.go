@@ -11,12 +11,12 @@ import (
 	"time"
 
 	napv1 "github.com/nupi-ai/nupi/api/nap/v1"
-	"github.com/nupi-ai/nupi/internal/audio/streammanager"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/mapper"
 	"github.com/nupi-ai/nupi/internal/napdial"
+	maputil "github.com/nupi-ai/nupi/internal/util/maps"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -253,7 +253,7 @@ func (a *napAnalyzer) drainError() error {
 func speechEventToDetection(evt *napv1.SpeechEvent) Detection {
 	det := Detection{
 		Confidence: evt.GetConfidence(),
-		Metadata:   streammanager.CopyMetadata(evt.GetMetadata()),
+		Metadata:   maputil.Clone(evt.GetMetadata()),
 	}
 	switch evt.GetType() {
 	case napv1.SpeechEventType_SPEECH_EVENT_TYPE_START,

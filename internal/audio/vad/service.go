@@ -12,6 +12,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/mapper"
+	maputil "github.com/nupi-ai/nupi/internal/util/maps"
 )
 
 var (
@@ -220,7 +221,7 @@ func (s *Service) handleSegment(segment eventbus.AudioIngressSegmentEvent) {
 		SessionID: segment.SessionID,
 		StreamID:  segment.StreamID,
 		Format:    segment.Format,
-		Metadata:  streammanager.CopyMetadata(segment.Metadata),
+		Metadata:  maputil.Clone(segment.Metadata),
 	}
 
 	h, err := s.manager.CreateStream(key, params)
@@ -267,7 +268,7 @@ func (s *Service) publishDetection(sessionID, streamID string, segment eventbus.
 		Active:      det.Active,
 		Confidence:  det.Confidence,
 		Timestamp:   segment.EndedAt,
-		Metadata:    mergeMetadata(streammanager.CopyMetadata(segment.Metadata), det.Metadata),
+		Metadata:    mergeMetadata(maputil.Clone(segment.Metadata), det.Metadata),
 		EnergyLevel: 0,
 	}
 
@@ -387,7 +388,7 @@ func (st *stream) handleSegment(segment eventbus.AudioIngressSegmentEvent) {
 			SessionID: st.sessionID,
 			StreamID:  st.streamID,
 			Format:    segment.Format,
-			Metadata:  streammanager.CopyMetadata(segment.Metadata),
+			Metadata:  maputil.Clone(segment.Metadata),
 		}
 		analyzer, err := st.service.factory.Create(st.ctx, params)
 		if err != nil {
@@ -457,7 +458,7 @@ func (st *stream) handleLatencyDiagnostics(latency time.Duration, segment eventb
 		ObservedMs:  latency.Milliseconds(),
 		Consecutive: latencyDegradeFrames,
 		Timestamp:   time.Now().UTC(),
-		Metadata:    streammanager.CopyMetadata(segment.Metadata),
+		Metadata:    maputil.Clone(segment.Metadata),
 	}
 
 	eventbus.Publish(context.Background(), st.service.bus, eventbus.Voice.Diagnostics, eventbus.SourceSpeechVAD, evt)

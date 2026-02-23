@@ -8,9 +8,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/audio/streammanager"
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
+	maputil "github.com/nupi-ai/nupi/internal/util/maps"
 )
 
 var (
@@ -234,7 +235,7 @@ func (s *Service) handleSegment(segment eventbus.AudioIngressSegmentEvent) {
 		SessionID: segment.SessionID,
 		StreamID:  segment.StreamID,
 		Format:    segment.Format,
-		Metadata:  streammanager.CopyMetadata(segment.Metadata),
+		Metadata:  maputil.Clone(segment.Metadata),
 	}
 
 	h, err := s.manager.CreateStream(key, params)
@@ -291,7 +292,7 @@ func (s *Service) publishTranscript(st *stream, tr Transcription) {
 		Final:      tr.Final,
 		StartedAt:  tr.StartedAt,
 		EndedAt:    tr.EndedAt,
-		Metadata:   streammanager.CopyMetadata(tr.Metadata),
+		Metadata:   maputil.Clone(tr.Metadata),
 	}
 
 	td := eventbus.Speech.TranscriptPartial
@@ -331,7 +332,7 @@ func newStream(key string, svc *Service, params SessionParams, transcriber Trans
 		sessionID:   params.SessionID,
 		streamID:    params.StreamID,
 		format:      params.Format,
-		metadata:    streammanager.CopyMetadata(params.Metadata),
+		metadata:    maputil.Clone(params.Metadata),
 		transcriber: transcriber,
 		segmentCh:   make(chan eventbus.AudioIngressSegmentEvent, svc.segmentBuffer),
 		ctx:         ctx,
@@ -404,7 +405,7 @@ func (st *stream) handleSegment(segment eventbus.AudioIngressSegmentEvent) {
 			SessionID: st.sessionID,
 			StreamID:  st.streamID,
 			Format:    st.format,
-			Metadata:  streammanager.CopyMetadata(st.metadata),
+			Metadata:  maputil.Clone(st.metadata),
 		}
 		transcriber, err := st.service.factory.Create(st.ctx, params)
 		if err != nil {

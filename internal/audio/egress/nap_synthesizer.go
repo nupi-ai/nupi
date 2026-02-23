@@ -13,6 +13,7 @@ import (
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/mapper"
 	"github.com/nupi-ai/nupi/internal/napdial"
+	maputil "github.com/nupi-ai/nupi/internal/util/maps"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -54,7 +55,7 @@ func (s *napSynthesizer) Speak(ctx context.Context, req SpeakRequest) ([]Synthes
 		StreamId:   req.StreamID,
 		Text:       req.Text,
 		ConfigJson: configJSON,
-		Metadata:   copyMetadata(req.Metadata),
+		Metadata:   maputil.Clone(req.Metadata),
 	}
 
 	stream, err := client.StreamSynthesis(ctx, grpcReq)
@@ -109,7 +110,7 @@ func (s *napSynthesizer) Speak(ctx context.Context, req SpeakRequest) ([]Synthes
 			continue
 		}
 
-		meta := mergeSynthMeta(copyMetadata(chunk.GetMetadata()), respMeta)
+		meta := mergeSynthMeta(maputil.Clone(chunk.GetMetadata()), respMeta)
 		if len(pendingMeta) > 0 {
 			meta = mergeSynthMeta(meta, pendingMeta)
 			pendingMeta = nil
@@ -157,7 +158,7 @@ func mergeSynthMeta(chunkMeta, respMeta map[string]string) map[string]string {
 		return chunkMeta
 	}
 	if len(chunkMeta) == 0 {
-		return copyMetadata(respMeta)
+		return maputil.Clone(respMeta)
 	}
 	return mapper.MergeStringMaps(respMeta, chunkMeta)
 }
