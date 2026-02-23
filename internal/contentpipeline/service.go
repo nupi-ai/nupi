@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"maps"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,6 +14,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/jsruntime"
 	pipelinecleaners "github.com/nupi-ai/nupi/internal/plugins/pipeline_cleaners"
 	toolhandlers "github.com/nupi-ai/nupi/internal/plugins/tool_handlers"
+	maputil "github.com/nupi-ai/nupi/internal/util/maps"
 )
 
 // Service transforms session output through optional pipeline plugins and
@@ -656,7 +656,10 @@ func (s *Service) runPlugin(ctx context.Context, plugin *pipelinecleaners.Pipeli
 
 	input := pipelinecleaners.TransformInput{
 		Text:        text,
-		Annotations: copyStringMap(annotations),
+		Annotations: maputil.Clone(annotations),
+	}
+	if input.Annotations == nil {
+		input.Annotations = map[string]string{}
 	}
 
 	output, err := plugin.Transform(ctx, rt, input)
@@ -665,13 +668,6 @@ func (s *Service) runPlugin(ctx context.Context, plugin *pipelinecleaners.Pipeli
 	}
 
 	return output.Text, output.Annotations, nil
-}
-
-func copyStringMap(src map[string]string) map[string]string {
-	if len(src) == 0 {
-		return map[string]string{}
-	}
-	return maps.Clone(src)
 }
 
 type toolMetadata struct {
