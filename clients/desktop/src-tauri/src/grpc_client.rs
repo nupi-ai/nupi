@@ -599,6 +599,15 @@ fn primary_diagnostic_message(
         .unwrap_or_else(|| fallback.to_string())
 }
 
+fn require_not_empty<'a>(val: &'a str, field_name: &str) -> Result<&'a str, GrpcClientError> {
+    let trimmed = val.trim();
+    if trimmed.is_empty() {
+        Err(GrpcClientError::Config(format!("{field_name} is required")))
+    } else {
+        Ok(trimmed)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Transport snapshot from SQLite
 // ---------------------------------------------------------------------------
@@ -1152,10 +1161,7 @@ impl GrpcClient {
             metadata,
         } = req;
 
-        let trimmed_session = session_id.trim();
-        if trimmed_session.is_empty() {
-            return Err(GrpcClientError::Config("session_id is required".into()));
-        }
+        let trimmed_session = require_not_empty(&session_id, "session_id")?;
 
         let stream_id_value = stream_id
             .as_ref()
@@ -1594,10 +1600,7 @@ impl GrpcClient {
         reason: Option<&str>,
         metadata: HashMap<String, String>,
     ) -> Result<VoiceInterruptSummary, GrpcClientError> {
-        let trimmed_session = session_id.trim();
-        if trimmed_session.is_empty() {
-            return Err(GrpcClientError::Config("session_id is required".into()));
-        }
+        let trimmed_session = require_not_empty(session_id, "session_id")?;
 
         let stream_value = stream_id
             .and_then(|v| {
