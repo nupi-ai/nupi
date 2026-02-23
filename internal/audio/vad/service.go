@@ -10,6 +10,7 @@ import (
 
 	"github.com/nupi-ai/nupi/internal/audio/streammanager"
 	"github.com/nupi-ai/nupi/internal/eventbus"
+	"github.com/nupi-ai/nupi/internal/mapper"
 )
 
 var (
@@ -499,17 +500,7 @@ func (st *stream) closeAnalyzer(reason string) {
 }
 
 func mergeMetadata(base map[string]string, override map[string]string) map[string]string {
-	if len(base) == 0 && len(override) == 0 {
-		return nil
-	}
-	out := make(map[string]string, len(base)+len(override))
-	for k, v := range base {
-		out[k] = v
-	}
-	for k, v := range override {
-		out[k] = v
-	}
-	return out
+	return mapper.MergeStringMaps(base, override)
 }
 
 type latencyHistogram struct {

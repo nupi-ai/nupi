@@ -1269,24 +1269,6 @@ func (m *adapterRuntimeService) StopAdapter(ctx context.Context, req *apiv1.Adap
 	return &apiv1.AdapterActionResponse{Adapter: bindingStatusToProto(*statusEntry)}, nil
 }
 
-// parseTimestampString parses a timestamp string into a protobuf Timestamp.
-// Supports RFC3339 ("2006-01-02T15:04:05Z07:00") and SQLite CURRENT_TIMESTAMP
-// format ("2006-01-02 15:04:05"). Returns nil for empty or unparseable strings.
-func parseTimestampString(s string) *timestamppb.Timestamp {
-	if s == "" {
-		return nil
-	}
-	// Try RFC3339 first (used by most API responses).
-	if t, err := time.Parse(time.RFC3339, s); err == nil {
-		return timestamppb.New(t.UTC())
-	}
-	// Fall back to SQLite CURRENT_TIMESTAMP format.
-	if t, err := time.ParseInLocation("2006-01-02 15:04:05", s, time.Local); err == nil {
-		return timestamppb.New(t.UTC())
-	}
-	return nil
-}
-
 func transportConfigToProto(cfg configstore.TransportConfig, authRequired bool) *apiv1.TransportConfig {
 	return &apiv1.TransportConfig{
 		Binding:        cfg.Binding,

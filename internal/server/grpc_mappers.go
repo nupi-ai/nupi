@@ -9,10 +9,10 @@ import (
 	apiv1 "github.com/nupi-ai/nupi/internal/api/grpc/v1"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
+	"github.com/nupi-ai/nupi/internal/mapper"
 	"github.com/nupi-ai/nupi/internal/plugins/adapters"
 	"github.com/nupi-ai/nupi/internal/session"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/known/timestamppb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
@@ -25,14 +25,10 @@ func conversationTurnsToProto(turns []eventbus.ConversationTurn) []*apiv1.Conver
 }
 
 func conversationTurnToProto(turn eventbus.ConversationTurn) *apiv1.ConversationTurn {
-	var ts *timestamppb.Timestamp
-	if !turn.At.IsZero() {
-		ts = timestamppb.New(turn.At)
-	}
 	return &apiv1.ConversationTurn{
 		Origin:   string(turn.Origin),
 		Text:     turn.Text,
-		At:       ts,
+		At:       mapper.ToProtoTimestamp(turn.At),
 		Metadata: conversationMetadataToProto(turn.Meta),
 	}
 }
@@ -66,8 +62,8 @@ func adapterRecordToProto(record configstore.Adapter) *apiv1.Adapter {
 		Type:      record.Type,
 		Name:      record.Name,
 		Manifest:  record.Manifest,
-		CreatedAt: parseTimestampString(record.CreatedAt),
-		UpdatedAt: parseTimestampString(record.UpdatedAt),
+		CreatedAt: mapper.ParseTimestampStringToProto(record.CreatedAt),
+		UpdatedAt: mapper.ParseTimestampStringToProto(record.UpdatedAt),
 	}
 }
 
@@ -81,7 +77,7 @@ func adapterBindingToProto(binding configstore.AdapterBinding) *apiv1.AdapterBin
 		AdapterId:  adapterID,
 		Status:     binding.Status,
 		ConfigJson: binding.Config,
-		UpdatedAt:  parseTimestampString(binding.UpdatedAt),
+		UpdatedAt:  mapper.ParseTimestampStringToProto(binding.UpdatedAt),
 	}
 }
 
@@ -90,7 +86,7 @@ func bindingStatusToProto(status adapters.BindingStatus) *apiv1.AdapterEntry {
 		Slot:       string(status.Slot),
 		Status:     status.Status,
 		ConfigJson: status.Config,
-		UpdatedAt:  parseTimestampString(status.UpdatedAt),
+		UpdatedAt:  mapper.ParseTimestampStringToProto(status.UpdatedAt),
 	}
 	if status.AdapterID != nil {
 		if id := strings.TrimSpace(*status.AdapterID); id != "" {
@@ -118,12 +114,8 @@ func runtimeStatusToProto(rt *adapters.RuntimeStatus) *apiv1.AdapterRuntime {
 			result.Extra[k] = v
 		}
 	}
-	if rt.StartedAt != nil && !rt.StartedAt.IsZero() {
-		result.StartedAt = timestamppb.New(rt.StartedAt.UTC())
-	}
-	if !rt.UpdatedAt.IsZero() {
-		result.UpdatedAt = timestamppb.New(rt.UpdatedAt.UTC())
-	}
+	result.StartedAt = mapper.ToProtoTimestampPtr(rt.StartedAt)
+	result.UpdatedAt = mapper.ToProtoTimestamp(rt.UpdatedAt)
 	return result
 }
 
@@ -141,9 +133,7 @@ func dtoToSessionProto(dto api.SessionDTO, apiServer *APIServer) *apiv1.Session 
 		ToolIconData: dto.ToolIconData,
 		Mode:         dto.Mode,
 	}
-	if !dto.StartTime.IsZero() {
-		pb.StartTime = timestamppb.New(dto.StartTime.UTC())
-	}
+	pb.StartTime = mapper.ToProtoTimestamp(dto.StartTime)
 	// Set exit_code only when process has actually exited (status == "stopped").
 	// Without this guard, proto3 default 0 is ambiguous with "exited with code 0".
 	if dto.Status == string(session.StatusStopped) {

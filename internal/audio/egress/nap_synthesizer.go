@@ -11,6 +11,7 @@ import (
 
 	napv1 "github.com/nupi-ai/nupi/api/nap/v1"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
+	"github.com/nupi-ai/nupi/internal/mapper"
 	"github.com/nupi-ai/nupi/internal/napdial"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -158,14 +159,7 @@ func mergeSynthMeta(chunkMeta, respMeta map[string]string) map[string]string {
 	if len(chunkMeta) == 0 {
 		return copyMetadata(respMeta)
 	}
-	merged := make(map[string]string, len(chunkMeta)+len(respMeta))
-	for k, v := range respMeta {
-		merged[k] = v
-	}
-	for k, v := range chunkMeta {
-		merged[k] = v
-	}
-	return merged
+	return mapper.MergeStringMaps(respMeta, chunkMeta)
 }
 
 func isStreamCancelled(err error) bool {
