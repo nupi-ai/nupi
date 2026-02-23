@@ -798,13 +798,13 @@ func adaptersStop(cmd *cobra.Command, args []string) error {
 
 func adaptersRegisterGRPC(out *OutputFormatter, req *apiv1.RegisterAdapterRequest) (*apiv1.RegisterAdapterResponse, error) {
 	var resp *apiv1.RegisterAdapterResponse
-	if err := withOutputClientTimeout(out, 5*time.Second, daemonConnectGRPCErrorMessage, func(ctx context.Context, gc *grpcclient.Client) error {
+	if err := withOutputClientTimeout(out, 5*time.Second, daemonConnectGRPCErrorMessage, func(ctx context.Context, gc *grpcclient.Client) (any, error) {
 		var err error
 		resp, err = gc.RegisterAdapter(ctx, req)
 		if err != nil {
-			return out.Error("Failed to register adapter via gRPC", err)
+			return nil, clientCallFailed("Failed to register adapter via gRPC", err)
 		}
-		return nil
+		return nil, nil
 	}); err != nil {
 		return nil, err
 	}
@@ -824,14 +824,14 @@ func adapterRegistrationResultFromProto(resp *apiv1.RegisterAdapterResponse) api
 }
 
 func adaptersListGRPC(out *OutputFormatter) error {
-	return withOutputClientTimeout(out, 5*time.Second, daemonConnectGRPCErrorMessage, func(ctx context.Context, gc *grpcclient.Client) error {
+	return withOutputClientTimeout(out, 5*time.Second, daemonConnectGRPCErrorMessage, func(ctx context.Context, gc *grpcclient.Client) (any, error) {
 		resp, err := gc.AdaptersOverview(ctx)
 		if err != nil {
-			return out.Error("Failed to fetch adapters overview via gRPC", err)
+			return nil, clientCallFailed("Failed to fetch adapters overview via gRPC", err)
 		}
 
 		overview := adaptersOverviewFromProto(resp)
-		return out.Render(CommandResult{
+		return CommandResult{
 			Data: overview,
 			HumanReadable: func() error {
 				if len(overview.Adapters) == 0 {
@@ -843,12 +843,12 @@ func adaptersListGRPC(out *OutputFormatter) error {
 				printAdapterRuntimeMessages(overview.Adapters)
 				return nil
 			},
-		})
+		}, nil
 	})
 }
 
 func adaptersBindGRPC(out *OutputFormatter, slot, adapter, cfg string) error {
-	return withOutputClientTimeout(out, 5*time.Second, daemonConnectGRPCErrorMessage, func(ctx context.Context, gc *grpcclient.Client) error {
+	return withOutputClientTimeout(out, 5*time.Second, daemonConnectGRPCErrorMessage, func(ctx context.Context, gc *grpcclient.Client) (any, error) {
 		req := &apiv1.BindAdapterRequest{
 			Slot:       slot,
 			AdapterId:  adapter,
@@ -857,53 +857,53 @@ func adaptersBindGRPC(out *OutputFormatter, slot, adapter, cfg string) error {
 
 		resp, err := gc.BindAdapter(ctx, req)
 		if err != nil {
-			return out.Error("Failed to bind adapter via gRPC", err)
+			return nil, clientCallFailed("Failed to bind adapter via gRPC", err)
 		}
 
 		entry := adapterEntryFromProto(resp.GetAdapter())
-		return out.Render(CommandResult{
+		return CommandResult{
 			Data: apihttp.AdapterActionResult{Adapter: entry},
 			HumanReadable: func() error {
 				printAdapterSummary("Bound", entry)
 				return nil
 			},
-		})
+		}, nil
 	})
 }
 
 func adaptersStartGRPC(out *OutputFormatter, slot string) error {
-	return withOutputClientTimeout(out, 5*time.Second, daemonConnectGRPCErrorMessage, func(ctx context.Context, gc *grpcclient.Client) error {
+	return withOutputClientTimeout(out, 5*time.Second, daemonConnectGRPCErrorMessage, func(ctx context.Context, gc *grpcclient.Client) (any, error) {
 		resp, err := gc.StartAdapter(ctx, slot)
 		if err != nil {
-			return out.Error("Failed to start adapter via gRPC", err)
+			return nil, clientCallFailed("Failed to start adapter via gRPC", err)
 		}
 
 		entry := adapterEntryFromProto(resp.GetAdapter())
-		return out.Render(CommandResult{
+		return CommandResult{
 			Data: apihttp.AdapterActionResult{Adapter: entry},
 			HumanReadable: func() error {
 				printAdapterSummary("Started", entry)
 				return nil
 			},
-		})
+		}, nil
 	})
 }
 
 func adaptersStopGRPC(out *OutputFormatter, slot string) error {
-	return withOutputClientTimeout(out, 5*time.Second, daemonConnectGRPCErrorMessage, func(ctx context.Context, gc *grpcclient.Client) error {
+	return withOutputClientTimeout(out, 5*time.Second, daemonConnectGRPCErrorMessage, func(ctx context.Context, gc *grpcclient.Client) (any, error) {
 		resp, err := gc.StopAdapter(ctx, slot)
 		if err != nil {
-			return out.Error("Failed to stop adapter via gRPC", err)
+			return nil, clientCallFailed("Failed to stop adapter via gRPC", err)
 		}
 
 		entry := adapterEntryFromProto(resp.GetAdapter())
-		return out.Render(CommandResult{
+		return CommandResult{
 			Data: apihttp.AdapterActionResult{Adapter: entry},
 			HumanReadable: func() error {
 				printAdapterSummary("Stopped", entry)
 				return nil
 			},
-		})
+		}, nil
 	})
 }
 

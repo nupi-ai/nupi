@@ -330,16 +330,16 @@ func voiceInterrupt(cmd *cobra.Command, defaultReason string) error {
 		streamID = slots.TTS
 	}
 
-	return withOutputClientTimeout(out, 5*time.Second, daemonConnectErrorMessage, func(ctx context.Context, gc *grpcclient.Client) error {
+	return withOutputClientTimeout(out, 5*time.Second, daemonConnectErrorMessage, func(ctx context.Context, gc *grpcclient.Client) (any, error) {
 		if err := gc.InterruptTTS(ctx, &apiv1.InterruptTTSRequest{
 			SessionId: sessionID,
 			StreamId:  streamID,
 			Reason:    reason,
 		}); err != nil {
-			return out.Error("Failed to send interruption", err)
+			return nil, clientCallFailed("Failed to send interruption", err)
 		}
 
-		return out.Render(CommandResult{
+		return CommandResult{
 			Data: map[string]any{
 				"session_id": sessionID,
 				"stream_id":  streamID,
@@ -349,18 +349,18 @@ func voiceInterrupt(cmd *cobra.Command, defaultReason string) error {
 				fmt.Fprintf(os.Stdout, "Sent interruption (%s) to session %s\n", reason, sessionID)
 				return nil
 			},
-		})
+		}, nil
 	})
 }
 
 func voiceStatus(cmd *cobra.Command, _ []string) error {
 	sessionID := strings.TrimSpace(cmd.Flag("session").Value.String())
-	return withClientTimeout(cmd, 5*time.Second, func(ctx context.Context, gc *grpcclient.Client, out *OutputFormatter) error {
+	return withClientTimeout(cmd, 5*time.Second, func(ctx context.Context, gc *grpcclient.Client, out *OutputFormatter) (any, error) {
 		caps, err := gc.AudioCapabilities(ctx, &apiv1.GetAudioCapabilitiesRequest{
 			SessionId: sessionID,
 		})
 		if err != nil {
-			return out.Error("Failed to fetch audio capabilities", err)
+			return nil, clientCallFailed("Failed to fetch audio capabilities", err)
 		}
 
 		captureEnabled := hasCaptureEnabled(caps)
@@ -373,7 +373,7 @@ func voiceStatus(cmd *cobra.Command, _ []string) error {
 			"playback_enabled": playbackEnabled,
 		}
 
-		return out.Render(CommandResult{
+		return CommandResult{
 			Data: payload,
 			HumanReadable: func() error {
 				fmt.Printf("Capture enabled: %v\n", captureEnabled)
@@ -407,7 +407,7 @@ func voiceStatus(cmd *cobra.Command, _ []string) error {
 				}
 				return nil
 			},
-		})
+		}, nil
 	})
 }
 
