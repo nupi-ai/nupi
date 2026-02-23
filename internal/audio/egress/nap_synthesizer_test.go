@@ -13,6 +13,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/audio/adapterutil"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
+	"github.com/nupi-ai/nupi/internal/napdial"
 	"github.com/nupi-ai/nupi/internal/plugins/adapters"
 	testutil "github.com/nupi-ai/nupi/internal/testutil"
 	"github.com/nupi-ai/nupi/internal/voice/slots"
@@ -88,7 +89,7 @@ func TestNAPSynthesizerSpeakStreamsChunks(t *testing.T) {
 	}
 
 	_, dialer := startMockTTSServer(t, srv)
-	ctx := ContextWithDialer(context.Background(), dialer)
+	ctx := napdial.ContextWithDialer(context.Background(), dialer)
 
 	endpoint := configstore.AdapterEndpoint{
 		AdapterID: "adapter.tts.test",
@@ -140,7 +141,7 @@ func TestNAPSynthesizerSpeakHandlesAdapterError(t *testing.T) {
 	}
 
 	_, dialer := startMockTTSServer(t, srv)
-	ctx := ContextWithDialer(context.Background(), dialer)
+	ctx := napdial.ContextWithDialer(context.Background(), dialer)
 
 	synth, err := newNAPSynthesizer(ctx, SessionParams{
 		SessionID: "sess",
@@ -170,7 +171,7 @@ func TestNAPSynthesizerSpeakHandlesServerStreamError(t *testing.T) {
 	}
 
 	_, dialer := startMockTTSServer(t, srv)
-	ctx := ContextWithDialer(context.Background(), dialer)
+	ctx := napdial.ContextWithDialer(context.Background(), dialer)
 
 	synth, err := newNAPSynthesizer(ctx, SessionParams{
 		SessionID: "sess",
@@ -200,7 +201,7 @@ func TestNAPSynthesizerSpeakClientCancel(t *testing.T) {
 	}
 
 	_, dialer := startMockTTSServer(t, srv)
-	ctx := ContextWithDialer(context.Background(), dialer)
+	ctx := napdial.ContextWithDialer(context.Background(), dialer)
 
 	synth, err := newNAPSynthesizer(ctx, SessionParams{
 		SessionID: "sess",
@@ -228,7 +229,7 @@ func TestNAPSynthesizerSpeakContextCancelled(t *testing.T) {
 	}
 
 	_, dialer := startMockTTSServer(t, srv)
-	ctx := ContextWithDialer(context.Background(), dialer)
+	ctx := napdial.ContextWithDialer(context.Background(), dialer)
 
 	synth, err := newNAPSynthesizer(ctx, SessionParams{
 		SessionID: "sess",
@@ -326,7 +327,7 @@ func TestAdapterFactoryCreatesNAPSynthesizer(t *testing.T) {
 	}
 
 	factory := NewAdapterFactory(store, nil)
-	ctx = ContextWithDialer(ctx, dialer)
+	ctx = napdial.ContextWithDialer(ctx, dialer)
 
 	synth, err := factory.Create(ctx, SessionParams{
 		SessionID: "sess",
@@ -565,7 +566,7 @@ func TestNAPSynthesizerMergesResponseMetadata(t *testing.T) {
 	}
 
 	_, dialer := startMockTTSServer(t, srv)
-	ctx := ContextWithDialer(context.Background(), dialer)
+	ctx := napdial.ContextWithDialer(context.Background(), dialer)
 
 	synth, err := newNAPSynthesizer(ctx, SessionParams{
 		SessionID: "sess",
@@ -629,7 +630,7 @@ func TestNAPSynthesizerStatusOnlyResponsePropagatesMetadata(t *testing.T) {
 	}
 
 	_, dialer := startMockTTSServer(t, srv)
-	ctx := ContextWithDialer(context.Background(), dialer)
+	ctx := napdial.ContextWithDialer(context.Background(), dialer)
 
 	synth, err := newNAPSynthesizer(ctx, SessionParams{
 		SessionID: "sess",
@@ -680,7 +681,7 @@ func TestNAPSynthesizerStatusOnlyBeforeFirstChunkBuffersMetadata(t *testing.T) {
 	}
 
 	_, dialer := startMockTTSServer(t, srv)
-	ctx := ContextWithDialer(context.Background(), dialer)
+	ctx := napdial.ContextWithDialer(context.Background(), dialer)
 
 	synth, err := newNAPSynthesizer(ctx, SessionParams{
 		SessionID: "sess",
@@ -748,7 +749,7 @@ func TestNAPSynthesizerStatusOnlyUpdatesOverridePrevious(t *testing.T) {
 	}
 
 	_, dialer := startMockTTSServer(t, srv)
-	ctx := ContextWithDialer(context.Background(), dialer)
+	ctx := napdial.ContextWithDialer(context.Background(), dialer)
 
 	synth, err := newNAPSynthesizer(ctx, SessionParams{
 		SessionID: "sess",
@@ -798,7 +799,7 @@ func TestNAPSynthesizerMetadataOnlyWhenNoAudioChunks(t *testing.T) {
 	}
 
 	_, dialer := startMockTTSServer(t, srv)
-	ctx := ContextWithDialer(context.Background(), dialer)
+	ctx := napdial.ContextWithDialer(context.Background(), dialer)
 
 	synth, err := newNAPSynthesizer(ctx, SessionParams{
 		SessionID: "sess",
@@ -837,7 +838,7 @@ func TestNAPSynthesizerMetadataOnlyWhenNoAudioChunks(t *testing.T) {
 func TestNAPSynthesizerSpeakRecvUnavailableWrapsError(t *testing.T) {
 	srv := &partialUnavailableTTSServer{}
 	_, dialer := startMockTTSServer(t, srv)
-	ctx := ContextWithDialer(context.Background(), dialer)
+	ctx := napdial.ContextWithDialer(context.Background(), dialer)
 
 	synth, err := newNAPSynthesizer(ctx, SessionParams{
 		SessionID: "sess",
@@ -882,7 +883,7 @@ func TestNAPSynthesizerSpeakUnavailableWrapsError(t *testing.T) {
 	dialer := func(ctx context.Context, _ string) (net.Conn, error) {
 		return nil, fmt.Errorf("connection refused")
 	}
-	ctx := ContextWithDialer(context.Background(), dialer)
+	ctx := napdial.ContextWithDialer(context.Background(), dialer)
 
 	synth, err := newNAPSynthesizer(ctx, SessionParams{
 		SessionID: "sess",
@@ -941,7 +942,7 @@ func TestNAPSynthesizerEnforceFinalOnStreamEnd(t *testing.T) {
 	}
 
 	_, dialer := startMockTTSServer(t, srv)
-	ctx := ContextWithDialer(context.Background(), dialer)
+	ctx := napdial.ContextWithDialer(context.Background(), dialer)
 
 	synth, err := newNAPSynthesizer(ctx, SessionParams{
 		SessionID: "sess",

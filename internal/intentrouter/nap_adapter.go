@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"net"
 	"sync"
 
 	napv1 "github.com/nupi-ai/nupi/api/nap/v1"
@@ -308,10 +307,4 @@ func actionTypeFromProto(t napv1.ActionType) ActionType {
 	default:
 		return ActionNoop
 	}
-}
-
-// ContextWithDialer attaches a custom dialer to the context.
-// This is primarily for tests using bufconn without real network sockets.
-func ContextWithDialer(ctx context.Context, dialer func(context.Context, string) (net.Conn, error)) context.Context {
-	return napdial.ContextWithDialer(ctx, dialer)
 }
