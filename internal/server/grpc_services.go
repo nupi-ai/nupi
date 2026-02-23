@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -168,6 +169,13 @@ func (a *audioService) StreamAudioIn(stream apiv1.AudioService_StreamAudioInServ
 			if err != nil {
 				return status.Errorf(codes.InvalidArgument, "invalid audio format: %v", err)
 			}
+			var metadata map[string]string
+			if chunk != nil {
+				metadata, err = normalizeAndValidateAudioChunkMetadata(chunk.GetMetadata())
+				if err != nil {
+					return status.Errorf(codes.InvalidArgument, "invalid metadata: %v", err)
+				}
+			}
 			readiness, err := a.api.voiceReadiness(stream.Context())
 			if err != nil {
 				return status.Errorf(codes.Internal, "voice readiness: %v", err)
@@ -177,11 +185,11 @@ func (a *audioService) StreamAudioIn(stream apiv1.AudioService_StreamAudioInServ
 				message := voiceIssueSummary(diags, "voice capture unavailable")
 				return status.Error(codes.FailedPrecondition, message)
 			}
-			var metadata map[string]string
-			if chunk != nil {
-				metadata = maputil.Clone(chunk.GetMetadata())
-			}
 			metadata = language.MergeContextLanguage(stream.Context(), metadata)
+			metadata, err = normalizeAndValidateAudioChunkMetadata(metadata)
+			if err != nil {
+				return status.Errorf(codes.InvalidArgument, "invalid metadata: %v", err)
+			}
 			ingressStream, err = a.api.audioIngress.OpenStream(sessionID, streamID, format, metadata)
 			if err != nil {
 				if errors.Is(err, ErrAudioStreamExists) {
@@ -737,6 +745,13 @@ func RegisterGRPCServices(api *APIServer, registrar grpc.ServiceRegistrar) {
 // DefaultCaptureStreamID is the default stream identifier for audio capture.
 const DefaultCaptureStreamID = "mic"
 
+const (
+	maxAudioChunkMetadataEntries    = 32
+	maxAudioChunkMetadataKeyRunes   = 64
+	maxAudioChunkMetadataValueRunes = 512
+	maxAudioChunkMetadataTotalBytes = 8192
+)
+
 var defaultCaptureFormat = eventbus.AudioFormat{
 	Encoding:      eventbus.AudioEncodingPCM16,
 	SampleRate:    16000,
@@ -776,6 +791,58 @@ func audioFormatFromProto(pb *apiv1.AudioFormat) (eventbus.AudioFormat, error) {
 		return eventbus.AudioFormat{}, fmt.Errorf("bit_depth must be divisible by 8")
 	}
 	return format, nil
+}
+
+func normalizeAndValidateAudioChunkMetadata(raw map[string]string) (map[string]string, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+
+	keys := make([]string, 0, len(raw))
+	for key := range raw {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	normalized := make(map[string]string, len(raw))
+	totalBytes := 0
+
+	for _, rawKey := range keys {
+		key := strings.TrimSpace(rawKey)
+		if key == "" {
+			continue
+		}
+
+		value := strings.TrimSpace(raw[rawKey])
+
+		if utf8.RuneCountInString(key) > maxAudioChunkMetadataKeyRunes {
+			return nil, fmt.Errorf("metadata key %q exceeds maximum length of %d characters", key, maxAudioChunkMetadataKeyRunes)
+		}
+		if utf8.RuneCountInString(value) > maxAudioChunkMetadataValueRunes {
+			return nil, fmt.Errorf("metadata value for key %q exceeds maximum length of %d characters", key, maxAudioChunkMetadataValueRunes)
+		}
+
+		if _, exists := normalized[key]; !exists && len(normalized) >= maxAudioChunkMetadataEntries {
+			return nil, fmt.Errorf("metadata exceeds maximum of %d entries", maxAudioChunkMetadataEntries)
+		}
+
+		entryBytes := len(key) + len(value)
+		if previous, exists := normalized[key]; exists {
+			totalBytes -= len(key) + len(previous)
+		}
+		if maxAudioChunkMetadataTotalBytes > 0 && totalBytes+entryBytes > maxAudioChunkMetadataTotalBytes {
+			return nil, fmt.Errorf("metadata total size exceeds %d bytes", maxAudioChunkMetadataTotalBytes)
+		}
+
+		normalized[key] = value
+		totalBytes += entryBytes
+	}
+
+	if len(normalized) == 0 {
+		return nil, nil
+	}
+
+	return normalized, nil
 }
 
 func audioFormatsEqual(a, b eventbus.AudioFormat) bool {
