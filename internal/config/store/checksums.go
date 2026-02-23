@@ -98,8 +98,8 @@ func (s *Store) GetPluginChecksumsByPlugin(ctx context.Context, namespace, slug 
 
 	var result []PluginChecksum
 	for rows.Next() {
-		var pc PluginChecksum
-		if err := rows.Scan(&pc.PluginID, &pc.FilePath, &pc.SHA256, &pc.CreatedAt); err != nil {
+		pc, err := scanPluginChecksum(rows)
+		if err != nil {
 			return nil, fmt.Errorf("config: get plugin checksums by plugin: scan: %w", err)
 		}
 		result = append(result, pc)
@@ -131,8 +131,8 @@ func (s *Store) GetPluginChecksumsByID(ctx context.Context, pluginID int64) ([]P
 
 	var result []PluginChecksum
 	for rows.Next() {
-		var pc PluginChecksum
-		if err := rows.Scan(&pc.PluginID, &pc.FilePath, &pc.SHA256, &pc.CreatedAt); err != nil {
+		pc, err := scanPluginChecksum(rows)
+		if err != nil {
 			return nil, fmt.Errorf("config: get plugin checksums by id: scan: %w", err)
 		}
 		result = append(result, pc)

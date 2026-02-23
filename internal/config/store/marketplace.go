@@ -59,13 +59,10 @@ func (s *Store) ListMarketplaces(ctx context.Context) ([]Marketplace, error) {
 
 	var result []Marketplace
 	for rows.Next() {
-		var m Marketplace
-		var cachedIndex, lastRefreshed sql.NullString
-		if err := rows.Scan(&m.ID, &m.InstanceName, &m.Namespace, &m.URL, &m.IsBuiltin, &cachedIndex, &lastRefreshed, &m.CreatedAt); err != nil {
+		m, err := scanMarketplace(rows)
+		if err != nil {
 			return nil, fmt.Errorf("config: scan marketplace: %w", err)
 		}
-		m.CachedIndex = cachedIndex.String
-		m.LastRefreshed = lastRefreshed.String
 		result = append(result, m)
 	}
 	return result, rows.Err()
@@ -78,41 +75,33 @@ func (s *Store) GetMarketplaceByNamespace(ctx context.Context, namespace string)
 		return Marketplace{}, fmt.Errorf("config: get marketplace: namespace required")
 	}
 
-	var m Marketplace
-	var cachedIndex, lastRefreshed sql.NullString
-	err := s.db.QueryRowContext(ctx, `
+	m, err := scanMarketplace(s.db.QueryRowContext(ctx, `
 		SELECT id, instance_name, namespace, url, is_builtin, cached_index, last_refreshed, created_at
 		FROM marketplaces
 		WHERE instance_name = ? AND namespace = ?
-	`, s.instanceName, namespace).Scan(&m.ID, &m.InstanceName, &m.Namespace, &m.URL, &m.IsBuiltin, &cachedIndex, &lastRefreshed, &m.CreatedAt)
+	`, s.instanceName, namespace))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Marketplace{}, NotFoundError{Entity: "marketplace", Key: namespace}
 		}
 		return Marketplace{}, fmt.Errorf("config: get marketplace %q: %w", namespace, err)
 	}
-	m.CachedIndex = cachedIndex.String
-	m.LastRefreshed = lastRefreshed.String
 	return m, nil
 }
 
 // GetMarketplaceByID retrieves a marketplace by its database ID.
 func (s *Store) GetMarketplaceByID(ctx context.Context, id int64) (Marketplace, error) {
-	var m Marketplace
-	var cachedIndex, lastRefreshed sql.NullString
-	err := s.db.QueryRowContext(ctx, `
+	m, err := scanMarketplace(s.db.QueryRowContext(ctx, `
 		SELECT id, instance_name, namespace, url, is_builtin, cached_index, last_refreshed, created_at
 		FROM marketplaces
 		WHERE id = ? AND instance_name = ?
-	`, id, s.instanceName).Scan(&m.ID, &m.InstanceName, &m.Namespace, &m.URL, &m.IsBuiltin, &cachedIndex, &lastRefreshed, &m.CreatedAt)
+	`, id, s.instanceName))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Marketplace{}, NotFoundError{Entity: "marketplace", Key: fmt.Sprintf("id=%d", id)}
 		}
 		return Marketplace{}, fmt.Errorf("config: get marketplace id=%d: %w", id, err)
 	}
-	m.CachedIndex = cachedIndex.String
-	m.LastRefreshed = lastRefreshed.String
 	return m, nil
 }
 
@@ -172,8 +161,8 @@ func (s *Store) RemoveMarketplace(ctx context.Context, namespace string) error {
 	}
 	var slugs []string
 	for rows.Next() {
-		var slug string
-		if err := rows.Scan(&slug); err != nil {
+		slug, err := scanString(rows)
+		if err != nil {
 			rows.Close()
 			return fmt.Errorf("config: scan plugin slug: %w", err)
 		}
@@ -236,12 +225,10 @@ func (s *Store) ListInstalledPlugins(ctx context.Context) ([]InstalledPluginWith
 
 	var result []InstalledPluginWithNamespace
 	for rows.Next() {
-		var p InstalledPluginWithNamespace
-		var sourceURL sql.NullString
-		if err := rows.Scan(&p.ID, &p.MarketplaceID, &p.Slug, &sourceURL, &p.InstalledAt, &p.Enabled, &p.Namespace); err != nil {
+		p, err := scanInstalledPluginWithNamespace(rows)
+		if err != nil {
 			return nil, fmt.Errorf("config: scan installed plugin: %w", err)
 		}
-		p.SourceURL = sourceURL.String
 		result = append(result, p)
 	}
 	return result, rows.Err()
@@ -252,21 +239,18 @@ func (s *Store) GetInstalledPlugin(ctx context.Context, namespace, slug string) 
 	if namespace == "" || slug == "" {
 		return InstalledPluginWithNamespace{}, NotFoundError{Entity: "installed plugin", Key: namespace + "/" + slug}
 	}
-	var p InstalledPluginWithNamespace
-	var sourceURL sql.NullString
-	err := s.db.QueryRowContext(ctx, `
+	p, err := scanInstalledPluginWithNamespace(s.db.QueryRowContext(ctx, `
 		SELECT ip.id, ip.marketplace_id, ip.slug, ip.source_url, ip.installed_at, ip.enabled, m.namespace
 		FROM installed_plugins ip
 		JOIN marketplaces m ON ip.marketplace_id = m.id
 		WHERE m.instance_name = ? AND m.namespace = ? AND ip.slug = ?
-	`, s.instanceName, namespace, slug).Scan(&p.ID, &p.MarketplaceID, &p.Slug, &sourceURL, &p.InstalledAt, &p.Enabled, &p.Namespace)
+	`, s.instanceName, namespace, slug))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return InstalledPluginWithNamespace{}, NotFoundError{Entity: "installed plugin", Key: namespace + "/" + slug}
 		}
 		return InstalledPluginWithNamespace{}, fmt.Errorf("config: get installed plugin %s/%s: %w", namespace, slug, err)
 	}
-	p.SourceURL = sourceURL.String
 	return p, nil
 }
 

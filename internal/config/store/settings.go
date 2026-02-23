@@ -29,8 +29,8 @@ func (s *Store) LoadSettings(ctx context.Context, keys ...string) (map[string]st
 
 	result := make(map[string]string)
 	for rows.Next() {
-		var key, value string
-		if err := rows.Scan(&key, &value); err != nil {
+		key, value, err := scanStringPair(rows)
+		if err != nil {
 			return nil, fmt.Errorf("config: scan settings row: %w", err)
 		}
 		result[key] = value

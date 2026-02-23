@@ -94,8 +94,8 @@ func (s *Store) PendingQuickstartSlots(ctx context.Context) ([]string, error) {
 
 	var slots []string
 	for rows.Next() {
-		var slot string
-		if err := rows.Scan(&slot); err != nil {
+		slot, err := scanString(rows)
+		if err != nil {
 			return nil, fmt.Errorf("config: scan quickstart slot: %w", err)
 		}
 		slots = append(slots, slot)

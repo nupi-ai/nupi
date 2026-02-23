@@ -65,8 +65,8 @@ func (s *Store) loadAllSecuritySettings(ctx context.Context) (map[string]string,
 
 	var dbKeys []string
 	for rows.Next() {
-		var key string
-		if err := rows.Scan(&key); err != nil {
+		key, err := scanString(rows)
+		if err != nil {
 			return nil, fmt.Errorf("config: scan security key: %w", err)
 		}
 		dbKeys = append(dbKeys, key)

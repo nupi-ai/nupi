@@ -21,21 +21,11 @@ func (s *Store) Profiles(ctx context.Context) ([]Profile, error) {
 
 	var profiles []Profile
 	for rows.Next() {
-		var (
-			name      string
-			isDefault int
-			createdAt string
-			updatedAt string
-		)
-		if err := rows.Scan(&name, &isDefault, &createdAt, &updatedAt); err != nil {
+		profile, err := scanProfile(rows)
+		if err != nil {
 			return nil, fmt.Errorf("config: scan profile: %w", err)
 		}
-		profiles = append(profiles, Profile{
-			Name:      name,
-			IsDefault: isDefault == 1,
-			CreatedAt: createdAt,
-			UpdatedAt: updatedAt,
-		})
+		profiles = append(profiles, profile)
 	}
 
 	if err := rows.Err(); err != nil {
