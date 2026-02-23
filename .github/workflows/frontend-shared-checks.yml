@@ -1,0 +1,64 @@
+name: Frontend Shared Checks
+
+on:
+  pull_request:
+    paths:
+      - "clients/desktop/**"
+      - "clients/mobile/**"
+      - "clients/shared/**"
+      - ".github/workflows/frontend-shared-checks.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "clients/desktop/**"
+      - "clients/mobile/**"
+      - "clients/shared/**"
+      - ".github/workflows/frontend-shared-checks.yml"
+
+jobs:
+  desktop-build:
+    name: Desktop Build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients/desktop
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: clients/desktop/package-lock.json
+
+      - name: Install Desktop Dependencies
+        run: npm ci
+
+      - name: Build Desktop
+        run: npm run build
+
+  mobile-design-token-tests:
+    name: Mobile Design Token Snapshot
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients/mobile
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: clients/mobile/package-lock.json
+
+      - name: Install Mobile Dependencies
+        run: npm ci
+
+      - name: Run Design Token Snapshot Test
+        run: npm run test:unit -- constants/designTokens.test.ts
