@@ -92,3 +92,47 @@ func TestWaitForWorkersNilWaitGroup(t *testing.T) {
 		t.Fatalf("expected nil error for nil waitgroup, got %v", err)
 	}
 }
+
+func TestServiceLifecycleStopClosesSubscriptionsAndCancelsContext(t *testing.T) {
+	var lc ServiceLifecycle
+	lc.Start(context.Background())
+
+	closer := &testCloser{}
+	lc.AddSubscriptions(closer)
+	lc.Stop()
+
+	if closer.calls() != 1 {
+		t.Fatalf("expected subscription closer to be called once, got %d", closer.calls())
+	}
+	if lc.Context().Err() == nil {
+		t.Fatal("expected lifecycle context to be cancelled")
+	}
+}
+
+func TestServiceLifecycleGoAndWait(t *testing.T) {
+	var lc ServiceLifecycle
+	lc.Start(context.Background())
+
+	done := make(chan struct{})
+	lc.Go(func(ctx context.Context) {
+		select {
+		case <-ctx.Done():
+			close(done)
+		case <-time.After(time.Second):
+		}
+	})
+
+	lc.Stop()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not observe context cancellation")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := lc.Wait(ctx); err != nil {
+		t.Fatalf("expected wait to succeed, got %v", err)
+	}
+}

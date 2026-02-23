@@ -125,14 +125,11 @@ type Service struct {
 	retryInitial  time.Duration
 	retryMax      time.Duration
 
-	ctx    context.Context
-	cancel context.CancelFunc
+	lifecycle eventbus.ServiceLifecycle
 
 	manager *streammanager.Manager[eventbus.AudioIngressSegmentEvent]
 
-	sub  *eventbus.TypedSubscription[eventbus.AudioIngressSegmentEvent]
-	subs eventbus.SubscriptionGroup
-	wg   sync.WaitGroup
+	sub *eventbus.TypedSubscription[eventbus.AudioIngressSegmentEvent]
 
 	segmentsTotal atomic.Uint64
 }
@@ -162,7 +159,7 @@ func (s *Service) Start(ctx context.Context) error {
 		return errors.New("stt: event bus is required")
 	}
 
-	s.ctx, s.cancel = context.WithCancel(ctx)
+	s.lifecycle.Start(ctx)
 
 	s.manager = streammanager.New(streammanager.Config[eventbus.AudioIngressSegmentEvent]{
 		Tag:        "STT",
@@ -176,33 +173,28 @@ func (s *Service) Start(ctx context.Context) error {
 			ClassifyCreateError: s.classifyError,
 		},
 		Logger: s.logger,
-		Ctx:    s.ctx,
+		Ctx:    s.lifecycle.Context(),
 	})
 
 	s.sub = eventbus.Subscribe[eventbus.AudioIngressSegmentEvent](s.bus,
 		eventbus.TopicAudioIngressSegment,
 		eventbus.WithSubscriptionName("audio_stt_segments"),
 	)
-	s.subs.Add(s.sub)
-
-	s.wg.Add(1)
-	go s.consumeSegments()
+	s.lifecycle.AddSubscriptions(s.sub)
+	s.lifecycle.Go(s.consumeSegments)
 	return nil
 }
 
 // Shutdown stops background processing and waits for streams to finish.
 func (s *Service) Shutdown(ctx context.Context) error {
-	if s.cancel != nil {
-		s.cancel()
-	}
-	s.subs.CloseAll()
+	s.lifecycle.Stop()
 
 	var handles []streammanager.StreamHandle[eventbus.AudioIngressSegmentEvent]
 	if s.manager != nil {
 		handles = s.manager.CloseAllStreams()
 	}
 
-	if err := eventbus.WaitForWorkers(ctx, &s.wg); err != nil {
+	if err := s.lifecycle.Wait(ctx); err != nil {
 		return err
 	}
 
@@ -217,8 +209,8 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-func (s *Service) consumeSegments() {
-	eventbus.Consume(s.ctx, s.sub, &s.wg, s.handleSegment)
+func (s *Service) consumeSegments(ctx context.Context) {
+	eventbus.Consume(ctx, s.sub, nil, s.handleSegment)
 }
 
 func (s *Service) handleSegment(segment eventbus.AudioIngressSegmentEvent) {
@@ -331,7 +323,7 @@ type stream struct {
 }
 
 func newStream(key string, svc *Service, params SessionParams, transcriber Transcriber) *stream {
-	ctx, cancel := context.WithCancel(svc.ctx)
+	ctx, cancel := context.WithCancel(svc.lifecycle.Context())
 	st := &stream{
 		service:     svc,
 		key:         key,

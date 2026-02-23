@@ -137,15 +137,12 @@ type Service struct {
 	retryInitial time.Duration
 	retryMax     time.Duration
 
-	ctx    context.Context
-	cancel context.CancelFunc
+	lifecycle eventbus.ServiceLifecycle
 
 	replySub     *eventbus.TypedSubscription[eventbus.ConversationReplyEvent]
 	speakSub     *eventbus.TypedSubscription[eventbus.ConversationSpeakEvent]
 	lifecycleSub *eventbus.TypedSubscription[eventbus.SessionLifecycleEvent]
 	bargeSub     *eventbus.TypedSubscription[eventbus.SpeechBargeInEvent]
-	subs         eventbus.SubscriptionGroup
-	wg           sync.WaitGroup
 
 	manager *streammanager.Manager[speakRequest]
 }
@@ -199,7 +196,7 @@ func (s *Service) Start(ctx context.Context) error {
 		return errors.New("tts: event bus required")
 	}
 
-	s.ctx, s.cancel = context.WithCancel(ctx)
+	s.lifecycle.Start(ctx)
 
 	s.manager = streammanager.New(streammanager.Config[speakRequest]{
 		Tag:        "TTS",
@@ -214,31 +211,26 @@ func (s *Service) Start(ctx context.Context) error {
 			OnEnqueueError:      s.onEnqueueError,
 		},
 		Logger: s.logger,
-		Ctx:    s.ctx,
+		Ctx:    s.lifecycle.Context(),
 	})
 
 	s.replySub = eventbus.Subscribe[eventbus.ConversationReplyEvent](s.bus, eventbus.TopicConversationReply, eventbus.WithSubscriptionName("audio_egress_reply"))
 	s.speakSub = eventbus.Subscribe[eventbus.ConversationSpeakEvent](s.bus, eventbus.TopicConversationSpeak, eventbus.WithSubscriptionName("audio_egress_speak"))
 	s.lifecycleSub = eventbus.Subscribe[eventbus.SessionLifecycleEvent](s.bus, eventbus.TopicSessionsLifecycle, eventbus.WithSubscriptionName("audio_egress_lifecycle"))
 	s.bargeSub = eventbus.Subscribe[eventbus.SpeechBargeInEvent](s.bus, eventbus.TopicSpeechBargeIn, eventbus.WithSubscriptionName("audio_egress_barge"))
-	s.subs.Add(s.replySub, s.speakSub, s.lifecycleSub, s.bargeSub)
-
-	s.wg.Add(4)
-	go s.consumeReplies()
-	go s.consumeSpeak()
-	go s.consumeLifecycle()
-	go s.consumeBarge()
+	s.lifecycle.AddSubscriptions(s.replySub, s.speakSub, s.lifecycleSub, s.bargeSub)
+	s.lifecycle.Go(s.consumeReplies)
+	s.lifecycle.Go(s.consumeSpeak)
+	s.lifecycle.Go(s.consumeLifecycle)
+	s.lifecycle.Go(s.consumeBarge)
 	return nil
 }
 
 // Shutdown stops background processing and releases resources.
 func (s *Service) Shutdown(ctx context.Context) error {
-	if s.cancel != nil {
-		s.cancel()
-	}
-	s.subs.CloseAll()
+	s.lifecycle.Stop()
 
-	if err := eventbus.WaitForWorkers(ctx, &s.wg); err != nil {
+	if err := s.lifecycle.Wait(ctx); err != nil {
 		return err
 	}
 
@@ -256,8 +248,8 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-func (s *Service) consumeReplies() {
-	eventbus.Consume(s.ctx, s.replySub, &s.wg, func(reply eventbus.ConversationReplyEvent) {
+func (s *Service) consumeReplies(ctx context.Context) {
+	eventbus.Consume(ctx, s.replySub, nil, func(reply eventbus.ConversationReplyEvent) {
 		s.handleSpeakRequest(speakRequest{
 			SessionID: reply.SessionID,
 			StreamID:  s.streamID,
@@ -268,8 +260,8 @@ func (s *Service) consumeReplies() {
 	})
 }
 
-func (s *Service) consumeSpeak() {
-	eventbus.Consume(s.ctx, s.speakSub, &s.wg, func(event eventbus.ConversationSpeakEvent) {
+func (s *Service) consumeSpeak(ctx context.Context) {
+	eventbus.Consume(ctx, s.speakSub, nil, func(event eventbus.ConversationSpeakEvent) {
 		s.handleSpeakRequest(speakRequest{
 			SessionID: event.SessionID,
 			StreamID:  s.streamID,
@@ -280,16 +272,16 @@ func (s *Service) consumeSpeak() {
 	})
 }
 
-func (s *Service) consumeLifecycle() {
-	eventbus.Consume(s.ctx, s.lifecycleSub, &s.wg, func(msg eventbus.SessionLifecycleEvent) {
+func (s *Service) consumeLifecycle(ctx context.Context) {
+	eventbus.Consume(ctx, s.lifecycleSub, nil, func(msg eventbus.SessionLifecycleEvent) {
 		if msg.State == eventbus.SessionStateStopped && s.manager != nil {
 			s.manager.RemoveStreamByKey(streammanager.StreamKey(msg.SessionID, s.streamID))
 		}
 	})
 }
 
-func (s *Service) consumeBarge() {
-	eventbus.Consume(s.ctx, s.bargeSub, &s.wg, s.handleBargeEvent)
+func (s *Service) consumeBarge(ctx context.Context) {
+	eventbus.Consume(ctx, s.bargeSub, nil, s.handleBargeEvent)
 }
 
 func (s *Service) handleBargeEvent(event eventbus.SpeechBargeInEvent) {
@@ -320,7 +312,7 @@ func (s *Service) handleSpeakRequest(req speakRequest) {
 		// Enqueue failed — stream is dying (rebuffer/interrupt) or service
 		// shutting down.  If the service is still running, buffer the request
 		// so it survives the stream transition rather than being dropped.
-		if s.ctx.Err() == nil {
+		if s.lifecycle.Context().Err() == nil {
 			s.manager.BufferPending(key, SessionParams{
 				SessionID: req.SessionID,
 				StreamID:  req.StreamID,
@@ -472,7 +464,7 @@ type stream struct {
 }
 
 func newStream(key string, svc *Service, params SessionParams, synth Synthesizer) *stream {
-	ctx, cancel := context.WithCancel(svc.ctx)
+	ctx, cancel := context.WithCancel(svc.lifecycle.Context())
 	st := &stream{
 		service:     svc,
 		key:         key,
