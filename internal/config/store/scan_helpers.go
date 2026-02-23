@@ -3,13 +3,11 @@ package store
 import (
 	"database/sql"
 	"fmt"
+
+	"github.com/nupi-ai/nupi/internal/config/store/dbutil"
 )
 
-type rowScanner interface {
-	Scan(dest ...any) error
-}
-
-func scanAdapter(scanner rowScanner) (Adapter, error) {
+func scanAdapter(scanner dbutil.RowScanner) (Adapter, error) {
 	var adapter Adapter
 	err := scanner.Scan(
 		&adapter.ID,
@@ -24,7 +22,7 @@ func scanAdapter(scanner rowScanner) (Adapter, error) {
 	return adapter, err
 }
 
-func scanAdapterBindingWithSlot(scanner rowScanner) (AdapterBinding, error) {
+func scanAdapterBindingWithSlot(scanner dbutil.RowScanner) (AdapterBinding, error) {
 	var (
 		slot      string
 		adapterID sql.NullString
@@ -50,7 +48,7 @@ func scanAdapterBindingWithSlot(scanner rowScanner) (AdapterBinding, error) {
 	return binding, nil
 }
 
-func scanAdapterEndpoint(scanner rowScanner) (AdapterEndpoint, error) {
+func scanAdapterEndpoint(scanner dbutil.RowScanner) (AdapterEndpoint, error) {
 	var (
 		argsRaw     sql.NullString
 		envRaw      sql.NullString
@@ -89,7 +87,7 @@ func scanAdapterEndpoint(scanner rowScanner) (AdapterEndpoint, error) {
 	return endpoint, nil
 }
 
-func scanProfile(scanner rowScanner) (Profile, error) {
+func scanProfile(scanner dbutil.RowScanner) (Profile, error) {
 	var (
 		name      string
 		isDefault int
@@ -107,19 +105,19 @@ func scanProfile(scanner rowScanner) (Profile, error) {
 	}, nil
 }
 
-func scanString(scanner rowScanner) (string, error) {
+func scanString(scanner dbutil.RowScanner) (string, error) {
 	var value string
 	err := scanner.Scan(&value)
 	return value, err
 }
 
-func scanStringPair(scanner rowScanner) (string, string, error) {
+func scanStringPair(scanner dbutil.RowScanner) (string, string, error) {
 	var key, value string
 	err := scanner.Scan(&key, &value)
 	return key, value, err
 }
 
-func scanMarketplace(scanner rowScanner) (Marketplace, error) {
+func scanMarketplace(scanner dbutil.RowScanner) (Marketplace, error) {
 	var (
 		marketplace                Marketplace
 		cachedIndex, lastRefreshed sql.NullString
@@ -142,7 +140,7 @@ func scanMarketplace(scanner rowScanner) (Marketplace, error) {
 	return marketplace, nil
 }
 
-func scanInstalledPluginWithNamespace(scanner rowScanner) (InstalledPluginWithNamespace, error) {
+func scanInstalledPluginWithNamespace(scanner dbutil.RowScanner) (InstalledPluginWithNamespace, error) {
 	var (
 		plugin    InstalledPluginWithNamespace
 		sourceURL sql.NullString
@@ -163,7 +161,7 @@ func scanInstalledPluginWithNamespace(scanner rowScanner) (InstalledPluginWithNa
 	return plugin, nil
 }
 
-func scanPromptTemplate(scanner rowScanner) (PromptTemplate, error) {
+func scanPromptTemplate(scanner dbutil.RowScanner) (PromptTemplate, error) {
 	var (
 		template PromptTemplate
 		isCustom int
@@ -176,7 +174,7 @@ func scanPromptTemplate(scanner rowScanner) (PromptTemplate, error) {
 	return template, nil
 }
 
-func scanPluginChecksum(scanner rowScanner) (PluginChecksum, error) {
+func scanPluginChecksum(scanner dbutil.RowScanner) (PluginChecksum, error) {
 	var checksum PluginChecksum
 	err := scanner.Scan(&checksum.PluginID, &checksum.FilePath, &checksum.SHA256, &checksum.CreatedAt)
 	return checksum, err

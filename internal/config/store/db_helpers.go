@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/nupi-ai/nupi/internal/config/store/dbutil"
 )
 
 // encodeJSON serializes value as JSON and returns it as a SQL argument.
@@ -51,7 +53,7 @@ func nullWhenNilMap[K comparable, V any](values map[K]V) bool {
 // provided operation names and always closes rows before returning.
 func scanList[T any](
 	rows *sql.Rows,
-	scanFn func(rowScanner) (T, error),
+	scanFn func(dbutil.RowScanner) (T, error),
 	scanOp string,
 	iterOp string,
 ) ([]T, error) {
