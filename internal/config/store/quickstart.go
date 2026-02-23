@@ -43,11 +43,7 @@ func (s *Store) QuickstartStatus(ctx context.Context) (bool, *time.Time, error) 
 
 // MarkQuickstartCompleted flips the quickstart completion flag.
 func (s *Store) MarkQuickstartCompleted(ctx context.Context, complete bool) error {
-	if s.readOnly {
-		return fmt.Errorf("config: mark quickstart: store opened read-only")
-	}
-
-	return s.withTx(ctx, func(tx *sql.Tx) error {
+	return s.withWriteTx(ctx, "mark quickstart", func(tx *sql.Tx) error {
 		var query string
 		if complete {
 			query = `

@@ -97,8 +97,8 @@ func (s *Store) GetMarketplaceByID(ctx context.Context, id int64) (Marketplace, 
 
 // AddMarketplace registers a new marketplace source. The namespace must be unique.
 func (s *Store) AddMarketplace(ctx context.Context, namespace, url string) (Marketplace, error) {
-	if s.readOnly {
-		return Marketplace{}, fmt.Errorf("config: add marketplace: store opened read-only")
+	if err := s.ensureWritable("add marketplace"); err != nil {
+		return Marketplace{}, err
 	}
 	namespace = strings.TrimSpace(namespace)
 	if namespace == "" {
@@ -130,8 +130,8 @@ func (s *Store) AddMarketplace(ctx context.Context, namespace, url string) (Mark
 
 // RemoveMarketplace removes a non-builtin marketplace. Returns error if plugins are still installed.
 func (s *Store) RemoveMarketplace(ctx context.Context, namespace string) error {
-	if s.readOnly {
-		return fmt.Errorf("config: remove marketplace: store opened read-only")
+	if err := s.ensureWritable("remove marketplace"); err != nil {
+		return err
 	}
 
 	m, err := s.GetMarketplaceByNamespace(ctx, namespace)
@@ -172,8 +172,8 @@ func (s *Store) RemoveMarketplace(ctx context.Context, namespace string) error {
 
 // UpdateMarketplaceCache stores the fetched index YAML and refresh timestamp.
 func (s *Store) UpdateMarketplaceCache(ctx context.Context, namespace, cachedIndex, lastRefreshed string) error {
-	if s.readOnly {
-		return fmt.Errorf("config: update marketplace cache: store opened read-only")
+	if err := s.ensureWritable("update marketplace cache"); err != nil {
+		return err
 	}
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE marketplaces SET cached_index = ?, last_refreshed = ?
@@ -231,8 +231,8 @@ func (s *Store) GetInstalledPlugin(ctx context.Context, namespace, slug string) 
 
 // InsertInstalledPlugin records a newly installed plugin and returns its ID.
 func (s *Store) InsertInstalledPlugin(ctx context.Context, marketplaceID int64, slug, sourceURL string) (int64, error) {
-	if s.readOnly {
-		return 0, fmt.Errorf("config: insert installed plugin: store opened read-only")
+	if err := s.ensureWritable("insert installed plugin"); err != nil {
+		return 0, err
 	}
 	slug = strings.TrimSpace(slug)
 	if slug == "" {
@@ -278,8 +278,8 @@ func (s *Store) DeleteInstalledPlugin(ctx context.Context, namespace, slug strin
 	if namespace == "" || slug == "" {
 		return NotFoundError{Entity: "installed plugin", Key: namespace + "/" + slug}
 	}
-	if s.readOnly {
-		return fmt.Errorf("config: delete installed plugin: store opened read-only")
+	if err := s.ensureWritable("delete installed plugin"); err != nil {
+		return err
 	}
 	result, err := s.db.ExecContext(ctx, `
 		DELETE FROM installed_plugins
@@ -305,8 +305,8 @@ func (s *Store) SetPluginEnabled(ctx context.Context, namespace, slug string, en
 	if namespace == "" || slug == "" {
 		return NotFoundError{Entity: "installed plugin", Key: namespace + "/" + slug}
 	}
-	if s.readOnly {
-		return fmt.Errorf("config: set plugin enabled: store opened read-only")
+	if err := s.ensureWritable("set plugin enabled"); err != nil {
+		return err
 	}
 	val := 0
 	if enabled {

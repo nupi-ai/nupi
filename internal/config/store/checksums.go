@@ -20,8 +20,8 @@ type PluginChecksum struct {
 
 // SetPluginChecksums replaces all checksums for a plugin in a single transaction.
 func (s *Store) SetPluginChecksums(ctx context.Context, pluginID int64, checksums map[string]string) error {
-	if s.readOnly {
-		return fmt.Errorf("config: set plugin checksums: store opened read-only")
+	if err := s.ensureWritable("set plugin checksums"); err != nil {
+		return err
 	}
 	if pluginID <= 0 {
 		return fmt.Errorf("config: set plugin checksums: invalid plugin ID %d", pluginID)
@@ -132,8 +132,8 @@ func (s *Store) GetPluginChecksumsByID(ctx context.Context, pluginID int64) ([]P
 
 // DeletePluginChecksumsByID removes all checksums for a plugin by its database ID.
 func (s *Store) DeletePluginChecksumsByID(ctx context.Context, pluginID int64) error {
-	if s.readOnly {
-		return fmt.Errorf("config: delete plugin checksums: store opened read-only")
+	if err := s.ensureWritable("delete plugin checksums"); err != nil {
+		return err
 	}
 	if pluginID <= 0 {
 		return fmt.Errorf("config: delete plugin checksums: invalid plugin ID %d", pluginID)

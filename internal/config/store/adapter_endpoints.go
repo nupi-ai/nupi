@@ -67,8 +67,8 @@ func (s *Store) GetAdapterEndpoint(ctx context.Context, adapterID string) (Adapt
 
 // UpsertAdapterEndpoint inserts or updates an endpoint definition for the adapter.
 func (s *Store) UpsertAdapterEndpoint(ctx context.Context, endpoint AdapterEndpoint) error {
-	if s.readOnly {
-		return fmt.Errorf("config: upsert adapter endpoint: store opened read-only")
+	if err := s.ensureWritable("upsert adapter endpoint"); err != nil {
+		return err
 	}
 
 	adapterID := strings.TrimSpace(endpoint.AdapterID)
@@ -134,8 +134,8 @@ func (s *Store) UpsertAdapterEndpoint(ctx context.Context, endpoint AdapterEndpo
 
 // RemoveAdapterEndpoint deletes the endpoint definition for the adapter.
 func (s *Store) RemoveAdapterEndpoint(ctx context.Context, adapterID string) error {
-	if s.readOnly {
-		return fmt.Errorf("config: remove adapter endpoint: store opened read-only")
+	if err := s.ensureWritable("remove adapter endpoint"); err != nil {
+		return err
 	}
 
 	adapterID = strings.TrimSpace(adapterID)

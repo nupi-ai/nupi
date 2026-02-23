@@ -8,8 +8,8 @@ import (
 
 // SaveSecuritySettings upserts secret entries for the active profile.
 func (s *Store) SaveSecuritySettings(ctx context.Context, values map[string]string) error {
-	if s.readOnly {
-		return fmt.Errorf("config: save security settings: store opened read-only")
+	if err := s.ensureWritable("save security settings"); err != nil {
+		return err
 	}
 	if s.secretBackend == nil {
 		return fmt.Errorf("config: save security settings: secret backend not available")
