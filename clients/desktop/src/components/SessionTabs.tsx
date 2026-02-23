@@ -1,6 +1,8 @@
+import { useState } from 'react';
 import { ToolIcon } from './ToolIcon';
 import type { Session } from '../types/session';
 import { isSessionActive, truncatePath, getSessionDisplayName, getFullCommand } from '../utils/sessionHelpers';
+import { mergeStyles } from '../utils/mergeStyles';
 import * as styles from './sessionTabsStyles';
 
 interface SessionTabsProps {
@@ -12,6 +14,8 @@ interface SessionTabsProps {
 }
 
 export function SessionTabs({ sessions, activeSessionId, onSelectSession, onKillSession, onPlayRecording }: SessionTabsProps) {
+  const [hoveredActionKey, setHoveredActionKey] = useState<string | null>(null);
+
   return (
     <div style={styles.tabsContainer}>
       {sessions.length === 0 ? (
@@ -22,6 +26,8 @@ export function SessionTabs({ sessions, activeSessionId, onSelectSession, onKill
         sessions.map(session => {
           const active = isSessionActive(session);
           const isSelected = activeSessionId === session.id;
+          const killHoverKey = `${session.id}:kill`;
+          const playHoverKey = `${session.id}:play`;
           return (
             <div
               key={session.id}
@@ -51,13 +57,12 @@ export function SessionTabs({ sessions, activeSessionId, onSelectSession, onKill
                       onKillSession(session.id, getSessionDisplayName(session));
                     }}
                     title="Kill session"
-                    style={styles.tabActionButton}
-                    onMouseEnter={(e) => {
-                      styles.highlightKillButton(e.currentTarget);
-                    }}
-                    onMouseLeave={(e) => {
-                      styles.resetTabActionButton(e.currentTarget);
-                    }}
+                    style={mergeStyles(
+                      styles.tabActionButton,
+                      hoveredActionKey === killHoverKey && styles.killButtonHover,
+                    )}
+                    onMouseEnter={() => setHoveredActionKey(killHoverKey)}
+                    onMouseLeave={() => setHoveredActionKey(null)}
                   >
                     ✕
                   </button>
@@ -71,13 +76,12 @@ export function SessionTabs({ sessions, activeSessionId, onSelectSession, onKill
                       onPlayRecording(session.id);
                     }}
                     title="Play recording"
-                    style={styles.tabActionButton}
-                    onMouseEnter={(e) => {
-                      styles.highlightPlayButton(e.currentTarget);
-                    }}
-                    onMouseLeave={(e) => {
-                      styles.resetTabActionButton(e.currentTarget);
-                    }}
+                    style={mergeStyles(
+                      styles.tabActionButton,
+                      hoveredActionKey === playHoverKey && styles.playButtonHover,
+                    )}
+                    onMouseEnter={() => setHoveredActionKey(playHoverKey)}
+                    onMouseLeave={() => setHoveredActionKey(null)}
                   >
                     ▶
                   </button>
