@@ -124,10 +124,10 @@ func configTransport(cmd *cobra.Command, args []string) error {
 }
 
 func configMigrate(cmd *cobra.Command, _ []string) error {
-	return withClientTimeout(cmd, 5*time.Second, func(ctx context.Context, gc *grpcclient.Client, out *OutputFormatter) error {
+	return withClientTimeout(cmd, 5*time.Second, func(ctx context.Context, gc *grpcclient.Client, out *OutputFormatter) (any, error) {
 		resp, err := gc.Migrate(ctx, &apiv1.ConfigMigrateRequest{})
 		if err != nil {
-			return out.Error("Failed to run configuration migration", err)
+			return nil, clientCallFailed("Failed to run configuration migration", err)
 		}
 
 		payload := map[string]interface{}{
@@ -136,7 +136,7 @@ func configMigrate(cmd *cobra.Command, _ []string) error {
 			"audio_settings_updated": resp.GetAudioSettingsUpdated(),
 		}
 
-		return out.Render(CommandResult{
+		return CommandResult{
 			Data: payload,
 			HumanReadable: func() error {
 				fmt.Println("Configuration migration summary:")
@@ -165,6 +165,6 @@ func configMigrate(cmd *cobra.Command, _ []string) error {
 				}
 				return nil
 			},
-		})
+		}, nil
 	})
 }

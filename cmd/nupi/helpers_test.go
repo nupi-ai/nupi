@@ -300,3 +300,72 @@ func TestOutputFormatterPrintText(t *testing.T) {
 		}
 	})
 }
+
+func TestFinalizeClientResult(t *testing.T) {
+	t.Run("maps typed call error to formatter output", func(t *testing.T) {
+		oldStderr := os.Stderr
+		r, w, _ := os.Pipe()
+		os.Stderr = w
+
+		f := &OutputFormatter{jsonMode: true}
+		retErr := finalizeClientResult(f, nil, clientCallFailed("rpc failed", io.EOF))
+
+		w.Close()
+		os.Stderr = oldStderr
+
+		var buf bytes.Buffer
+		io.Copy(&buf, r)
+		output := strings.TrimSpace(buf.String())
+
+		if retErr == nil {
+			t.Fatal("expected non-nil error")
+		}
+		if !strings.Contains(retErr.Error(), "rpc failed") {
+			t.Fatalf("expected returned error to include message, got %q", retErr.Error())
+		}
+		if !strings.Contains(output, "rpc failed") {
+			t.Fatalf("expected stderr output to include message, got %q", output)
+		}
+	})
+
+	t.Run("renders command result", func(t *testing.T) {
+		called := false
+		f := &OutputFormatter{jsonMode: false}
+		err := finalizeClientResult(f, CommandResult{
+			Data: map[string]any{"ignored": true},
+			HumanReadable: func() error {
+				called = true
+				return nil
+			},
+		}, nil)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !called {
+			t.Fatal("expected human-readable callback to run")
+		}
+	})
+
+	t.Run("renders success result", func(t *testing.T) {
+		oldStdout := os.Stdout
+		r, w, _ := os.Pipe()
+		os.Stdout = w
+
+		f := &OutputFormatter{jsonMode: false}
+		err := finalizeClientResult(f, clientSuccess("done", map[string]interface{}{"id": "x"}), nil)
+
+		w.Close()
+		os.Stdout = oldStdout
+
+		var buf bytes.Buffer
+		io.Copy(&buf, r)
+		output := strings.TrimSpace(buf.String())
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if output != "done" {
+			t.Fatalf("unexpected stdout output: %q", output)
+		}
+	})
+}

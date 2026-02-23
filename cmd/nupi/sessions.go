@@ -181,10 +181,10 @@ func runCommand(cmd *cobra.Command, args []string) error {
 
 // listSessions lists all active sessions
 func listSessions(cmd *cobra.Command, args []string) error {
-	return withClientTimeout(cmd, 5*time.Second, func(ctx context.Context, c *grpcclient.Client, out *OutputFormatter) error {
+	return withClientTimeout(cmd, 5*time.Second, func(ctx context.Context, c *grpcclient.Client, out *OutputFormatter) (any, error) {
 		resp, err := c.ListSessions(ctx)
 		if err != nil {
-			return out.Error("Failed to list sessions", err)
+			return nil, clientCallFailed("Failed to list sessions", err)
 		}
 
 		sessions := resp.GetSessions()
@@ -204,7 +204,7 @@ func listSessions(cmd *cobra.Command, args []string) error {
 			list = append(list, entry)
 		}
 
-		return out.Render(CommandResult{
+		return CommandResult{
 			Data: map[string]interface{}{"sessions": list},
 			HumanReadable: func() error {
 				if len(sessions) == 0 {
@@ -226,7 +226,7 @@ func listSessions(cmd *cobra.Command, args []string) error {
 
 				return nil
 			},
-		})
+		}, nil
 	})
 }
 
@@ -517,17 +517,17 @@ func inspectCommand(cmd *cobra.Command, args []string) error {
 // killSession kills a running session
 func killSession(cmd *cobra.Command, args []string) error {
 	sessionID := args[0]
-	return withClientTimeout(cmd, 5*time.Second, func(ctx context.Context, c *grpcclient.Client, out *OutputFormatter) error {
+	return withClientTimeout(cmd, 5*time.Second, func(ctx context.Context, c *grpcclient.Client, out *OutputFormatter) (any, error) {
 		if _, err := c.KillSession(ctx, sessionID); err != nil {
 			errMsg := "Failed to kill session"
 			if st, ok := status.FromError(err); ok && st.Code() == codes.NotFound {
 				errMsg = fmt.Sprintf("Session %s not found", sessionID)
 			}
-			return out.Error(errMsg, err)
+			return nil, clientCallFailed(errMsg, err)
 		}
 
-		return out.Success(fmt.Sprintf("Session %s killed", sessionID), map[string]interface{}{
+		return clientSuccess(fmt.Sprintf("Session %s killed", sessionID), map[string]interface{}{
 			"session_id": sessionID,
-		})
+		}), nil
 	})
 }
