@@ -284,30 +284,32 @@ func voiceStart(cmd *cobra.Command, _ []string) error {
 		return out.Error("Voice streaming failed", errors.Join(errs...))
 	}
 
-	if out.jsonMode {
-		payload := map[string]any{
-			"session_id":      sessionID,
-			"stream_id":       streamID,
-			"bytes_uploaded":  counter.n,
-			"ingress_source":  input.description,
-			"playback_chunks": playbackChunks,
-			"playback_bytes":  playbackBytes,
-		}
-		return out.Print(payload)
+	payload := map[string]any{
+		"session_id":      sessionID,
+		"stream_id":       streamID,
+		"bytes_uploaded":  counter.n,
+		"ingress_source":  input.description,
+		"playback_chunks": playbackChunks,
+		"playback_bytes":  playbackBytes,
 	}
 
-	fmt.Fprintf(os.Stdout, "Uploaded %d bytes from %s to session %s/%s\n", counter.n, input.description, sessionID, streamID)
-	if !noPlayback {
-		if playbackBytes > 0 {
-			fmt.Fprintf(os.Stdout, "Received %d playback chunks (%d bytes)\n", playbackChunks, playbackBytes)
-			if outputPath != "" {
-				fmt.Fprintf(os.Stdout, "Saved playback audio to %s\n", outputPath)
+	return out.Render(CommandResult{
+		Data: payload,
+		HumanReadable: func() error {
+			fmt.Fprintf(os.Stdout, "Uploaded %d bytes from %s to session %s/%s\n", counter.n, input.description, sessionID, streamID)
+			if !noPlayback {
+				if playbackBytes > 0 {
+					fmt.Fprintf(os.Stdout, "Received %d playback chunks (%d bytes)\n", playbackChunks, playbackBytes)
+					if outputPath != "" {
+						fmt.Fprintf(os.Stdout, "Saved playback audio to %s\n", outputPath)
+					}
+				} else {
+					fmt.Fprintln(os.Stdout, "Playback stream completed with no audio data")
+				}
 			}
-		} else {
-			fmt.Fprintln(os.Stdout, "Playback stream completed with no audio data")
-		}
-	}
-	return nil
+			return nil
+		},
+	})
 }
 
 func voiceInterrupt(cmd *cobra.Command, defaultReason string) error {
@@ -337,16 +339,17 @@ func voiceInterrupt(cmd *cobra.Command, defaultReason string) error {
 			return out.Error("Failed to send interruption", err)
 		}
 
-		if out.jsonMode {
-			return out.Print(map[string]any{
+		return out.Render(CommandResult{
+			Data: map[string]any{
 				"session_id": sessionID,
 				"stream_id":  streamID,
 				"reason":     reason,
-			})
-		}
-
-		fmt.Fprintf(os.Stdout, "Sent interruption (%s) to session %s\n", reason, sessionID)
-		return nil
+			},
+			HumanReadable: func() error {
+				fmt.Fprintf(os.Stdout, "Sent interruption (%s) to session %s\n", reason, sessionID)
+				return nil
+			},
+		})
 	})
 }
 
@@ -363,47 +366,48 @@ func voiceStatus(cmd *cobra.Command, _ []string) error {
 		captureEnabled := hasCaptureEnabled(caps)
 		playbackEnabled := hasPlaybackEnabled(caps)
 
-		if out.jsonMode {
-			payload := map[string]any{
-				"capture":          formatCapabilitiesProtoJSON(caps.GetCapture()),
-				"playback":         formatCapabilitiesProtoJSON(caps.GetPlayback()),
-				"capture_enabled":  captureEnabled,
-				"playback_enabled": playbackEnabled,
-			}
-			return out.Print(payload)
+		payload := map[string]any{
+			"capture":          formatCapabilitiesProtoJSON(caps.GetCapture()),
+			"playback":         formatCapabilitiesProtoJSON(caps.GetPlayback()),
+			"capture_enabled":  captureEnabled,
+			"playback_enabled": playbackEnabled,
 		}
 
-		fmt.Printf("Capture enabled: %v\n", captureEnabled)
-		fmt.Println("Capture capabilities:")
-		if len(caps.GetCapture()) == 0 {
-			fmt.Println("  (none)")
-		} else {
-			for _, cap := range caps.GetCapture() {
-				fmt.Printf("  - stream=%s %dHz %dbit %dch\n",
-					cap.GetStreamId(),
-					cap.GetFormat().GetSampleRate(),
-					cap.GetFormat().GetBitDepth(),
-					cap.GetFormat().GetChannels(),
-				)
-			}
-		}
+		return out.Render(CommandResult{
+			Data: payload,
+			HumanReadable: func() error {
+				fmt.Printf("Capture enabled: %v\n", captureEnabled)
+				fmt.Println("Capture capabilities:")
+				if len(caps.GetCapture()) == 0 {
+					fmt.Println("  (none)")
+				} else {
+					for _, cap := range caps.GetCapture() {
+						fmt.Printf("  - stream=%s %dHz %dbit %dch\n",
+							cap.GetStreamId(),
+							cap.GetFormat().GetSampleRate(),
+							cap.GetFormat().GetBitDepth(),
+							cap.GetFormat().GetChannels(),
+						)
+					}
+				}
 
-		fmt.Printf("Playback enabled: %v\n", playbackEnabled)
-		fmt.Println("Playback capabilities:")
-		if len(caps.GetPlayback()) == 0 {
-			fmt.Println("  (none)")
-		} else {
-			for _, cap := range caps.GetPlayback() {
-				fmt.Printf("  - stream=%s %dHz %dbit %dch\n",
-					cap.GetStreamId(),
-					cap.GetFormat().GetSampleRate(),
-					cap.GetFormat().GetBitDepth(),
-					cap.GetFormat().GetChannels(),
-				)
-			}
-		}
-
-		return nil
+				fmt.Printf("Playback enabled: %v\n", playbackEnabled)
+				fmt.Println("Playback capabilities:")
+				if len(caps.GetPlayback()) == 0 {
+					fmt.Println("  (none)")
+				} else {
+					for _, cap := range caps.GetPlayback() {
+						fmt.Printf("  - stream=%s %dHz %dbit %dch\n",
+							cap.GetStreamId(),
+							cap.GetFormat().GetSampleRate(),
+							cap.GetFormat().GetBitDepth(),
+							cap.GetFormat().GetChannels(),
+						)
+					}
+				}
+				return nil
+			},
+		})
 	})
 }
 

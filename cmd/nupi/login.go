@@ -239,23 +239,25 @@ func pairClaim(cmd *cobra.Command, _ []string) error {
 		return out.Error("Failed to claim pairing code", err)
 	}
 
-	if out.jsonMode {
-		result := map[string]interface{}{
-			"token": resp.GetToken(),
-			"name":  resp.GetName(),
-			"role":  resp.GetRole(),
-		}
-		if resp.GetCreatedAt() != nil {
-			result["created_at"] = resp.GetCreatedAt().AsTime().Format(time.RFC3339)
-		}
-		return out.Print(result)
+	result := map[string]interface{}{
+		"token": resp.GetToken(),
+		"name":  resp.GetName(),
+		"role":  resp.GetRole(),
+	}
+	if resp.GetCreatedAt() != nil {
+		result["created_at"] = resp.GetCreatedAt().AsTime().Format(time.RFC3339)
 	}
 
-	fmt.Println("Pairing successful. Store this token securely:")
-	fmt.Printf("  Token: %s\n", resp.GetToken())
-	if strings.TrimSpace(resp.GetName()) != "" {
-		fmt.Printf("  Name:  %s\n", resp.GetName())
-	}
-	fmt.Printf("  Role:  %s\n", resp.GetRole())
-	return nil
+	return out.Render(CommandResult{
+		Data: result,
+		HumanReadable: func() error {
+			fmt.Println("Pairing successful. Store this token securely:")
+			fmt.Printf("  Token: %s\n", resp.GetToken())
+			if strings.TrimSpace(resp.GetName()) != "" {
+				fmt.Printf("  Name:  %s\n", resp.GetName())
+			}
+			fmt.Printf("  Role:  %s\n", resp.GetRole())
+			return nil
+		},
+	})
 }
