@@ -3,17 +3,14 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { listen } from '@tauri-apps/api/event';
 import { api } from '../api';
+import {
+  parseSessionEventPayload,
+  type SessionEventPayload,
+} from '../lib/sessionEvents';
 import type { Session } from '../types/session';
 import { isSessionActive } from '../utils/sessionHelpers';
 
 export type { Session };
-
-// Session event payload emitted by the Rust backend
-interface SessionEventPayload {
-  event_type: string;
-  session_id: string;
-  data: Record<string, string>;
-}
 
 export function useSession() {
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -183,72 +180,68 @@ export function useSession() {
     refreshSessions();
 
     // Listen for global session events (session list updates)
-    const unlistenPromise = listen<SessionEventPayload>('session_event', (event) => {
-      const { event_type, session_id, data } = event.payload;
+    const unlistenPromise = listen('session_event', (event) => {
+      const payload = parseSessionEventPayload(event.payload);
+      if (!payload) {
+        return;
+      }
 
-      switch (event_type) {
-        case 'session_created':
+      const handlers: Record<SessionEventPayload['event_type'], () => void> = {
+        session_created: () => {
           // Refresh full list to get complete session info
           refreshSessions();
-          break;
-
-        case 'session_killed':
+        },
+        session_killed: () => {
           setSessions(prev => {
-            const remaining = prev.filter(s => s.id !== session_id);
-            if (activeSessionIdRef.current === session_id) {
+            const remaining = prev.filter(s => s.id !== payload.session_id);
+            if (activeSessionIdRef.current === payload.session_id) {
               const nextId = remaining.length > 0 ? remaining[0].id : null;
               activeSessionIdRef.current = nextId;
               setActiveSessionIdRef.current(nextId);
             }
             return remaining;
           });
-          break;
-
-        case 'session_status_changed': {
+        },
+        session_status_changed: () => {
           // Refresh the specific session to get new status
-          api.sessions.get(session_id)
+          api.sessions.get(payload.session_id)
             .then(updated => {
               setSessions(prev => prev.map(s =>
-                s.id === session_id ? { ...s, status: updated.status } : s
+                s.id === payload.session_id ? { ...s, status: updated.status } : s
               ));
             })
             .catch(err => console.error('[IPC] get_session failed:', err));
 
           // If attached session stopped, mark terminal
-          if (session_id === attachedSessionId.current && data?.exit_code !== undefined) {
+          if (payload.session_id === attachedSessionId.current && payload.data.exit_code !== undefined) {
             controlsRef.current.markSessionStopped();
           }
-          break;
-        }
-
-        case 'tool_detected': {
+        },
+        tool_detected: () => {
           const updates: Partial<Session> = {};
-          if (data?.new_tool) updates.tool = data.new_tool;
+          if (payload.data.new_tool) updates.tool = payload.data.new_tool;
           setSessions(prev => prev.map(s =>
-            s.id === session_id ? { ...s, ...updates } : s
+            s.id === payload.session_id ? { ...s, ...updates } : s
           ));
-          break;
-        }
-
-        case 'session_mode_changed': {
-          if (data?.mode) {
+        },
+        session_mode_changed: () => {
+          if (payload.data.mode) {
             setSessions(prev => prev.map(s =>
-              s.id === session_id ? { ...s, mode: data.mode } : s
+              s.id === payload.session_id ? { ...s, mode: payload.data.mode } : s
             ));
           }
-          break;
-        }
-
-        case 'resize_instruction': {
-          if (session_id === attachedSessionId.current && data?.cols) {
-            const cols = parseInt(data.cols, 10);
+        },
+        resize_instruction: () => {
+          if (payload.session_id === attachedSessionId.current && payload.data.cols) {
+            const cols = parseInt(payload.data.cols, 10);
             if (!isNaN(cols)) {
               controlsRef.current.applyResize(cols);
             }
           }
-          break;
-        }
-      }
+        },
+      };
+
+      handlers[payload.event_type]();
     });
 
     return () => {
