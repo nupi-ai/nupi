@@ -52,17 +52,13 @@ export function useAutoReconnect({
     if (statusRef.current === "connected") return;
 
     isReconnectingRef.current = true;
-    if (mountedRef.current) {
-      setReconnecting(true);
-    }
+    setReconnecting(true);
 
     const { token, config } = await readStoredCredentials();
     if (!token || !config) {
       isReconnectingRef.current = false;
-      if (mountedRef.current) {
-        setReconnecting(false);
-        setReconnectAttempts(0);
-      }
+      setReconnecting(false);
+      setReconnectAttempts(0);
       return;
     }
 
@@ -70,7 +66,7 @@ export function useAutoReconnect({
       const nupiClient = createNupiClientFromConfig(config);
       await nupiClient.daemon.status({});
 
-      if (mountedRef.current && !manualDisconnectRef.current) {
+      if (!manualDisconnectRef.current) {
         setClient(nupiClient);
         setHostInfo(`${config.host}:${config.port}`);
         updateStatus("connected");
@@ -85,9 +81,7 @@ export function useAutoReconnect({
       isReconnectingRef.current = false;
 
       if (!mountedRef.current || manualDisconnectRef.current) {
-        if (mountedRef.current) {
-          setReconnecting(false);
-        }
+        setReconnecting(false);
         return;
       }
 
@@ -104,9 +98,7 @@ export function useAutoReconnect({
 
       if (reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
         reconnectAttemptsRef.current += 1;
-        if (mountedRef.current) {
-          setReconnectAttempts(reconnectAttemptsRef.current);
-        }
+        setReconnectAttempts(reconnectAttemptsRef.current);
         const delay = 1000 * Math.pow(2, reconnectAttemptsRef.current - 1);
         reconnectTimerRef.current = setTimeout(() => {
           reconnectTimerRef.current = null;
@@ -145,10 +137,8 @@ export function useAutoReconnect({
       reconnectTimerRef.current = null;
     }
     isReconnectingRef.current = false;
-    if (mountedRef.current) {
-      setReconnectAttempts(0);
-      setError(null);
-    }
+    setReconnectAttempts(0);
+    setError(null);
     attemptReconnect();
   }, [
     attemptReconnect,

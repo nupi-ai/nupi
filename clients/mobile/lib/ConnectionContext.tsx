@@ -4,7 +4,6 @@ import React, {
   useContext,
   useMemo,
   useRef,
-  useState,
 } from "react";
 
 import type { NupiClient } from "./connect";
@@ -17,6 +16,7 @@ import type { StoredConnectionConfig } from "./storage";
 import { useAutoReconnect } from "./useAutoReconnect";
 import { useClientLifecycle } from "./useClientLifecycle";
 import { useNetworkStatus } from "./useNetworkStatus";
+import { useSafeState } from "./useSafeState";
 
 interface ConnectionContextValue {
   status: ConnectionStatus;
@@ -49,14 +49,6 @@ export function useConnection() {
 }
 
 export function ConnectionProvider({ children }: { children: React.ReactNode }) {
-  const [status, setStatus] = useState<ConnectionStatus>("disconnected");
-  const [client, setClient] = useState<NupiClient | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [errorCanRetry, setErrorCanRetry] = useState(true);
-  const [hostInfo, setHostInfo] = useState<string | null>(null);
-  const [reconnecting, setReconnecting] = useState(false);
-  const [reconnectAttempts, setReconnectAttempts] = useState(0);
-
   const mountedRef = useRef(true);
   const manualConnectRef = useRef(false);
   const manualDisconnectRef = useRef(false);
@@ -65,6 +57,14 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const statusRef = useRef<ConnectionStatus>("disconnected");
   const prevNetworkConnectedRef = useRef<boolean | null>(null);
+
+  const [status, setStatus] = useSafeState<ConnectionStatus>("disconnected", mountedRef);
+  const [client, setClient] = useSafeState<NupiClient | null>(null, mountedRef);
+  const [error, setError] = useSafeState<string | null>(null, mountedRef);
+  const [errorCanRetry, setErrorCanRetry] = useSafeState(true, mountedRef);
+  const [hostInfo, setHostInfo] = useSafeState<string | null>(null, mountedRef);
+  const [reconnecting, setReconnecting] = useSafeState(false, mountedRef);
+  const [reconnectAttempts, setReconnectAttempts] = useSafeState(0, mountedRef);
 
   const { isConnected: networkConnected } = useNetworkStatus();
 

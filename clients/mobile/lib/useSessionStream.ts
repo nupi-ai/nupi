@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef } from "react";
 
 import { getConnectionConfig, getToken } from "./storage";
+import { useSafeState } from "./useSafeState";
 
 export type StreamStatus = "connecting" | "connected" | "reconnecting" | "closed" | "error";
 
@@ -41,11 +42,10 @@ export function useSessionStream(
   sessionId: string,
   options: UseSessionStreamOptions = {}
 ): UseSessionStreamResult {
-  const [status, setStatus] = useState<StreamStatus>("connecting");
-  const [error, setError] = useState<string | null>(null);
-  const [reconnectAttempts, setReconnectAttempts] = useState(0);
+  const [status, setStatus, mountedRef] = useSafeState<StreamStatus>("connecting");
+  const [error, setError] = useSafeState<string | null>(null, mountedRef);
+  const [reconnectAttempts, setReconnectAttempts] = useSafeState(0, mountedRef);
   const wsRef = useRef<WebSocket | null>(null);
-  const mountedRef = useRef(true);
   const cancelledRef = useRef(false);
   const onOutputRef = useRef(options.onOutput);
   const onEventRef = useRef(options.onEvent);
@@ -192,7 +192,7 @@ export function useSessionStream(
       };
     } catch (err) {
       isOpeningWsRef.current = false;
-      if (!cancelledRef.current && mountedRef.current) {
+      if (!cancelledRef.current) {
         setStatus("error");
         setError("Connection failed \u2014 tap to reconnect");
       }
@@ -219,9 +219,7 @@ export function useSessionStream(
       ws.close();
       wsRef.current = null;
     }
-    if (mountedRef.current) {
-      setStatus("closed");
-    }
+    setStatus("closed");
   }, []);
 
   const reconnect = useCallback(() => {
@@ -245,11 +243,9 @@ export function useSessionStream(
     }
     // Reset state for fresh connection
     reconnectAttemptsRef.current = 0;
-    if (mountedRef.current) {
-      setReconnectAttempts(0);
-      setStatus("connecting");
-      setError(null);
-    }
+    setReconnectAttempts(0);
+    setStatus("connecting");
+    setError(null);
     openWebSocket();
   }, [openWebSocket]);
 

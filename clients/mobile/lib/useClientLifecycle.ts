@@ -69,19 +69,15 @@ export function useClientLifecycle({
         // Verify connection — auth interceptor reads token from SecureStore.
         await nupiClient.daemon.status({});
 
-        if (mountedRef.current) {
-          setClient(nupiClient);
-          setHostInfo(`${config.host}:${config.port}`);
-          updateStatus("connected");
-        }
+        setClient(nupiClient);
+        setHostInfo(`${config.host}:${config.port}`);
+        updateStatus("connected");
       } catch (err) {
         // Keep stored credentials so reconnect can retry one-time pairing flow.
-        if (mountedRef.current) {
-          const mapped = mapConnectionError(err);
-          updateStatus("disconnected");
-          setError(mapped.message);
-          setErrorCanRetry(mapped.canRetry);
-        }
+        const mapped = mapConnectionError(err);
+        updateStatus("disconnected");
+        setError(mapped.message);
+        setErrorCanRetry(mapped.canRetry);
         throw err;
       } finally {
         manualConnectRef.current = false;
@@ -90,7 +86,6 @@ export function useClientLifecycle({
     [
       manualConnectRef,
       manualDisconnectRef,
-      mountedRef,
       setClient,
       setError,
       setErrorCanRetry,
@@ -110,21 +105,18 @@ export function useClientLifecycle({
     isReconnectingRef.current = false;
     reconnectAttemptsRef.current = 0;
 
-    if (mountedRef.current) {
-      setClient(null);
-      setHostInfo(null);
-      updateStatus("disconnected");
-      setError(null);
-      setErrorCanRetry(true);
-      setReconnecting(false);
-      setReconnectAttempts(0);
-    }
+    setClient(null);
+    setHostInfo(null);
+    updateStatus("disconnected");
+    setError(null);
+    setErrorCanRetry(true);
+    setReconnecting(false);
+    setReconnectAttempts(0);
 
     await clearAll();
   }, [
     isReconnectingRef,
     manualDisconnectRef,
-    mountedRef,
     reconnectAttemptsRef,
     reconnectTimerRef,
     setClient,
@@ -145,9 +137,7 @@ export function useClientLifecycle({
 
       if (!token || !config) return;
 
-      if (mountedRef.current) {
-        updateStatus("connecting");
-      }
+      updateStatus("connecting");
 
       try {
         const nupiClient = createNupiClientFromConfig(config);
