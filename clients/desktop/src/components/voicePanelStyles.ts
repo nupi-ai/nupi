@@ -1,49 +1,53 @@
 import type { CSSProperties } from "react";
+import { theme } from "../designTokens";
+
+const borderDefault = `1px solid ${theme.border.default}`;
+const borderDanger = `1px solid ${theme.border.danger}`;
 
 export const root: CSSProperties = {
   display: "flex",
   flexDirection: "column",
   gap: "16px",
   padding: "16px",
-  color: "#fff",
-  backgroundColor: "#121212",
+  color: theme.text.primary,
+  backgroundColor: theme.bg.app,
   overflowY: "auto",
   height: "100%",
 };
 
 export const section: CSSProperties = {
-  backgroundColor: "#1c1c1c",
+  backgroundColor: theme.bg.panel,
   borderRadius: "8px",
   padding: "16px",
-  border: "1px solid #2a2a2a",
-  boxShadow: "0 4px 12px rgba(0,0,0,0.2)",
+  border: `1px solid ${theme.border.subtle}`,
+  boxShadow: `0 4px 12px ${theme.shadow.panel}`,
 };
 
 export const sectionHeading: CSSProperties = { marginTop: 0 };
 
 export const descriptionText: CSSProperties = {
-  color: "#9ca3af",
+  color: theme.text.secondary,
   lineHeight: 1.5,
 };
 
 export const labelText: CSSProperties = {
   fontSize: "0.85rem",
-  color: "#9ca3af",
+  color: theme.text.secondary,
 };
 
 export const statusText: CSSProperties = {
   marginTop: "16px",
-  color: "#9ca3af",
+  color: theme.text.secondary,
   fontSize: "0.9rem",
 };
 
 export const infoText: CSSProperties = {
-  color: "#6b7280",
+  color: theme.text.tertiary,
   fontSize: "0.85rem",
 };
 
 export const warningText: CSSProperties = {
-  color: "#f87171",
+  color: theme.text.danger,
   fontSize: "0.85rem",
 };
 
@@ -61,9 +65,9 @@ export const fieldLabel: CSSProperties = {
 };
 
 export const textInput: CSSProperties = {
-  backgroundColor: "#111",
-  color: "#fff",
-  border: "1px solid #333",
+  backgroundColor: theme.bg.input,
+  color: theme.text.primary,
+  border: borderDefault,
   borderRadius: "6px",
   padding: "8px 10px",
 };
@@ -90,56 +94,56 @@ const buttonBase: CSSProperties = {
 export const primaryButton: CSSProperties = {
   ...buttonBase,
   padding: "10px 18px",
-  backgroundColor: "#2563eb",
-  color: "#fff",
+  backgroundColor: theme.bg.primaryButton,
+  color: theme.text.primary,
   border: "none",
 };
 
 export const secondaryButton: CSSProperties = {
   ...buttonBase,
   padding: "10px 18px",
-  backgroundColor: "#1f2937",
-  color: "#e5e7eb",
-  border: "1px solid #374151",
+  backgroundColor: theme.bg.secondaryButton,
+  color: theme.text.secondaryButton,
+  border: `1px solid ${theme.border.secondaryButton}`,
 };
 
 export const dangerOutlineButton: CSSProperties = {
   ...buttonBase,
   padding: "10px 18px",
-  backgroundColor: "transparent",
-  color: "#f87171",
-  border: "1px solid #f87171",
+  backgroundColor: theme.bg.transparent,
+  color: theme.text.danger,
+  border: borderDanger,
 };
 
 export const successButton: CSSProperties = {
   ...buttonBase,
   padding: "10px 22px",
-  backgroundColor: "#10b981",
-  color: "#fff",
+  backgroundColor: theme.bg.successButton,
+  color: theme.text.primary,
   border: "none",
 };
 
 export const warningButton: CSSProperties = {
   ...buttonBase,
   padding: "10px 22px",
-  backgroundColor: "#f97316",
-  color: "#fff",
+  backgroundColor: theme.bg.warningButton,
+  color: theme.text.primary,
   border: "none",
 };
 
 export const indigoButton: CSSProperties = {
   ...buttonBase,
   padding: "10px 22px",
-  backgroundColor: "#4338ca",
-  color: "#fff",
+  backgroundColor: theme.bg.indigoButton,
+  color: theme.text.primary,
   border: "none",
 };
 
 export const dangerButton: CSSProperties = {
   ...buttonBase,
   padding: "10px 22px",
-  backgroundColor: "#ef4444",
-  color: "#fff",
+  backgroundColor: theme.bg.dangerButton,
+  color: theme.text.primary,
   border: "none",
 };
 
@@ -147,11 +151,11 @@ export const checkboxLabel: CSSProperties = {
   display: "flex",
   alignItems: "center",
   gap: "8px",
-  color: "#cbd5f5",
+  color: theme.text.checkbox,
 };
 
 const preBlock: CSSProperties = {
-  backgroundColor: "#0f172a",
+  backgroundColor: theme.bg.code,
   padding: "12px",
   borderRadius: "6px",
   fontSize: "0.85rem",
@@ -185,9 +189,9 @@ export const currentLanguageRow: CSSProperties = {
 export const clearLanguageButton: CSSProperties = {
   marginLeft: "12px",
   padding: "2px 10px",
-  backgroundColor: "transparent",
-  color: "#f87171",
-  border: "1px solid #f87171",
+  backgroundColor: theme.bg.transparent,
+  color: theme.text.danger,
+  border: borderDanger,
   borderRadius: "4px",
   cursor: "pointer",
   fontSize: "0.8rem",
@@ -196,9 +200,9 @@ export const clearLanguageButton: CSSProperties = {
 export const languageListBox: CSSProperties = {
   maxHeight: "200px",
   overflowY: "auto",
-  border: "1px solid #333",
+  border: borderDefault,
   borderRadius: "6px",
-  backgroundColor: "#111",
+  backgroundColor: theme.bg.input,
 };
 
 export const languageOptionBase: CSSProperties = {
@@ -207,13 +211,13 @@ export const languageOptionBase: CSSProperties = {
   textAlign: "left",
   padding: "8px 12px",
   border: "none",
-  borderBottom: "1px solid #222",
+  borderBottom: `1px solid ${theme.border.muted}`,
   cursor: "pointer",
   fontSize: "0.9rem",
 };
 
 export const languageIsoLabel: CSSProperties = {
   float: "right",
-  color: "#6b7280",
+  color: theme.text.tertiary,
   fontSize: "0.8rem",
 };
