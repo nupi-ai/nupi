@@ -12,6 +12,7 @@ import {
   type ConnectionStateActions,
   type ConnectionStatus,
 } from "./connectionUtils";
+import type { ErrorAction } from "./errorMessages";
 import type { StoredConnectionConfig } from "./storage";
 import { useAutoReconnect } from "./useAutoReconnect";
 import { useClientLifecycle } from "./useClientLifecycle";
@@ -22,6 +23,7 @@ interface ConnectionContextValue {
   status: ConnectionStatus;
   client: NupiClient | null;
   error: string | null;
+  errorAction: ErrorAction;
   errorCanRetry: boolean;
   hostInfo: string | null;
   reconnecting: boolean;
@@ -35,6 +37,7 @@ const ConnectionContext = createContext<ConnectionContextValue>({
   status: "disconnected",
   client: null,
   error: null,
+  errorAction: "none",
   errorCanRetry: true,
   hostInfo: null,
   reconnecting: false,
@@ -61,6 +64,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
   const [status, setStatus] = useSafeState<ConnectionStatus>("disconnected", mountedRef);
   const [client, setClient] = useSafeState<NupiClient | null>(null, mountedRef);
   const [error, setError] = useSafeState<string | null>(null, mountedRef);
+  const [errorAction, setErrorAction] = useSafeState<ErrorAction>("none", mountedRef);
   const [errorCanRetry, setErrorCanRetry] = useSafeState(true, mountedRef);
   const [hostInfo, setHostInfo] = useSafeState<string | null>(null, mountedRef);
   const [reconnecting, setReconnecting] = useSafeState(false, mountedRef);
@@ -77,6 +81,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
     () => ({
       setClient,
       setError,
+      setErrorAction,
       setErrorCanRetry,
       setHostInfo,
       setReconnecting,
@@ -112,6 +117,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
       status,
       client,
       error,
+      errorAction,
       errorCanRetry,
       hostInfo,
       reconnecting,
@@ -124,6 +130,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
       status,
       client,
       error,
+      errorAction,
       errorCanRetry,
       hostInfo,
       reconnecting,

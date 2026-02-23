@@ -30,6 +30,7 @@ export function useAutoReconnect({
   const {
     setClient,
     setError,
+    setErrorAction,
     setErrorCanRetry,
     setHostInfo,
     setReconnecting,
@@ -71,6 +72,7 @@ export function useAutoReconnect({
         setHostInfo(`${config.host}:${config.port}`);
         updateStatus("connected");
         setError(null);
+        setErrorAction("none");
         setErrorCanRetry(true);
         reconnectAttemptsRef.current = 0;
         setReconnectAttempts(0);
@@ -86,9 +88,11 @@ export function useAutoReconnect({
       }
 
       if (isAuthError(err)) {
+        const mapped = mapConnectionError(err);
         await clearAll();
         updateStatus("disconnected");
-        setError(mapConnectionError(err).message);
+        setError(mapped.message);
+        setErrorAction(mapped.action);
         setErrorCanRetry(false);
         reconnectAttemptsRef.current = 0;
         setReconnectAttempts(0);
@@ -108,6 +112,7 @@ export function useAutoReconnect({
       } else {
         updateStatus("disconnected");
         setError(`Cannot reach nupid at ${config.host}:${config.port}`);
+        setErrorAction("retry");
         setErrorCanRetry(true);
         reconnectAttemptsRef.current = 0;
         setReconnectAttempts(0);
@@ -122,6 +127,7 @@ export function useAutoReconnect({
     reconnectTimerRef,
     setClient,
     setError,
+    setErrorAction,
     setErrorCanRetry,
     setHostInfo,
     setReconnectAttempts,
@@ -139,6 +145,7 @@ export function useAutoReconnect({
     isReconnectingRef.current = false;
     setReconnectAttempts(0);
     setError(null);
+    setErrorAction("none");
     attemptReconnect();
   }, [
     attemptReconnect,
@@ -147,6 +154,7 @@ export function useAutoReconnect({
     reconnectAttemptsRef,
     reconnectTimerRef,
     setError,
+    setErrorAction,
     setReconnectAttempts,
   ]);
 
@@ -214,6 +222,7 @@ export function useAutoReconnect({
       updateStatus("disconnected");
       setReconnecting(true);
       setError(null);
+      setErrorAction("none");
       setErrorCanRetry(true);
     }
 
@@ -242,6 +251,7 @@ export function useAutoReconnect({
     reconnectAttemptsRef,
     reconnectTimerRef,
     setError,
+    setErrorAction,
     setErrorCanRetry,
     setReconnectAttempts,
     setReconnecting,

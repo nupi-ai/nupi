@@ -8,13 +8,14 @@ import {
 } from "react-native";
 import { router } from "expo-router";
 
-import { Button } from "@/components/Button";
+import { ErrorView } from "@/components/ErrorView";
 import type { Session } from "@/lib/gen/nupi_pb";
 import Colors from "@/constants/Colors";
 import { useColorScheme } from "@/components/useColorScheme";
 import { Text, View } from "@/components/Themed";
 import { useConnection } from "@/lib/ConnectionContext";
 import { SessionItem } from "@/components/SessionItem";
+import type { MappedError } from "@/lib/errorMessages";
 import { mapConnectionError } from "@/lib/errorMessages";
 
 export default function SessionsScreen() {
@@ -25,7 +26,7 @@ export default function SessionsScreen() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<MappedError | null>(null);
   const mountedRef = useRef(true);
   const hasFetchedRef = useRef(false);
 
@@ -39,7 +40,7 @@ export default function SessionsScreen() {
       }
     } catch (err) {
       if (mountedRef.current) {
-        setError(mapConnectionError(err).message);
+        setError(mapConnectionError(err));
       }
     }
   }, [client]);
@@ -106,28 +107,25 @@ export default function SessionsScreen() {
   if (error && sessions.length === 0 && !reconnecting) {
     return (
       <View style={styles.centered}>
-        <Text style={[styles.errorText, { color: colors.danger }]}>
-          {error}
-        </Text>
-        {status === "connected" ? (
-          <Button
-            style={styles.retryButton}
-            variant="primary"
-            color={colors.tint}
-            onPress={handleRetry}
-            accessibilityLabel="Retry loading sessions"
-            accessibilityHint="Attempts to fetch the session list again"
-            testID="retry-sessions-button"
-          >
-            <Text style={[styles.retryButtonText, { color: colors.background }]}>
-              Retry
-            </Text>
-          </Button>
-        ) : (
-          <Text style={styles.emptyText}>
-            Reconnect on the Home tab to retry.
-          </Text>
-        )}
+        <ErrorView
+          error={error}
+          onRetry={status === "connected" ? handleRetry : undefined}
+          onRePair={status === "connected" ? handleRetry : undefined}
+          onGoBack={status === "connected" ? handleRetry : undefined}
+          actionLabels={{
+            retry: "Retry",
+            "re-pair": "Retry",
+            "go-back": "Retry",
+          }}
+          fallbackText="Reconnect on the Home tab to retry."
+          accessibilityLabel="Retry loading sessions"
+          accessibilityHint="Attempts to fetch the session list again"
+          buttonTestID="retry-sessions-button"
+          messageStyle={[styles.errorText, { color: colors.danger }]}
+          fallbackStyle={styles.emptyText}
+          buttonStyle={styles.retryButton}
+          buttonTextStyle={[styles.retryButtonText, { color: colors.background }]}
+        />
       </View>
     );
   }
@@ -161,7 +159,7 @@ export default function SessionsScreen() {
           accessibilityRole="alert"
         >
           <Text style={[styles.offlineBannerText, { color: colors.onDanger }]}>
-            {error}
+            {error.message}
           </Text>
         </RNView>
       )}
