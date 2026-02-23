@@ -130,14 +130,21 @@ const (
 	defaultSummaryBatchSize = 20
 	summaryTimeout          = constants.Duration60Seconds
 
-	maxMetadataEntries    = 32
-	maxMetadataKeyRunes   = 64
-	maxMetadataValueRunes = 512
-	maxMetadataTotalBytes = 8192
+	maxMetadataEntries    = sanitize.DefaultMetadataMaxEntries
+	maxMetadataKeyRunes   = sanitize.DefaultMetadataMaxKeyRunes
+	maxMetadataValueRunes = sanitize.DefaultMetadataMaxValueRunes
+	maxMetadataTotalBytes = sanitize.DefaultMetadataMaxTotalBytes
 
 	// Rate limiting for SESSION_OUTPUT events
 	sessionOutputMinInterval = constants.Duration2Seconds
 )
+
+var conversationMetadataLimits = sanitize.MetadataLimits{
+	MaxEntries:    maxMetadataEntries,
+	MaxKeyRunes:   maxMetadataKeyRunes,
+	MaxValueRunes: maxMetadataValueRunes,
+	MaxTotalBytes: maxMetadataTotalBytes,
+}
 
 // NewService creates a conversation service bound to the provided bus.
 func NewService(bus *eventbus.Bus, opts ...Option) *Service {
@@ -291,32 +298,32 @@ func (s *Service) handlePipelineMessage(ts time.Time, msg eventbus.PipelineMessa
 		ts = time.Now().UTC()
 	}
 
-	meta := newMetadataAccumulator(nil)
-	meta.merge(msg.Annotations)
+	meta := sanitize.NewMetadataAccumulator(nil, conversationMetadataLimits)
+	meta.Merge(msg.Annotations)
 
 	// Determine event type BEFORE creating turn (to avoid mutating Meta after it's in history)
 	shouldTriggerAI := false
-	eventType := "user_intent"
+	eventType := constants.PromptEventUserIntent
 
 	if msg.Origin == eventbus.OriginUser {
 		shouldTriggerAI = true
-		eventType = "user_intent"
-	} else if msg.Annotations["notable"] == "true" {
+		eventType = constants.PromptEventUserIntent
+	} else if msg.Annotations[constants.MetadataKeyNotable] == constants.MetadataValueTrue {
 		// Tool output marked as notable by content pipeline
 		// Note: rate limiting check is deferred until after we have sessionID context
-		eventType = "session_output"
+		eventType = constants.PromptEventSessionOutput
 	}
 
 	// Set event_type in meta BEFORE turn is added to history (prevents race condition)
-	if shouldTriggerAI || msg.Annotations["notable"] == "true" {
-		meta.merge(map[string]string{"event_type": eventType})
+	if shouldTriggerAI || msg.Annotations[constants.MetadataKeyNotable] == constants.MetadataValueTrue {
+		meta.Merge(map[string]string{constants.MetadataKeyEventType: eventType})
 	}
 
 	turn := eventbus.ConversationTurn{
 		Origin: msg.Origin,
 		Text:   msg.Text,
 		At:     ts,
-		Meta:   meta.result(),
+		Meta:   meta.Result(),
 	}
 
 	// Handle sessionless ("bezpańskie") messages via GlobalStore
@@ -334,7 +341,7 @@ func (s *Service) handlePipelineMessage(ts time.Time, msg eventbus.PipelineMessa
 	s.cancelDetachCleanup(msg.SessionID)
 
 	// Check rate limiting for session_output (needs sessionID, so done here)
-	if eventType == "session_output" {
+	if eventType == constants.PromptEventSessionOutput {
 		shouldTriggerAI = s.shouldTriggerSessionOutput(msg.SessionID)
 	}
 
@@ -402,15 +409,15 @@ func (s *Service) publishPrompt(sessionID string, ctxTurns []eventbus.Conversati
 		// Propagate relevant annotations to prompt metadata
 		switch key {
 		// Core event metadata
-		case "tool", "tool_id", "confidence", "stream_id", "event_type",
-			"session_output", "clarification_question", "severity":
+		case "tool", "tool_id", "confidence", "stream_id", constants.MetadataKeyEventType,
+			constants.MetadataKeySessionOutput, constants.MetadataKeyClarificationQuestion, "severity":
 			metadata[key] = value
 		// Extended pipeline metadata (input source, mode, annotations)
 		case "input_source", "mode", "sessionless", "adapter", "language",
 			"model", "provider", "priority", "context_window":
 			metadata[key] = value
 		// SESSION_OUTPUT specific metadata (idle detection, events, buffer status)
-		case "notable", "idle_state", "waiting_for", "prompt_text",
+		case constants.MetadataKeyNotable, constants.MetadataKeyIdleState, constants.MetadataKeyWaitingFor, constants.MetadataKeyPromptText,
 			"event_count", "event_title", "event_details", "event_action",
 			"summarized", "original_length",
 			"buffer_truncated", "buffer_max_size",
@@ -429,8 +436,8 @@ func (s *Service) publishPrompt(sessionID string, ctxTurns []eventbus.Conversati
 	if sessionID != "" {
 		s.mu.RLock()
 		if tool, ok := s.toolCache[sessionID]; ok && tool != "" {
-			if _, exists := metadata["current_tool"]; !exists {
-				metadata["current_tool"] = tool
+			if _, exists := metadata[constants.MetadataKeyCurrentTool]; !exists {
+				metadata[constants.MetadataKeyCurrentTool] = tool
 			}
 			if _, exists := metadata["tool"]; !exists {
 				metadata["tool"] = tool
@@ -440,18 +447,18 @@ func (s *Service) publishPrompt(sessionID string, ctxTurns []eventbus.Conversati
 	}
 
 	// Validate and set event_type
-	if eventType, exists := metadata["event_type"]; exists {
+	if eventType, exists := metadata[constants.MetadataKeyEventType]; exists {
 		if !validEventTypes[eventType] {
 			// Invalid event_type, reset to default
-			metadata["event_type"] = "user_intent"
+			metadata[constants.MetadataKeyEventType] = constants.PromptEventUserIntent
 		}
 		// For session_output events, populate session_output field with the turn text
 		// This is what the prompts engine template expects via {{.session_output}}
-		if eventType == "session_output" {
-			metadata["session_output"] = newTurn.Text
+		if eventType == constants.PromptEventSessionOutput {
+			metadata[constants.MetadataKeySessionOutput] = newTurn.Text
 		}
 	} else {
-		metadata["event_type"] = "user_intent"
+		metadata[constants.MetadataKeyEventType] = constants.PromptEventUserIntent
 	}
 
 	prompt := eventbus.ConversationPromptEvent{
@@ -651,11 +658,11 @@ func (s *Service) proceedWithSummary(sessionID string, oldest []eventbus.Convers
 			Text:   promptText, // Serialized text as fallback for adapters without prompt engine
 			At:     now,
 			Meta: map[string]string{
-				"event_type": "history_summary",
+				constants.MetadataKeyEventType: constants.PromptEventHistorySummary,
 			},
 		},
 		Metadata: map[string]string{
-			"event_type": "history_summary",
+			constants.MetadataKeyEventType: constants.PromptEventHistorySummary,
 		},
 	}
 
@@ -842,23 +849,23 @@ func (s *Service) handleReplyMessage(ts time.Time, msg eventbus.ConversationRepl
 	}
 
 	// Intercept history_summary replies before normal processing
-	if msg.Metadata["event_type"] == "history_summary" && msg.SessionID != "" {
+	if msg.Metadata[constants.MetadataKeyEventType] == constants.PromptEventHistorySummary && msg.SessionID != "" {
 		s.handleSummaryReply(msg.SessionID, msg)
 		return
 	}
 
 	// Intercept memory_flush replies — awareness service handles these,
 	// do not store in conversation history.
-	if msg.Metadata["event_type"] == "memory_flush" {
+	if msg.Metadata[constants.MetadataKeyEventType] == constants.PromptEventMemoryFlush {
 		return
 	}
 
 	// Intercept session_slug replies — awareness service handles these.
-	if msg.Metadata["event_type"] == "session_slug" {
+	if msg.Metadata[constants.MetadataKeyEventType] == constants.PromptEventSessionSlug {
 		return
 	}
 
-	meta := newMetadataAccumulator(msg.Metadata)
+	meta := sanitize.NewMetadataAccumulator(msg.Metadata, conversationMetadataLimits)
 
 	turn := eventbus.ConversationTurn{
 		Origin: eventbus.OriginAI,
@@ -868,21 +875,21 @@ func (s *Service) handleReplyMessage(ts time.Time, msg eventbus.ConversationRepl
 	}
 	for idx, action := range msg.Actions {
 		base := fmt.Sprintf("action_%d", idx)
-		meta.add(base+".type", action.Type)
+		meta.Add(base+".type", action.Type)
 		if action.Target != "" {
-			meta.add(base+".target", action.Target)
+			meta.Add(base+".target", action.Target)
 		}
 		if len(action.Args) > 0 {
 			data, err := json.Marshal(action.Args)
 			if err == nil {
-				meta.add(base+".args", string(data))
+				meta.Add(base+".args", string(data))
 			}
 		}
 	}
 	if msg.PromptID != "" {
-		meta.add("prompt_id", msg.PromptID)
+		meta.Add("prompt_id", msg.PromptID)
 	}
-	turn.Meta = meta.result()
+	turn.Meta = meta.Result()
 
 	// Handle sessionless ("bezpańskie") replies via GlobalStore
 	if msg.SessionID == "" {
@@ -936,85 +943,4 @@ func (s *Service) handleBargeEvent(event eventbus.SpeechBargeInEvent) {
 		break
 	}
 	s.mu.Unlock()
-}
-
-type metadataAccumulator struct {
-	entries map[string]string
-	total   int
-}
-
-func newMetadataAccumulator(base map[string]string) *metadataAccumulator {
-	acc := &metadataAccumulator{
-		entries: nil,
-		total:   0,
-	}
-	acc.merge(base)
-	return acc
-}
-
-func (m *metadataAccumulator) merge(src map[string]string) {
-	if len(src) == 0 {
-		return
-	}
-	keys := make([]string, 0, len(src))
-	for k := range src {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, key := range keys {
-		m.add(key, src[key])
-	}
-}
-
-func (m *metadataAccumulator) add(key, value string) {
-	key = sanitizeKey(key)
-	if key == "" {
-		return
-	}
-	value = sanitizeValue(value)
-
-	if m.entries == nil {
-		m.entries = make(map[string]string)
-	}
-
-	if len(m.entries) >= maxMetadataEntries {
-		if _, exists := m.entries[key]; !exists {
-			return
-		}
-	}
-
-	addition := len(key) + len(value)
-	if existing, ok := m.entries[key]; ok {
-		m.total -= len(key) + len(existing)
-	}
-
-	if maxMetadataTotalBytes > 0 && m.total+addition > maxMetadataTotalBytes {
-		if existing, ok := m.entries[key]; ok {
-			m.total += len(key) + len(existing)
-		}
-		return
-	}
-
-	m.entries[key] = value
-	m.total += addition
-
-	if len(m.entries) > maxMetadataEntries {
-		delete(m.entries, key)
-		m.total -= addition
-	}
-}
-
-func (m *metadataAccumulator) result() map[string]string {
-	if len(m.entries) == 0 {
-		return nil
-	}
-	return maps.Clone(m.entries)
-}
-
-func sanitizeKey(key string) string {
-	return sanitize.TrimToRunes(key, maxMetadataKeyRunes)
-}
-
-func sanitizeValue(value string) string {
-	return sanitize.TrimToRunes(value, maxMetadataValueRunes)
 }
