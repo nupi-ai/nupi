@@ -42,6 +42,7 @@ type Service struct {
 	outputSub     *eventbus.TypedSubscription[eventbus.SessionOutputEvent]
 	lifecycleSub  *eventbus.TypedSubscription[eventbus.SessionLifecycleEvent]
 	transcriptSub *eventbus.TypedSubscription[eventbus.SpeechTranscriptEvent]
+	subs          eventbus.SubscriptionGroup
 
 	logger          *log.Logger
 	metricsInterval time.Duration
@@ -112,6 +113,7 @@ func (s *Service) Start(ctx context.Context) error {
 	s.outputSub = eventbus.Subscribe[eventbus.SessionOutputEvent](s.bus, eventbus.TopicSessionsOutput, eventbus.WithSubscriptionName("pipeline_output"))
 	s.lifecycleSub = eventbus.Subscribe[eventbus.SessionLifecycleEvent](s.bus, eventbus.TopicSessionsLifecycle, eventbus.WithSubscriptionName("pipeline_lifecycle"))
 	s.transcriptSub = eventbus.Subscribe[eventbus.SpeechTranscriptEvent](s.bus, eventbus.TopicSpeechTranscriptFinal, eventbus.WithSubscriptionName("pipeline_transcripts"))
+	s.subs.Add(s.toolSub, s.outputSub, s.lifecycleSub, s.transcriptSub)
 
 	s.wg.Add(4)
 	go s.consumeToolEvents(derivedCtx)
@@ -151,30 +153,8 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		return true
 	})
 
-	if s.toolSub != nil {
-		s.toolSub.Close()
-	}
-	if s.outputSub != nil {
-		s.outputSub.Close()
-	}
-	if s.lifecycleSub != nil {
-		s.lifecycleSub.Close()
-	}
-	if s.transcriptSub != nil {
-		s.transcriptSub.Close()
-	}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		s.wg.Wait()
-	}()
-
-	select {
-	case <-done:
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-	return nil
+	s.subs.CloseAll()
+	return eventbus.WaitForWorkers(ctx, &s.wg)
 }
 
 func (s *Service) consumeToolEvents(ctx context.Context) {

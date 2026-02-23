@@ -105,8 +105,9 @@ type Service struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	sub *eventbus.TypedSubscription[eventbus.AudioIngressSegmentEvent]
-	wg  sync.WaitGroup
+	sub  *eventbus.TypedSubscription[eventbus.AudioIngressSegmentEvent]
+	subs eventbus.SubscriptionGroup
+	wg   sync.WaitGroup
 
 	manager *streammanager.Manager[eventbus.AudioIngressSegmentEvent]
 
@@ -156,6 +157,7 @@ func (s *Service) Start(ctx context.Context) error {
 	})
 
 	s.sub = eventbus.Subscribe[eventbus.AudioIngressSegmentEvent](s.bus, eventbus.TopicAudioIngressSegment, eventbus.WithSubscriptionName("audio_vad_segments"))
+	s.subs.Add(s.sub)
 
 	s.wg.Add(1)
 	go s.consumeSegments()
@@ -167,20 +169,10 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	if s.cancel != nil {
 		s.cancel()
 	}
-	if s.sub != nil {
-		s.sub.Close()
-	}
+	s.subs.CloseAll()
 
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		s.wg.Wait()
-	}()
-
-	select {
-	case <-done:
-	case <-ctx.Done():
-		return ctx.Err()
+	if err := eventbus.WaitForWorkers(ctx, &s.wg); err != nil {
+		return err
 	}
 
 	var handles []streammanager.StreamHandle[eventbus.AudioIngressSegmentEvent]
