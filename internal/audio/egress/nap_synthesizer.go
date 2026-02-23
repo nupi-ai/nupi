@@ -2,7 +2,6 @@ package egress
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +9,7 @@ import (
 	"time"
 
 	napv1 "github.com/nupi-ai/nupi/api/nap/v1"
+	"github.com/nupi-ai/nupi/internal/audio/napstream"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/mapper"
 	"github.com/nupi-ai/nupi/internal/napdial"
@@ -41,13 +41,9 @@ func newNAPSynthesizer(ctx context.Context, params SessionParams, endpoint confi
 func (s *napSynthesizer) Speak(ctx context.Context, req SpeakRequest) ([]SynthesisChunk, error) {
 	client := napv1.NewTextToSpeechServiceClient(s.conn)
 
-	configJSON := ""
-	if len(s.params.Config) > 0 {
-		raw, err := json.Marshal(s.params.Config)
-		if err != nil {
-			return nil, fmt.Errorf("tts: marshal adapter config: %w", err)
-		}
-		configJSON = string(raw)
+	configJSON, err := napstream.MarshalConfigJSON("tts", s.params.Config)
+	if err != nil {
+		return nil, err
 	}
 
 	grpcReq := &napv1.StreamSynthesisRequest{
@@ -60,10 +56,7 @@ func (s *napSynthesizer) Speak(ctx context.Context, req SpeakRequest) ([]Synthes
 
 	stream, err := client.StreamSynthesis(ctx, grpcReq)
 	if err != nil {
-		if st, ok := status.FromError(err); ok && st.Code() == codes.Unavailable {
-			return nil, fmt.Errorf("tts: open synthesis stream: %w: %w", err, ErrAdapterUnavailable)
-		}
-		return nil, fmt.Errorf("tts: open synthesis stream: %w", err)
+		return nil, napstream.WrapGRPCError("tts", "open synthesis stream", err, ErrAdapterUnavailable)
 	}
 
 	var (
@@ -83,10 +76,7 @@ func (s *napSynthesizer) Speak(ctx context.Context, req SpeakRequest) ([]Synthes
 				// Server-side cancel — not initiated by us, treat as real error.
 				return chunks, fmt.Errorf("tts: receive synthesis chunk: %w", err)
 			}
-			if st, ok := status.FromError(err); ok && st.Code() == codes.Unavailable {
-				return chunks, fmt.Errorf("tts: receive synthesis chunk: %w: %w", err, ErrAdapterUnavailable)
-			}
-			return chunks, fmt.Errorf("tts: receive synthesis chunk: %w", err)
+			return chunks, napstream.WrapGRPCError("tts", "receive synthesis chunk", err, ErrAdapterUnavailable)
 		}
 
 		if resp.GetStatus() == napv1.SynthesisStatus_SYNTHESIS_STATUS_ERROR {

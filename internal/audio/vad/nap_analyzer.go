@@ -2,15 +2,13 @@ package vad
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"sync"
-	"time"
 
 	napv1 "github.com/nupi-ai/nupi/api/nap/v1"
+	"github.com/nupi-ai/nupi/internal/audio/napstream"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
@@ -18,8 +16,6 @@ import (
 	"github.com/nupi-ai/nupi/internal/napdial"
 	maputil "github.com/nupi-ai/nupi/internal/util/maps"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 type napAnalyzer struct {
@@ -34,21 +30,18 @@ type napAnalyzer struct {
 }
 
 func newNAPAnalyzer(ctx context.Context, params SessionParams, endpoint configstore.AdapterEndpoint) (Analyzer, error) {
-	conn, err := napdial.DialAdapter(ctx, endpoint)
+	conn, stream, streamCtx, cancel, err := napstream.OpenBidi(
+		ctx,
+		endpoint,
+		"vad",
+		"open detect speech stream",
+		ErrAdapterUnavailable,
+		func(streamCtx context.Context, conn *grpc.ClientConn) (napv1.VoiceActivityDetectionService_DetectSpeechClient, error) {
+			return napv1.NewVoiceActivityDetectionServiceClient(conn).DetectSpeech(streamCtx)
+		},
+	)
 	if err != nil {
-		return nil, fmt.Errorf("vad: %w", err)
-	}
-
-	streamCtx, cancel := context.WithCancel(ctx)
-	client := napv1.NewVoiceActivityDetectionServiceClient(conn)
-	stream, err := client.DetectSpeech(streamCtx)
-	if err != nil {
-		cancel()
-		conn.Close()
-		if s, ok := status.FromError(err); ok && s.Code() == codes.Unavailable {
-			return nil, fmt.Errorf("vad: open detect speech stream: %w: %w", err, ErrAdapterUnavailable)
-		}
-		return nil, fmt.Errorf("vad: open detect speech stream: %w", err)
+		return nil, err
 	}
 
 	a := &napAnalyzer{
@@ -62,16 +55,12 @@ func newNAPAnalyzer(ctx context.Context, params SessionParams, endpoint configst
 	}
 	a.startReceiver()
 
-	configJSON := ""
-	if len(params.Config) > 0 {
-		raw, err := json.Marshal(params.Config)
-		if err != nil {
-			closeCtx, closeCancel := context.WithTimeout(context.Background(), constants.Duration2Seconds)
-			a.Close(closeCtx)
-			closeCancel()
-			return nil, fmt.Errorf("vad: marshal adapter config: %w", err)
-		}
-		configJSON = string(raw)
+	configJSON, err := napstream.MarshalConfigJSON("vad", params.Config)
+	if err != nil {
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), constants.Duration2Seconds)
+		a.Close(closeCtx)
+		closeCancel()
+		return nil, err
 	}
 
 	initReq := &napv1.DetectSpeechRequest{
@@ -85,40 +74,21 @@ func newNAPAnalyzer(ctx context.Context, params SessionParams, endpoint configst
 		closeCtx, closeCancel := context.WithTimeout(context.Background(), constants.Duration2Seconds)
 		a.Close(closeCtx)
 		closeCancel()
-		if s, ok := status.FromError(err); ok && s.Code() == codes.Unavailable {
-			return nil, fmt.Errorf("vad: send init request: %w: %w", err, ErrAdapterUnavailable)
-		}
-		return nil, fmt.Errorf("vad: send init request: %w", err)
+		return nil, napstream.WrapGRPCError("vad", "send init request", err, ErrAdapterUnavailable)
 	}
 
 	return a, nil
 }
 
 func (a *napAnalyzer) startReceiver() {
-	a.wg.Add(1)
-	go func() {
-		defer a.wg.Done()
-		for {
-			resp, err := a.stream.Recv()
-			if err != nil {
-				if err != io.EOF {
-					select {
-					case a.errCh <- err:
-					default:
-					}
-				}
-				close(a.responses)
-				return
-			}
-
-			det := speechEventToDetection(resp)
-			select {
-			case a.responses <- det:
-			case <-a.ctx.Done():
-				return
-			}
-		}
-	}()
+	napstream.StartReceiver(
+		a.ctx,
+		&a.wg,
+		a.stream.Recv,
+		a.responses,
+		a.errCh,
+		speechEventToDetection,
+	)
 }
 
 func (a *napAnalyzer) OnSegment(_ context.Context, segment eventbus.AudioIngressSegmentEvent) ([]Detection, error) {
@@ -131,10 +101,7 @@ func (a *napAnalyzer) OnSegment(_ context.Context, segment eventbus.AudioIngress
 	}
 
 	if err := a.stream.Send(req); err != nil {
-		if s, ok := status.FromError(err); ok && s.Code() == codes.Unavailable {
-			return nil, fmt.Errorf("vad: send segment: %w: %w", err, ErrAdapterUnavailable)
-		}
-		return nil, fmt.Errorf("vad: send segment: %w", err)
+		return nil, napstream.WrapGRPCError("vad", "send segment", err, ErrAdapterUnavailable)
 	}
 
 	return a.collectDetections(segment.Last), a.drainError()
@@ -158,96 +125,15 @@ func (a *napAnalyzer) Close(ctx context.Context) ([]Detection, error) {
 const vadResponseGracePeriod = constants.Duration10Milliseconds
 
 func (a *napAnalyzer) collectDetections(wait bool) []Detection {
-	var detections []Detection
-
-drainBuffered:
-	for {
-		select {
-		case det, ok := <-a.responses:
-			if !ok {
-				return detections
-			}
-			detections = append(detections, det)
-		default:
-			break drainBuffered
-		}
-	}
-
-	if len(detections) > 0 || !wait {
-		return detections
-	}
-
-	timer := time.NewTimer(vadResponseGracePeriod)
-	defer timer.Stop()
-
-	for {
-		select {
-		case det, ok := <-a.responses:
-			if !ok {
-				return detections
-			}
-			detections = append(detections, det)
-			for {
-				select {
-				case det, ok := <-a.responses:
-					if !ok {
-						return detections
-					}
-					detections = append(detections, det)
-				default:
-					return detections
-				}
-			}
-		default:
-			select {
-			case det, ok := <-a.responses:
-				if !ok {
-					return detections
-				}
-				detections = append(detections, det)
-			case <-timer.C:
-				return detections
-			}
-		}
-	}
+	return napstream.CollectBufferedOrGrace(a.responses, wait, vadResponseGracePeriod)
 }
 
 func (a *napAnalyzer) drainDetections(ctx context.Context) []Detection {
-	var detections []Detection
-	for {
-		select {
-		case det, ok := <-a.responses:
-			if !ok {
-				return detections
-			}
-			detections = append(detections, det)
-		case <-ctx.Done():
-			return detections
-		}
-	}
+	return napstream.DrainUntilDone(ctx, a.responses)
 }
 
 func (a *napAnalyzer) drainError() error {
-	select {
-	case err := <-a.errCh:
-		if err == nil || errors.Is(err, io.EOF) {
-			return nil
-		}
-		if s, ok := status.FromError(err); ok {
-			switch s.Code() {
-			case codes.Canceled:
-				return nil
-			case codes.Unavailable:
-				return fmt.Errorf("vad: receive speech event: %w: %w", err, ErrAdapterUnavailable)
-			}
-		}
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return nil
-		}
-		return fmt.Errorf("vad: receive speech event: %w", err)
-	default:
-		return nil
-	}
+	return napstream.DrainReceiveError(a.errCh, "vad", "receive speech event", ErrAdapterUnavailable)
 }
 
 func speechEventToDetection(evt *napv1.SpeechEvent) Detection {

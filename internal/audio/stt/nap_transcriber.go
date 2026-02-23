@@ -2,15 +2,14 @@ package stt
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"sync"
 	"time"
 
 	napv1 "github.com/nupi-ai/nupi/api/nap/v1"
+	"github.com/nupi-ai/nupi/internal/audio/napstream"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
@@ -18,8 +17,6 @@ import (
 	"github.com/nupi-ai/nupi/internal/napdial"
 	maputil "github.com/nupi-ai/nupi/internal/util/maps"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 type napTranscriber struct {
@@ -34,21 +31,18 @@ type napTranscriber struct {
 }
 
 func newNAPTranscriber(ctx context.Context, params SessionParams, endpoint configstore.AdapterEndpoint) (Transcriber, error) {
-	conn, err := napdial.DialAdapter(ctx, endpoint)
+	conn, stream, streamCtx, cancel, err := napstream.OpenBidi(
+		ctx,
+		endpoint,
+		"stt",
+		"open transcription stream",
+		ErrAdapterUnavailable,
+		func(streamCtx context.Context, conn *grpc.ClientConn) (napv1.SpeechToTextService_StreamTranscriptionClient, error) {
+			return napv1.NewSpeechToTextServiceClient(conn).StreamTranscription(streamCtx)
+		},
+	)
 	if err != nil {
-		return nil, fmt.Errorf("stt: %w", err)
-	}
-
-	streamCtx, cancel := context.WithCancel(ctx)
-	client := napv1.NewSpeechToTextServiceClient(conn)
-	stream, err := client.StreamTranscription(streamCtx)
-	if err != nil {
-		cancel()
-		conn.Close()
-		if s, ok := status.FromError(err); ok && s.Code() == codes.Unavailable {
-			return nil, fmt.Errorf("stt: open transcription stream: %w: %w", err, ErrAdapterUnavailable)
-		}
-		return nil, fmt.Errorf("stt: open transcription stream: %w", err)
+		return nil, err
 	}
 
 	t := &napTranscriber{
@@ -62,16 +56,12 @@ func newNAPTranscriber(ctx context.Context, params SessionParams, endpoint confi
 	}
 	t.startReceiver()
 
-	configJSON := ""
-	if len(params.Config) > 0 {
-		raw, err := json.Marshal(params.Config)
-		if err != nil {
-			closeCtx, closeCancel := context.WithTimeout(context.Background(), constants.Duration2Seconds)
-			t.Close(closeCtx)
-			closeCancel()
-			return nil, fmt.Errorf("stt: marshal adapter config: %w", err)
-		}
-		configJSON = string(raw)
+	configJSON, err := napstream.MarshalConfigJSON("stt", params.Config)
+	if err != nil {
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), constants.Duration2Seconds)
+		t.Close(closeCtx)
+		closeCancel()
+		return nil, err
 	}
 
 	initReq := &napv1.StreamTranscriptionRequest{
@@ -86,32 +76,20 @@ func newNAPTranscriber(ctx context.Context, params SessionParams, endpoint confi
 		closeCtx, closeCancel := context.WithTimeout(context.Background(), constants.Duration2Seconds)
 		t.Close(closeCtx)
 		closeCancel()
-		if s, ok := status.FromError(err); ok && s.Code() == codes.Unavailable {
-			return nil, fmt.Errorf("stt: send init request: %w: %w", err, ErrAdapterUnavailable)
-		}
-		return nil, fmt.Errorf("stt: send init request: %w", err)
+		return nil, napstream.WrapGRPCError("stt", "send init request", err, ErrAdapterUnavailable)
 	}
 
 	return t, nil
 }
 
 func (t *napTranscriber) startReceiver() {
-	t.wg.Add(1)
-	go func() {
-		defer t.wg.Done()
-		for {
-			resp, err := t.stream.Recv()
-			if err != nil {
-				if err != io.EOF {
-					select {
-					case t.errCh <- err:
-					default:
-					}
-				}
-				close(t.responses)
-				return
-			}
-
+	napstream.StartReceiver(
+		t.ctx,
+		&t.wg,
+		t.stream.Recv,
+		t.responses,
+		t.errCh,
+		func(resp *napv1.Transcript) Transcription {
 			tr := Transcription{
 				Text:       resp.GetText(),
 				Confidence: resp.GetConfidence(),
@@ -124,14 +102,9 @@ func (t *napTranscriber) startReceiver() {
 			if resp.GetEndedAt() != nil {
 				tr.EndedAt = resp.GetEndedAt().AsTime()
 			}
-
-			select {
-			case t.responses <- tr:
-			case <-t.ctx.Done():
-				return
-			}
-		}
-	}()
+			return tr
+		},
+	)
 }
 
 func (t *napTranscriber) OnSegment(ctx context.Context, segment eventbus.AudioIngressSegmentEvent) ([]Transcription, error) {
@@ -151,10 +124,7 @@ func (t *napTranscriber) OnSegment(ctx context.Context, segment eventbus.AudioIn
 	}
 
 	if err := t.stream.Send(req); err != nil {
-		if s, ok := status.FromError(err); ok && s.Code() == codes.Unavailable {
-			return nil, fmt.Errorf("stt: send segment: %w: %w", err, ErrAdapterUnavailable)
-		}
-		return nil, fmt.Errorf("stt: send segment: %w", err)
+		return nil, napstream.WrapGRPCError("stt", "send segment", err, ErrAdapterUnavailable)
 	}
 
 	return t.collectResponses(segment.Last), t.drainError()
@@ -184,99 +154,15 @@ func (t *napTranscriber) Close(ctx context.Context) ([]Transcription, error) {
 const sttResponseGracePeriod = constants.Duration10Milliseconds
 
 func (t *napTranscriber) collectResponses(wait bool) []Transcription {
-	var transcripts []Transcription
-
-	// Drain anything already buffered without blocking.
-drainBuffered:
-	for {
-		select {
-		case tr, ok := <-t.responses:
-			if !ok {
-				return transcripts
-			}
-			transcripts = append(transcripts, tr)
-		default:
-			break drainBuffered
-		}
-	}
-
-	if len(transcripts) > 0 || !wait {
-		return transcripts
-	}
-
-	// Allow a brief grace period for final segments to deliver late transcripts.
-	timer := time.NewTimer(sttResponseGracePeriod)
-	defer timer.Stop()
-
-	for {
-		select {
-		case tr, ok := <-t.responses:
-			if !ok {
-				return transcripts
-			}
-			transcripts = append(transcripts, tr)
-			// After receiving the first item, drain whatever else is pending.
-			for {
-				select {
-				case tr, ok := <-t.responses:
-					if !ok {
-						return transcripts
-					}
-					transcripts = append(transcripts, tr)
-				default:
-					return transcripts
-				}
-			}
-		default:
-			select {
-			case tr, ok := <-t.responses:
-				if !ok {
-					return transcripts
-				}
-				transcripts = append(transcripts, tr)
-			case <-timer.C:
-				return transcripts
-			}
-		}
-	}
+	return napstream.CollectBufferedOrGrace(t.responses, wait, sttResponseGracePeriod)
 }
 
 func (t *napTranscriber) drainResponses(ctx context.Context) []Transcription {
-	var transcripts []Transcription
-	for {
-		select {
-		case tr, ok := <-t.responses:
-			if !ok {
-				return transcripts
-			}
-			transcripts = append(transcripts, tr)
-		case <-ctx.Done():
-			return transcripts
-		}
-	}
+	return napstream.DrainUntilDone(ctx, t.responses)
 }
 
 func (t *napTranscriber) drainError() error {
-	select {
-	case err := <-t.errCh:
-		if err == nil || errors.Is(err, io.EOF) {
-			return nil
-		}
-		if s, ok := status.FromError(err); ok {
-			switch s.Code() {
-			case codes.Canceled:
-				return nil
-			case codes.Unavailable:
-				return fmt.Errorf("stt: receive transcript: %w: %w", err, ErrAdapterUnavailable)
-			}
-		}
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return nil
-		}
-		return fmt.Errorf("stt: receive transcript: %w", err)
-	default:
-		return nil
-	}
+	return napstream.DrainReceiveError(t.errCh, "stt", "receive transcript", ErrAdapterUnavailable)
 }
 
 // ContextWithDialer attaches a custom dialer to the context.
