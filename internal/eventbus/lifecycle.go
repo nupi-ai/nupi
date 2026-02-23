@@ -62,6 +62,61 @@ func isNilSubscription(sub SubscriptionCloser) bool {
 	}
 }
 
+// ServiceLifecycle centralises common service lifecycle plumbing:
+// start context, track subscriptions, run workers, and wait for shutdown.
+type ServiceLifecycle struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	subs   SubscriptionGroup
+	wg     sync.WaitGroup
+}
+
+// Start initialises the service context using the provided parent context.
+func (l *ServiceLifecycle) Start(ctx context.Context) {
+	l.ctx, l.cancel = context.WithCancel(ctx)
+}
+
+// Context returns the active service context.
+func (l *ServiceLifecycle) Context() context.Context {
+	return l.ctx
+}
+
+// AddSubscriptions registers subscriptions that should be closed on shutdown.
+func (l *ServiceLifecycle) AddSubscriptions(subs ...SubscriptionCloser) {
+	l.subs.Add(subs...)
+}
+
+// Go runs a worker goroutine tracked by the lifecycle wait group.
+func (l *ServiceLifecycle) Go(worker func(ctx context.Context)) {
+	if worker == nil {
+		return
+	}
+	l.wg.Add(1)
+	go func(ctx context.Context) {
+		defer l.wg.Done()
+		worker(ctx)
+	}(l.ctx)
+}
+
+// Stop cancels the service context and closes tracked subscriptions.
+func (l *ServiceLifecycle) Stop() {
+	if l.cancel != nil {
+		l.cancel()
+	}
+	l.subs.CloseAll()
+}
+
+// Wait blocks until all lifecycle workers complete or ctx is done.
+func (l *ServiceLifecycle) Wait(ctx context.Context) error {
+	return WaitForWorkers(ctx, &l.wg)
+}
+
+// Shutdown combines Stop and Wait for convenience.
+func (l *ServiceLifecycle) Shutdown(ctx context.Context) error {
+	l.Stop()
+	return l.Wait(ctx)
+}
+
 // WaitForWorkers waits for the provided wait group or returns when ctx is done.
 func WaitForWorkers(ctx context.Context, wg *sync.WaitGroup) error {
 	if wg == nil {
