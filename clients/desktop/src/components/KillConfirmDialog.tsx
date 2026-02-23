@@ -1,4 +1,4 @@
-import { theme } from "../designTokens";
+import * as styles from './killConfirmDialogStyles';
 
 interface KillConfirmDialogProps {
   sessionName: string;
@@ -8,66 +8,29 @@ interface KillConfirmDialogProps {
 
 export function KillConfirmDialog({ sessionName, onConfirm, onCancel }: KillConfirmDialogProps) {
   return (
-    <div
-      style={{
-        position: 'fixed',
-        top: 0,
-        left: 0,
-        right: 0,
-        bottom: 0,
-        backgroundColor: theme.bg.overlayDialog,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        zIndex: 1000,
-      }}
-      onClick={onCancel}
-    >
+    <div style={styles.overlay} onClick={onCancel}>
       <div
-        style={{
-          backgroundColor: theme.bg.nav,
-          border: `1px solid ${theme.border.default}`,
-          borderRadius: '8px',
-          padding: '24px',
-          minWidth: '400px',
-          maxWidth: '500px',
-        }}
+        style={styles.dialog}
         onClick={(e) => e.stopPropagation()}
       >
-        <h3 style={{ margin: '0 0 16px 0', color: theme.text.primary, fontSize: '18px' }}>
+        <h3 style={styles.title}>
           Kill Session?
         </h3>
-        <p style={{ margin: '0 0 24px 0', color: theme.text.light, lineHeight: '1.5' }}>
+        <p style={styles.message}>
           Are you sure you want to kill session <strong>"{sessionName}"</strong>?
           <br /><br />
           The session will be stopped but remain visible in the list.
         </p>
-        <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+        <div style={styles.actionsRow}>
           <button
             onClick={onCancel}
-            style={{
-              padding: '8px 16px',
-              backgroundColor: theme.bg.neutral,
-              color: theme.text.primary,
-              border: 'none',
-              borderRadius: '4px',
-              cursor: 'pointer',
-              fontSize: '14px',
-            }}
+            style={styles.cancelButton}
           >
             Cancel
           </button>
           <button
             onClick={onConfirm}
-            style={{
-              padding: '8px 16px',
-              backgroundColor: theme.bg.dangerButton,
-              color: theme.text.primary,
-              border: 'none',
-              borderRadius: '4px',
-              cursor: 'pointer',
-              fontSize: '14px',
-            }}
+            style={styles.confirmButton}
           >
             Kill Session
           </button>
