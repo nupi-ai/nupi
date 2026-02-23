@@ -2,12 +2,18 @@ type JsonRecord = Record<string, unknown>;
 
 const WS_EVENT_MESSAGE_TYPE = "event" as const;
 
-export type SessionStreamEventType =
-  | "created"
-  | "running"
-  | "detached"
-  | "stopped"
-  | "resize_instruction";
+// WebSocket session stream emits eventbus session states, not gRPC SessionEventType.
+export const SESSION_STREAM_EVENT_TYPES = [
+  "created",
+  "running",
+  "detached",
+  "stopped",
+  "resize_instruction",
+] as const;
+
+export type SessionStreamEventType = (typeof SESSION_STREAM_EVENT_TYPES)[number];
+
+const SESSION_STREAM_EVENT_TYPE_SET: ReadonlySet<string> = new Set(SESSION_STREAM_EVENT_TYPES);
 
 interface SessionStreamEventBase {
   type: typeof WS_EVENT_MESSAGE_TYPE;
@@ -69,16 +75,10 @@ function parseStringRecord(value: unknown): Record<string, string> | undefined {
 }
 
 function parseEventType(value: unknown): SessionStreamEventType {
-  switch (value) {
-    case "created":
-    case "running":
-    case "detached":
-    case "stopped":
-    case "resize_instruction":
-      return value;
-    default:
-      throw new Error("unknown event_type");
+  if (typeof value !== "string" || !SESSION_STREAM_EVENT_TYPE_SET.has(value)) {
+    throw new Error("unknown event_type");
   }
+  return value as SessionStreamEventType;
 }
 
 export function parseSessionStreamEvent(raw: string): SessionStreamEvent {

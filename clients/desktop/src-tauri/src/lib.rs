@@ -501,16 +501,20 @@ async fn claim_pairing(
 // Session streaming commands (Task 1: AC #2)
 // ---------------------------------------------------------------------------
 
-fn forward_session_event(app: &tauri::AppHandle, session_id: &str, event: nupi_api::SessionEvent) {
-    let event_type = match event.r#type() {
+fn session_event_type_to_wire(event_type: nupi_api::SessionEventType) -> &'static str {
+    match event_type {
+        nupi_api::SessionEventType::Unspecified => "unknown",
         nupi_api::SessionEventType::Created => "session_created",
         nupi_api::SessionEventType::Killed => "session_killed",
         nupi_api::SessionEventType::StatusChanged => "session_status_changed",
         nupi_api::SessionEventType::ModeChanged => "session_mode_changed",
         nupi_api::SessionEventType::ToolDetected => "tool_detected",
         nupi_api::SessionEventType::ResizeInstruction => "resize_instruction",
-        _ => "unknown",
-    };
+    }
+}
+
+fn forward_session_event(app: &tauri::AppHandle, session_id: &str, event: nupi_api::SessionEvent) {
+    let event_type = session_event_type_to_wire(event.r#type());
 
     let payload = json!({
         "event_type": event_type,
@@ -1383,5 +1387,41 @@ mod tests {
         assert_eq!(normalize_version("0.3.0-rc1"), "0.3.0-rc1");
         // semver pre-release + git-describe suffix — strip suffix, keep pre-release
         assert_eq!(normalize_version("0.3.0-beta-5-gabcdef"), "0.3.0-beta");
+    }
+
+    #[test]
+    fn test_session_event_type_to_wire_mapping() {
+        assert_eq!(
+            session_event_type_to_wire(nupi_api::SessionEventType::Created),
+            "session_created"
+        );
+        assert_eq!(
+            session_event_type_to_wire(nupi_api::SessionEventType::Killed),
+            "session_killed"
+        );
+        assert_eq!(
+            session_event_type_to_wire(nupi_api::SessionEventType::StatusChanged),
+            "session_status_changed"
+        );
+        assert_eq!(
+            session_event_type_to_wire(nupi_api::SessionEventType::ModeChanged),
+            "session_mode_changed"
+        );
+        assert_eq!(
+            session_event_type_to_wire(nupi_api::SessionEventType::ToolDetected),
+            "tool_detected"
+        );
+        assert_eq!(
+            session_event_type_to_wire(nupi_api::SessionEventType::ResizeInstruction),
+            "resize_instruction"
+        );
+    }
+
+    #[test]
+    fn test_session_event_type_to_wire_unspecified() {
+        assert_eq!(
+            session_event_type_to_wire(nupi_api::SessionEventType::Unspecified),
+            "unknown"
+        );
     }
 }
