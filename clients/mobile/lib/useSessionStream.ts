@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef } from "react";
 
 import { getConnectionConfig, getToken } from "./storage";
 import { useSafeState } from "./useSafeState";
+import { useTimeout } from "./useTimeout";
 
 export type StreamStatus = "connecting" | "connected" | "reconnecting" | "closed" | "error";
 
@@ -51,7 +52,7 @@ export function useSessionStream(
   const onEventRef = useRef(options.onEvent);
   const sessionStoppedRef = useRef(false);
   const reconnectAttemptsRef = useRef(0);
-  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectTimer = useTimeout();
   const manualCloseRef = useRef(false);
   const isOpeningWsRef = useRef(false);
   const onReconnectedRef = useRef(options.onReconnected);
@@ -181,10 +182,7 @@ export function useSessionStream(
           setReconnectAttempts(reconnectAttemptsRef.current);
           setStatus("reconnecting");
           const delay = 1000 * Math.pow(2, reconnectAttemptsRef.current - 1);
-          reconnectTimerRef.current = setTimeout(() => {
-            reconnectTimerRef.current = null;
-            openWebSocket();
-          }, delay);
+          reconnectTimer.schedule(() => openWebSocket(), delay);
         } else {
           setStatus("error");
           setError("Connection lost \u2014 tap to reconnect");
@@ -197,15 +195,12 @@ export function useSessionStream(
         setError("Connection failed \u2014 tap to reconnect");
       }
     }
-  }, [sessionId]);
+  }, [reconnectTimer, sessionId]);
 
   const close = useCallback(() => {
     manualCloseRef.current = true;
     // Cancel any pending reconnect
-    if (reconnectTimerRef.current) {
-      clearTimeout(reconnectTimerRef.current);
-      reconnectTimerRef.current = null;
-    }
+    reconnectTimer.clear();
     const ws = wsRef.current;
     if (ws) {
       // Send detach control message before closing.
@@ -220,17 +215,14 @@ export function useSessionStream(
       wsRef.current = null;
     }
     setStatus("closed");
-  }, []);
+  }, [reconnectTimer]);
 
   const reconnect = useCallback(() => {
     // Manual reconnect triggered by user — reset attempts and reopen
     if (sessionStoppedRef.current) return; // Session is done
     if (isOpeningWsRef.current) return; // Prevent double-tap race
     manualCloseRef.current = false;
-    if (reconnectTimerRef.current) {
-      clearTimeout(reconnectTimerRef.current);
-      reconnectTimerRef.current = null;
-    }
+    reconnectTimer.clear();
     const ws = wsRef.current;
     if (ws) {
       // Null handlers to prevent old onclose from interfering with new connection
@@ -247,7 +239,7 @@ export function useSessionStream(
     setStatus("connecting");
     setError(null);
     openWebSocket();
-  }, [openWebSocket]);
+  }, [openWebSocket, reconnectTimer]);
 
   useEffect(() => {
     cancelledRef.current = false;
@@ -263,10 +255,7 @@ export function useSessionStream(
     return () => {
       cancelledRef.current = true;
       mountedRef.current = false;
-      if (reconnectTimerRef.current) {
-        clearTimeout(reconnectTimerRef.current);
-        reconnectTimerRef.current = null;
-      }
+      reconnectTimer.clear();
       const ws = wsRef.current;
       if (ws) {
         // Null handlers BEFORE close to prevent stale onclose from firing
@@ -287,9 +276,7 @@ export function useSessionStream(
         wsRef.current = null;
       }
     };
-    // sessionId is the only external dependency — reconnect on ID change.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId]);
+  }, [openWebSocket, reconnectTimer]);
 
   return { status, error, reconnectAttempts, send, close, reconnect };
 }
