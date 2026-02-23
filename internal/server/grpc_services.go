@@ -33,10 +33,6 @@ type daemonService struct {
 	api *APIServer
 }
 
-func newDaemonService(api *APIServer) *daemonService {
-	return &daemonService{api: api}
-}
-
 func (d *daemonService) Status(ctx context.Context, _ *apiv1.DaemonStatusRequest) (*apiv1.DaemonStatusResponse, error) {
 	snapshot, err := d.api.daemonStatus(ctx)
 	if err != nil {
@@ -60,17 +56,9 @@ type sessionsService struct {
 	api *APIServer
 }
 
-func newSessionsService(api *APIServer) *sessionsService {
-	return &sessionsService{api: api}
-}
-
 type configService struct {
 	apiv1.UnimplementedConfigServiceServer
 	api *APIServer
-}
-
-func newConfigService(api *APIServer) *configService {
-	return &configService{api: api}
 }
 
 type adaptersService struct {
@@ -78,17 +66,9 @@ type adaptersService struct {
 	api *APIServer
 }
 
-func newAdaptersService(api *APIServer) *adaptersService {
-	return &adaptersService{api: api}
-}
-
 type quickstartService struct {
 	apiv1.UnimplementedQuickstartServiceServer
 	api *APIServer
-}
-
-func newQuickstartService(api *APIServer) *quickstartService {
-	return &quickstartService{api: api}
 }
 
 type adapterRuntimeService struct {
@@ -96,17 +76,9 @@ type adapterRuntimeService struct {
 	api *APIServer
 }
 
-func newAdapterRuntimeService(api *APIServer) *adapterRuntimeService {
-	return &adapterRuntimeService{api: api}
-}
-
 type audioService struct {
 	apiv1.UnimplementedAudioServiceServer
 	api *APIServer
-}
-
-func newAudioService(api *APIServer) *audioService {
-	return &audioService{api: api}
 }
 
 func (a *audioService) StreamAudioIn(stream apiv1.AudioService_StreamAudioInServer) error {
@@ -729,16 +701,16 @@ func (s *sessionsService) SendVoiceCommand(ctx context.Context, req *apiv1.SendV
 }
 
 func RegisterGRPCServices(api *APIServer, registrar grpc.ServiceRegistrar) {
-	apiv1.RegisterDaemonServiceServer(registrar, newDaemonService(api))
-	apiv1.RegisterSessionsServiceServer(registrar, newSessionsService(api))
-	apiv1.RegisterConfigServiceServer(registrar, newConfigService(api))
-	apiv1.RegisterAdaptersServiceServer(registrar, newAdaptersService(api))
-	apiv1.RegisterQuickstartServiceServer(registrar, newQuickstartService(api))
-	apiv1.RegisterAdapterRuntimeServiceServer(registrar, newAdapterRuntimeService(api))
-	apiv1.RegisterAuthServiceServer(registrar, newAuthService(api))
-	apiv1.RegisterRecordingsServiceServer(registrar, newRecordingsService(api))
+	apiv1.RegisterDaemonServiceServer(registrar, &daemonService{api: api})
+	apiv1.RegisterSessionsServiceServer(registrar, &sessionsService{api: api})
+	apiv1.RegisterConfigServiceServer(registrar, &configService{api: api})
+	apiv1.RegisterAdaptersServiceServer(registrar, &adaptersService{api: api})
+	apiv1.RegisterQuickstartServiceServer(registrar, &quickstartService{api: api})
+	apiv1.RegisterAdapterRuntimeServiceServer(registrar, &adapterRuntimeService{api: api})
+	apiv1.RegisterAuthServiceServer(registrar, &authService{api: api})
+	apiv1.RegisterRecordingsServiceServer(registrar, &recordingsService{api: api})
 	if api.audioIngress != nil {
-		apiv1.RegisterAudioServiceServer(registrar, newAudioService(api))
+		apiv1.RegisterAudioServiceServer(registrar, &audioService{api: api})
 	}
 }
 

@@ -117,7 +117,7 @@ func TestSessionsServiceGetConversation(t *testing.T) {
 	}
 	apiServer.SetConversationStore(store)
 
-	service := newSessionsService(apiServer)
+	service := &sessionsService{api: apiServer}
 
 	resp, err := service.GetConversation(context.Background(), &apiv1.GetConversationRequest{SessionId: sess.ID})
 	if err != nil {
@@ -176,7 +176,7 @@ func TestSessionsServiceGetConversationPagination(t *testing.T) {
 	}
 	apiServer.SetConversationStore(store)
 
-	service := newSessionsService(apiServer)
+	service := &sessionsService{api: apiServer}
 
 	resp, err := service.GetConversation(context.Background(), &apiv1.GetConversationRequest{
 		SessionId: sess.ID,
@@ -216,7 +216,7 @@ func TestSessionsServiceGetGlobalConversation(t *testing.T) {
 	}
 	apiServer.SetConversationStore(store)
 
-	service := newSessionsService(apiServer)
+	service := &sessionsService{api: apiServer}
 
 	resp, err := service.GetGlobalConversation(context.Background(), &apiv1.GetGlobalConversationRequest{})
 	if err != nil {
@@ -260,7 +260,7 @@ func TestSessionsServiceGetGlobalConversationPagination(t *testing.T) {
 	}
 	apiServer.SetConversationStore(store)
 
-	service := newSessionsService(apiServer)
+	service := &sessionsService{api: apiServer}
 
 	resp, err := service.GetGlobalConversation(context.Background(), &apiv1.GetGlobalConversationRequest{
 		Offset: 1,
@@ -293,7 +293,7 @@ func TestSessionsServiceGetGlobalConversationEmpty(t *testing.T) {
 	store := &mockConversationStore{}
 	apiServer.SetConversationStore(store)
 
-	service := newSessionsService(apiServer)
+	service := &sessionsService{api: apiServer}
 
 	resp, err := service.GetGlobalConversation(context.Background(), &apiv1.GetGlobalConversationRequest{})
 	if err != nil {
@@ -312,7 +312,7 @@ func TestSessionsServiceGetGlobalConversationNoService(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
 	// conversation store is nil by default
 
-	service := newSessionsService(apiServer)
+	service := &sessionsService{api: apiServer}
 
 	_, err := service.GetGlobalConversation(context.Background(), &apiv1.GetGlobalConversationRequest{})
 	if err == nil {
@@ -344,7 +344,7 @@ func TestAdaptersServiceOverview(t *testing.T) {
 		t.Fatalf("set active adapter: %v", err)
 	}
 
-	service := newAdapterRuntimeService(apiServer)
+	service := &adapterRuntimeService{api: apiServer}
 
 	resp, err := service.Overview(ctx, &emptypb.Empty{})
 	if err != nil {
@@ -384,7 +384,7 @@ func TestAdaptersServiceBindStartStop(t *testing.T) {
 	}
 	adapterID := adapters.MockAIAdapterID
 
-	service := newAdapterRuntimeService(apiServer)
+	service := &adapterRuntimeService{api: apiServer}
 
 	bindResp, err := service.BindAdapter(ctx, &apiv1.BindAdapterRequest{
 		Slot:      "ai",
@@ -444,7 +444,7 @@ func TestQuickstartServiceIncludesAdapters(t *testing.T) {
 		t.Fatalf("set active adapter: %v", err)
 	}
 
-	service := newQuickstartService(apiServer)
+	service := &quickstartService{api: apiServer}
 	resp, err := service.GetStatus(ctx, &emptypb.Empty{})
 	if err != nil {
 		t.Fatalf("QuickstartService.GetStatus error: %v", err)
@@ -473,7 +473,7 @@ func TestQuickstartServiceIncludesAdapters(t *testing.T) {
 func TestQuickstartServiceWithoutAdaptersService(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
 
-	service := newQuickstartService(apiServer)
+	service := &quickstartService{api: apiServer}
 	_, err := service.GetStatus(context.Background(), &emptypb.Empty{})
 	if err == nil {
 		t.Fatalf("expected error when adapter service unavailable")
@@ -486,7 +486,7 @@ func TestQuickstartServiceWithoutAdaptersService(t *testing.T) {
 func TestQuickstartServiceUpdateFailsWhenReferenceMissing(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
 	store := apiServer.configStore
-	service := newQuickstartService(apiServer)
+	service := &quickstartService{api: apiServer}
 
 	ctx := context.WithValue(context.Background(), authContextKey{}, storedToken{Role: string(roleAdmin)})
 
@@ -550,7 +550,7 @@ func TestAudioServiceStreamAudioIn(t *testing.T) {
 	sess := createSessionOrSkip(t, sessionManager, opts, false)
 	defer sessionManager.KillSession(sess.ID)
 
-	service := newAudioService(apiServer)
+	service := &audioService{api: apiServer}
 
 	rawSub := eventbus.SubscribeTo(bus, eventbus.Audio.IngressRaw)
 	defer rawSub.Close()
@@ -629,7 +629,7 @@ func TestAudioServiceStreamAudioInRejectsInvalidMetadata(t *testing.T) {
 	apiServer.SetAudioIngress(newTestAudioIngressProvider(ingressSvc))
 	apiServer.sessionManager = &stubSessionManager{}
 
-	service := newAudioService(apiServer)
+	service := &audioService{api: apiServer}
 
 	baseRequest := func(meta map[string]string) *apiv1.StreamAudioInRequest {
 		return &apiv1.StreamAudioInRequest{
@@ -721,7 +721,7 @@ func TestAudioServiceStreamAudioOut(t *testing.T) {
 	// without requiring real PTY sessions.
 	apiServer.sessionManager = &stubSessionManager{}
 
-	service := newAudioService(apiServer)
+	service := &audioService{api: apiServer}
 
 	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), authContextKey{}, storedToken{Role: string(roleAdmin)}))
 	defer cancel()
@@ -809,7 +809,7 @@ func TestAudioServiceGetAudioCapabilities(t *testing.T) {
 	// without requiring real PTY sessions.
 	apiServer.sessionManager = &stubSessionManager{}
 
-	service := newAudioService(apiServer)
+	service := &audioService{api: apiServer}
 	ctx := context.WithValue(context.Background(), authContextKey{}, storedToken{Role: string(roleAdmin)})
 
 	resp, err := service.GetAudioCapabilities(ctx, &apiv1.GetAudioCapabilitiesRequest{})
@@ -987,7 +987,7 @@ func TestSessionsServiceSendVoiceCommand(t *testing.T) {
 	apiServer.SetEventBus(bus)
 	apiServer.sessionManager = &stubSessionManager{}
 
-	service := newSessionsService(apiServer)
+	service := &sessionsService{api: apiServer}
 
 	sub := eventbus.SubscribeTo(bus, eventbus.Pipeline.Cleaned)
 	defer sub.Close()
@@ -1035,7 +1035,7 @@ func TestSessionsServiceSendVoiceCommandEmptyText(t *testing.T) {
 	apiServer.SetEventBus(bus)
 	apiServer.sessionManager = &stubSessionManager{}
 
-	service := newSessionsService(apiServer)
+	service := &sessionsService{api: apiServer}
 
 	_, err := service.SendVoiceCommand(context.Background(), &apiv1.SendVoiceCommandRequest{
 		SessionId: "test-session",
@@ -1054,7 +1054,7 @@ func TestSessionsServiceSendVoiceCommandNoEventBus(t *testing.T) {
 	apiServer.sessionManager = &stubSessionManager{}
 	// eventBus is nil by default
 
-	service := newSessionsService(apiServer)
+	service := &sessionsService{api: apiServer}
 
 	_, err := service.SendVoiceCommand(context.Background(), &apiv1.SendVoiceCommandRequest{
 		Text: "hello",
@@ -1072,7 +1072,7 @@ func TestSessionsServiceSendVoiceCommandGlobalNoSession(t *testing.T) {
 	bus := eventbus.New()
 	apiServer.SetEventBus(bus)
 
-	service := newSessionsService(apiServer)
+	service := &sessionsService{api: apiServer}
 
 	sub := eventbus.SubscribeTo(bus, eventbus.Pipeline.Cleaned)
 	defer sub.Close()
@@ -1110,7 +1110,7 @@ func TestSessionsServiceSendVoiceCommandWhitespaceOnlyText(t *testing.T) {
 	apiServer.SetEventBus(bus)
 	apiServer.sessionManager = &stubSessionManager{}
 
-	service := newSessionsService(apiServer)
+	service := &sessionsService{api: apiServer}
 
 	_, err := service.SendVoiceCommand(context.Background(), &apiv1.SendVoiceCommandRequest{
 		Text: "   \t\n  ",
@@ -1129,7 +1129,7 @@ func TestSessionsServiceSendVoiceCommandReservedAnnotationKeys(t *testing.T) {
 	apiServer.SetEventBus(bus)
 	apiServer.sessionManager = &stubSessionManager{}
 
-	service := newSessionsService(apiServer)
+	service := &sessionsService{api: apiServer}
 
 	sub := eventbus.SubscribeTo(bus, eventbus.Pipeline.Cleaned)
 	defer sub.Close()
@@ -1178,7 +1178,7 @@ func TestSessionsServiceSendVoiceCommandTextTooLong(t *testing.T) {
 	apiServer.SetEventBus(bus)
 	apiServer.sessionManager = &stubSessionManager{}
 
-	service := newSessionsService(apiServer)
+	service := &sessionsService{api: apiServer}
 
 	longText := strings.Repeat("a", 10001)
 	_, err := service.SendVoiceCommand(context.Background(), &apiv1.SendVoiceCommandRequest{
@@ -1204,7 +1204,7 @@ func TestSessionsServiceSendVoiceCommandMultibyteWithinLimit(t *testing.T) {
 	apiServer.SetEventBus(bus)
 	apiServer.sessionManager = &stubSessionManager{}
 
-	service := newSessionsService(apiServer)
+	service := &sessionsService{api: apiServer}
 
 	sub := eventbus.SubscribeTo(bus, eventbus.Pipeline.Cleaned)
 	defer sub.Close()
@@ -1233,7 +1233,7 @@ func TestSessionsServiceSendVoiceCommandInvalidSession(t *testing.T) {
 	apiServer.SetEventBus(bus)
 	apiServer.sessionManager = &notFoundSessionManager{}
 
-	service := newSessionsService(apiServer)
+	service := &sessionsService{api: apiServer}
 
 	_, err := service.SendVoiceCommand(context.Background(), &apiv1.SendVoiceCommandRequest{
 		SessionId: "nonexistent-session",
@@ -1253,7 +1253,7 @@ func TestSessionsServiceSendVoiceCommandLanguagePropagation(t *testing.T) {
 	apiServer.SetEventBus(bus)
 	apiServer.sessionManager = &stubSessionManager{}
 
-	service := newSessionsService(apiServer)
+	service := &sessionsService{api: apiServer}
 
 	sub := eventbus.SubscribeTo(bus, eventbus.Pipeline.Cleaned)
 	defer sub.Close()
@@ -1300,7 +1300,7 @@ func TestSessionsServiceSendVoiceCommandNilMetadata(t *testing.T) {
 	apiServer.SetEventBus(bus)
 	apiServer.sessionManager = &stubSessionManager{}
 
-	service := newSessionsService(apiServer)
+	service := &sessionsService{api: apiServer}
 
 	sub := eventbus.SubscribeTo(bus, eventbus.Pipeline.Cleaned)
 	defer sub.Close()
@@ -1329,7 +1329,7 @@ func TestSessionsServiceSendVoiceCommandMetadataTooMany(t *testing.T) {
 	apiServer.SetEventBus(bus)
 	apiServer.sessionManager = &stubSessionManager{}
 
-	service := newSessionsService(apiServer)
+	service := &sessionsService{api: apiServer}
 
 	// Exceed max metadata entry count.
 	bigMeta := make(map[string]string, 51)
@@ -1357,7 +1357,7 @@ func TestSessionsServiceSendVoiceCommandMetadataValueTooLong(t *testing.T) {
 	apiServer.SetEventBus(bus)
 	apiServer.sessionManager = &stubSessionManager{}
 
-	service := newSessionsService(apiServer)
+	service := &sessionsService{api: apiServer}
 
 	_, err := service.SendVoiceCommand(context.Background(), &apiv1.SendVoiceCommandRequest{
 		Text:     "hello",
@@ -1377,7 +1377,7 @@ func TestSessionsServiceSendVoiceCommandMetadataKeyTooLong(t *testing.T) {
 	apiServer.SetEventBus(bus)
 	apiServer.sessionManager = &stubSessionManager{}
 
-	service := newSessionsService(apiServer)
+	service := &sessionsService{api: apiServer}
 
 	_, err := service.SendVoiceCommand(context.Background(), &apiv1.SendVoiceCommandRequest{
 		Text:     "hello",
@@ -1401,7 +1401,7 @@ func TestSessionsServiceSendVoiceCommandMetadataMultibyteWithinLimit(t *testing.
 	apiServer.SetEventBus(bus)
 	apiServer.sessionManager = &stubSessionManager{}
 
-	service := newSessionsService(apiServer)
+	service := &sessionsService{api: apiServer}
 
 	sub := eventbus.SubscribeTo(bus, eventbus.Pipeline.Cleaned)
 	defer sub.Close()

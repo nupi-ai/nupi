@@ -28,7 +28,7 @@ func TestPairingCreatedEventPublished(t *testing.T) {
 	sub := eventbus.SubscribeTo(bus, eventbus.Pairing.Created)
 	defer sub.Close()
 
-	service := newAuthService(apiServer)
+	service := &authService{api: apiServer}
 	ctx := context.WithValue(context.Background(), authContextKey{}, storedToken{Role: string(roleAdmin)})
 
 	resp, err := service.CreatePairing(ctx, &apiv1.CreatePairingRequest{
@@ -77,7 +77,7 @@ func TestPairingClaimedEventPublished(t *testing.T) {
 	bus := eventbus.New()
 	apiServer.SetEventBus(bus)
 
-	service := newAuthService(apiServer)
+	service := &authService{api: apiServer}
 	adminCtx := context.WithValue(context.Background(), authContextKey{}, storedToken{Role: string(roleAdmin)})
 
 	createResp, err := service.CreatePairing(adminCtx, &apiv1.CreatePairingRequest{
@@ -160,7 +160,7 @@ func TestPairingConnectURLFormat(t *testing.T) {
 func TestPairingExpiredCodeClaimFails(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
 
-	service := newAuthService(apiServer)
+	service := &authService{api: apiServer}
 	adminCtx := context.WithValue(context.Background(), authContextKey{}, storedToken{Role: string(roleAdmin)})
 
 	// Create pairing with very short TTL (1 second)
@@ -193,7 +193,7 @@ func TestPairingNoEventWithoutBus(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
 	// eventBus is nil by default in newTestAPIServer
 
-	service := newAuthService(apiServer)
+	service := &authService{api: apiServer}
 	adminCtx := context.WithValue(context.Background(), authContextKey{}, storedToken{Role: string(roleAdmin)})
 
 	// Should not panic even without event bus
@@ -221,7 +221,7 @@ func TestPairingConnectURLInResponse(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
 	apiServer.runtime = runtimeStubWithPorts{grpcPort: 9090, connectPort: 8080}
 
-	service := newAuthService(apiServer)
+	service := &authService{api: apiServer}
 	adminCtx := context.WithValue(context.Background(), authContextKey{}, storedToken{Role: string(roleAdmin)})
 
 	resp, err := service.CreatePairing(adminCtx, &apiv1.CreatePairingRequest{
