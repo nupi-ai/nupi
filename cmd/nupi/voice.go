@@ -138,10 +138,11 @@ func voiceStart(cmd *cobra.Command, _ []string) error {
 	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sigs)
 
+	stderr := out.errW
 	go func() {
 		select {
 		case <-sigs:
-			fmt.Fprintln(os.Stderr, "\nInterrupt received, stopping voice stream...")
+			fmt.Fprintln(stderr, "\nInterrupt received, stopping voice stream...")
 			cancel()
 		case <-ctx.Done():
 		}
@@ -290,18 +291,19 @@ func voiceStart(cmd *cobra.Command, _ []string) error {
 			"playback_bytes":  playbackBytes,
 		}
 
+		stdout := out.w
 		return out.Render(CommandResult{
 			Data: payload,
 			HumanReadable: func() error {
-				fmt.Fprintf(os.Stdout, "Uploaded %d bytes from %s to session %s/%s\n", counter.n, input.description, sessionID, streamID)
+				fmt.Fprintf(stdout, "Uploaded %d bytes from %s to session %s/%s\n", counter.n, input.description, sessionID, streamID)
 				if !noPlayback {
 					if playbackBytes > 0 {
-						fmt.Fprintf(os.Stdout, "Received %d playback chunks (%d bytes)\n", playbackChunks, playbackBytes)
+						fmt.Fprintf(stdout, "Received %d playback chunks (%d bytes)\n", playbackChunks, playbackBytes)
 						if outputPath != "" {
-							fmt.Fprintf(os.Stdout, "Saved playback audio to %s\n", outputPath)
+							fmt.Fprintf(stdout, "Saved playback audio to %s\n", outputPath)
 						}
 					} else {
-						fmt.Fprintln(os.Stdout, "Playback stream completed with no audio data")
+						fmt.Fprintln(stdout, "Playback stream completed with no audio data")
 					}
 				}
 				return nil
@@ -344,7 +346,7 @@ func voiceInterrupt(cmd *cobra.Command, defaultReason string) error {
 				"reason":     reason,
 			},
 			HumanReadable: func() error {
-				fmt.Fprintf(os.Stdout, "Sent interruption (%s) to session %s\n", reason, sessionID)
+				fmt.Fprintf(out.w, "Sent interruption (%s) to session %s\n", reason, sessionID)
 				return nil
 			},
 		}, nil
@@ -371,16 +373,17 @@ func voiceStatus(cmd *cobra.Command, _ []string) error {
 			"playback_enabled": playbackEnabled,
 		}
 
+		stdout := cmd.OutOrStdout()
 		return CommandResult{
 			Data: payload,
 			HumanReadable: func() error {
-				fmt.Printf("Capture enabled: %v\n", captureEnabled)
-				fmt.Println("Capture capabilities:")
+				fmt.Fprintf(stdout, "Capture enabled: %v\n", captureEnabled)
+				fmt.Fprintln(stdout, "Capture capabilities:")
 				if len(caps.GetCapture()) == 0 {
-					fmt.Println("  (none)")
+					fmt.Fprintln(stdout, "  (none)")
 				} else {
 					for _, cap := range caps.GetCapture() {
-						fmt.Printf("  - stream=%s %dHz %dbit %dch\n",
+						fmt.Fprintf(stdout, "  - stream=%s %dHz %dbit %dch\n",
 							cap.GetStreamId(),
 							cap.GetFormat().GetSampleRate(),
 							cap.GetFormat().GetBitDepth(),
@@ -389,13 +392,13 @@ func voiceStatus(cmd *cobra.Command, _ []string) error {
 					}
 				}
 
-				fmt.Printf("Playback enabled: %v\n", playbackEnabled)
-				fmt.Println("Playback capabilities:")
+				fmt.Fprintf(stdout, "Playback enabled: %v\n", playbackEnabled)
+				fmt.Fprintln(stdout, "Playback capabilities:")
 				if len(caps.GetPlayback()) == 0 {
-					fmt.Println("  (none)")
+					fmt.Fprintln(stdout, "  (none)")
 				} else {
 					for _, cap := range caps.GetPlayback() {
-						fmt.Printf("  - stream=%s %dHz %dbit %dch\n",
+						fmt.Fprintf(stdout, "  - stream=%s %dHz %dbit %dch\n",
 							cap.GetStreamId(),
 							cap.GetFormat().GetSampleRate(),
 							cap.GetFormat().GetBitDepth(),
@@ -519,6 +522,9 @@ func prepareAudioInput(path string, sampleRate, channels, bitDepth, frameMS int)
 		if sampleRate <= 0 || channels <= 0 || bitDepth <= 0 {
 			return audioInput{}, errors.New("raw input requires --sample-rate, --channels and --bit-depth")
 		}
+		// Bare os.Stdin is intentional — this reads raw binary audio data
+		// from a pipe, not interactive CLI input. cmd.InOrStdin() is not
+		// available here (helper function, no *cobra.Command parameter).
 		return audioInput{
 			reader:      os.Stdin,
 			format:      format,
