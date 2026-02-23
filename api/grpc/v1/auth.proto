@@ -1,0 +1,123 @@
+syntax = "proto3";
+
+package nupi.api.v1;
+
+option go_package = "github.com/nupi-ai/nupi/internal/api/grpc/v1;v1";
+
+import "google/protobuf/timestamp.proto";
+
+// NotificationEventType identifies the kind of push notification event.
+enum NotificationEventType {
+  NOTIFICATION_EVENT_TYPE_UNSPECIFIED = 0;
+  NOTIFICATION_EVENT_TYPE_TASK_COMPLETED = 1;
+  NOTIFICATION_EVENT_TYPE_INPUT_NEEDED = 2;
+  NOTIFICATION_EVENT_TYPE_ERROR = 3;
+}
+
+// TokenInfo describes an authentication token with its value masked.
+message TokenInfo {
+  string id = 1;
+  string name = 2;
+  string role = 3;
+  string masked_value = 4;
+  google.protobuf.Timestamp created_at = 5;
+}
+
+// ListTokensRequest asks for all authentication tokens.
+message ListTokensRequest {}
+
+// ListTokensResponse returns tokens with masked values.
+message ListTokensResponse {
+  repeated TokenInfo tokens = 1;
+}
+
+// CreateTokenRequest generates a new authentication token.
+message CreateTokenRequest {
+  string name = 1;
+  string role = 2;
+}
+
+// CreateTokenResponse returns the full token value (shown once) and its metadata.
+message CreateTokenResponse {
+  string token = 1;
+  TokenInfo info = 2;
+}
+
+// DeleteTokenRequest identifies a token to revoke. Provide either the record
+// ID (from ListTokens) or the full token value — the daemon tries ID first,
+// then falls back to value lookup.
+message DeleteTokenRequest {
+  // Token record identifier returned by ListTokens.
+  string id = 1;
+  // Full token string (used when the record ID is unknown).
+  string token = 2;
+}
+
+// PairingInfo describes a device pairing code and its claim status.
+message PairingInfo {
+  string code = 1;
+  string name = 2;
+  string role = 3;
+  google.protobuf.Timestamp expires_at = 4;
+  bool claimed = 5;
+  google.protobuf.Timestamp created_at = 6;
+}
+
+// ListPairingsRequest asks for all active pairing codes.
+message ListPairingsRequest {}
+
+// ListPairingsResponse returns the list of pairing codes.
+message ListPairingsResponse {
+  repeated PairingInfo pairings = 1;
+}
+
+// CreatePairingRequest generates a new time-limited pairing code for device enrollment.
+message CreatePairingRequest {
+  string name = 1;
+  string role = 2;
+  int32 expires_in_seconds = 3;
+}
+
+// CreatePairingResponse returns the pairing code and its expiry.
+message CreatePairingResponse {
+  string code = 1;
+  google.protobuf.Timestamp expires_at = 2;
+  string name = 3;
+  string role = 4;
+  string connect_url = 5;
+}
+
+// ClaimPairingRequest exchanges a pairing code for an auth token (no auth required).
+message ClaimPairingRequest {
+  string code = 1;
+  string client_name = 2;
+}
+
+// ClaimPairingResponse returns the auth token and daemon connection details.
+message ClaimPairingResponse {
+  string token = 1;
+  string daemon_host = 2;
+  int32 daemon_port = 3;
+  bool tls = 4;
+  string name = 5;
+  string role = 6;
+  google.protobuf.Timestamp created_at = 7;
+}
+
+// RegisterPushTokenRequest registers an Expo push token for a paired mobile device.
+message RegisterPushTokenRequest {
+  string token = 1;                                    // Expo push token (ExponentPushToken[...])
+  string device_id = 2;                                // Unique device identifier
+  repeated NotificationEventType enabled_events = 3;   // Which event types the device wants to receive
+}
+
+// RegisterPushTokenResponse is empty on success.
+message RegisterPushTokenResponse {}
+
+// UnregisterPushTokenRequest removes a push token for a device.
+message UnregisterPushTokenRequest {
+  string device_id = 1;
+}
+
+// UnregisterPushTokenResponse is empty on success.
+message UnregisterPushTokenResponse {}

@@ -1,8 +1,6 @@
-import type {
-  LanguageInfo as ProtoLanguageInfo,
-  Recording as ProtoRecording,
-  Session as ProtoSession,
-} from "../gen/nupi_pb";
+import type { LanguageInfo as ProtoLanguageInfo } from "../gen/daemon_pb";
+import type { Recording as ProtoRecording } from "../gen/recordings_pb";
+import type { Session as ProtoSession } from "../gen/sessions_pb";
 
 // Desktop Tauri payloads use snake_case and RFC3339 timestamps.
 // Field scalar types are sourced from generated proto types to keep

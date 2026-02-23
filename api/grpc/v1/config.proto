@@ -1,0 +1,57 @@
+syntax = "proto3";
+
+package nupi.api.v1;
+
+option go_package = "github.com/nupi-ai/nupi/internal/api/grpc/v1;v1";
+
+import "adapters.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/wrappers.proto";
+
+// ConfigMigrateRequest triggers a configuration migration from the old format.
+message ConfigMigrateRequest {}
+
+// ConfigMigrateResponse reports the result of a config migration operation.
+message ConfigMigrateResponse {
+  repeated string updated_slots = 1;
+  repeated string pending_slots = 2;
+  bool audio_settings_updated = 3;
+}
+
+// TransportConfig represents daemon transport settings (gRPC bindings, TLS).
+message TransportConfig {
+  string binding = 1;
+  int32 port = 2;
+  string tls_cert_path = 3;
+  string tls_key_path = 4;
+  repeated string allowed_origins = 5;
+  int32 grpc_port = 6;
+  string grpc_binding = 7;
+  bool auth_required = 8;
+}
+
+// UpdateTransportConfigRequest propagates new transport settings.
+message UpdateTransportConfigRequest {
+  TransportConfig config = 1;
+}
+
+// QuickstartStatusResponse summarizes progress and adapter state for the quickstart wizard.
+message QuickstartStatusResponse {
+  bool completed = 1;
+  google.protobuf.Timestamp completed_at = 2;
+  repeated string pending_slots = 3;
+  repeated AdapterEntry adapters = 4;
+  repeated string missing_reference_adapters = 5;
+}
+
+// QuickstartBinding pairs a slot with the adapter chosen via quickstart.
+message QuickstartBinding {
+  string slot = 1;
+  string adapter_id = 2;
+}
+
+// UpdateQuickstartRequest applies quickstart selections.
+message UpdateQuickstartRequest {
+  repeated QuickstartBinding bindings = 1;
+  google.protobuf.BoolValue complete = 2;
+}
