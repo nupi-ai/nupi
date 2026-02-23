@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nupi-ai/nupi/internal/audio/serviceutil"
 	"github.com/nupi-ai/nupi/internal/audio/streammanager"
 	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
@@ -26,16 +27,15 @@ var (
 )
 
 const (
-	defaultRequestBuffer = 16
-	defaultRetryInitial  = constants.Duration200Milliseconds
-	defaultRetryMax      = constants.Duration5Seconds
-	maxPendingRequests   = 100
+	defaultRequestBuffer = serviceutil.DefaultWorkerBuffer
+	defaultRetryInitial  = serviceutil.DefaultRetryInitial
+	defaultRetryMax      = serviceutil.DefaultRetryMax
+	maxPendingRequests   = serviceutil.DefaultMaxPending
 
 	defaultStreamID = slots.TTS
 )
 
-// SessionParams is an alias for backward compatibility.
-type SessionParams = streammanager.SessionParams
+type SessionParams = serviceutil.SessionParams
 
 // SpeakRequest represents a text-to-speech invocation.
 type SpeakRequest struct {
@@ -61,18 +61,8 @@ type Synthesizer interface {
 	Close(ctx context.Context) ([]SynthesisChunk, error)
 }
 
-// Factory constructs synthesizers for a given session.
-type Factory interface {
-	Create(ctx context.Context, params SessionParams) (Synthesizer, error)
-}
-
-// FactoryFunc adapts a function to the Factory interface.
-type FactoryFunc func(ctx context.Context, params SessionParams) (Synthesizer, error)
-
-// Create invokes the underlying function.
-func (f FactoryFunc) Create(ctx context.Context, params SessionParams) (Synthesizer, error) {
-	return f(ctx, params)
-}
+type Factory = serviceutil.Factory[Synthesizer]
+type FactoryFunc = serviceutil.FactoryFunc[Synthesizer]
 
 // Option configures the Service.
 type Option func(*Service)
@@ -105,15 +95,7 @@ func WithAudioFormat(format eventbus.AudioFormat) Option {
 // WithRetryDelays customises retry backoff for adapter availability.
 func WithRetryDelays(initial, max time.Duration) Option {
 	return func(s *Service) {
-		if initial > 0 {
-			s.retryInitial = initial
-		}
-		if max > 0 && max >= s.retryInitial {
-			s.retryMax = max
-		}
-		if s.retryMax < s.retryInitial {
-			s.retryMax = s.retryInitial
-		}
+		s.retryInitial, s.retryMax = serviceutil.NormalizeRetryDelays(s.retryInitial, s.retryMax, initial, max)
 	}
 }
 

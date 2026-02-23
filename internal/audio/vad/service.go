@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/nupi-ai/nupi/internal/audio/serviceutil"
 	"github.com/nupi-ai/nupi/internal/audio/streammanager"
 	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
@@ -23,18 +24,17 @@ var (
 )
 
 const (
-	defaultSegmentBuffer = 16
-	defaultRetryInitial  = constants.Duration200Milliseconds
-	defaultRetryMax      = constants.Duration5Seconds
-	maxPendingSegments   = 100
+	defaultSegmentBuffer = serviceutil.DefaultWorkerBuffer
+	defaultRetryInitial  = serviceutil.DefaultRetryInitial
+	defaultRetryMax      = serviceutil.DefaultRetryMax
+	maxPendingSegments   = serviceutil.DefaultMaxPending
 	maxRetryFailures     = 10
 	maxRetryDuration     = constants.Duration2Minutes
 	defaultLatencyP99    = constants.Duration100Milliseconds
 	latencyDegradeFrames = 10
 )
 
-// SessionParams is an alias for backward compatibility.
-type SessionParams = streammanager.SessionParams
+type SessionParams = serviceutil.SessionParams
 
 // Detection represents the outcome of processing a segment.
 type Detection struct {
@@ -49,18 +49,8 @@ type Analyzer interface {
 	Close(ctx context.Context) ([]Detection, error)
 }
 
-// Factory constructs analyzers for a given session stream.
-type Factory interface {
-	Create(ctx context.Context, params SessionParams) (Analyzer, error)
-}
-
-// FactoryFunc adapts a function to the Factory interface.
-type FactoryFunc func(ctx context.Context, params SessionParams) (Analyzer, error)
-
-// Create invokes the underlying function.
-func (f FactoryFunc) Create(ctx context.Context, params SessionParams) (Analyzer, error) {
-	return f(ctx, params)
-}
+type Factory = serviceutil.Factory[Analyzer]
+type FactoryFunc = serviceutil.FactoryFunc[Analyzer]
 
 // Option configures the Service behaviour.
 type Option func(*Service)
@@ -86,15 +76,7 @@ func WithFactory(factory Factory) Option {
 // WithRetryDelays configures the retry backoff when adapters are temporarily unavailable.
 func WithRetryDelays(initial, max time.Duration) Option {
 	return func(s *Service) {
-		if initial > 0 {
-			s.retryInitial = initial
-		}
-		if max > 0 && max >= s.retryInitial {
-			s.retryMax = max
-		}
-		if s.retryMax < s.retryInitial {
-			s.retryMax = s.retryInitial
-		}
+		s.retryInitial, s.retryMax = serviceutil.NormalizeRetryDelays(s.retryInitial, s.retryMax, initial, max)
 	}
 }
 
