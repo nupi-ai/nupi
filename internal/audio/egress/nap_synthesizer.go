@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"time"
 
 	napv1 "github.com/nupi-ai/nupi/api/nap/v1"
@@ -167,9 +166,4 @@ func isStreamCancelled(err error) bool {
 		}
 	}
 	return false
-}
-
-// ContextWithDialer attaches a custom gRPC dialer to the context for testing.
-func ContextWithDialer(ctx context.Context, dialer func(context.Context, string) (net.Conn, error)) context.Context {
-	return napdial.ContextWithDialer(ctx, dialer)
 }

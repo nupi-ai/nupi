@@ -14,6 +14,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/audio/adapterutil"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
+	"github.com/nupi-ai/nupi/internal/napdial"
 	"github.com/nupi-ai/nupi/internal/plugins/adapters"
 	testutil "github.com/nupi-ai/nupi/internal/testutil"
 	"google.golang.org/grpc"
@@ -198,7 +199,7 @@ func TestAdapterFactoryCreatesNAPTranscriber(t *testing.T) {
 	}
 
 	factory := NewAdapterFactory(store, nil)
-	ctx = ContextWithDialer(ctx, dialer)
+	ctx = napdial.ContextWithDialer(ctx, dialer)
 	params := SessionParams{
 		SessionID: "sess",
 		StreamID:  "mic",
@@ -543,7 +544,7 @@ func TestNAPTranscriberUnavailableWrapsError(t *testing.T) {
 	dialer := func(ctx context.Context, _ string) (net.Conn, error) {
 		return nil, fmt.Errorf("connection refused")
 	}
-	ctx := ContextWithDialer(context.Background(), dialer)
+	ctx := napdial.ContextWithDialer(context.Background(), dialer)
 
 	_, err := newNAPTranscriber(ctx, SessionParams{
 		SessionID: "sess",

@@ -26,6 +26,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/conversation"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/intentrouter"
+	"github.com/nupi-ai/nupi/internal/napdial"
 	adapters "github.com/nupi-ai/nupi/internal/plugins/adapters"
 	testutil "github.com/nupi-ai/nupi/internal/testutil"
 	maputil "github.com/nupi-ai/nupi/internal/util/maps"
@@ -391,7 +392,7 @@ func TestAudioIngressToSTTGRPCPipeline(t *testing.T) {
 	}
 	defer ingressSvc.Shutdown(context.Background())
 
-	if err := sttSvc.Start(stt.ContextWithDialer(runCtx, dialer)); err != nil {
+	if err := sttSvc.Start(napdial.ContextWithDialer(runCtx, dialer)); err != nil {
 		t.Fatalf("start stt service: %v", err)
 	}
 	defer sttSvc.Shutdown(context.Background())
@@ -1469,7 +1470,7 @@ func TestGRPCSTTAndTTSNAPPipeline(t *testing.T) {
 	}
 	defer ingressSvc.Shutdown(context.Background())
 
-	if err := sttSvc.Start(stt.ContextWithDialer(runCtx, sttDialer)); err != nil {
+	if err := sttSvc.Start(napdial.ContextWithDialer(runCtx, sttDialer)); err != nil {
 		t.Fatalf("start stt: %v", err)
 	}
 	defer sttSvc.Shutdown(context.Background())
@@ -1490,7 +1491,7 @@ func TestGRPCSTTAndTTSNAPPipeline(t *testing.T) {
 	defer intentSvc.Shutdown(context.Background())
 
 	// Egress needs TTS dialer injected.
-	if err := egressSvc.Start(egress.ContextWithDialer(runCtx, ttsDialer)); err != nil {
+	if err := egressSvc.Start(napdial.ContextWithDialer(runCtx, ttsDialer)); err != nil {
 		t.Fatalf("start egress: %v", err)
 	}
 	defer egressSvc.Shutdown(context.Background())
