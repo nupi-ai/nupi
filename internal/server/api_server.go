@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"maps"
 	"os"
 	"strings"
 	"sync"
@@ -22,6 +21,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/pty"
 	"github.com/nupi-ai/nupi/internal/session"
 	"github.com/nupi-ai/nupi/internal/termresize"
+	maputil "github.com/nupi-ai/nupi/internal/util/maps"
 	nupiversion "github.com/nupi-ai/nupi/internal/version"
 	"github.com/nupi-ai/nupi/internal/voice/slots"
 	"google.golang.org/grpc/codes"
@@ -1135,7 +1135,7 @@ func (s *APIServer) publishAudioInterrupt(sessionID, streamID, reason string, me
 		StreamID:  streamID,
 		Reason:    strings.TrimSpace(reason),
 		Timestamp: time.Now().UTC(),
-		Metadata:  cloneStringMap(metadata),
+		Metadata:  maputil.Clone(metadata),
 	}
 
 	eventbus.Publish(context.Background(), s.eventBus, eventbus.Audio.Interrupt, eventbus.SourceClient, event)
@@ -1220,10 +1220,3 @@ func voiceIssueSummary(diags []voiceDiagnostic, fallback string) string {
 // ---------------------------------------------------------------------------
 // Utility
 // ---------------------------------------------------------------------------
-
-func cloneStringMap(in map[string]string) map[string]string {
-	if len(in) == 0 {
-		return nil
-	}
-	return maps.Clone(in)
-}

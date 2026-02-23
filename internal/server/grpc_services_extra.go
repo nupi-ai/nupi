@@ -12,6 +12,7 @@ import (
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/language"
+	maputil "github.com/nupi-ai/nupi/internal/util/maps"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -178,7 +179,7 @@ func (m *adapterRuntimeService) RegisterAdapter(ctx context.Context, req *apiv1.
 				endpoint.Args = append([]string(nil), args...)
 			}
 			if env := ep.GetEnv(); len(env) > 0 {
-				endpoint.Env = cloneStringMap(env)
+				endpoint.Env = maputil.Clone(env)
 			}
 			if err := m.api.configStore.UpsertAdapterEndpoint(ctx, endpoint); err != nil {
 				return nil, status.Errorf(codes.Internal, "register adapter endpoint: %v", err)

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"maps"
 	"net"
 	"sync"
 	"time"
@@ -14,6 +13,7 @@ import (
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/napdial"
+	maputil "github.com/nupi-ai/nupi/internal/util/maps"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -124,7 +124,7 @@ func (a *NAPAdapter) ResolveIntent(ctx context.Context, req IntentRequest) (*Int
 		PromptId:              req.PromptID,
 		SessionId:             req.SessionID,
 		Transcript:            req.Transcript,
-		Metadata:              copyStringMap(req.Metadata),
+		Metadata:              maputil.Clone(req.Metadata),
 		EventType:             eventTypeToProto(req.EventType),
 		CurrentTool:           req.CurrentTool,
 		SessionOutput:         req.SessionOutput,
@@ -148,7 +148,7 @@ func (a *NAPAdapter) ResolveIntent(ctx context.Context, req IntentRequest) (*Int
 			Origin:   contentOriginToProto(turn.Origin),
 			Text:     turn.Text,
 			At:       timestampOrNil(turn.At),
-			Metadata: copyStringMap(turn.Meta),
+			Metadata: maputil.Clone(turn.Meta),
 		})
 	}
 
@@ -187,7 +187,7 @@ func (a *NAPAdapter) ResolveIntent(ctx context.Context, req IntentRequest) (*Int
 			Tool:      session.Tool,
 			Status:    session.Status,
 			StartTime: timestampOrNil(session.StartTime),
-			Metadata:  copyStringMap(session.Metadata),
+			Metadata:  maputil.Clone(session.Metadata),
 		})
 	}
 
@@ -211,7 +211,7 @@ func (a *NAPAdapter) ResolveIntent(ctx context.Context, req IntentRequest) (*Int
 		PromptID:   grpcResp.PromptId,
 		Reasoning:  grpcResp.Reasoning,
 		Confidence: grpcResp.Confidence,
-		Metadata:   copyStringMap(grpcResp.Metadata),
+		Metadata:   maputil.Clone(grpcResp.Metadata),
 	}
 
 	for _, action := range grpcResp.Actions {
@@ -220,7 +220,7 @@ func (a *NAPAdapter) ResolveIntent(ctx context.Context, req IntentRequest) (*Int
 			SessionRef: action.SessionRef,
 			Command:    action.Command,
 			Text:       action.Text,
-			Metadata:   copyStringMap(action.Metadata),
+			Metadata:   maputil.Clone(action.Metadata),
 		})
 	}
 
@@ -311,14 +311,6 @@ func actionTypeFromProto(t napv1.ActionType) ActionType {
 	default:
 		return ActionNoop
 	}
-}
-
-// copyStringMap creates a copy of a string map.
-func copyStringMap(src map[string]string) map[string]string {
-	if len(src) == 0 {
-		return nil
-	}
-	return maps.Clone(src)
 }
 
 // timestampOrNil converts time.Time to protobuf timestamp, returning nil for zero time.

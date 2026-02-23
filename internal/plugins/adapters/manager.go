@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"maps"
 	"net"
 	"os"
 	"path/filepath"
@@ -24,6 +23,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/jsrunner"
 	"github.com/nupi-ai/nupi/internal/napdial"
 	"github.com/nupi-ai/nupi/internal/plugins/manifest"
+	maputil "github.com/nupi-ai/nupi/internal/util/maps"
 	"github.com/nupi-ai/nupi/internal/voice/slots"
 )
 
@@ -386,7 +386,7 @@ func (m *Manager) Running() []Binding {
 		binding := inst.binding
 		binding.Fingerprint = inst.fingerprint
 		if len(binding.Runtime) > 0 {
-			binding.Runtime = cloneStringMap(binding.Runtime)
+			binding.Runtime = maputil.Clone(binding.Runtime)
 		}
 		out = append(out, binding)
 	}
@@ -758,7 +758,7 @@ func (m *Manager) startAdapter(ctx context.Context, plan bindingPlan) (*adapterI
 		}
 
 		if len(runtimeExtra) > 0 {
-			plan.binding.Runtime = cloneStringMap(runtimeExtra)
+			plan.binding.Runtime = maputil.Clone(runtimeExtra)
 		}
 		plan.endpoint = endpoint
 
@@ -1352,13 +1352,6 @@ func waitForAdapterReady(ctx context.Context, addr string) error {
 		case <-ticker.C:
 		}
 	}
-}
-
-func cloneStringMap(in map[string]string) map[string]string {
-	if len(in) == 0 {
-		return nil
-	}
-	return maps.Clone(in)
 }
 
 // SetReadinessChecker allows tests to override the adapter readiness check function.

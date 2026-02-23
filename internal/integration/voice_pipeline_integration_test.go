@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"maps"
 	"net"
 	"strings"
 	"sync"
@@ -29,6 +28,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/intentrouter"
 	adapters "github.com/nupi-ai/nupi/internal/plugins/adapters"
 	testutil "github.com/nupi-ai/nupi/internal/testutil"
+	maputil "github.com/nupi-ai/nupi/internal/util/maps"
 	"github.com/nupi-ai/nupi/internal/voice/slots"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/test/bufconn"
@@ -642,7 +642,7 @@ func copyChunk(chunk egress.SynthesisChunk) egress.SynthesisChunk {
 		Data:     append([]byte(nil), chunk.Data...),
 		Duration: chunk.Duration,
 		Final:    chunk.Final,
-		Metadata: copyStringMap(chunk.Metadata),
+		Metadata: maputil.Clone(chunk.Metadata),
 	}
 	if chunk.Format != nil {
 		format := *chunk.Format
@@ -675,13 +675,6 @@ func splitChunk(chunk egress.SynthesisChunk) (egress.SynthesisChunk, []egress.Sy
 
 	second.Final = true
 	return first, []egress.SynthesisChunk{second}
-}
-
-func copyStringMap(src map[string]string) map[string]string {
-	if len(src) == 0 {
-		return nil
-	}
-	return maps.Clone(src)
 }
 
 // ---------------------------------------------------------------------------

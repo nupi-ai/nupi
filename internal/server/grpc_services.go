@@ -19,6 +19,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/language"
 	"github.com/nupi-ai/nupi/internal/plugins/adapters"
 	"github.com/nupi-ai/nupi/internal/protocol"
+	maputil "github.com/nupi-ai/nupi/internal/util/maps"
 	"github.com/nupi-ai/nupi/internal/session"
 	"github.com/nupi-ai/nupi/internal/voice/slots"
 	"google.golang.org/grpc"
@@ -182,7 +183,7 @@ func (a *audioService) StreamAudioIn(stream apiv1.AudioService_StreamAudioInServ
 			}
 			var metadata map[string]string
 			if chunk != nil {
-				metadata = cloneStringMap(chunk.GetMetadata())
+				metadata = maputil.Clone(chunk.GetMetadata())
 			}
 			metadata = language.MergeContextLanguage(stream.Context(), metadata)
 			ingressStream, err = a.api.audioIngress.OpenStream(sessionID, streamID, format, metadata)
@@ -301,7 +302,7 @@ func (a *audioService) StreamAudioOut(req *apiv1.StreamAudioOutRequest, srv apiv
 					Sequence:   evt.Sequence,
 					DurationMs: durationToMillis(chunkDuration),
 					Last:       evt.Final,
-					Metadata:   cloneStringMap(evt.Metadata),
+					Metadata:   maputil.Clone(evt.Metadata),
 				},
 			}
 			if firstChunk {

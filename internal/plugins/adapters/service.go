@@ -15,6 +15,7 @@ import (
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/plugins/manifest"
+	maputil "github.com/nupi-ai/nupi/internal/util/maps"
 )
 
 // Service orchestrates adapters and publishes status updates on the event bus.
@@ -301,7 +302,7 @@ func (s *Service) updateState(ctx context.Context, running []Binding) {
 		}
 		s.state[slot] = newState
 
-		extra := cloneStringMap(binding.Runtime)
+		extra := maputil.Clone(binding.Runtime)
 		s.publishStatus(ctx, eventbus.AdapterStatusEvent{
 			AdapterID: binding.AdapterID,
 			Slot:      string(slot),
