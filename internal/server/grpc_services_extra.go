@@ -330,10 +330,6 @@ type recordingsService struct {
 	api *APIServer
 }
 
-func newRecordingsService(api *APIServer) *recordingsService {
-	return &recordingsService{api: api}
-}
-
 func (r *recordingsService) ListRecordings(ctx context.Context, req *apiv1.ListRecordingsRequest) (*apiv1.ListRecordingsResponse, error) {
 
 	store := r.api.sessionManager.GetRecordingStore()

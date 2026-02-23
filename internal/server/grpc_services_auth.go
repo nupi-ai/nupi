@@ -24,10 +24,6 @@ type authService struct {
 	api *APIServer
 }
 
-func newAuthService(api *APIServer) *authService {
-	return &authService{api: api}
-}
-
 func (a *authService) ListTokens(ctx context.Context, _ *apiv1.ListTokensRequest) (*apiv1.ListTokensResponse, error) {
 
 	tokens, err := a.api.loadAuthTokens(ctx)
