@@ -6,17 +6,17 @@ import { fileURLToPath } from 'node:url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const protoPath = path.resolve(__dirname, '../../../api/grpc/v1/nupi.proto');
+const sessionProtoPath = path.resolve(__dirname, '../../../api/grpc/v1/sessions.proto');
 const frontendPath = path.resolve(__dirname, '../src/lib/sessionEvents.ts');
 const tauriPath = path.resolve(__dirname, '../src-tauri/src/lib.rs');
 
-const proto = fs.readFileSync(protoPath, 'utf8');
+const sessionProto = fs.readFileSync(sessionProtoPath, 'utf8');
 const frontend = fs.readFileSync(frontendPath, 'utf8');
 const tauri = fs.readFileSync(tauriPath, 'utf8');
 
-const enumMatch = proto.match(/enum\s+SessionEventType\s*\{([\s\S]*?)\n\}/);
+const enumMatch = sessionProto.match(/enum\s+SessionEventType\s*\{([\s\S]*?)\n\}/);
 if (!enumMatch) {
-  console.error('Cannot find enum SessionEventType in nupi.proto');
+  console.error('Cannot find enum SessionEventType in sessions.proto');
   process.exit(1);
 }
 

@@ -1354,12 +1354,14 @@ var AudioService_ServiceDesc = grpc.ServiceDesc{
 }
 
 const (
-	AuthService_ListTokens_FullMethodName    = "/nupi.api.v1.AuthService/ListTokens"
-	AuthService_CreateToken_FullMethodName   = "/nupi.api.v1.AuthService/CreateToken"
-	AuthService_DeleteToken_FullMethodName   = "/nupi.api.v1.AuthService/DeleteToken"
-	AuthService_ListPairings_FullMethodName  = "/nupi.api.v1.AuthService/ListPairings"
-	AuthService_CreatePairing_FullMethodName = "/nupi.api.v1.AuthService/CreatePairing"
-	AuthService_ClaimPairing_FullMethodName  = "/nupi.api.v1.AuthService/ClaimPairing"
+	AuthService_ListTokens_FullMethodName          = "/nupi.api.v1.AuthService/ListTokens"
+	AuthService_CreateToken_FullMethodName         = "/nupi.api.v1.AuthService/CreateToken"
+	AuthService_DeleteToken_FullMethodName         = "/nupi.api.v1.AuthService/DeleteToken"
+	AuthService_ListPairings_FullMethodName        = "/nupi.api.v1.AuthService/ListPairings"
+	AuthService_CreatePairing_FullMethodName       = "/nupi.api.v1.AuthService/CreatePairing"
+	AuthService_ClaimPairing_FullMethodName        = "/nupi.api.v1.AuthService/ClaimPairing"
+	AuthService_RegisterPushToken_FullMethodName   = "/nupi.api.v1.AuthService/RegisterPushToken"
+	AuthService_UnregisterPushToken_FullMethodName = "/nupi.api.v1.AuthService/UnregisterPushToken"
 )
 
 // AuthServiceClient is the client API for AuthService service.
@@ -1372,6 +1374,8 @@ type AuthServiceClient interface {
 	ListPairings(ctx context.Context, in *ListPairingsRequest, opts ...grpc.CallOption) (*ListPairingsResponse, error)
 	CreatePairing(ctx context.Context, in *CreatePairingRequest, opts ...grpc.CallOption) (*CreatePairingResponse, error)
 	ClaimPairing(ctx context.Context, in *ClaimPairingRequest, opts ...grpc.CallOption) (*ClaimPairingResponse, error)
+	RegisterPushToken(ctx context.Context, in *RegisterPushTokenRequest, opts ...grpc.CallOption) (*RegisterPushTokenResponse, error)
+	UnregisterPushToken(ctx context.Context, in *UnregisterPushTokenRequest, opts ...grpc.CallOption) (*UnregisterPushTokenResponse, error)
 }
 
 type authServiceClient struct {
@@ -1436,6 +1440,24 @@ func (c *authServiceClient) ClaimPairing(ctx context.Context, in *ClaimPairingRe
 	return out, nil
 }
 
+func (c *authServiceClient) RegisterPushToken(ctx context.Context, in *RegisterPushTokenRequest, opts ...grpc.CallOption) (*RegisterPushTokenResponse, error) {
+	out := new(RegisterPushTokenResponse)
+	err := c.cc.Invoke(ctx, AuthService_RegisterPushToken_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *authServiceClient) UnregisterPushToken(ctx context.Context, in *UnregisterPushTokenRequest, opts ...grpc.CallOption) (*UnregisterPushTokenResponse, error) {
+	out := new(UnregisterPushTokenResponse)
+	err := c.cc.Invoke(ctx, AuthService_UnregisterPushToken_FullMethodName, in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AuthServiceServer is the server API for AuthService service.
 // All implementations must embed UnimplementedAuthServiceServer
 // for forward compatibility
@@ -1446,6 +1468,8 @@ type AuthServiceServer interface {
 	ListPairings(context.Context, *ListPairingsRequest) (*ListPairingsResponse, error)
 	CreatePairing(context.Context, *CreatePairingRequest) (*CreatePairingResponse, error)
 	ClaimPairing(context.Context, *ClaimPairingRequest) (*ClaimPairingResponse, error)
+	RegisterPushToken(context.Context, *RegisterPushTokenRequest) (*RegisterPushTokenResponse, error)
+	UnregisterPushToken(context.Context, *UnregisterPushTokenRequest) (*UnregisterPushTokenResponse, error)
 	mustEmbedUnimplementedAuthServiceServer()
 }
 
@@ -1470,6 +1494,12 @@ func (UnimplementedAuthServiceServer) CreatePairing(context.Context, *CreatePair
 }
 func (UnimplementedAuthServiceServer) ClaimPairing(context.Context, *ClaimPairingRequest) (*ClaimPairingResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ClaimPairing not implemented")
+}
+func (UnimplementedAuthServiceServer) RegisterPushToken(context.Context, *RegisterPushTokenRequest) (*RegisterPushTokenResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RegisterPushToken not implemented")
+}
+func (UnimplementedAuthServiceServer) UnregisterPushToken(context.Context, *UnregisterPushTokenRequest) (*UnregisterPushTokenResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method UnregisterPushToken not implemented")
 }
 func (UnimplementedAuthServiceServer) mustEmbedUnimplementedAuthServiceServer() {}
 
@@ -1592,6 +1622,42 @@ func _AuthService_ClaimPairing_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AuthService_RegisterPushToken_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RegisterPushTokenRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AuthServiceServer).RegisterPushToken(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AuthService_RegisterPushToken_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AuthServiceServer).RegisterPushToken(ctx, req.(*RegisterPushTokenRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AuthService_UnregisterPushToken_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UnregisterPushTokenRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AuthServiceServer).UnregisterPushToken(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AuthService_UnregisterPushToken_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AuthServiceServer).UnregisterPushToken(ctx, req.(*UnregisterPushTokenRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AuthService_ServiceDesc is the grpc.ServiceDesc for AuthService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -1622,6 +1688,14 @@ var AuthService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ClaimPairing",
 			Handler:    _AuthService_ClaimPairing_Handler,
+		},
+		{
+			MethodName: "RegisterPushToken",
+			Handler:    _AuthService_RegisterPushToken_Handler,
+		},
+		{
+			MethodName: "UnregisterPushToken",
+			Handler:    _AuthService_UnregisterPushToken_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

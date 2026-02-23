@@ -1,0 +1,68 @@
+syntax = "proto3";
+
+package nupi.api.v1;
+
+option go_package = "github.com/nupi-ai/nupi/internal/api/grpc/v1;v1";
+
+// DaemonStatusRequest asks for a snapshot of the daemon's current state.
+message DaemonStatusRequest {}
+
+// DaemonStatusResponse returns the daemon's runtime status including version,
+// session count, network bindings, and security configuration.
+message DaemonStatusResponse {
+  string version = 1;
+  int32 sessions_count = 2;
+  int32 port = 3;
+  int32 grpc_port = 4;
+  string binding = 5;
+  string grpc_binding = 6;
+  bool auth_required = 7;
+  double uptime_sec = 8;
+  bool tls_enabled = 9;
+  int32 connect_port = 10;
+}
+
+// ShutdownRequest asks the daemon to terminate gracefully.
+message ShutdownRequest {}
+
+// ShutdownResponse confirms the shutdown and may include a message.
+message ShutdownResponse {
+  string message = 1;
+}
+
+// GetPluginWarningsRequest asks for plugin discovery warnings.
+message GetPluginWarningsRequest {}
+
+// PluginWarning mirrors PluginDiscoveryWarning from the plugin loader.
+message PluginWarning {
+  string dir = 1;
+  string error = 2;
+}
+
+// GetPluginWarningsResponse returns warnings from the last plugin scan.
+message GetPluginWarningsResponse {
+  repeated PluginWarning warnings = 1;
+}
+
+// ReloadPluginsRequest triggers a hot-reload of all plugin indices.
+message ReloadPluginsRequest {}
+
+// ReloadPluginsResponse confirms the reload.
+message ReloadPluginsResponse {
+  string message = 1;
+}
+
+// LanguageInfo describes a language in four standardised formats so that
+// each downstream plugin can pick the representation it needs.
+message LanguageInfo {
+  string iso1 = 1;          // ISO 639-1 two-letter code, e.g. "pl"
+  string bcp47 = 2;         // BCP 47 / IETF language tag, e.g. "pl-PL"
+  string english_name = 3;  // English name, e.g. "Polish"
+  string native_name = 4;   // Native name, e.g. "Polski"
+}
+
+message ListLanguagesRequest {}
+
+message ListLanguagesResponse {
+  repeated LanguageInfo languages = 1;
+}

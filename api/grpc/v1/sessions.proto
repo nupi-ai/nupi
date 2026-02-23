@@ -1,0 +1,221 @@
+syntax = "proto3";
+
+package nupi.api.v1;
+
+option go_package = "github.com/nupi-ai/nupi/internal/api/grpc/v1;v1";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/wrappers.proto";
+
+// Session represents a managed PTY session with its process state and metadata.
+message Session {
+  string id = 1;
+  string command = 2;
+  repeated string args = 3;
+  string status = 4;
+  int32 pid = 5;
+  google.protobuf.Timestamp start_time = 6;
+  google.protobuf.Int32Value exit_code = 7;  // Absent (null) while running; present once process exits
+  string work_dir = 8;
+  string tool = 9;             // Detected AI tool (e.g. "claude", "chatgpt")
+  string tool_icon = 10;       // Tool icon identifier
+  string tool_icon_data = 11;  // Base64-encoded icon data
+  string mode = 12;            // Session mode (e.g. "inspect")
+}
+
+// ListSessionsRequest asks for all active sessions managed by the daemon.
+message ListSessionsRequest {}
+
+// ListSessionsResponse returns the list of sessions.
+message ListSessionsResponse {
+  repeated Session sessions = 1;
+}
+
+// CreateSessionRequest starts a new PTY session running the specified command.
+message CreateSessionRequest {
+  string command = 1;
+  repeated string args = 2;
+  string working_dir = 3;
+  repeated string env = 4;
+  uint32 rows = 5;
+  uint32 cols = 6;
+  bool detached = 7;
+  bool inspect = 8;
+}
+
+// CreateSessionResponse returns the newly created session.
+message CreateSessionResponse {
+  Session session = 1;
+}
+
+// KillSessionRequest terminates a session by ID.
+message KillSessionRequest {
+  string session_id = 1;
+}
+
+// KillSessionResponse is empty on success.
+message KillSessionResponse {}
+
+// ConversationMetadata stores auxiliary information about a conversation turn,
+// mirroring key/value annotations produced by the conversation service.
+message ConversationMetadata {
+  // Metadata key (for example "tool_id" or "prompt_id").
+  string key = 1;
+  // Metadata value stored as plain text.
+  string value = 2;
+}
+
+// ConversationTurn represents a single entry in the conversational history.
+message ConversationTurn {
+  // Origin identifies the logical author (user/ai/tool/system).
+  string origin = 1;
+  // Normalised textual content produced by the pipeline.
+  string text = 2;
+  // Timestamp in UTC when the turn was recorded.
+  google.protobuf.Timestamp at = 3;
+  // Optional metadata annotations attached to the turn.
+  repeated ConversationMetadata metadata = 4;
+}
+
+// GetConversationRequest asks for the conversation history of a session.
+message GetConversationRequest {
+  // Target session identifier.
+  string session_id = 1;
+  // Optional zero-based offset for pagination.
+  uint32 offset = 2;
+  // Optional limit for the number of turns returned.
+  uint32 limit = 3;
+}
+
+// GetConversationResponse returns the ordered list of turns for the session.
+message GetConversationResponse {
+  string session_id = 1;
+  repeated ConversationTurn turns = 2;
+  uint32 offset = 3;
+  uint32 limit = 4;
+  uint32 total = 5;
+  bool has_more = 6;
+  uint32 next_offset = 7;
+}
+
+// GetGlobalConversationRequest asks for the global (sessionless) conversation history.
+message GetGlobalConversationRequest {
+  uint32 offset = 1;
+  uint32 limit = 2;
+}
+
+// GetGlobalConversationResponse returns the ordered list of global turns.
+message GetGlobalConversationResponse {
+  repeated ConversationTurn turns = 1;
+  uint32 offset = 2;
+  uint32 limit = 3;
+  uint32 total = 4;
+  bool has_more = 5;
+  uint32 next_offset = 6;
+}
+
+// SessionEventType identifies the kind of session lifecycle event.
+enum SessionEventType {
+  SESSION_EVENT_TYPE_UNSPECIFIED = 0;
+  SESSION_EVENT_TYPE_CREATED = 1;
+  SESSION_EVENT_TYPE_KILLED = 2;
+  SESSION_EVENT_TYPE_STATUS_CHANGED = 3;
+  SESSION_EVENT_TYPE_MODE_CHANGED = 4;
+  SESSION_EVENT_TYPE_TOOL_DETECTED = 5;
+  SESSION_EVENT_TYPE_RESIZE_INSTRUCTION = 6;
+}
+
+// AttachInit is the first message a client sends to join a session stream.
+message AttachInit {
+  string session_id = 1;
+  bool include_history = 2;
+}
+
+// ResizeRequest asks the daemon to resize a session PTY.
+message ResizeRequest {
+  uint32 cols = 1;
+  uint32 rows = 2;
+  string source = 3;
+  map<string, string> metadata = 4;
+}
+
+// SessionEvent carries a session lifecycle notification.
+message SessionEvent {
+  SessionEventType type = 1;
+  string session_id = 2;
+  map<string, string> data = 3;
+}
+
+// AttachSessionRequest multiplexes client-to-daemon messages on a session stream.
+message AttachSessionRequest {
+  oneof payload {
+    AttachInit init = 1;
+    bytes input = 2;
+    ResizeRequest resize = 3;
+    string control = 4; // "detach" or "kill"
+  }
+}
+
+// AttachSessionResponse multiplexes daemon-to-client messages on a session stream.
+message AttachSessionResponse {
+  oneof payload {
+    bytes output = 1;
+    SessionEvent event = 2;
+  }
+}
+
+// GetSessionRequest retrieves a single session by ID.
+message GetSessionRequest {
+  string session_id = 1;
+}
+
+// GetSessionResponse returns the requested session.
+message GetSessionResponse {
+  Session session = 1;
+}
+
+// SendInputRequest writes data to a session's stdin (non-streaming alternative to AttachSession).
+message SendInputRequest {
+  string session_id = 1;
+  bytes input = 2;
+  bool eof = 3;
+}
+
+// SendInputResponse is empty on success.
+message SendInputResponse {}
+
+// SendVoiceCommandRequest sends transcribed speech text to a session's AI pipeline.
+message SendVoiceCommandRequest {
+  string session_id = 1;              // Optional — empty string for global/sessionless
+  string text = 2;                    // Required — transcribed speech (server trims leading/trailing whitespace)
+  map<string, string> metadata = 3;   // Optional — source, confidence, etc.
+}
+
+// SendVoiceCommandResponse acknowledges the voice command was accepted.
+message SendVoiceCommandResponse {
+  bool accepted = 1;
+  string message = 2;
+}
+
+// GetSessionModeRequest asks for the current mode of a session.
+message GetSessionModeRequest {
+  string session_id = 1;
+}
+
+// GetSessionModeResponse returns the current session mode.
+message GetSessionModeResponse {
+  string session_id = 1;
+  string mode = 2;
+}
+
+// SetSessionModeRequest changes the mode of a session (e.g. "inspect").
+message SetSessionModeRequest {
+  string session_id = 1;
+  string mode = 2;
+}
+
+// SetSessionModeResponse returns the updated session mode.
+message SetSessionModeResponse {
+  string session_id = 1;
+  string mode = 2;
+}
