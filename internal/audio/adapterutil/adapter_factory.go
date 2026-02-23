@@ -2,7 +2,7 @@ package adapterutil
 
 import (
 	"context"
-	"encoding/json"
+	"database/sql"
 	"fmt"
 	"strings"
 
@@ -17,11 +17,11 @@ type SessionParams = streammanager.SessionParams
 
 // FactoryConfig parametrises a generic adapter factory.
 type FactoryConfig[T any] struct {
-	Prefix            string       // log/error prefix, e.g. "stt", "tts", "vad"
-	Slot              adapters.Slot
-	MockAdapterID     string
-	NewMock           func(SessionParams) (T, error)
-	NewNAP            func(context.Context, SessionParams, configstore.AdapterEndpoint) (T, error)
+	Prefix                string // log/error prefix, e.g. "stt", "tts", "vad"
+	Slot                  adapters.Slot
+	MockAdapterID         string
+	NewMock               func(SessionParams) (T, error)
+	NewNAP                func(context.Context, SessionParams, configstore.AdapterEndpoint) (T, error)
 	ErrAdapterUnavailable error
 	ErrFactoryUnavailable error
 }
@@ -95,13 +95,11 @@ func (f *Factory[T]) Create(ctx context.Context, params SessionParams) (T, error
 			continue
 		}
 		adapterID = id
-		if rawCfg := strings.TrimSpace(binding.Config); rawCfg != "" {
-			var parsed map[string]any
-			if err := json.Unmarshal([]byte(rawCfg), &parsed); err != nil {
-				return zero, fmt.Errorf("%s: parse config for %s: %w", f.cfg.Prefix, binding.Slot, err)
-			}
-			config = parsed
+		parsed, err := configstore.DecodeJSON[map[string]any](sql.NullString{Valid: true, String: binding.Config})
+		if err != nil {
+			return zero, fmt.Errorf("%s: parse config for %s: %w", f.cfg.Prefix, binding.Slot, err)
 		}
+		config = parsed
 		break
 	}
 
