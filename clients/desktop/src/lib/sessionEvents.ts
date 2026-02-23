@@ -1,12 +1,17 @@
 type JsonRecord = Record<string, unknown>;
 
-export type SessionEventType =
-  | 'session_created'
-  | 'session_killed'
-  | 'session_status_changed'
-  | 'session_mode_changed'
-  | 'tool_detected'
-  | 'resize_instruction';
+export const SESSION_EVENT_TYPES = [
+  'session_created',
+  'session_killed',
+  'session_status_changed',
+  'session_mode_changed',
+  'tool_detected',
+  'resize_instruction',
+] as const;
+
+export type SessionEventType = (typeof SESSION_EVENT_TYPES)[number];
+
+const SESSION_EVENT_TYPE_SET: ReadonlySet<string> = new Set(SESSION_EVENT_TYPES);
 
 export interface SessionEventPayload {
   event_type: SessionEventType;
@@ -33,17 +38,10 @@ function parseStringRecord(value: unknown): Record<string, string> {
 }
 
 function parseEventType(value: unknown): SessionEventType | null {
-  switch (value) {
-    case 'session_created':
-    case 'session_killed':
-    case 'session_status_changed':
-    case 'session_mode_changed':
-    case 'tool_detected':
-    case 'resize_instruction':
-      return value;
-    default:
-      return null;
+  if (typeof value !== 'string') {
+    return null;
   }
+  return SESSION_EVENT_TYPE_SET.has(value) ? (value as SessionEventType) : null;
 }
 
 export function parseSessionEventPayload(raw: unknown): SessionEventPayload | null {
