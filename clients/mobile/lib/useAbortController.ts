@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useMemo } from "react";
+
+import { useResourceManager } from "./useResourceManager";
 
 export interface UseAbortControllerResult {
   set: (controller: AbortController | null) => void;
@@ -44,18 +46,12 @@ export function createAbortControllerManager(): AbortControllerManager {
  * Tracks a single AbortController and aborts it automatically on unmount.
  */
 export function useAbortController(): UseAbortControllerResult {
-  const managerRef = useRef<AbortControllerManager | null>(null);
-  if (!managerRef.current) {
-    managerRef.current = createAbortControllerManager();
-  }
-  const manager = managerRef.current;
+  const manager = useResourceManager(createAbortControllerManager, (currentManager) => currentManager.abort());
 
   const set = useCallback((controller: AbortController | null) => manager.set(controller), [manager]);
   const abort = useCallback(() => manager.abort(), [manager]);
   const abortAndCreate = useCallback(() => manager.abortAndCreate(), [manager]);
   const clearIfCurrent = useCallback((controller: AbortController) => manager.clearIfCurrent(controller), [manager]);
-
-  useEffect(() => abort, [abort]);
 
   return useMemo(
     () => ({ set, abort, abortAndCreate, clearIfCurrent }),

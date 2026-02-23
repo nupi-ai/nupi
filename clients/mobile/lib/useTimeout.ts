@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useMemo } from "react";
+
+import { useResourceManager } from "./useResourceManager";
 
 type TimerId = ReturnType<typeof setTimeout>;
 type TimerSet = typeof setTimeout;
@@ -44,16 +46,10 @@ export interface UseTimeoutResult {
  * Manages a single timeout instance and always clears it on unmount.
  */
 export function useTimeout(): UseTimeoutResult {
-  const managerRef = useRef<TimeoutManager | null>(null);
-  if (!managerRef.current) {
-    managerRef.current = createTimeoutManager();
-  }
-  const manager = managerRef.current;
+  const manager = useResourceManager(createTimeoutManager, (currentManager) => currentManager.clear());
 
   const clear = useCallback(() => manager.clear(), [manager]);
   const schedule = useCallback((callback: () => void, delayMs: number) => manager.schedule(callback, delayMs), [manager]);
-
-  useEffect(() => clear, [clear]);
 
   return useMemo(
     () => ({ schedule, clear }),
