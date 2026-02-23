@@ -4,18 +4,19 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/nupi-ai/nupi/internal/audio/adapterutil"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 )
 
 const defaultMockConfidence = 0.6
 
 func newMockTranscriber(params SessionParams) (Transcriber, error) {
-	cfg := params.Config
+	cfg := adapterutil.NewConfigReader(params.Config)
 	return &mockTranscriber{
-		text:        stringValue(cfg, "text"),
-		phrases:     stringSlice(cfg, "phrases"),
-		confidence:  floatValue(cfg, "confidence", defaultMockConfidence),
-		emitPartial: boolValue(cfg, "emit_partial", false),
+		text:        cfg.String("text"),
+		phrases:     cfg.StringSlice("phrases"),
+		confidence:  cfg.Float32("confidence", defaultMockConfidence),
+		emitPartial: cfg.Bool("emit_partial", false),
 	}, nil
 }
 
@@ -91,73 +92,4 @@ func (m *mockTranscriber) mode() string {
 	default:
 		return "auto"
 	}
-}
-
-func stringValue(cfg map[string]any, key string) string {
-	if cfg == nil {
-		return ""
-	}
-	if value, ok := cfg[key]; ok {
-		switch v := value.(type) {
-		case string:
-			return v
-		}
-	}
-	return ""
-}
-
-func stringSlice(cfg map[string]any, key string) []string {
-	if cfg == nil {
-		return nil
-	}
-	val, ok := cfg[key]
-	if !ok {
-		return nil
-	}
-
-	switch raw := val.(type) {
-	case []any:
-		out := make([]string, 0, len(raw))
-		for _, item := range raw {
-			switch v := item.(type) {
-			case string:
-				out = append(out, v)
-			}
-		}
-		return out
-	case []string:
-		return append([]string(nil), raw...)
-	default:
-		return nil
-	}
-}
-
-func floatValue(cfg map[string]any, key string, def float32) float32 {
-	if cfg == nil {
-		return def
-	}
-	if value, ok := cfg[key]; ok {
-		switch v := value.(type) {
-		case float64:
-			return float32(v)
-		case float32:
-			return v
-		case int:
-			return float32(v)
-		}
-	}
-	return def
-}
-
-func boolValue(cfg map[string]any, key string, def bool) bool {
-	if cfg == nil {
-		return def
-	}
-	if value, ok := cfg[key]; ok {
-		switch v := value.(type) {
-		case bool:
-			return v
-		}
-	}
-	return def
 }

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"math"
 	"time"
+
+	"github.com/nupi-ai/nupi/internal/audio/adapterutil"
 )
 
 const (
@@ -15,16 +17,16 @@ const (
 )
 
 func newMockSynthesizer(params SessionParams) (Synthesizer, error) {
-	cfg := params.Config
+	cfg := adapterutil.NewConfigReader(params.Config)
 	sampleRate := params.Format.SampleRate
 	if sampleRate <= 0 {
 		sampleRate = defaultSampleRate
 	}
 	return &mockSynthesizer{
 		sampleRate: sampleRate,
-		frequency:  floatConfig(cfg, "frequency", defaultMockFrequency),
-		duration:   durationConfig(cfg, "duration_ms", defaultMockDuration),
-		metadata:   mapConfig(cfg, "metadata"),
+		frequency:  cfg.Float64("frequency", defaultMockFrequency),
+		duration:   cfg.Duration("duration_ms", defaultMockDuration),
+		metadata:   cfg.StringMap("metadata"),
 	}, nil
 }
 
@@ -74,64 +76,6 @@ func (m *mockSynthesizer) Speak(ctx context.Context, req SpeakRequest) ([]Synthe
 
 func (m *mockSynthesizer) Close(context.Context) ([]SynthesisChunk, error) {
 	return nil, nil
-}
-
-func floatConfig(cfg map[string]any, key string, def float64) float64 {
-	if cfg == nil {
-		return def
-	}
-	if v, ok := cfg[key]; ok {
-		switch value := v.(type) {
-		case float64:
-			return value
-		case float32:
-			return float64(value)
-		case int:
-			return float64(value)
-		}
-	}
-	return def
-}
-
-func durationConfig(cfg map[string]any, key string, def time.Duration) time.Duration {
-	if cfg == nil {
-		return def
-	}
-	if v, ok := cfg[key]; ok {
-		switch value := v.(type) {
-		case float64:
-			return time.Duration(value) * time.Millisecond
-		case float32:
-			return time.Duration(value) * time.Millisecond
-		case int:
-			return time.Duration(value) * time.Millisecond
-		}
-	}
-	return def
-}
-
-func mapConfig(cfg map[string]any, key string) map[string]string {
-	if cfg == nil {
-		return nil
-	}
-	val, ok := cfg[key]
-	if !ok {
-		return nil
-	}
-	out := make(map[string]string)
-	switch raw := val.(type) {
-	case map[string]any:
-		for k, v := range raw {
-			if str, ok := v.(string); ok {
-				out[k] = str
-			}
-		}
-	case map[string]string:
-		for k, v := range raw {
-			out[k] = v
-		}
-	}
-	return out
 }
 
 func intToString(v int) string {
