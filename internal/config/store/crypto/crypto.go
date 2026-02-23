@@ -166,9 +166,8 @@ func MigratePlaintext(ctx context.Context, db *sql.DB, key []byte) (int, error) 
 	var updates []pendingUpdate
 
 	for rows.Next() {
-		var rowid int64
-		var raw string
-		if err := rows.Scan(&rowid, &raw); err != nil {
+		rowid, raw, err := scanInt64StringPair(rows)
+		if err != nil {
 			return 0, fmt.Errorf("config: scan secret for migration: %w", err)
 		}
 

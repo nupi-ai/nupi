@@ -45,40 +45,10 @@ func (s *Store) ListAdapterEndpoints(ctx context.Context) ([]AdapterEndpoint, er
 
 	var endpoints []AdapterEndpoint
 	for rows.Next() {
-		var (
-			argsRaw     sql.NullString
-			envRaw      sql.NullString
-			tlsInsecure int
-			endp        AdapterEndpoint
-		)
-		if err := rows.Scan(
-			&endp.AdapterID,
-			&endp.Transport,
-			&endp.Address,
-			&endp.Command,
-			&argsRaw,
-			&envRaw,
-			&endp.TLSCertPath,
-			&endp.TLSKeyPath,
-			&endp.TLSCACertPath,
-			&tlsInsecure,
-			&endp.CreatedAt,
-			&endp.UpdatedAt,
-		); err != nil {
+		endp, err := scanAdapterEndpoint(rows)
+		if err != nil {
 			return nil, fmt.Errorf("config: scan adapter endpoint: %w", err)
 		}
-		endp.TLSInsecure = tlsInsecure != 0
-
-		args, err := DecodeJSON[[]string](argsRaw)
-		if err != nil {
-			return nil, fmt.Errorf("config: decode adapter endpoint args for %s: %w", endp.AdapterID, err)
-		}
-		endp.Args = args
-		env, err := DecodeJSON[map[string]string](envRaw)
-		if err != nil {
-			return nil, fmt.Errorf("config: decode adapter endpoint env for %s: %w", endp.AdapterID, err)
-		}
-		endp.Env = env
 
 		endpoints = append(endpoints, endp)
 	}
@@ -101,44 +71,13 @@ func (s *Store) GetAdapterEndpoint(ctx context.Context, adapterID string) (Adapt
         WHERE adapter_id = ?
     `, adapterID)
 
-	var (
-		argsRaw     sql.NullString
-		envRaw      sql.NullString
-		tlsInsecure int
-		endp        AdapterEndpoint
-	)
-
-	if err := row.Scan(
-		&endp.AdapterID,
-		&endp.Transport,
-		&endp.Address,
-		&endp.Command,
-		&argsRaw,
-		&envRaw,
-		&endp.TLSCertPath,
-		&endp.TLSKeyPath,
-		&endp.TLSCACertPath,
-		&tlsInsecure,
-		&endp.CreatedAt,
-		&endp.UpdatedAt,
-	); err != nil {
+	endp, err := scanAdapterEndpoint(row)
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return AdapterEndpoint{}, NotFoundError{Entity: "adapter_endpoint", Key: adapterID}
 		}
 		return AdapterEndpoint{}, fmt.Errorf("config: get adapter endpoint %q: %w", adapterID, err)
 	}
-	endp.TLSInsecure = tlsInsecure != 0
-
-	args, err := DecodeJSON[[]string](argsRaw)
-	if err != nil {
-		return AdapterEndpoint{}, fmt.Errorf("config: decode adapter endpoint args for %s: %w", adapterID, err)
-	}
-	endp.Args = args
-	env, err := DecodeJSON[map[string]string](envRaw)
-	if err != nil {
-		return AdapterEndpoint{}, fmt.Errorf("config: decode adapter endpoint env for %s: %w", adapterID, err)
-	}
-	endp.Env = env
 	return endp, nil
 }
 

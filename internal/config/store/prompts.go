@@ -14,15 +14,13 @@ func (s *Store) GetPromptTemplate(ctx context.Context, eventType string) (*Promp
 		WHERE instance_name = ? AND profile_name = ? AND event_type = ?
 	`, s.instanceName, s.profileName, eventType)
 
-	var pt PromptTemplate
-	var isCustom int
-	if err := row.Scan(&pt.EventType, &pt.Content, &isCustom, &pt.UpdatedAt); err != nil {
+	pt, err := scanPromptTemplate(row)
+	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, NotFoundError{Entity: "prompt_template", Key: eventType}
 		}
 		return nil, fmt.Errorf("config: get prompt template %s: %w", eventType, err)
 	}
-	pt.IsCustom = isCustom != 0
 
 	return &pt, nil
 }
@@ -63,12 +61,10 @@ func (s *Store) ListPromptTemplates(ctx context.Context) ([]PromptTemplate, erro
 
 	var templates []PromptTemplate
 	for rows.Next() {
-		var pt PromptTemplate
-		var isCustom int
-		if err := rows.Scan(&pt.EventType, &pt.Content, &isCustom, &pt.UpdatedAt); err != nil {
+		pt, err := scanPromptTemplate(rows)
+		if err != nil {
 			return nil, fmt.Errorf("config: scan prompt template row: %w", err)
 		}
-		pt.IsCustom = isCustom != 0
 		templates = append(templates, pt)
 	}
 

@@ -23,17 +23,8 @@ func (s *Store) ListAdapters(ctx context.Context) ([]Adapter, error) {
 
 	var adapters []Adapter
 	for rows.Next() {
-		var adapter Adapter
-		if err := rows.Scan(
-			&adapter.ID,
-			&adapter.Source,
-			&adapter.Version,
-			&adapter.Type,
-			&adapter.Name,
-			&adapter.Manifest,
-			&adapter.CreatedAt,
-			&adapter.UpdatedAt,
-		); err != nil {
+		adapter, err := scanAdapter(rows)
+		if err != nil {
 			return nil, fmt.Errorf("config: scan adapter: %w", err)
 		}
 		adapters = append(adapters, adapter)
@@ -59,17 +50,8 @@ func (s *Store) GetAdapter(ctx context.Context, adapterID string) (Adapter, erro
         WHERE id = ?
     `, adapterID)
 
-	var adapter Adapter
-	if err := row.Scan(
-		&adapter.ID,
-		&adapter.Source,
-		&adapter.Version,
-		&adapter.Type,
-		&adapter.Name,
-		&adapter.Manifest,
-		&adapter.CreatedAt,
-		&adapter.UpdatedAt,
-	); err != nil {
+	adapter, err := scanAdapter(row)
+	if err != nil {
 		if err == sql.ErrNoRows {
 			return Adapter{}, NotFoundError{Entity: "adapter", Key: adapterID}
 		}
@@ -156,31 +138,10 @@ func (s *Store) ListAdapterBindings(ctx context.Context) ([]AdapterBinding, erro
 
 	var bindings []AdapterBinding
 	for rows.Next() {
-		var (
-			slot      string
-			adapterID sql.NullString
-			config    sql.NullString
-			status    string
-			updatedAt string
-		)
-		if err := rows.Scan(&slot, &adapterID, &config, &status, &updatedAt); err != nil {
+		binding, err := scanAdapterBindingWithSlot(rows)
+		if err != nil {
 			return nil, fmt.Errorf("config: scan adapter binding: %w", err)
 		}
-
-		var parsedConfig string
-		if config.Valid {
-			parsedConfig = config.String
-		}
-
-		binding := AdapterBinding{
-			Slot:      slot,
-			Status:    status,
-			UpdatedAt: updatedAt,
-		}
-		if adapterID.Valid {
-			binding.AdapterID = &adapterID.String
-		}
-		binding.Config = parsedConfig
 		bindings = append(bindings, binding)
 	}
 

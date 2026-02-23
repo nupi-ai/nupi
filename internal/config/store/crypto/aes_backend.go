@@ -110,8 +110,8 @@ func (ab *AESBackend) GetBatch(ctx context.Context, keys []string) (map[string]s
 
 	result := make(map[string]string, len(keys))
 	for rows.Next() {
-		var key, raw string
-		if err := rows.Scan(&key, &raw); err != nil {
+		key, raw, err := scanStringPair(rows)
+		if err != nil {
 			return nil, fmt.Errorf("aes-file: scan batch: %w", err)
 		}
 		decrypted, err := DecryptValue(ab.key, raw)
