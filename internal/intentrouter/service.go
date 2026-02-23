@@ -43,6 +43,16 @@ var (
 // maxToolIterations is the safety cap for the multi-turn tool-use loop (NFR32).
 const maxToolIterations = 10
 
+const (
+	metadataKeyEventType             = constants.MetadataKeyEventType
+	metadataKeyCurrentTool           = constants.MetadataKeyCurrentTool
+	metadataKeySessionOutput         = constants.MetadataKeySessionOutput
+	metadataKeyClarificationQuestion = constants.MetadataKeyClarificationQuestion
+	metadataKeySuggestedSession      = "suggested_session"
+	metadataKeyRoutingHint           = "routing_hint"
+	metadataRoutingHintConversation  = "conversation_context"
+)
+
 // Service routes user intents to appropriate sessions via AI adapter.
 type Service struct {
 	bus                *eventbus.Bus
@@ -438,21 +448,21 @@ func (s *Service) handlePrompt(ctx context.Context, prompt eventbus.Conversation
 func (s *Service) buildIntentRequest(prompt eventbus.ConversationPromptEvent, provider SessionProvider, engine PromptEngine, onboarding OnboardingProvider) IntentRequest {
 	// Determine event type from metadata
 	eventType := EventTypeUserIntent
-	if et, ok := prompt.Metadata["event_type"]; ok {
+	if et, ok := prompt.Metadata[metadataKeyEventType]; ok {
 		switch et {
-		case "session_output":
+		case constants.PromptEventSessionOutput:
 			eventType = EventTypeSessionOutput
-		case "history_summary":
+		case constants.PromptEventHistorySummary:
 			eventType = EventTypeHistorySummary
-		case "clarification":
+		case constants.PromptEventClarification:
 			eventType = EventTypeClarification
-		case "memory_flush":
+		case constants.PromptEventMemoryFlush:
 			eventType = EventTypeMemoryFlush
-		case "scheduled_task":
+		case string(EventTypeScheduledTask):
 			eventType = EventTypeScheduledTask
-		case "session_slug":
+		case constants.PromptEventSessionSlug:
 			eventType = EventTypeSessionSlug
-		case "onboarding":
+		case constants.PromptEventOnboarding:
 			eventType = EventTypeOnboarding
 		}
 	}
@@ -468,7 +478,7 @@ func (s *Service) buildIntentRequest(prompt eventbus.ConversationPromptEvent, pr
 
 	// Extract current tool: check metadata first, then our cache, then session provider
 	var currentTool string
-	if tool, ok := prompt.Metadata["current_tool"]; ok {
+	if tool, ok := prompt.Metadata[metadataKeyCurrentTool]; ok {
 		currentTool = tool
 	} else if targetSession != "" {
 		// Check our local tool cache (updated by tool change events)
@@ -496,15 +506,15 @@ func (s *Service) buildIntentRequest(prompt eventbus.ConversationPromptEvent, pr
 		if req.Metadata == nil {
 			req.Metadata = make(map[string]string)
 		}
-		req.Metadata["suggested_session"] = targetSession
-		req.Metadata["routing_hint"] = "conversation_context"
+		req.Metadata[metadataKeySuggestedSession] = targetSession
+		req.Metadata[metadataKeyRoutingHint] = metadataRoutingHintConversation
 	}
 
 	// Extract optional fields from metadata
-	if sessionOutput, ok := prompt.Metadata["session_output"]; ok {
+	if sessionOutput, ok := prompt.Metadata[metadataKeySessionOutput]; ok {
 		req.SessionOutput = sessionOutput
 	}
-	if clarificationQ, ok := prompt.Metadata["clarification_question"]; ok {
+	if clarificationQ, ok := prompt.Metadata[metadataKeyClarificationQuestion]; ok {
 		req.ClarificationQuestion = clarificationQ
 	}
 
@@ -592,8 +602,8 @@ func (s *Service) buildReplyMetadata(prompt eventbus.ConversationPromptEvent, ex
 	for k, v := range extra {
 		meta[k] = v
 	}
-	if et, ok := prompt.Metadata["event_type"]; ok && et != "" {
-		meta["event_type"] = et
+	if et, ok := prompt.Metadata[metadataKeyEventType]; ok && et != "" {
+		meta[metadataKeyEventType] = et
 	}
 	return meta
 }
@@ -708,7 +718,7 @@ func (s *Service) executeClarify(ctx context.Context, prompt eventbus.Conversati
 	}
 
 	// Publish speak event with clarification — include language for TTS
-	clarifyMeta := map[string]string{"type": "clarification"}
+	clarifyMeta := map[string]string{constants.SpeakMetadataTypeKey: constants.SpeakTypeClarification}
 	for k, v := range prompt.Metadata {
 		if strings.HasPrefix(k, "nupi.lang.") {
 			clarifyMeta[k] = v
@@ -766,8 +776,8 @@ func (s *Service) publishError(sessionID, promptID string, err error) {
 		PromptID:  promptID,
 		Text:      userFriendlyError(err),
 		Metadata: map[string]string{
-			"type":  "error",
-			"error": err.Error(),
+			constants.SpeakMetadataTypeKey: constants.SpeakTypeError,
+			"error":                        err.Error(),
 		},
 	})
 }
@@ -896,11 +906,13 @@ func injectBootstrapContent(systemPrompt string, provider OnboardingProvider) st
 	}
 
 	// Strip all H1 headings to prevent hierarchy inversion under ## ONBOARDING.
+	// Matches "# Title" (standard ATX) and bare "#" (empty H1 per CommonMark).
 	var filtered []string
 	for _, line := range strings.Split(bc, "\n") {
-		if !strings.HasPrefix(line, "# ") {
-			filtered = append(filtered, line)
+		if strings.HasPrefix(line, "# ") || line == "#" {
+			continue
 		}
+		filtered = append(filtered, line)
 	}
 	bc = strings.TrimSpace(strings.Join(filtered, "\n"))
 

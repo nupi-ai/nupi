@@ -9,18 +9,19 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 )
 
 // testAdapter implements IntentAdapter for testing.
 type testAdapter struct {
-	name       string
-	ready      bool
-	response   *IntentResponse
-	err        error
-	lastReq    IntentRequest
-	callCount  int
-	mu         sync.Mutex
+	name      string
+	ready     bool
+	response  *IntentResponse
+	err       error
+	lastReq   IntentRequest
+	callCount int
+	mu        sync.Mutex
 }
 
 func (m *testAdapter) ResolveIntent(ctx context.Context, req IntentRequest) (*IntentResponse, error) {
@@ -218,7 +219,7 @@ func TestServiceNoAdapterPublishesError(t *testing.T) {
 	select {
 	case env := <-speakSub.C():
 		speak := env.Payload
-		if speak.Metadata["type"] != "error" {
+		if speak.Metadata[constants.SpeakMetadataTypeKey] != constants.SpeakTypeError {
 			t.Errorf("Expected type=error metadata")
 		}
 	case <-time.After(1 * time.Second):
@@ -489,7 +490,7 @@ func TestServiceClarifyAction(t *testing.T) {
 	select {
 	case env := <-speakSub.C():
 		speak := env.Payload
-		if speak.Metadata["type"] != "clarification" {
+		if speak.Metadata[constants.SpeakMetadataTypeKey] != constants.SpeakTypeClarification {
 			t.Errorf("Expected clarification type metadata")
 		}
 	case <-time.After(1 * time.Second):
@@ -1147,8 +1148,8 @@ func TestE2EClarifyFlowWithMockAdapter(t *testing.T) {
 	select {
 	case env := <-speakSub.C():
 		speak := env.Payload
-		if speak.Metadata["type"] != "clarification" {
-			t.Errorf("Expected clarification type, got %s", speak.Metadata["type"])
+		if speak.Metadata[constants.SpeakMetadataTypeKey] != constants.SpeakTypeClarification {
+			t.Errorf("Expected clarification type, got %s", speak.Metadata[constants.SpeakMetadataTypeKey])
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Timeout waiting for speak event")
@@ -1158,7 +1159,7 @@ func TestE2EClarifyFlowWithMockAdapter(t *testing.T) {
 	select {
 	case env := <-replySub.C():
 		reply := env.Payload
-		if reply.Metadata["status"] != "clarification" {
+		if reply.Metadata["status"] != constants.PromptEventClarification {
 			t.Errorf("Expected status=clarification, got %s", reply.Metadata["status"])
 		}
 		if len(reply.Actions) != 1 || reply.Actions[0].Type != "clarify" {
@@ -1424,12 +1425,12 @@ func TestServiceToolCacheCleanupOnSessionLifecycle(t *testing.T) {
 
 // MockPromptEngine is a mock implementation of PromptEngine for testing.
 type MockPromptEngine struct {
-	lastRequest   PromptBuildRequest
-	systemPrompt  string
-	userPrompt    string
-	shouldError   bool
-	buildCount    int
-	mu            sync.Mutex
+	lastRequest  PromptBuildRequest
+	systemPrompt string
+	userPrompt   string
+	shouldError  bool
+	buildCount   int
+	mu           sync.Mutex
 }
 
 func (m *MockPromptEngine) Build(req PromptBuildRequest) (*PromptBuildResponse, error) {
@@ -1495,7 +1496,7 @@ func TestServiceEventTypeMetadataPropagation(t *testing.T) {
 			Text: "hello",
 		},
 		Metadata: map[string]string{
-			"event_type": "user_intent",
+			constants.MetadataKeyEventType: constants.PromptEventUserIntent,
 		},
 	})
 
@@ -1517,8 +1518,8 @@ func TestServiceEventTypeMetadataPropagation(t *testing.T) {
 			Text: "output text",
 		},
 		Metadata: map[string]string{
-			"event_type":     "session_output",
-			"session_output": "Error: something failed",
+			constants.MetadataKeyEventType:     constants.PromptEventSessionOutput,
+			constants.MetadataKeySessionOutput: "Error: something failed",
 		},
 	})
 
@@ -1540,8 +1541,8 @@ func TestServiceEventTypeMetadataPropagation(t *testing.T) {
 			Text: "yes, run it",
 		},
 		Metadata: map[string]string{
-			"event_type":             "clarification",
-			"clarification_question": "Do you want me to run the tests?",
+			constants.MetadataKeyEventType:             constants.PromptEventClarification,
+			constants.MetadataKeyClarificationQuestion: "Do you want me to run the tests?",
 		},
 	})
 
@@ -1602,7 +1603,7 @@ func TestServicePromptEnginePopulatesSystemAndUserPrompts(t *testing.T) {
 			Text: "hello",
 		},
 		Metadata: map[string]string{
-			"event_type": "user_intent",
+			constants.MetadataKeyEventType: constants.PromptEventUserIntent,
 		},
 	})
 
@@ -1670,10 +1671,10 @@ func TestServiceExtendedMetadataPropagation(t *testing.T) {
 			Text: "hello",
 		},
 		Metadata: map[string]string{
-			"event_type":   "user_intent",
-			"input_source": "voice",
-			"sessionless":  "true",
-			"confidence":   "0.95",
+			constants.MetadataKeyEventType: constants.PromptEventUserIntent,
+			"input_source":                 "voice",
+			"sessionless":                  "true",
+			"confidence":                   "0.95",
 		},
 	})
 
@@ -1687,8 +1688,8 @@ func TestServiceExtendedMetadataPropagation(t *testing.T) {
 	if capturedMetadata == nil {
 		t.Fatal("Expected metadata to be captured")
 	}
-	if capturedMetadata["event_type"] != "user_intent" {
-		t.Errorf("Expected event_type=user_intent, got %q", capturedMetadata["event_type"])
+	if capturedMetadata[constants.MetadataKeyEventType] != constants.PromptEventUserIntent {
+		t.Errorf("Expected event_type=user_intent, got %q", capturedMetadata[constants.MetadataKeyEventType])
 	}
 	if capturedMetadata["input_source"] != "voice" {
 		t.Errorf("Expected input_source=voice, got %q", capturedMetadata["input_source"])
@@ -1811,7 +1812,7 @@ func TestToolLoopInjectsAvailableTools(t *testing.T) {
 		NewMessage: eventbus.ConversationMessage{
 			Text: "search my memory",
 		},
-		Metadata: map[string]string{"event_type": "user_intent"},
+		Metadata: map[string]string{constants.MetadataKeyEventType: constants.PromptEventUserIntent},
 	})
 
 	select {
@@ -1876,7 +1877,7 @@ func TestToolLoopNoToolsForHistorySummary(t *testing.T) {
 		NewMessage: eventbus.ConversationMessage{
 			Text: "summarize",
 		},
-		Metadata: map[string]string{"event_type": "history_summary"},
+		Metadata: map[string]string{constants.MetadataKeyEventType: constants.PromptEventHistorySummary},
 	})
 
 	select {
@@ -2006,7 +2007,7 @@ func TestToolLoopSingleTurnToolUse(t *testing.T) {
 		NewMessage: eventbus.ConversationMessage{
 			Text: "search my memory",
 		},
-		Metadata: map[string]string{"event_type": "user_intent"},
+		Metadata: map[string]string{constants.MetadataKeyEventType: constants.PromptEventUserIntent},
 	})
 
 	// Should receive speak event from final response
@@ -2116,7 +2117,7 @@ func TestToolLoopMultiTurnToolUse(t *testing.T) {
 		NewMessage: eventbus.ConversationMessage{
 			Text: "search and write",
 		},
-		Metadata: map[string]string{"event_type": "user_intent"},
+		Metadata: map[string]string{constants.MetadataKeyEventType: constants.PromptEventUserIntent},
 	})
 
 	select {
@@ -2196,7 +2197,7 @@ func TestToolLoopMaxIterationsCap(t *testing.T) {
 		NewMessage: eventbus.ConversationMessage{
 			Text: "infinite loop",
 		},
-		Metadata: map[string]string{"event_type": "user_intent"},
+		Metadata: map[string]string{constants.MetadataKeyEventType: constants.PromptEventUserIntent},
 	})
 
 	// Should receive error reply after max iterations
@@ -2289,7 +2290,7 @@ func TestToolLoopToolExecutionError(t *testing.T) {
 		NewMessage: eventbus.ConversationMessage{
 			Text: "search",
 		},
-		Metadata: map[string]string{"event_type": "user_intent"},
+		Metadata: map[string]string{constants.MetadataKeyEventType: constants.PromptEventUserIntent},
 	})
 
 	select {
@@ -2497,7 +2498,7 @@ func TestServiceCoreMemoryPrependedToSystemPrompt(t *testing.T) {
 			Text: "hello",
 		},
 		Metadata: map[string]string{
-			"event_type": "user_intent",
+			constants.MetadataKeyEventType: constants.PromptEventUserIntent,
 		},
 	})
 
@@ -2570,7 +2571,7 @@ func TestServiceEmptyCoreMemoryLeavesPromptUnchanged(t *testing.T) {
 			Text: "hello",
 		},
 		Metadata: map[string]string{
-			"event_type": "user_intent",
+			constants.MetadataKeyEventType: constants.PromptEventUserIntent,
 		},
 	})
 
@@ -2631,7 +2632,7 @@ func TestServiceNoCoreMemoryProviderLeavesPromptUnchanged(t *testing.T) {
 			Text: "hello",
 		},
 		Metadata: map[string]string{
-			"event_type": "user_intent",
+			constants.MetadataKeyEventType: constants.PromptEventUserIntent,
 		},
 	})
 

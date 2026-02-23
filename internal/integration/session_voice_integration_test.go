@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/conversation"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/intentrouter"
@@ -366,8 +367,8 @@ func publishPrompt(ctx context.Context, bus *eventbus.Bus, sessionID, promptID, 
 			Origin: eventbus.OriginUser,
 		},
 		Metadata: map[string]string{
-			"event_type":   "user_intent",
-			"input_source": "voice",
+			constants.MetadataKeyEventType: constants.PromptEventUserIntent,
+			"input_source":                 "voice",
 		},
 	})
 }
@@ -381,9 +382,9 @@ func publishSessionlessPrompt(ctx context.Context, bus *eventbus.Bus, promptID, 
 			Origin: eventbus.OriginUser,
 		},
 		Metadata: map[string]string{
-			"event_type":   "user_intent",
-			"input_source": "voice",
-			"sessionless":  "true",
+			constants.MetadataKeyEventType: constants.PromptEventUserIntent,
+			"input_source":                 "voice",
+			"sessionless":                  "true",
 		},
 	})
 }
@@ -1117,8 +1118,8 @@ type errorMockAdapter struct {
 	err error
 }
 
-func (a *errorMockAdapter) Name() string          { return "error-mock" }
-func (a *errorMockAdapter) Ready() bool            { return true }
+func (a *errorMockAdapter) Name() string { return "error-mock" }
+func (a *errorMockAdapter) Ready() bool  { return true }
 func (a *errorMockAdapter) ResolveIntent(_ context.Context, _ intentrouter.IntentRequest) (*intentrouter.IntentResponse, error) {
 	return nil, a.err
 }

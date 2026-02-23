@@ -1,5 +1,7 @@
 package store
 
+import "github.com/nupi-ai/nupi/internal/constants"
+
 // Setting represents a simple key-value pair scoped to instance/profile.
 type Setting struct {
 	Key       string
@@ -86,8 +88,11 @@ type PromptTemplate struct {
 
 // PromptEventType constants for prompt templates.
 const (
-	PromptEventUserIntent     = "user_intent"
-	PromptEventSessionOutput  = "session_output"
-	PromptEventHistorySummary = "history_summary"
-	PromptEventClarification  = "clarification"
+	PromptEventUserIntent     = constants.PromptEventUserIntent
+	PromptEventSessionOutput  = constants.PromptEventSessionOutput
+	PromptEventHistorySummary = constants.PromptEventHistorySummary
+	PromptEventClarification  = constants.PromptEventClarification
+	PromptEventMemoryFlush    = constants.PromptEventMemoryFlush
+	PromptEventSessionSlug    = constants.PromptEventSessionSlug
+	PromptEventOnboarding     = constants.PromptEventOnboarding
 )

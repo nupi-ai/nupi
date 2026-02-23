@@ -106,11 +106,11 @@ func (s *Service) handleExportRequest(ctx context.Context, event eventbus.Sessio
 			Text:   serialized,
 			At:     now,
 			Meta: map[string]string{
-				"event_type": "session_slug",
+				constants.MetadataKeyEventType: constants.PromptEventSessionSlug,
 			},
 		},
 		Metadata: map[string]string{
-			"event_type": "session_slug",
+			constants.MetadataKeyEventType: constants.PromptEventSessionSlug,
 		},
 	}
 
@@ -120,7 +120,7 @@ func (s *Service) handleExportRequest(ctx context.Context, event eventbus.Sessio
 func (s *Service) consumeExportReplies(ctx context.Context) {
 	eventbus.Consume(ctx, s.exportReplySub, nil, func(reply eventbus.ConversationReplyEvent) {
 		// Only process session_slug replies.
-		if reply.Metadata["event_type"] != "session_slug" {
+		if reply.Metadata[constants.MetadataKeyEventType] != constants.PromptEventSessionSlug {
 			return
 		}
 		s.handleExportReply(ctx, reply)

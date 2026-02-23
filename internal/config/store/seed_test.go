@@ -3,6 +3,8 @@ package store
 import (
 	"strings"
 	"testing"
+
+	"github.com/nupi-ai/nupi/internal/constants"
 )
 
 func TestDefaultPromptTemplatesNotEmpty(t *testing.T) {
@@ -70,7 +72,7 @@ func TestPromptEventDescriptionsSyncWithTemplates(t *testing.T) {
 
 func TestDefaultPromptTemplatesIncludesSessionSlug(t *testing.T) {
 	templates := DefaultPromptTemplates()
-	content, ok := templates["session_slug"]
+	content, ok := templates[constants.PromptEventSessionSlug]
 	if !ok {
 		t.Fatal("expected session_slug key in DefaultPromptTemplates")
 	}
@@ -85,9 +87,23 @@ func TestDefaultPromptTemplatesIncludesSessionSlug(t *testing.T) {
 	}
 }
 
+func TestDefaultPromptTemplatesIncludesOnboarding(t *testing.T) {
+	templates := DefaultPromptTemplates()
+	content, ok := templates[constants.PromptEventOnboarding]
+	if !ok {
+		t.Fatal("expected onboarding key in DefaultPromptTemplates")
+	}
+	if !strings.Contains(content, "onboarding_complete") {
+		t.Error("onboarding template should mention onboarding_complete tool")
+	}
+	if !strings.Contains(content, "core_memory_update") {
+		t.Error("onboarding template should mention core_memory_update tool")
+	}
+}
+
 func TestDefaultPromptTemplatesIncludesMemoryFlush(t *testing.T) {
 	templates := DefaultPromptTemplates()
-	content, ok := templates["memory_flush"]
+	content, ok := templates[constants.PromptEventMemoryFlush]
 	if !ok {
 		t.Fatal("expected memory_flush key in DefaultPromptTemplates")
 	}

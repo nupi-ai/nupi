@@ -230,15 +230,15 @@ func (e *Engine) ResetAllTemplates(ctx context.Context) error {
 
 func (e *Engine) buildTemplateData(req BuildRequest) map[string]any {
 	data := map[string]any{
-		"event_type":      string(req.EventType),
-		"session_id":      req.SessionID,
-		"transcript":      req.Transcript,
-		"current_tool":    req.CurrentTool,
-		"session_output":  req.SessionOutput,
-		"clarification_q": req.ClarificationQuestion,
-		"has_session":     req.SessionID != "",
-		"has_tool":        req.CurrentTool != "",
-		"metadata":        req.Metadata,
+		constants.MetadataKeyEventType:     string(req.EventType),
+		"session_id":                       req.SessionID,
+		"transcript":                       req.Transcript,
+		constants.MetadataKeyCurrentTool:   req.CurrentTool,
+		constants.MetadataKeySessionOutput: req.SessionOutput,
+		"clarification_q":                  req.ClarificationQuestion,
+		"has_session":                      req.SessionID != "",
+		"has_tool":                         req.CurrentTool != "",
+		"metadata":                         req.Metadata,
 	}
 
 	// Format history

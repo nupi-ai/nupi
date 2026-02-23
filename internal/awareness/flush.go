@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 )
 
@@ -96,11 +97,11 @@ func (s *Service) handleFlushRequest(ctx context.Context, event eventbus.MemoryF
 			Text:   serialized,
 			At:     now,
 			Meta: map[string]string{
-				"event_type": "memory_flush",
+				constants.MetadataKeyEventType: constants.PromptEventMemoryFlush,
 			},
 		},
 		Metadata: map[string]string{
-			"event_type": "memory_flush",
+			constants.MetadataKeyEventType: constants.PromptEventMemoryFlush,
 		},
 	}
 
@@ -112,7 +113,7 @@ func (s *Service) handleFlushRequest(ctx context.Context, event eventbus.MemoryF
 func (s *Service) consumeFlushReplies(ctx context.Context) {
 	eventbus.Consume(ctx, s.flushReplySub, nil, func(reply eventbus.ConversationReplyEvent) {
 		// Only process memory_flush replies.
-		if reply.Metadata["event_type"] != "memory_flush" {
+		if reply.Metadata[constants.MetadataKeyEventType] != constants.PromptEventMemoryFlush {
 			return
 		}
 		s.handleFlushReply(ctx, reply)

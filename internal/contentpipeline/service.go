@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/jsruntime"
 	pipelinecleaners "github.com/nupi-ai/nupi/internal/plugins/pipeline_cleaners"
@@ -431,8 +432,8 @@ func (s *Service) flushAndProcess(ctx context.Context, sessionID string, buf *Ou
 		if err != nil {
 			log.Printf("[ContentPipeline] ExtractEvents error for session %s: %v", sessionID, err)
 		} else if len(events) > 0 {
-			annotations["notable"] = "true"
-			annotations["event_type"] = "session_output"
+			annotations[constants.MetadataKeyNotable] = constants.MetadataValueTrue
+			annotations[constants.MetadataKeyEventType] = constants.PromptEventSessionOutput
 			annotations["event_count"] = fmt.Sprintf("%d", len(events))
 
 			// Store first event details in flat fields (most important event)
@@ -460,22 +461,22 @@ func (s *Service) flushAndProcess(ctx context.Context, sessionID string, buf *Ou
 
 	// Add idle state info and mark as notable when waiting for user input
 	if idleState != nil {
-		annotations["idle_state"] = idleState.Reason
+		annotations[constants.MetadataKeyIdleState] = idleState.Reason
 		// Mark tool_changed for flush triggered by tool change
 		if idleState.Reason == "tool_change" {
 			annotations["tool_changed"] = "true"
 		}
 		if idleState.WaitingFor != "" {
-			annotations["waiting_for"] = idleState.WaitingFor
+			annotations[constants.MetadataKeyWaitingFor] = idleState.WaitingFor
 			// Tool is waiting for user interaction - mark as notable to trigger AI
 			// This ensures proactive AI response when tool prompts for input
-			if annotations["notable"] != "true" {
-				annotations["notable"] = "true"
-				annotations["event_type"] = "session_output"
+			if annotations[constants.MetadataKeyNotable] != constants.MetadataValueTrue {
+				annotations[constants.MetadataKeyNotable] = constants.MetadataValueTrue
+				annotations[constants.MetadataKeyEventType] = constants.PromptEventSessionOutput
 			}
 		}
 		if idleState.PromptText != "" {
-			annotations["prompt_text"] = idleState.PromptText
+			annotations[constants.MetadataKeyPromptText] = idleState.PromptText
 		}
 	}
 
