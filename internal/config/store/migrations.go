@@ -19,8 +19,8 @@ type MigrationResult struct {
 // EnsureRequiredAdapterSlots makes sure required adapter slots exist and are marked as required when no adapter is bound.
 func (s *Store) EnsureRequiredAdapterSlots(ctx context.Context) (MigrationResult, error) {
 	var result MigrationResult
-	if s.readOnly {
-		return result, fmt.Errorf("config: ensure required slots: store opened read-only")
+	if err := s.ensureWritable("ensure required slots"); err != nil {
+		return result, err
 	}
 
 	updated := make(map[string]struct{})
@@ -93,8 +93,8 @@ func (s *Store) EnsureRequiredAdapterSlots(ctx context.Context) (MigrationResult
 
 // EnsureAudioSettings ensures audio preferences row exists and is sanitised.
 func (s *Store) EnsureAudioSettings(ctx context.Context) (bool, error) {
-	if s.readOnly {
-		return false, fmt.Errorf("config: ensure audio settings: store opened read-only")
+	if err := s.ensureWritable("ensure audio settings"); err != nil {
+		return false, err
 	}
 
 	var count int

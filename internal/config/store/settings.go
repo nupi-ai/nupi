@@ -45,8 +45,8 @@ func (s *Store) LoadSettings(ctx context.Context, keys ...string) (map[string]st
 
 // SaveSettings upserts the provided key/value pairs for the active profile.
 func (s *Store) SaveSettings(ctx context.Context, values map[string]string) error {
-	if s.readOnly {
-		return fmt.Errorf("config: save settings: store opened read-only")
+	if err := s.ensureWritable("save settings"); err != nil {
+		return err
 	}
 	if len(values) == 0 {
 		return nil

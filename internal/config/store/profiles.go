@@ -22,11 +22,7 @@ func (s *Store) Profiles(ctx context.Context) ([]Profile, error) {
 
 // ActivateProfile marks the provided profile as the default one for the instance.
 func (s *Store) ActivateProfile(ctx context.Context, profileName string) error {
-	if s.readOnly {
-		return fmt.Errorf("config: activate profile: store opened read-only")
-	}
-
-	return s.withTx(ctx, func(tx *sql.Tx) error {
+	return s.withWriteTx(ctx, "activate profile", func(tx *sql.Tx) error {
 		var exists bool
 		if err := tx.QueryRowContext(ctx, `
 			SELECT EXISTS(
