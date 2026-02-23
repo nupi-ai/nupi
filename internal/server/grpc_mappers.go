@@ -1,7 +1,6 @@
 package server
 
 import (
-	"sort"
 	"strconv"
 	"strings"
 
@@ -17,11 +16,7 @@ import (
 )
 
 func conversationTurnsToProto(turns []eventbus.ConversationTurn) []*apiv1.ConversationTurn {
-	out := make([]*apiv1.ConversationTurn, 0, len(turns))
-	for _, turn := range turns {
-		out = append(out, conversationTurnToProto(turn))
-	}
-	return out
+	return mapper.MapSlice(turns, conversationTurnToProto)
 }
 
 func conversationTurnToProto(turn eventbus.ConversationTurn) *apiv1.ConversationTurn {
@@ -34,24 +29,12 @@ func conversationTurnToProto(turn eventbus.ConversationTurn) *apiv1.Conversation
 }
 
 func conversationMetadataToProto(meta map[string]string) []*apiv1.ConversationMetadata {
-	if len(meta) == 0 {
-		return nil
-	}
-
-	keys := make([]string, 0, len(meta))
-	for key := range meta {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-
-	metadata := make([]*apiv1.ConversationMetadata, 0, len(keys))
-	for _, key := range keys {
-		metadata = append(metadata, &apiv1.ConversationMetadata{
+	return mapper.StringMapToSortedSlice(meta, func(key, value string) *apiv1.ConversationMetadata {
+		return &apiv1.ConversationMetadata{
 			Key:   key,
-			Value: meta[key],
-		})
-	}
-	return metadata
+			Value: value,
+		}
+	})
 }
 
 func adapterRecordToProto(record configstore.Adapter) *apiv1.Adapter {
