@@ -305,3 +305,17 @@ func (s *Store) withTx(ctx context.Context, fn func(*sql.Tx) error) error {
 
 	return tx.Commit()
 }
+
+func (s *Store) ensureWritable(opName string) error {
+	if s.readOnly {
+		return fmt.Errorf("config: %s: store opened read-only", opName)
+	}
+	return nil
+}
+
+func (s *Store) withWriteTx(ctx context.Context, opName string, fn func(*sql.Tx) error) error {
+	if err := s.ensureWritable(opName); err != nil {
+		return err
+	}
+	return s.withTx(ctx, fn)
+}

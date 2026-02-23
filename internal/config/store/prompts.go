@@ -29,8 +29,8 @@ func (s *Store) GetPromptTemplate(ctx context.Context, eventType string) (*Promp
 
 // SetPromptTemplate creates or updates a prompt template (sets is_custom=1).
 func (s *Store) SetPromptTemplate(ctx context.Context, eventType, content string) error {
-	if s.readOnly {
-		return fmt.Errorf("config: set prompt template: store opened read-only")
+	if err := s.ensureWritable("set prompt template"); err != nil {
+		return err
 	}
 
 	_, err := s.db.ExecContext(ctx, `
@@ -81,8 +81,8 @@ func (s *Store) ListPromptTemplates(ctx context.Context) ([]PromptTemplate, erro
 
 // DeletePromptTemplate deletes a prompt template (used before re-seeding default).
 func (s *Store) DeletePromptTemplate(ctx context.Context, eventType string) error {
-	if s.readOnly {
-		return fmt.Errorf("config: delete prompt template: store opened read-only")
+	if err := s.ensureWritable("delete prompt template"); err != nil {
+		return err
 	}
 
 	_, err := s.db.ExecContext(ctx, `
@@ -98,8 +98,8 @@ func (s *Store) DeletePromptTemplate(ctx context.Context, eventType string) erro
 
 // SeedPromptTemplate inserts a default prompt template (is_custom=0) if it doesn't exist.
 func (s *Store) SeedPromptTemplate(ctx context.Context, eventType, content string) error {
-	if s.readOnly {
-		return fmt.Errorf("config: seed prompt template: store opened read-only")
+	if err := s.ensureWritable("seed prompt template"); err != nil {
+		return err
 	}
 
 	_, err := s.db.ExecContext(ctx, `
@@ -116,11 +116,7 @@ func (s *Store) SeedPromptTemplate(ctx context.Context, eventType, content strin
 
 // ResetPromptTemplate resets a template to default by deleting and re-seeding.
 func (s *Store) ResetPromptTemplate(ctx context.Context, eventType, defaultContent string) error {
-	if s.readOnly {
-		return fmt.Errorf("config: reset prompt template: store opened read-only")
-	}
-
-	return s.withTx(ctx, func(tx *sql.Tx) error {
+	return s.withWriteTx(ctx, "reset prompt template", func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `
 			DELETE FROM prompt_templates
 			WHERE instance_name = ? AND profile_name = ? AND event_type = ?
@@ -141,11 +137,7 @@ func (s *Store) ResetPromptTemplate(ctx context.Context, eventType, defaultConte
 
 // ResetAllPromptTemplates resets all templates to defaults.
 func (s *Store) ResetAllPromptTemplates(ctx context.Context, defaults map[string]string) error {
-	if s.readOnly {
-		return fmt.Errorf("config: reset all prompt templates: store opened read-only")
-	}
-
-	return s.withTx(ctx, func(tx *sql.Tx) error {
+	return s.withWriteTx(ctx, "reset all prompt templates", func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `
 			DELETE FROM prompt_templates
 			WHERE instance_name = ? AND profile_name = ?
