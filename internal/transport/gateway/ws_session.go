@@ -9,7 +9,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -75,49 +74,17 @@ func newWSSessionHandler(apiServer *server.APIServer, shutdownCtx context.Contex
 }
 
 func (h *wsSessionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Extract session ID from URL path: /ws/session/{session_id}
-	sessionID := strings.TrimPrefix(r.URL.Path, "/ws/session/")
-	sessionID = strings.TrimSuffix(sessionID, "/")
-	if sessionID == "" || strings.Contains(sessionID, "/") {
-		http.Error(w, "session_id required", http.StatusBadRequest)
-		return
-	}
-
-	// Authenticate before WebSocket upgrade.
-	if h.apiServer.AuthRequired() {
-		token := r.URL.Query().Get("token")
-		if token == "" {
-			token = parseBearer(r.Header.Get("Authorization"))
-		}
-		if token == "" {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		if _, ok := h.apiServer.AuthenticateToken(token); !ok {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-	}
-
-	// Verify session exists before upgrading.
-	sm := h.apiServer.SessionMgr()
-	if _, err := sm.GetSession(sessionID); err != nil {
-		http.Error(w, "session not found", http.StatusNotFound)
-		return
-	}
-
-	// Accept WebSocket upgrade.
-	conn, err := websocket.Accept(w, r, nil)
+	sessionID, conn, ctx, cancel, err := wsHandshake(h.apiServer, h.shutdownCtx, "/ws/session/", w, r)
 	if err != nil {
 		log.Printf("[WS Session] accept error for session %s: %v", sessionID, err)
 		return
 	}
+	if conn == nil {
+		return
+	}
 	defer conn.CloseNow()
 
-	// Derive from shutdownCtx so connections terminate on gateway shutdown.
-	// r.Context() is unreliable after hijack, but shutdownCtx is cancelled
-	// when the gateway shuts down.
-	ctx, cancel := context.WithCancel(h.shutdownCtx)
+	sm := h.apiServer.SessionMgr()
 	defer cancel()
 
 	conn.SetReadLimit(64 * 1024) // 64 KB max incoming message (control JSON + PTY input)
