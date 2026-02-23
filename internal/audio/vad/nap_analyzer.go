@@ -2,10 +2,6 @@ package vad
 
 import (
 	"context"
-	"errors"
-	"fmt"
-	"net"
-	"sync"
 
 	napv1 "github.com/nupi-ai/nupi/api/nap/v1"
 	"github.com/nupi-ai/nupi/internal/audio/napstream"
@@ -13,47 +9,39 @@ import (
 	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/mapper"
-	"github.com/nupi-ai/nupi/internal/napdial"
 	maputil "github.com/nupi-ai/nupi/internal/util/maps"
 	"google.golang.org/grpc"
 )
 
 type napAnalyzer struct {
-	params    SessionParams
-	conn      *grpc.ClientConn
-	stream    napv1.VoiceActivityDetectionService_DetectSpeechClient
-	ctx       context.Context
-	cancel    context.CancelFunc
-	responses chan Detection
-	errCh     chan error
-	wg        sync.WaitGroup
+	params SessionParams
+	client *napstream.BidiClient[napv1.DetectSpeechRequest, napv1.SpeechEvent, Detection]
 }
 
 func newNAPAnalyzer(ctx context.Context, params SessionParams, endpoint configstore.AdapterEndpoint) (Analyzer, error) {
-	conn, stream, streamCtx, cancel, err := napstream.OpenBidi(
+	client, err := napstream.NewBidiClient(
 		ctx,
 		endpoint,
 		"vad",
 		"open detect speech stream",
+		"receive speech event",
 		ErrAdapterUnavailable,
 		func(streamCtx context.Context, conn *grpc.ClientConn) (napv1.VoiceActivityDetectionService_DetectSpeechClient, error) {
 			return napv1.NewVoiceActivityDetectionServiceClient(conn).DetectSpeech(streamCtx)
 		},
+		speechEventToDetection,
+		16,
+		1,
+		vadResponseGracePeriod,
 	)
 	if err != nil {
 		return nil, err
 	}
 
 	a := &napAnalyzer{
-		params:    params,
-		conn:      conn,
-		stream:    stream,
-		ctx:       streamCtx,
-		cancel:    cancel,
-		responses: make(chan Detection, 16),
-		errCh:     make(chan error, 1),
+		params: params,
+		client: client,
 	}
-	a.startReceiver()
 
 	configJSON, err := napstream.MarshalConfigJSON("vad", params.Config)
 	if err != nil {
@@ -70,25 +58,14 @@ func newNAPAnalyzer(ctx context.Context, params SessionParams, endpoint configst
 		ConfigJson: configJSON,
 	}
 
-	if err := stream.Send(initReq); err != nil {
+	if err := client.Send(initReq, "send init request"); err != nil {
 		closeCtx, closeCancel := context.WithTimeout(context.Background(), constants.Duration2Seconds)
 		a.Close(closeCtx)
 		closeCancel()
-		return nil, napstream.WrapGRPCError("vad", "send init request", err, ErrAdapterUnavailable)
+		return nil, err
 	}
 
 	return a, nil
-}
-
-func (a *napAnalyzer) startReceiver() {
-	napstream.StartReceiver(
-		a.ctx,
-		&a.wg,
-		a.stream.Recv,
-		a.responses,
-		a.errCh,
-		speechEventToDetection,
-	)
 }
 
 func (a *napAnalyzer) OnSegment(_ context.Context, segment eventbus.AudioIngressSegmentEvent) ([]Detection, error) {
@@ -100,41 +77,18 @@ func (a *napAnalyzer) OnSegment(_ context.Context, segment eventbus.AudioIngress
 		Timestamp: mapper.ToProtoTimestampChecked(segment.EndedAt),
 	}
 
-	if err := a.stream.Send(req); err != nil {
-		return nil, napstream.WrapGRPCError("vad", "send segment", err, ErrAdapterUnavailable)
+	if err := a.client.Send(req, "send segment"); err != nil {
+		return nil, err
 	}
 
-	return a.collectDetections(segment.Last), a.drainError()
+	return a.client.Collect(segment.Last), a.client.DrainError()
 }
 
 func (a *napAnalyzer) Close(ctx context.Context) ([]Detection, error) {
-	_ = a.stream.CloseSend()
-
-	detections := a.drainDetections(ctx)
-	a.cancel()
-	a.wg.Wait()
-	if err := a.conn.Close(); err != nil {
-		return detections, fmt.Errorf("vad: close connection: %w", err)
-	}
-	if err := a.drainError(); err != nil && !errors.Is(err, ErrAdapterUnavailable) {
-		return detections, err
-	}
-	return detections, nil
+	return a.client.Close(ctx, nil)
 }
 
 const vadResponseGracePeriod = constants.Duration10Milliseconds
-
-func (a *napAnalyzer) collectDetections(wait bool) []Detection {
-	return napstream.CollectBufferedOrGrace(a.responses, wait, vadResponseGracePeriod)
-}
-
-func (a *napAnalyzer) drainDetections(ctx context.Context) []Detection {
-	return napstream.DrainUntilDone(ctx, a.responses)
-}
-
-func (a *napAnalyzer) drainError() error {
-	return napstream.DrainReceiveError(a.errCh, "vad", "receive speech event", ErrAdapterUnavailable)
-}
 
 func speechEventToDetection(evt *napv1.SpeechEvent) Detection {
 	det := Detection{
@@ -151,11 +105,4 @@ func speechEventToDetection(evt *napv1.SpeechEvent) Detection {
 		det.Active = false
 	}
 	return det
-}
-
-// ContextWithDialer attaches a custom dialer to the context.
-// It is primarily intended for tests that exercise gRPC connectivity via bufconn
-// without opening real network sockets.
-func ContextWithDialer(ctx context.Context, dialer func(context.Context, string) (net.Conn, error)) context.Context {
-	return napdial.ContextWithDialer(ctx, dialer)
 }
