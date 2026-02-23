@@ -19,6 +19,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/mapper"
 	"github.com/nupi-ai/nupi/internal/plugins/adapters"
 	"github.com/nupi-ai/nupi/internal/protocol"
+	"github.com/nupi-ai/nupi/internal/sanitize"
 	maputil "github.com/nupi-ai/nupi/internal/util/maps"
 	"github.com/nupi-ai/nupi/internal/voice/slots"
 	"google.golang.org/grpc"
@@ -220,9 +221,9 @@ func (a *audioService) StreamAudioOut(req *apiv1.StreamAudioOutRequest, srv apiv
 		return status.Error(codes.Unavailable, "event bus unavailable")
 	}
 
-	sessionID := strings.TrimSpace(req.GetSessionId())
-	if sessionID == "" {
-		return status.Error(codes.InvalidArgument, "session_id is required")
+	_, sessionID, err := a.api.validateAndGetSession(req.GetSessionId())
+	if err != nil {
+		return err
 	}
 	streamID := strings.TrimSpace(req.GetStreamId())
 	if streamID == "" {
@@ -231,10 +232,6 @@ func (a *audioService) StreamAudioOut(req *apiv1.StreamAudioOutRequest, srv apiv
 		} else {
 			streamID = defaultTTSStreamID
 		}
-	}
-
-	if _, err := a.api.sessionManager.GetSession(sessionID); err != nil {
-		return status.Errorf(codes.NotFound, "session %s not found", sessionID)
 	}
 
 	readiness, err := a.api.voiceReadiness(srv.Context())
@@ -298,9 +295,9 @@ func (a *audioService) InterruptTTS(ctx context.Context, req *apiv1.InterruptTTS
 		return nil, status.Error(codes.InvalidArgument, "request is required")
 	}
 
-	sessionID := strings.TrimSpace(req.GetSessionId())
-	if sessionID == "" {
-		return nil, status.Error(codes.InvalidArgument, "session_id is required")
+	_, sessionID, err := a.api.validateAndGetSession(req.GetSessionId())
+	if err != nil {
+		return nil, err
 	}
 
 	streamID := strings.TrimSpace(req.GetStreamId())
@@ -313,10 +310,6 @@ func (a *audioService) InterruptTTS(ctx context.Context, req *apiv1.InterruptTTS
 	}
 
 	reason := strings.TrimSpace(req.GetReason())
-
-	if _, err := a.api.sessionManager.GetSession(sessionID); err != nil {
-		return nil, status.Errorf(codes.NotFound, "session %s not found", sessionID)
-	}
 
 	readiness, err := a.api.voiceReadiness(ctx)
 	if err != nil {
@@ -446,14 +439,9 @@ func (s *sessionsService) KillSession(ctx context.Context, req *apiv1.KillSessio
 
 func (s *sessionsService) GetSession(ctx context.Context, req *apiv1.GetSessionRequest) (*apiv1.GetSessionResponse, error) {
 
-	sessionID := strings.TrimSpace(req.GetSessionId())
-	if sessionID == "" {
-		return nil, status.Error(codes.InvalidArgument, "session_id is required")
-	}
-
-	sess, err := s.api.sessionManager.GetSession(sessionID)
+	sess, _, err := s.api.validateAndGetSession(req.GetSessionId())
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "session %s not found", sessionID)
+		return nil, err
 	}
 
 	dto := api.ToDTO(sess)
@@ -462,13 +450,9 @@ func (s *sessionsService) GetSession(ctx context.Context, req *apiv1.GetSessionR
 
 func (s *sessionsService) SendInput(ctx context.Context, req *apiv1.SendInputRequest) (*apiv1.SendInputResponse, error) {
 
-	sessionID := strings.TrimSpace(req.GetSessionId())
-	if sessionID == "" {
-		return nil, status.Error(codes.InvalidArgument, "session_id is required")
-	}
-
-	if _, err := s.api.sessionManager.GetSession(sessionID); err != nil {
-		return nil, status.Errorf(codes.NotFound, "session %s not found", sessionID)
+	_, sessionID, err := s.api.validateAndGetSession(req.GetSessionId())
+	if err != nil {
+		return nil, err
 	}
 
 	if input := req.GetInput(); len(input) > 0 {
@@ -489,13 +473,9 @@ func (s *sessionsService) SendInput(ctx context.Context, req *apiv1.SendInputReq
 
 func (s *sessionsService) GetSessionMode(ctx context.Context, req *apiv1.GetSessionModeRequest) (*apiv1.GetSessionModeResponse, error) {
 
-	sessionID := strings.TrimSpace(req.GetSessionId())
-	if sessionID == "" {
-		return nil, status.Error(codes.InvalidArgument, "session_id is required")
-	}
-
-	if _, err := s.api.sessionManager.GetSession(sessionID); err != nil {
-		return nil, status.Errorf(codes.NotFound, "session %s not found", sessionID)
+	_, sessionID, err := s.api.validateAndGetSession(req.GetSessionId())
+	if err != nil {
+		return nil, err
 	}
 
 	mode := ""
@@ -518,8 +498,8 @@ func (s *sessionsService) SetSessionMode(ctx context.Context, req *apiv1.SetSess
 		return nil, status.Error(codes.InvalidArgument, "mode is required")
 	}
 
-	if _, err := s.api.sessionManager.GetSession(sessionID); err != nil {
-		return nil, status.Errorf(codes.NotFound, "session %s not found", sessionID)
+	if _, _, err := s.api.validateAndGetSession(sessionID); err != nil {
+		return nil, err
 	}
 
 	if s.api.resizeManager == nil {
@@ -548,8 +528,8 @@ func (s *sessionsService) GetConversation(ctx context.Context, req *apiv1.GetCon
 		return nil, status.Error(codes.Unavailable, "conversation service unavailable")
 	}
 
-	if _, err := s.api.sessionManager.GetSession(sessionID); err != nil {
-		return nil, status.Errorf(codes.NotFound, "session %s not found", sessionID)
+	if _, _, err := s.api.validateAndGetSession(sessionID); err != nil {
+		return nil, err
 	}
 
 	offset := int(req.GetOffset())
@@ -718,10 +698,10 @@ func RegisterGRPCServices(api *APIServer, registrar grpc.ServiceRegistrar) {
 const DefaultCaptureStreamID = "mic"
 
 const (
-	maxAudioChunkMetadataEntries    = 32
-	maxAudioChunkMetadataKeyRunes   = 64
-	maxAudioChunkMetadataValueRunes = 512
-	maxAudioChunkMetadataTotalBytes = 8192
+	maxAudioChunkMetadataEntries    = sanitize.DefaultMetadataMaxEntries
+	maxAudioChunkMetadataKeyRunes   = sanitize.DefaultMetadataMaxKeyRunes
+	maxAudioChunkMetadataValueRunes = sanitize.DefaultMetadataMaxValueRunes
+	maxAudioChunkMetadataTotalBytes = sanitize.DefaultMetadataMaxTotalBytes
 )
 
 var defaultCaptureFormat = eventbus.AudioFormat{
@@ -736,7 +716,7 @@ var defaultCaptureFormat = eventbus.AudioFormat{
 func DefaultCaptureFormat() eventbus.AudioFormat { return defaultCaptureFormat }
 
 func normalizeAndValidateAudioChunkMetadata(raw map[string]string) (map[string]string, error) {
-	return mapper.NormalizeAndValidateMetadata(raw, mapper.MetadataLimits{
+	return sanitize.NormalizeAndValidateMetadata(raw, sanitize.MetadataLimits{
 		MaxEntries:    maxAudioChunkMetadataEntries,
 		MaxKeyRunes:   maxAudioChunkMetadataKeyRunes,
 		MaxValueRunes: maxAudioChunkMetadataValueRunes,
