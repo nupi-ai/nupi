@@ -3,6 +3,7 @@ import { api, toErrorMessage, type Recording } from '../api';
 import { mergeStyles } from '../utils/mergeStyles';
 import { AsciinemaPlayer } from './AsciinemaPlayer';
 import * as styles from './historyStyles';
+import { formatDateTimeLocal, formatDurationSeconds } from '@nupi/shared/time';
 
 export function History() {
   const [recordings, setRecordings] = useState<Recording[]>([]);
@@ -46,17 +47,6 @@ export function History() {
     loadCastData(recording.session_id);
   }
 
-  function formatDuration(seconds: number): string {
-    const mins = Math.floor(seconds / 60);
-    const secs = Math.floor(seconds % 60);
-    return `${mins}:${secs.toString().padStart(2, '0')}`;
-  }
-
-  function formatDate(dateStr: string): string {
-    const date = new Date(dateStr);
-    return date.toLocaleString();
-  }
-
   if (selectedRecording) {
     return (
       <div style={styles.root}>
@@ -81,7 +71,7 @@ export function History() {
             </div>
           </div>
           <div style={styles.headerMetadata}>
-            {selectedRecording.start_time ? formatDate(selectedRecording.start_time) : 'Unknown'} · {formatDuration(selectedRecording.duration)}
+            {selectedRecording.start_time ? formatDateTimeLocal(selectedRecording.start_time) : 'Unknown'} · {formatDurationSeconds(selectedRecording.duration)}
           </div>
         </div>
 
@@ -169,10 +159,10 @@ export function History() {
                   </div>
                   <div style={styles.recordingMetaColumn}>
                     <div style={styles.recordingStartTime}>
-                      {recording.start_time ? formatDate(recording.start_time) : 'Unknown'}
+                      {recording.start_time ? formatDateTimeLocal(recording.start_time) : 'Unknown'}
                     </div>
                     <div style={styles.recordingDuration}>
-                      Duration: {formatDuration(recording.duration)}
+                      Duration: {formatDurationSeconds(recording.duration)}
                     </div>
                   </div>
                 </div>

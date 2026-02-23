@@ -1,4 +1,4 @@
-type JsonRecord = Record<string, unknown>;
+import { isJsonRecord, parseStringRecordLenient } from '@nupi/shared/json';
 
 export const SESSION_EVENT_TYPES = [
   'session_created',
@@ -17,24 +17,6 @@ export interface SessionEventPayload {
   event_type: SessionEventType;
   session_id: string;
   data: Record<string, string>;
-}
-
-function isJsonRecord(value: unknown): value is JsonRecord {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function parseStringRecord(value: unknown): Record<string, string> {
-  if (!isJsonRecord(value)) {
-    return {};
-  }
-
-  const parsed: Record<string, string> = {};
-  for (const [key, entry] of Object.entries(value)) {
-    if (typeof entry === 'string') {
-      parsed[key] = entry;
-    }
-  }
-  return parsed;
 }
 
 function parseEventType(value: unknown): SessionEventType | null {
@@ -61,6 +43,6 @@ export function parseSessionEventPayload(raw: unknown): SessionEventPayload | nu
   return {
     event_type,
     session_id: raw.session_id,
-    data: parseStringRecord(raw.data),
+    data: parseStringRecordLenient(raw.data),
   };
 }

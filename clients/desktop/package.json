@@ -12,6 +12,7 @@
     "tauri": "tauri"
   },
   "dependencies": {
+    "@nupi/shared": "file:../shared",
     "@tauri-apps/plugin-dialog": "^2",
     "@tauri-apps/api": "^2",
     "@xterm/addon-fit": "^0.10.0",

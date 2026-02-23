@@ -1,4 +1,4 @@
-type JsonRecord = Record<string, unknown>;
+import { isJsonRecord, parseStringRecordStrict } from "@nupi/shared/json";
 
 const WS_EVENT_MESSAGE_TYPE = "event" as const;
 
@@ -53,25 +53,11 @@ export type SessionStreamEvent =
   | SessionStoppedEvent
   | SessionResizeInstructionEvent;
 
-function isJsonRecord(value: unknown): value is JsonRecord {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function parseStringRecord(value: unknown): Record<string, string> | undefined {
   if (value === undefined) {
     return undefined;
   }
-  if (!isJsonRecord(value)) {
-    throw new Error("event.data must be an object");
-  }
-  const parsed: Record<string, string> = {};
-  for (const [key, entry] of Object.entries(value)) {
-    if (typeof entry !== "string") {
-      throw new Error(`event.data.${key} must be a string`);
-    }
-    parsed[key] = entry;
-  }
-  return parsed;
+  return parseStringRecordStrict(value, "event.data");
 }
 
 function parseEventType(value: unknown): SessionStreamEventType {

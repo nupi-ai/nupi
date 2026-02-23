@@ -1,0 +1,20 @@
+{
+  "name": "@nupi/shared",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./design-tokens": {
+      "types": "./dist/designTokens.d.ts",
+      "import": "./dist/designTokens.js"
+    },
+    "./json": {
+      "types": "./dist/json.d.ts",
+      "import": "./dist/json.js"
+    },
+    "./time": {
+      "types": "./dist/time.d.ts",
+      "import": "./dist/time.js"
+    }
+  }
+}

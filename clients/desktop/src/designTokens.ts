@@ -1,11 +1,13 @@
+import { sharedDesignTokens } from "@nupi/shared/design-tokens";
+
 export const theme = {
   bg: {
     app: "#121212",
     nav: "#1a1a1a",
     panel: "#1c1c1c",
     tabs: "#2d2d2d",
-    tabSelected: "#262626",
-    neutral: "#333",
+    tabSelected: sharedDesignTokens.color.terminalBackground,
+    neutral: sharedDesignTokens.color.neutral333,
     input: "#111",
     modal: "#0d1117",
     code: "#0f172a",
@@ -18,13 +20,13 @@ export const theme = {
     dangerButton: "#ef4444",
     transparent: "transparent",
     overlay: "rgba(0, 0, 0, 0.9)",
-    overlayDialog: "rgba(0, 0, 0, 0.7)",
+    overlayDialog: sharedDesignTokens.overlay.black70,
     dangerHover: "rgba(239, 68, 68, 0.2)",
     successHover: "rgba(74, 222, 128, 0.2)",
     languageSelected: "#1e3a5f",
   },
   text: {
-    primary: "#fff",
+    primary: sharedDesignTokens.color.white,
     secondary: "#9ca3af",
     tertiary: "#6b7280",
     muted: "#999",
@@ -40,14 +42,14 @@ export const theme = {
     languageSelected: "#60a5fa",
   },
   border: {
-    default: "#333",
+    default: sharedDesignTokens.color.neutral333,
     subtle: "#2a2a2a",
     muted: "#222",
     secondaryButton: "#374151",
     danger: "#f87171",
     active: "#4ade80",
     inactive: "#ef4444",
-    selected: "#262626",
+    selected: sharedDesignTokens.color.terminalBackground,
   },
   shadow: {
     panel: "rgba(0,0,0,0.2)",
