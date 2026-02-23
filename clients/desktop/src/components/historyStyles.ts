@@ -116,33 +116,10 @@ export const recordingCard: CSSProperties = {
   transition: 'all 0.2s',
 };
 
-interface RecordingCardState {
-  backgroundColor: string;
-  borderColor: string;
-}
-
-const recordingCardDefaultState: RecordingCardState = {
-  backgroundColor: '#1a1a1a',
-  borderColor: '#333',
-};
-
-const recordingCardHoverState: RecordingCardState = {
+export const recordingCardHover: CSSProperties = {
   backgroundColor: '#252525',
   borderColor: '#444',
 };
-
-function applyRecordingCardState(card: HTMLElement, state: RecordingCardState): void {
-  card.style.backgroundColor = state.backgroundColor;
-  card.style.borderColor = state.borderColor;
-}
-
-export function highlightRecordingCard(card: HTMLElement): void {
-  applyRecordingCardState(card, recordingCardHoverState);
-}
-
-export function resetRecordingCard(card: HTMLElement): void {
-  applyRecordingCardState(card, recordingCardDefaultState);
-}
 
 export const recordingRow: CSSProperties = {
   display: 'flex',

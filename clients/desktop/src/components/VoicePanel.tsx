@@ -1,6 +1,7 @@
 import { useAudioFilePicker } from "../hooks/useAudioFilePicker";
 import { useVoiceSessionConfig } from "../hooks/useVoiceSessionConfig";
 import { useVoiceStream } from "../hooks/useVoiceStream";
+import { mergeStyles } from "../utils/mergeStyles";
 import { LanguageSelector } from "./LanguageSelector";
 import * as styles from "./voicePanelStyles";
 
@@ -109,21 +110,21 @@ export function VoicePanel() {
           <button
             onClick={performUpload}
             disabled={isBusy}
-            style={{ ...styles.successButton, ...styles.busyCursor(isBusy) }}
+            style={mergeStyles(styles.successButton, styles.busyCursor(isBusy))}
           >
             {isBusy ? "Streaming\u2026" : "Send Audio"}
           </button>
           <button
             onClick={performInterrupt}
             disabled={isBusy}
-            style={{ ...styles.warningButton, ...styles.busyCursor(isBusy) }}
+            style={mergeStyles(styles.warningButton, styles.busyCursor(isBusy))}
           >
             Interrupt TTS
           </button>
           <button
             onClick={fetchCapabilities}
             disabled={isBusy}
-            style={{ ...styles.indigoButton, ...styles.busyCursor(isBusy) }}
+            style={mergeStyles(styles.indigoButton, styles.busyCursor(isBusy))}
           >
             Refresh Capabilities
           </button>
@@ -131,10 +132,7 @@ export function VoicePanel() {
             <button
               onClick={cancelUpload}
               disabled={isCancelling}
-              style={{
-                ...styles.dangerButton,
-                ...styles.busyCursor(isCancelling),
-              }}
+              style={mergeStyles(styles.dangerButton, styles.busyCursor(isCancelling))}
             >
               {isCancelling ? "Cancelling\u2026" : "Cancel Upload"}
             </button>

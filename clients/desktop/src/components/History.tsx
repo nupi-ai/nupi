@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { api, toErrorMessage, type Recording } from '../api';
+import { mergeStyles } from '../utils/mergeStyles';
 import { AsciinemaPlayer } from './AsciinemaPlayer';
 import * as styles from './historyStyles';
 
@@ -9,6 +10,7 @@ export function History() {
   const [castData, setCastData] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [hoveredRecordingId, setHoveredRecordingId] = useState<string | null>(null);
 
   useEffect(() => {
     loadRecordings();
@@ -137,13 +139,12 @@ export function History() {
               <div
                 key={recording.session_id}
                 onClick={() => selectRecording(recording)}
-                style={styles.recordingCard}
-                onMouseEnter={(e) => {
-                  styles.highlightRecordingCard(e.currentTarget);
-                }}
-                onMouseLeave={(e) => {
-                  styles.resetRecordingCard(e.currentTarget);
-                }}
+                style={mergeStyles(
+                  styles.recordingCard,
+                  hoveredRecordingId === recording.session_id && styles.recordingCardHover,
+                )}
+                onMouseEnter={() => setHoveredRecordingId(recording.session_id)}
+                onMouseLeave={() => setHoveredRecordingId(null)}
               >
                 <div style={styles.recordingRow}>
                   <div style={styles.recordingMainColumn}>

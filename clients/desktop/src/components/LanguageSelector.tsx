@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { LanguageInfo } from "../api";
 import { theme } from "../designTokens";
 import { useLanguagePreference } from "../hooks/useLanguagePreference";
+import { mergeStyles } from "../utils/mergeStyles";
 import * as styles from "./voicePanelStyles";
 
 export function LanguageSelector() {
@@ -47,7 +48,7 @@ export function LanguageSelector() {
       </p>
 
       <div style={styles.currentLanguageRow}>
-        <span style={{ ...styles.labelText, marginRight: "8px" }}>
+        <span style={mergeStyles(styles.labelText, { marginRight: "8px" })}>
           Current:
         </span>
         <span style={{ color: language ? theme.text.success : theme.text.secondary }}>
@@ -68,7 +69,7 @@ export function LanguageSelector() {
         onChange={(e) => setSearch(e.target.value)}
         placeholder="Search languages..."
         aria-label="Search languages"
-        style={{ ...styles.textInput, width: "100%", marginBottom: "8px" }}
+        style={mergeStyles(styles.textInput, { width: "100%", marginBottom: "8px" })}
       />
 
       {loading && <p style={styles.infoText}>Loading languages...</p>}
@@ -90,11 +91,10 @@ export function LanguageSelector() {
                 role="option"
                 aria-selected={isSelected}
                 onClick={() => setLanguage(lang.iso1)}
-                style={{
-                  ...styles.languageOptionBase,
+                style={mergeStyles(styles.languageOptionBase, {
                   backgroundColor: isSelected ? theme.bg.languageSelected : theme.bg.transparent,
                   color: isSelected ? theme.text.languageSelected : theme.text.secondaryButton,
-                }}
+                })}
               >
                 {lang.native_name} ({lang.english_name})
                 <span style={styles.languageIsoLabel}>{lang.iso1}</span>

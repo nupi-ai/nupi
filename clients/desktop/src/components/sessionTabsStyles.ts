@@ -91,42 +91,15 @@ export const tabActionButton: CSSProperties = {
   transition: 'all 0.15s ease',
 };
 
-interface ActionButtonState {
-  background: string;
-  color: string;
-}
-
-const actionButtonDefaultState: ActionButtonState = {
-  background: theme.bg.transparent,
-  color: theme.text.muted,
-};
-
-const killButtonHoverState: ActionButtonState = {
+export const killButtonHover: CSSProperties = {
   background: theme.bg.dangerHover,
   color: theme.text.dangerStrong,
 };
 
-const playButtonHoverState: ActionButtonState = {
+export const playButtonHover: CSSProperties = {
   background: theme.bg.successHover,
   color: theme.text.success,
 };
-
-function applyButtonState(button: HTMLElement, state: ActionButtonState): void {
-  button.style.background = state.background;
-  button.style.color = state.color;
-}
-
-export function highlightKillButton(button: HTMLElement): void {
-  applyButtonState(button, killButtonHoverState);
-}
-
-export function highlightPlayButton(button: HTMLElement): void {
-  applyButtonState(button, playButtonHoverState);
-}
-
-export function resetTabActionButton(button: HTMLElement): void {
-  applyButtonState(button, actionButtonDefaultState);
-}
 
 export const workingDirectoryText: CSSProperties = {
   fontSize: '11px',
