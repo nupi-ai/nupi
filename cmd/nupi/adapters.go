@@ -172,7 +172,7 @@ func adaptersList(cmd *cobra.Command, _ []string) error {
 	out := newOutputFormatter(cmd)
 
 	out.PrintText(func() {
-		fmt.Fprintln(os.Stderr, "Hint: use 'nupi plugins list' for a unified view of all plugins")
+		fmt.Fprintln(out.ErrWriter(), "Hint: use 'nupi plugins list' for a unified view of all plugins")
 	})
 
 	return adaptersListGRPC(out)
@@ -268,14 +268,15 @@ func adaptersRegister(cmd *cobra.Command, _ []string) error {
 	}
 
 	result := adapterRegistrationResultFromProto(resp)
+	stdout := cmd.OutOrStdout()
 	return out.Render(CommandResult{
 		Data: result,
 		HumanReadable: func() error {
-			fmt.Printf("Registered adapter %s", resp.GetAdapterId())
+			fmt.Fprintf(stdout, "Registered adapter %s", resp.GetAdapterId())
 			if resp.GetType() != "" {
-				fmt.Printf(" (%s)", resp.GetType())
+				fmt.Fprintf(stdout, " (%s)", resp.GetType())
 			}
-			fmt.Println()
+			fmt.Fprintln(stdout)
 			return nil
 		},
 	})
@@ -420,6 +421,12 @@ func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 		command = strings.TrimSpace(manifest.Adapter.Entrypoint.Command)
 		if command != "" {
 			command = config.ExpandPath(command)
+			// Bare command names (e.g. "python3") are intentionally NOT joined with
+			// baseDir here — they should be resolved via PATH by normalizeCommand
+			// below. Only relative paths with a separator (e.g. "./bin/adapter")
+			// are anchored to the source/manifest directory. This differs from
+			// --binary which always anchors to baseDir because --binary is expected
+			// to reference a file path, never a system command.
 			if !filepath.IsAbs(command) && containsPathSeparator(command) {
 				baseDir := sourceDir
 				if baseDir == "" {
@@ -469,9 +476,6 @@ func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 			return out.Error(fmt.Sprintf("--endpoint-address required for %s transport", transport), errors.New("missing endpoint address"))
 		}
 	case constants.AdapterTransportProcess:
-		if command == "" {
-			return out.Error("--binary or manifest entrypoint.command required for process transport", errors.New("missing command"))
-		}
 		if address != "" {
 			return out.Error("--endpoint-address not used for process transport", errors.New("unexpected address"))
 		}
@@ -527,13 +531,14 @@ func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 	// Normalize command to an absolute path so that the registered endpoint
 	// and sanityCheck both operate on the same resolved binary. This avoids
 	// mismatches when daemon PATH differs from install-time PATH.
-	command = normalizeCommand(command)
+	command = normalizeCommand(command, cleanupWriter)
 
 	regReq := &apiv1.RegisterAdapterRequest{
 		AdapterId:    adapterID,
 		Source:       "local",
 		Type:         slotType,
 		Name:         adapterName,
+		Version:      strings.TrimSpace(manifest.Metadata.Version),
 		ManifestYaml: string(manifestJSON),
 		Endpoint: &apiv1.AdapterEndpointConfig{
 			Transport: transport,
@@ -565,7 +570,7 @@ func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 		Adapter:     adapterRegistrationResultFromProto(resp).Adapter,
 		SanityCheck: sc,
 	}
-	stdout := cmd.OutOrStdout()
+	stdout := out.w
 	if err := out.Render(CommandResult{
 		Data: result,
 		HumanReadable: func() error {
@@ -594,7 +599,7 @@ func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 	}
 
 	out.PrintText(func() {
-		fmt.Printf("Bound adapter %s to %s\n", adapterID, slot)
+		fmt.Fprintf(stdout, "Bound adapter %s to %s\n", adapterID, slot)
 	})
 	return nil
 }
@@ -638,16 +643,16 @@ func adaptersLogs(cmd *cobra.Command, _ []string) error {
 			}
 
 			if out.jsonMode {
-				printAdapterLogEntryJSON(entry)
+				printAdapterLogEntryJSON(out.w, entry)
 				continue
 			}
 
-			printAdapterLogEntry(entry)
+			printAdapterLogEntry(out.w, entry)
 		}
 	})
 }
 
-func printAdapterLogEntry(entry *apiv1.AdapterLogStreamEntry) {
+func printAdapterLogEntry(w io.Writer, entry *apiv1.AdapterLogStreamEntry) {
 	switch payload := entry.GetPayload().(type) {
 	case *apiv1.AdapterLogStreamEntry_Log:
 		log := payload.Log
@@ -664,15 +669,15 @@ func printAdapterLogEntry(entry *apiv1.AdapterLogStreamEntry) {
 		adapterID := strings.TrimSpace(log.GetAdapterId())
 		if slot != "" {
 			if adapterID != "" {
-				fmt.Printf("%s [%s] %s %s: %s\n", timestamp, slot, adapterID, level, log.GetMessage())
+				fmt.Fprintf(w, "%s [%s] %s %s: %s\n", timestamp, slot, adapterID, level, log.GetMessage())
 			} else {
-				fmt.Printf("%s [%s] %s: %s\n", timestamp, slot, level, log.GetMessage())
+				fmt.Fprintf(w, "%s [%s] %s: %s\n", timestamp, slot, level, log.GetMessage())
 			}
 		} else {
 			if adapterID != "" {
-				fmt.Printf("%s %s %s: %s\n", timestamp, adapterID, level, log.GetMessage())
+				fmt.Fprintf(w, "%s %s %s: %s\n", timestamp, adapterID, level, log.GetMessage())
 			} else {
-				fmt.Printf("%s %s: %s\n", timestamp, level, log.GetMessage())
+				fmt.Fprintf(w, "%s %s: %s\n", timestamp, level, log.GetMessage())
 			}
 		}
 	case *apiv1.AdapterLogStreamEntry_Transcript:
@@ -686,12 +691,12 @@ func printAdapterLogEntry(entry *apiv1.AdapterLogStreamEntry) {
 		if tr.GetIsFinal() {
 			stage = "final"
 		}
-		fmt.Printf("%s [transcript %s] session=%s stream=%s conf=%.2f %s\n",
+		fmt.Fprintf(w, "%s [transcript %s] session=%s stream=%s conf=%.2f %s\n",
 			timestamp, stage, tr.GetSessionId(), tr.GetStreamId(), tr.GetConfidence(), tr.GetText())
 	}
 }
 
-func printAdapterLogEntryJSON(entry *apiv1.AdapterLogStreamEntry) {
+func printAdapterLogEntryJSON(w io.Writer, entry *apiv1.AdapterLogStreamEntry) {
 	var m map[string]interface{}
 	switch payload := entry.GetPayload().(type) {
 	case *apiv1.AdapterLogStreamEntry_Log:
@@ -732,9 +737,12 @@ func printAdapterLogEntryJSON(entry *apiv1.AdapterLogStreamEntry) {
 	}
 	data, err := json.Marshal(m)
 	if err != nil {
+		if errJSON, e := json.Marshal(map[string]string{"error": fmt.Sprintf("failed to marshal log entry: %s", err)}); e == nil {
+			fmt.Fprintln(w, string(errJSON))
+		}
 		return
 	}
-	fmt.Println(string(data))
+	fmt.Fprintln(w, string(data))
 }
 
 func adaptersBind(cmd *cobra.Command, args []string) error {
@@ -826,12 +834,12 @@ func adaptersListGRPC(out *OutputFormatter) error {
 			Data: overview,
 			HumanReadable: func() error {
 				if len(overview.Adapters) == 0 {
-					fmt.Println("No adapter slots found.")
+					fmt.Fprintln(out.w, "No adapter slots found.")
 					return nil
 				}
 
-				printAdapterTable(overview.Adapters)
-				printAdapterRuntimeMessages(overview.Adapters)
+				printAdapterTable(out.w, overview.Adapters)
+				printAdapterRuntimeMessages(out.w, overview.Adapters)
 				return nil
 			},
 		}, nil
@@ -855,7 +863,7 @@ func adaptersBindGRPC(out *OutputFormatter, slot, adapter, cfg string) error {
 		return CommandResult{
 			Data: apihttp.AdapterActionResult{Adapter: entry},
 			HumanReadable: func() error {
-				printAdapterSummary("Bound", entry)
+				printAdapterSummary(out.w, "Bound", entry)
 				return nil
 			},
 		}, nil
@@ -873,7 +881,7 @@ func adaptersStartGRPC(out *OutputFormatter, slot string) error {
 		return CommandResult{
 			Data: apihttp.AdapterActionResult{Adapter: entry},
 			HumanReadable: func() error {
-				printAdapterSummary("Started", entry)
+				printAdapterSummary(out.w, "Started", entry)
 				return nil
 			},
 		}, nil
@@ -891,7 +899,7 @@ func adaptersStopGRPC(out *OutputFormatter, slot string) error {
 		return CommandResult{
 			Data: apihttp.AdapterActionResult{Adapter: entry},
 			HumanReadable: func() error {
-				printAdapterSummary("Stopped", entry)
+				printAdapterSummary(out.w, "Stopped", entry)
 				return nil
 			},
 		}, nil
@@ -992,13 +1000,13 @@ func sortedAdapters(entries []apihttp.AdapterEntry) []apihttp.AdapterEntry {
 	return sorted
 }
 
-func printAdapterTable(entries []apihttp.AdapterEntry) {
+func printAdapterTable(out io.Writer, entries []apihttp.AdapterEntry) {
 	sorted := sortedAdapters(entries)
 	if len(sorted) == 0 {
 		return
 	}
 
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "SLOT\tADAPTER\tSTATUS\tHEALTH\tUPDATED")
 	for _, entry := range sorted {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
@@ -1012,32 +1020,32 @@ func printAdapterTable(entries []apihttp.AdapterEntry) {
 	w.Flush()
 }
 
-func printAdapterRuntimeMessages(entries []apihttp.AdapterEntry) {
+func printAdapterRuntimeMessages(w io.Writer, entries []apihttp.AdapterEntry) {
 	for _, entry := range sortedAdapters(entries) {
 		if entry.Runtime != nil && strings.TrimSpace(entry.Runtime.Message) != "" {
-			fmt.Printf("%s: %s\n", entry.Slot, entry.Runtime.Message)
+			fmt.Fprintf(w, "%s: %s\n", entry.Slot, entry.Runtime.Message)
 		}
 	}
 }
 
-func printAdapterSummary(action string, entry apihttp.AdapterEntry) {
-	fmt.Printf("%s slot %s -> %s (status: %s)\n", action, entry.Slot, adapterLabel(entry), entry.Status)
+func printAdapterSummary(w io.Writer, action string, entry apihttp.AdapterEntry) {
+	fmt.Fprintf(w, "%s slot %s -> %s (status: %s)\n", action, entry.Slot, adapterLabel(entry), entry.Status)
 	if entry.Runtime != nil {
-		fmt.Printf("  Health: %s\n", adapterHealthLabel(entry))
+		fmt.Fprintf(w, "  Health: %s\n", adapterHealthLabel(entry))
 		if entry.Runtime.Message != "" {
-			fmt.Printf("  Message: %s\n", entry.Runtime.Message)
+			fmt.Fprintf(w, "  Message: %s\n", entry.Runtime.Message)
 		}
 		if entry.Runtime.StartedAt != nil && *entry.Runtime.StartedAt != "" {
-			fmt.Printf("  Started: %s\n", *entry.Runtime.StartedAt)
+			fmt.Fprintf(w, "  Started: %s\n", *entry.Runtime.StartedAt)
 		}
-		fmt.Printf("  Updated: %s\n", entry.Runtime.UpdatedAt)
+		fmt.Fprintf(w, "  Updated: %s\n", entry.Runtime.UpdatedAt)
 	}
 }
 
-func printAvailableAdaptersForSlot(slot string, adapters []adapterInfo) []adapterInfo {
+func printAvailableAdaptersForSlot(w io.Writer, slot string, adapters []adapterInfo) []adapterInfo {
 	if len(adapters) == 0 {
-		fmt.Println("Available adapters:")
-		fmt.Println("  (no adapters installed)")
+		fmt.Fprintln(w, "Available adapters:")
+		fmt.Fprintln(w, "  (no adapters installed)")
 		return nil
 	}
 
@@ -1046,15 +1054,15 @@ func printAvailableAdaptersForSlot(slot string, adapters []adapterInfo) []adapte
 
 	if len(filtered) > 0 {
 		if expectedType != "" {
-			fmt.Printf("Available adapters for %s (type: %s):\n", slot, expectedType)
+			fmt.Fprintf(w, "Available adapters for %s (type: %s):\n", slot, expectedType)
 		} else {
-			fmt.Printf("Available adapters for %s:\n", slot)
+			fmt.Fprintf(w, "Available adapters for %s:\n", slot)
 		}
 	} else {
 		if expectedType != "" {
-			fmt.Printf("No adapters of type %s installed. Showing all adapters:\n", expectedType)
+			fmt.Fprintf(w, "No adapters of type %s installed. Showing all adapters:\n", expectedType)
 		} else {
-			fmt.Println("Available adapters:")
+			fmt.Fprintln(w, "Available adapters:")
 		}
 		filtered = adapters
 	}
@@ -1064,7 +1072,7 @@ func printAvailableAdaptersForSlot(slot string, adapters []adapterInfo) []adapte
 		if adapter.Name != "" {
 			label = fmt.Sprintf("%s (%s)", adapter.Name, adapter.ID)
 		}
-		fmt.Printf("  %d) %s [%s]\n", idx+1, label, adapter.Type)
+		fmt.Fprintf(w, "  %d) %s [%s]\n", idx+1, label, adapter.Type)
 	}
 	return filtered
 }
@@ -1319,11 +1327,12 @@ type sanityCheckEntry struct {
 	Remediation string `json:"remediation,omitempty"`
 }
 
-// containsPathSeparator reports whether s contains a path separator character.
-// It checks both forward slash and backslash so that relative paths like
-// "./bin/adapter" are correctly recognised on Windows (where os.PathSeparator
-// is '\\' and a forward-slash-only path would otherwise be treated as a bare
-// command name).
+// containsPathSeparator is a cross-platform heuristic that reports whether s
+// looks like a path (as opposed to a bare command name). It checks for both '/'
+// and '\' unconditionally so that relative paths like "./bin/adapter" are
+// correctly recognised on all platforms. On Unix '\' is technically a valid
+// filename character, but in practice adapter paths never contain literal
+// backslashes, so treating it as a path indicator is safe here.
 func containsPathSeparator(s string) bool {
 	return strings.ContainsAny(s, `/\`)
 }
@@ -1331,8 +1340,10 @@ func containsPathSeparator(s string) bool {
 // normalizeCommand resolves a command string to an absolute path. Bare command
 // names (no path separator) are resolved via exec.LookPath; relative paths with
 // a separator are resolved via filepath.Abs. Already-absolute or empty commands
-// are returned unchanged. If resolution fails the original value is returned.
-func normalizeCommand(command string) string {
+// are returned unchanged. If resolution fails, the original value is returned
+// and a warning is logged to w (if non-nil) so the user knows the daemon will
+// receive an unresolved command.
+func normalizeCommand(command string, w io.Writer) string {
 	if command == "" || filepath.IsAbs(command) {
 		return command
 	}
@@ -1341,10 +1352,16 @@ func normalizeCommand(command string) string {
 		if p, err := exec.LookPath(command); err == nil {
 			return p
 		}
+		if w != nil {
+			fmt.Fprintf(w, "⚠ Could not resolve %q in PATH — registering as-is (daemon may have a different PATH)\n", command)
+		}
 	} else {
 		// Relative path with separator — resolve to absolute.
 		if p, err := filepath.Abs(command); err == nil {
 			return p
+		}
+		if w != nil {
+			fmt.Fprintf(w, "⚠ Could not resolve relative path %q to absolute — registering as-is\n", command)
 		}
 	}
 	return command
@@ -1359,6 +1376,18 @@ type sanityCheckResult struct {
 }
 
 func sanityCheck(binaryPath string) sanityCheckResult {
+	if binaryPath == "" {
+		return sanityCheckResult{
+			Passed: false,
+			Checks: []sanityCheckEntry{{
+				Name:        "binary_exists",
+				Passed:      false,
+				Message:     "binary path is empty",
+				Remediation: "no binary path provided — check --binary flag, manifest entrypoint.command, or build output",
+			}},
+		}
+	}
+
 	// binaryPath is expected to be already normalized to an absolute path by
 	// normalizeCommand (called before registration). No additional LookPath
 	// resolution is needed here.
@@ -1433,7 +1462,7 @@ func sanityCheck(binaryPath string) sanityCheckResult {
 				Name:        "binary_executable",
 				Passed:      false,
 				Message:     fmt.Sprintf("binary at %s is not executable", resolved),
-				Remediation: fmt.Sprintf("binary at %s is not executable — run: chmod +x %s", resolved, resolved),
+				Remediation: fmt.Sprintf("binary at %s is not executable — run: chmod +x '%s'", resolved, strings.ReplaceAll(resolved, "'", `'\''`)),
 			})
 		} else {
 			result.Checks = append(result.Checks, sanityCheckEntry{
@@ -1475,17 +1504,32 @@ func checkWindowsExecutableExtension(path string) sanityCheckEntry {
 	}
 }
 
-// resolveWindowsPATHEXT tries appending common Windows executable extensions to
-// path and returns the first match that os.Stat succeeds on. This mirrors the
-// PATHEXT resolution that os/exec performs at runtime, preventing false-negative
-// sanity check failures for paths like "C:\...\adapter" when "adapter.exe" exists.
+// resolveWindowsPATHEXT tries appending executable extensions to path and returns
+// the first match that os.Stat succeeds on. It consults the PATHEXT environment
+// variable first (standard Windows behaviour) and falls back to the hardcoded
+// windowsExecutableExtensions list when PATHEXT is unset. This mirrors the
+// resolution that os/exec performs at runtime, preventing false-negative sanity
+// check failures for paths like "C:\...\adapter" when "adapter.exe" exists.
 func resolveWindowsPATHEXT(path string) (string, os.FileInfo, bool) {
 	// Only attempt resolution when the path has no extension — if it already
 	// has one (e.g. ".sh"), the user explicitly chose it.
 	if filepath.Ext(path) != "" {
 		return "", nil, false
 	}
-	for _, ext := range windowsExecutableExtensions {
+	exts := windowsExecutableExtensions
+	if pathext := os.Getenv("PATHEXT"); pathext != "" {
+		parts := strings.Split(strings.ToLower(pathext), ";")
+		exts = make([]string, 0, len(parts))
+		for _, p := range parts {
+			if s := strings.TrimSpace(p); s != "" {
+				exts = append(exts, s)
+			}
+		}
+	}
+	for _, ext := range exts {
+		if ext == "" {
+			continue
+		}
 		candidate := path + ext
 		if info, err := os.Stat(candidate); err == nil && info.Mode().IsRegular() {
 			return candidate, info, true
@@ -1503,7 +1547,8 @@ type installLocalResult struct {
 func printSanityCheckResult(w io.Writer, result sanityCheckResult) {
 	if result.Passed {
 		// Build human-readable summary from check names (underscore → space).
-		// Currently only "binary_executable" passes through (binary_exists is filtered).
+		// binary_exists is always true when the summary runs (prerequisite for
+		// other checks), so it's excluded to avoid redundancy.
 		var parts []string
 		for _, c := range result.Checks {
 			if c.Passed && c.Name != "binary_exists" {

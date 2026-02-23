@@ -130,12 +130,13 @@ func promptsList(cmd *cobra.Command, args []string) error {
 		})
 	}
 
+	stdout := formatter.w
 	return formatter.Render(CommandResult{
 		Data: map[string]interface{}{
 			"templates": result,
 		},
 		HumanReadable: func() error {
-			tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+			tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
 			fmt.Fprintln(tw, "TEMPLATE\tSTATUS\tDESCRIPTION")
 			for _, t := range templates {
 				status := "default"
@@ -174,6 +175,7 @@ func promptsShow(cmd *cobra.Command, args []string) error {
 		return formatter.Error("Failed to get template", err)
 	}
 
+	stdout := formatter.w
 	return formatter.Render(CommandResult{
 		Data: map[string]interface{}{
 			"template":  pt.EventType,
@@ -185,10 +187,10 @@ func promptsShow(cmd *cobra.Command, args []string) error {
 			if pt.IsCustom {
 				status = "custom"
 			}
-			fmt.Printf("# Template: %s (%s)\n\n", pt.EventType, status)
-			fmt.Print(pt.Content)
+			fmt.Fprintf(stdout, "# Template: %s (%s)\n\n", pt.EventType, status)
+			fmt.Fprint(stdout, pt.Content)
 			if !strings.HasSuffix(pt.Content, "\n") {
-				fmt.Println()
+				fmt.Fprintln(stdout)
 			}
 			return nil
 		},
@@ -242,7 +244,9 @@ func promptsEdit(cmd *cobra.Command, args []string) error {
 		editor = "vi" // fallback
 	}
 
-	// Open editor
+	// Open editor — bare os.Stdin/Stdout/Stderr are intentional here.
+	// The editor subprocess requires direct terminal access for interactive
+	// editing; Cobra's redirectable streams are not appropriate.
 	editorCmd := exec.Command(editor, tmpPath)
 	editorCmd.Stdin = os.Stdin
 	editorCmd.Stdout = os.Stdout
@@ -263,8 +267,10 @@ func promptsEdit(cmd *cobra.Command, args []string) error {
 		return formatter.Error("Failed to save template", err)
 	}
 
-	fmt.Printf("Template saved: %s\n", templateName)
-	fmt.Println("Note: Restart the daemon for changes to take effect.")
+	formatter.PrintText(func() {
+		fmt.Fprintf(formatter.w, "Template saved: %s\n", templateName)
+		fmt.Fprintln(formatter.w, "Note: Restart the daemon for changes to take effect.")
+	})
 	return nil
 }
 
@@ -309,8 +315,8 @@ func promptsReset(cmd *cobra.Command, args []string) error {
 		},
 		HumanReadable: func() error {
 			if len(reset) > 0 {
-				fmt.Printf("Reset templates: %s\n", strings.Join(reset, ", "))
-				fmt.Println("Note: Restart the daemon for changes to take effect.")
+				fmt.Fprintf(formatter.w, "Reset templates: %s\n", strings.Join(reset, ", "))
+				fmt.Fprintln(formatter.w, "Note: Restart the daemon for changes to take effect.")
 			}
 			return nil
 		},

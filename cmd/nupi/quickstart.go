@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -60,6 +59,7 @@ func quickstartInit(cmd *cobra.Command, args []string) error {
 		return out.Error("Quickstart wizard is interactive and does not support --json", nil)
 	}
 
+	stdout := out.w
 	return withOutputClient(out, daemonConnectErrorMessage, func(gc *grpcclient.Client) error {
 		statusCtx, statusCancel := context.WithTimeout(context.Background(), constants.Duration10Seconds)
 		defer statusCancel()
@@ -71,17 +71,17 @@ func quickstartInit(cmd *cobra.Command, args []string) error {
 
 		adaptersFromProto := quickstartAdaptersFromProto(status.GetAdapters())
 		if len(adaptersFromProto) > 0 {
-			fmt.Println("Current adapter status:")
-			printAdapterTable(adaptersFromProto)
-			printAdapterRuntimeMessages(adaptersFromProto)
-			fmt.Println()
+			fmt.Fprintln(stdout, "Current adapter status:")
+			printAdapterTable(stdout, adaptersFromProto)
+			printAdapterRuntimeMessages(stdout, adaptersFromProto)
+			fmt.Fprintln(stdout)
 		}
 
 		missingRefs := status.GetMissingReferenceAdapters()
-		printMissingReferenceAdapters(missingRefs, true)
+		printMissingReferenceAdapters(stdout, missingRefs, true)
 
 		if status.GetCompleted() && len(status.GetPendingSlots()) == 0 {
-			fmt.Println("Quickstart is already completed. Nothing to do.")
+			fmt.Fprintln(stdout, "Quickstart is already completed. Nothing to do.")
 			return nil
 		}
 
@@ -96,24 +96,24 @@ func quickstartInit(cmd *cobra.Command, args []string) error {
 		adapters := adaptersFromListResponse(listResp)
 
 		if len(adapters) == 0 {
-			fmt.Println("No adapters are installed yet. Install adapters before running the wizard.")
+			fmt.Fprintln(stdout, "No adapters are installed yet. Install adapters before running the wizard.")
 			return nil
 		}
 
-		reader := bufio.NewReader(os.Stdin)
+		reader := bufio.NewReader(cmd.InOrStdin())
 		var bindings []*apiv1.QuickstartBinding
 
-		fmt.Println("=== Quickstart Wizard ===")
+		fmt.Fprintln(stdout, "=== Quickstart Wizard ===")
 		if status.GetCompleted() {
-			fmt.Println("Quickstart was marked complete previously, but some slots are pending.")
+			fmt.Fprintln(stdout, "Quickstart was marked complete previously, but some slots are pending.")
 		}
 
 		for _, slot := range status.GetPendingSlots() {
-			fmt.Printf("\nSlot %s requires an adapter.\n", slot)
-			slotAdapters := printAvailableAdaptersForSlot(slot, adapters)
+			fmt.Fprintf(stdout, "\nSlot %s requires an adapter.\n", slot)
+			slotAdapters := printAvailableAdaptersForSlot(stdout, slot, adapters)
 
 			for {
-				fmt.Printf("Select adapter for %s (enter number/id, blank to skip): ", slot)
+				fmt.Fprintf(stdout, "Select adapter for %s (enter number/id, blank to skip): ", slot)
 				choice, err := reader.ReadString('\n')
 				if err != nil {
 					return out.Error("Failed to read input", err)
@@ -121,22 +121,22 @@ func quickstartInit(cmd *cobra.Command, args []string) error {
 				choice = strings.TrimSpace(choice)
 
 				if choice == "" {
-					fmt.Printf("Skipping %s. You can assign it later.\n", slot)
+					fmt.Fprintf(stdout, "Skipping %s. You can assign it later.\n", slot)
 					break
 				}
 
 				if id, ok := resolveAdapterChoice(choice, slotAdapters, adapters); ok {
 					bindings = append(bindings, &apiv1.QuickstartBinding{Slot: slot, AdapterId: id})
-					fmt.Printf("  -> Assigned %s to %s\n", id, slot)
+					fmt.Fprintf(stdout, "  -> Assigned %s to %s\n", id, slot)
 					break
 				}
 
-				fmt.Println("Invalid selection. Please try again.")
+				fmt.Fprintln(stdout, "Invalid selection. Please try again.")
 			}
 		}
 
 		if len(bindings) == 0 {
-			fmt.Println("\nNo bindings were selected. Quickstart remains unchanged.")
+			fmt.Fprintln(stdout, "\nNo bindings were selected. Quickstart remains unchanged.")
 			return nil
 		}
 
@@ -144,9 +144,9 @@ func quickstartInit(cmd *cobra.Command, args []string) error {
 		complete := false
 		if len(bindings) == len(status.GetPendingSlots()) {
 			if !allowComplete {
-				fmt.Println("\nAll pending slots are assigned, but reference adapters are still missing. Quickstart will remain incomplete.")
+				fmt.Fprintln(stdout, "\nAll pending slots are assigned, but reference adapters are still missing. Quickstart will remain incomplete.")
 			} else {
-				fmt.Print("\nAll pending slots have assignments. Mark quickstart as complete? [Y/n]: ")
+				fmt.Fprint(stdout, "\nAll pending slots have assignments. Mark quickstart as complete? [Y/n]: ")
 				answer, _ := reader.ReadString('\n')
 				answer = strings.TrimSpace(strings.ToLower(answer))
 				complete = answer == "" || answer == "y" || answer == "yes"
@@ -168,30 +168,30 @@ func quickstartInit(cmd *cobra.Command, args []string) error {
 			return out.Error("Failed to submit quickstart bindings", err)
 		}
 
-		fmt.Println("\nQuickstart updated.")
+		fmt.Fprintln(stdout, "\nQuickstart updated.")
 		if complete && result.GetCompleted() {
-			fmt.Println("Quickstart marked as completed.")
+			fmt.Fprintln(stdout, "Quickstart marked as completed.")
 		} else {
-			fmt.Printf("Quickstart completed: %v\n", result.GetCompleted())
+			fmt.Fprintf(stdout, "Quickstart completed: %v\n", result.GetCompleted())
 		}
 
 		if len(result.GetPendingSlots()) > 0 {
-			fmt.Println("Pending slots remaining:")
+			fmt.Fprintln(stdout, "Pending slots remaining:")
 			for _, slot := range result.GetPendingSlots() {
-				fmt.Printf("  - %s\n", slot)
+				fmt.Fprintf(stdout, "  - %s\n", slot)
 			}
 		} else {
-			fmt.Println("No pending slots remaining.")
+			fmt.Fprintln(stdout, "No pending slots remaining.")
 		}
 
 		resultAdapters := quickstartAdaptersFromProto(result.GetAdapters())
 		if len(resultAdapters) > 0 {
-			fmt.Println("\nUpdated adapter status:")
-			printAdapterTable(resultAdapters)
-			printAdapterRuntimeMessages(resultAdapters)
+			fmt.Fprintln(stdout, "\nUpdated adapter status:")
+			printAdapterTable(stdout, resultAdapters)
+			printAdapterRuntimeMessages(stdout, resultAdapters)
 		}
 
-		printMissingReferenceAdapters(result.GetMissingReferenceAdapters(), true)
+		printMissingReferenceAdapters(stdout, result.GetMissingReferenceAdapters(), true)
 
 		return nil
 	})
@@ -221,32 +221,33 @@ func quickstartStatus(cmd *cobra.Command, args []string) error {
 			status["adapters"] = adapters
 		}
 
+		stdout := out.w
 		return CommandResult{
 			Data: status,
 			HumanReadable: func() error {
-				fmt.Printf("Quickstart completed: %v\n", payload.GetCompleted())
+				fmt.Fprintf(stdout, "Quickstart completed: %v\n", payload.GetCompleted())
 				if payload.GetCompletedAt() != nil {
-					fmt.Printf("Completed at: %s\n", payload.GetCompletedAt().AsTime().UTC().Format(time.RFC3339))
+					fmt.Fprintf(stdout, "Completed at: %s\n", payload.GetCompletedAt().AsTime().UTC().Format(time.RFC3339))
 				}
 				if len(payload.GetPendingSlots()) == 0 {
-					fmt.Println("Pending slots: none")
+					fmt.Fprintln(stdout, "Pending slots: none")
 				} else {
-					fmt.Println("Pending slots:")
+					fmt.Fprintln(stdout, "Pending slots:")
 					for _, slot := range payload.GetPendingSlots() {
-						fmt.Printf("  - %s\n", slot)
+						fmt.Fprintf(stdout, "  - %s\n", slot)
 					}
 				}
 
 				if len(payload.GetMissingReferenceAdapters()) > 0 {
-					printMissingReferenceAdapters(payload.GetMissingReferenceAdapters(), true)
+					printMissingReferenceAdapters(stdout, payload.GetMissingReferenceAdapters(), true)
 				}
 
 				if len(adapters) == 0 {
-					fmt.Println("Adapters: none reported")
+					fmt.Fprintln(stdout, "Adapters: none reported")
 				} else {
-					fmt.Println("\nAdapters:")
-					printAdapterTable(adapters)
-					printAdapterRuntimeMessages(adapters)
+					fmt.Fprintln(stdout, "\nAdapters:")
+					printAdapterTable(stdout, adapters)
+					printAdapterRuntimeMessages(stdout, adapters)
 				}
 				return nil
 			},
@@ -322,28 +323,33 @@ func quickstartComplete(cmd *cobra.Command, args []string) error {
 			status["adapters"] = adapters
 		}
 
+		stdout := out.w
 		return out.Render(CommandResult{
 			Data: status,
 			HumanReadable: func() error {
-				fmt.Printf("Quickstart completed: %v\n", result.GetCompleted())
+				fmt.Fprintf(stdout, "Quickstart completed: %v\n", result.GetCompleted())
 				if result.GetCompletedAt() != nil {
-					fmt.Printf("Completed at: %s\n", result.GetCompletedAt().AsTime().UTC().Format(time.RFC3339))
+					fmt.Fprintf(stdout, "Completed at: %s\n", result.GetCompletedAt().AsTime().UTC().Format(time.RFC3339))
 				}
 				if len(result.GetPendingSlots()) == 0 {
-					fmt.Println("Pending slots: none")
+					fmt.Fprintln(stdout, "Pending slots: none")
 				} else {
-					fmt.Println("Pending slots:")
+					fmt.Fprintln(stdout, "Pending slots:")
 					for _, slot := range result.GetPendingSlots() {
-						fmt.Printf("  - %s\n", slot)
+						fmt.Fprintf(stdout, "  - %s\n", slot)
 					}
 				}
 
+				if len(result.GetMissingReferenceAdapters()) > 0 {
+					printMissingReferenceAdapters(stdout, result.GetMissingReferenceAdapters(), true)
+				}
+
 				if len(adapters) == 0 {
-					fmt.Println("Adapters: none reported")
+					fmt.Fprintln(stdout, "Adapters: none reported")
 				} else {
-					fmt.Println("\nAdapters:")
-					printAdapterTable(adapters)
-					printAdapterRuntimeMessages(adapters)
+					fmt.Fprintln(stdout, "\nAdapters:")
+					printAdapterTable(stdout, adapters)
+					printAdapterRuntimeMessages(stdout, adapters)
 				}
 				return nil
 			},

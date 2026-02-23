@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -185,13 +186,13 @@ func withPlainClientTimeout(
 	})
 }
 
-func printMissingReferenceAdapters(missing []string, showHelp bool) {
+func printMissingReferenceAdapters(w io.Writer, missing []string, showHelp bool) {
 	if len(missing) == 0 {
 		return
 	}
-	fmt.Printf(quickstartMissingRefsWarning, strings.Join(missing, ", "))
+	fmt.Fprintf(w, quickstartMissingRefsWarning, strings.Join(missing, ", "))
 	if showHelp {
-		fmt.Print(quickstartMissingRefsHelp)
+		fmt.Fprint(w, quickstartMissingRefsHelp)
 	}
 }
 

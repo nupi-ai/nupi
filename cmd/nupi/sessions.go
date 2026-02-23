@@ -198,20 +198,21 @@ func listSessions(cmd *cobra.Command, args []string) error {
 			list = append(list, entry)
 		}
 
+		stdout := cmd.OutOrStdout()
 		return CommandResult{
 			Data: map[string]interface{}{"sessions": list},
 			HumanReadable: func() error {
 				if len(sessions) == 0 {
-					fmt.Println("No active sessions")
+					fmt.Fprintln(stdout, "No active sessions")
 					return nil
 				}
 
-				fmt.Println("Active sessions:")
-				fmt.Println("ID\t\tStatus\t\tCommand")
-				fmt.Println("---\t\t---\t\t---")
+				fmt.Fprintln(stdout, "Active sessions:")
+				fmt.Fprintln(stdout, "ID\t\tStatus\t\tCommand")
+				fmt.Fprintln(stdout, "---\t\t---\t\t---")
 
 				for _, sess := range sessions {
-					fmt.Printf("%s\t%s\t\t%s %s\n",
+					fmt.Fprintf(stdout, "%s\t%s\t\t%s %s\n",
 						sess.GetId(),
 						sess.GetStatus(),
 						sess.GetCommand(),
@@ -228,9 +229,10 @@ func listSessions(cmd *cobra.Command, args []string) error {
 func attachToSession(cmd *cobra.Command, args []string) error {
 	sessionID := args[0]
 
+	stdout := cmd.OutOrStdout()
 	return withPlainClient("failed to connect to daemon", func(c *grpcclient.Client) error {
-		fmt.Printf("Attaching to session %s...\n", sessionID)
-		fmt.Println("Press Ctrl+C to detach")
+		fmt.Fprintf(stdout, "Attaching to session %s...\n", sessionID)
+		fmt.Fprintln(stdout, "Press Ctrl+C to detach")
 		return attachToExistingSession(c, sessionID, true)
 	})
 }
@@ -322,6 +324,8 @@ func attachToExistingSession(c *grpcclient.Client, sessionID string, includeHist
 
 			switch payload := resp.GetPayload().(type) {
 			case *apiv1.AttachSessionResponse_Output:
+				// Bare os.Stdout.Write is intentional here — raw PTY data in
+				// terminal raw mode, so OutputFormatter is not appropriate.
 				if len(payload.Output) > 0 {
 					os.Stdout.Write(payload.Output)
 				}
@@ -369,6 +373,8 @@ func attachToExistingSession(c *grpcclient.Client, sessionID string, includeHist
 				continue
 			}
 			// Non-resize signal (SIGINT or SIGTERM) — detach.
+			// Bare fmt.Print is intentional here — terminal is in raw mode,
+			// so OutputFormatter is not appropriate for escape sequences.
 			fmt.Print("\r\nDetaching from session...\r\n")
 			_ = safeSend(&apiv1.AttachSessionRequest{
 				Payload: &apiv1.AttachSessionRequest_Control{
@@ -489,7 +495,7 @@ func inspectCommand(cmd *cobra.Command, args []string) error {
 
 		// Show inspection mode notice in human-readable mode only
 		out.PrintText(func() {
-			fmt.Printf("\033[33mInspection mode enabled. Raw output will be saved to ~/.nupi/inspect/%s.raw\033[0m\n", session.GetId())
+			fmt.Fprintf(out.w, "\033[33mInspection mode enabled. Raw output will be saved to ~/.nupi/inspect/%s.raw\033[0m\n", session.GetId())
 		})
 
 		// Attach to the session

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -55,8 +56,9 @@ var pluginsRebuildCmd = &cobra.Command{
 	Short: "Rebuild the handler index",
 	Long:  `Scans tool handler plugins in the plugin directory and rebuilds the handlers_index.json file.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		stdout := cmd.OutOrStdout()
 		pluginDir := getPluginDir()
-		fmt.Printf("Rebuilding plugin index in: %s\n", pluginDir)
+		fmt.Fprintf(stdout, "Rebuilding plugin index in: %s\n", pluginDir)
 
 		manifests, err := manifestpkg.Discover(pluginDir)
 		if err != nil {
@@ -68,7 +70,7 @@ var pluginsRebuildCmd = &cobra.Command{
 			return fmt.Errorf("failed to generate index: %w", err)
 		}
 
-		fmt.Println("Plugin index rebuilt successfully!")
+		fmt.Fprintln(stdout, "Plugin index rebuilt successfully!")
 		return nil
 	},
 }
@@ -79,6 +81,7 @@ var pluginsListCmd = &cobra.Command{
 	Short: "List all installed plugins",
 	Long:  `Shows all installed plugins (adapters, tool handlers, pipeline cleaners) with runtime status for adapters.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		stdout := cmd.OutOrStdout()
 		pluginDir := getPluginDir()
 
 		rows, err := listAllPlugins(pluginDir)
@@ -87,16 +90,16 @@ var pluginsListCmd = &cobra.Command{
 		}
 
 		if len(rows) == 0 {
-			fmt.Println("No plugins found.")
-			fmt.Printf("Plugin directory: %s\n", pluginDir)
+			fmt.Fprintln(stdout, "No plugins found.")
+			fmt.Fprintf(stdout, "Plugin directory: %s\n", pluginDir)
 			return nil
 		}
 
 		connected := enrichWithDaemonData(rows)
 		enrichWithInstallData(rows)
-		printPluginsTable(rows)
+		printPluginsTable(stdout, rows)
 		if !connected {
-			fmt.Println("\n(daemon not running)")
+			fmt.Fprintln(stdout, "\n(daemon not running)")
 		}
 
 		return nil
@@ -113,6 +116,7 @@ This shows the current state from the most recent plugin discovery scan. Warning
 disappear when manifests are fixed and the daemon reloads plugins (e.g., after restart
 or config change). For historical tracking, check daemon logs.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		stdout := cmd.OutOrStdout()
 		return withPlainClientTimeout(constants.Duration5Seconds, "failed to connect to daemon", func(ctx context.Context, gc *grpcclient.Client) error {
 			resp, err := gc.GetPluginWarnings(ctx)
 			if err != nil {
@@ -121,15 +125,15 @@ or config change). For historical tracking, check daemon logs.`,
 
 			warnings := resp.GetWarnings()
 			if len(warnings) == 0 {
-				fmt.Println("No plugin discovery warnings.")
-				fmt.Println("All plugins loaded successfully.")
+				fmt.Fprintln(stdout, "No plugin discovery warnings.")
+				fmt.Fprintln(stdout, "All plugins loaded successfully.")
 				return nil
 			}
 
-			fmt.Printf("Found %d plugin(s) with warnings:\n\n", len(warnings))
+			fmt.Fprintf(stdout, "Found %d plugin(s) with warnings:\n\n", len(warnings))
 			for i, w := range warnings {
-				fmt.Printf("%d. %s\n", i+1, w.GetDir())
-				fmt.Printf("   Error: %s\n\n", w.GetError())
+				fmt.Fprintf(stdout, "%d. %s\n", i+1, w.GetDir())
+				fmt.Fprintf(stdout, "   Error: %s\n\n", w.GetError())
 			}
 
 			return nil
@@ -174,26 +178,27 @@ var pluginsInfoCmd = &cobra.Command{
 			name = selected.Metadata.Slug
 		}
 
-		fmt.Printf("Name: %s\n", name)
+		stdout := cmd.OutOrStdout()
+		fmt.Fprintf(stdout, "Name: %s\n", name)
 		if selected.Metadata.Slug != "" {
-			fmt.Printf("Slug: %s\n", selected.Metadata.Slug)
+			fmt.Fprintf(stdout, "Slug: %s\n", selected.Metadata.Slug)
 		}
 		if selected.Metadata.Namespace != "" {
-			fmt.Printf("Namespace: %s\n", selected.Metadata.Namespace)
+			fmt.Fprintf(stdout, "Namespace: %s\n", selected.Metadata.Namespace)
 		}
-		fmt.Printf("Version: %s\n", selected.Metadata.Version)
-		fmt.Printf("Type: %s\n", selected.Type)
+		fmt.Fprintf(stdout, "Version: %s\n", selected.Metadata.Version)
+		fmt.Fprintf(stdout, "Type: %s\n", selected.Type)
 		if selected.Metadata.Description != "" {
-			fmt.Printf("Description: %s\n", selected.Metadata.Description)
+			fmt.Fprintf(stdout, "Description: %s\n", selected.Metadata.Description)
 		}
 
 		switch selected.Type {
 		case manifestpkg.PluginTypeAdapter:
 			if selected.Adapter != nil {
-				fmt.Printf("Slot: %s\n", selected.Adapter.Slot)
-				fmt.Printf("Transport: %s\n", selected.Adapter.Entrypoint.Transport)
+				fmt.Fprintf(stdout, "Slot: %s\n", selected.Adapter.Slot)
+				fmt.Fprintf(stdout, "Transport: %s\n", selected.Adapter.Entrypoint.Transport)
 				if selected.Adapter.Entrypoint.Command != "" {
-					fmt.Printf("Command: %s\n", selected.Adapter.Entrypoint.Command)
+					fmt.Fprintf(stdout, "Command: %s\n", selected.Adapter.Entrypoint.Command)
 				}
 			}
 		case manifestpkg.PluginTypeToolHandler:
@@ -203,11 +208,11 @@ var pluginsInfoCmd = &cobra.Command{
 				if relErr != nil {
 					relMain = mainPath
 				}
-				fmt.Printf("Entry: %s\n", relMain)
+				fmt.Fprintf(stdout, "Entry: %s\n", relMain)
 
 				plugin, loadErr := toolhandlers.LoadPlugin(mainPath)
 				if loadErr == nil {
-					fmt.Printf("Commands: %v\n", plugin.Commands)
+					fmt.Fprintf(stdout, "Commands: %v\n", plugin.Commands)
 				}
 			}
 		case manifestpkg.PluginTypePipelineCleaner:
@@ -217,7 +222,7 @@ var pluginsInfoCmd = &cobra.Command{
 				if err != nil {
 					relMain = mainPath
 				}
-				fmt.Printf("Entry: %s\n", relMain)
+				fmt.Fprintf(stdout, "Entry: %s\n", relMain)
 			}
 		}
 
@@ -283,12 +288,13 @@ Examples:
 		return out.Render(CommandResult{
 			Data: result,
 			HumanReadable: func() error {
+				stdout := out.w
 				version := result.Version
 				if version == "" {
 					version = "unknown"
 				}
-				fmt.Printf("Installed: %s/%s v%s (disabled)\n", result.Namespace, result.Slug, version)
-				fmt.Printf("\nTo activate run:\n  nupi plugins enable %s/%s\n", result.Namespace, result.Slug)
+				fmt.Fprintf(stdout, "Installed: %s/%s v%s (disabled)\n", result.Namespace, result.Slug, version)
+				fmt.Fprintf(stdout, "\nTo activate run:\n  nupi plugins enable %s/%s\n", result.Namespace, result.Slug)
 				triggerPluginReload()
 				return nil
 			},
@@ -498,7 +504,7 @@ Examples:
 			return out.Render(CommandResult{
 				Data: []interface{}{},
 				HumanReadable: func() error {
-					fmt.Println("No plugins found.")
+					fmt.Fprintln(out.w, "No plugins found.")
 					return nil
 				},
 			})
@@ -507,7 +513,7 @@ Examples:
 		return out.Render(CommandResult{
 			Data: results,
 			HumanReadable: func() error {
-				w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+				w := tabwriter.NewWriter(out.w, 0, 0, 2, ' ', 0)
 				fmt.Fprintln(w, "NAMESPACE/SLUG\tNAME\tCATEGORY\tVERSION\tDESCRIPTION")
 				for _, r := range results {
 					desc := r.Plugin.Description
@@ -547,7 +553,9 @@ func getPluginDir() string {
 		return filepath.Join(instanceDir, "plugins")
 	}
 
-	// Default to home directory
+	// Default to home directory.
+	// Bare os.Stderr is justified: this is a pre-Cobra bootstrap helper with
+	// no access to a cobra.Command or OutputFormatter.
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to determine home directory: %v\n", err)
@@ -702,9 +710,9 @@ func enrichWithInstallData(rows []pluginRow) {
 	}
 }
 
-// printPluginsTable renders the unified plugins table.
-func printPluginsTable(rows []pluginRow) {
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+// printPluginsTable renders the unified plugins table to the given writer.
+func printPluginsTable(dst io.Writer, rows []pluginRow) {
+	w := tabwriter.NewWriter(dst, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "TYPE\tNAMESPACE/SLUG\tNAME\tSLOT\tSTATUS\tHEALTH")
 	for _, r := range rows {
 		nsSlug := r.Namespace + "/" + r.Slug
