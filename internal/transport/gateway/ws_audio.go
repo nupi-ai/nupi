@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/coder/websocket"
@@ -62,41 +61,15 @@ func newWSAudioHandler(apiServer *server.APIServer, shutdownCtx context.Context)
 }
 
 func (h *wsAudioHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	sessionID := strings.TrimPrefix(r.URL.Path, "/ws/audio/")
-	sessionID = strings.TrimSuffix(sessionID, "/")
-	if sessionID == "" || strings.Contains(sessionID, "/") {
-		http.Error(w, "session_id required", http.StatusBadRequest)
-		return
-	}
-
-	if h.apiServer.AuthRequired() {
-		token := r.URL.Query().Get("token")
-		if token == "" {
-			token = parseBearer(r.Header.Get("Authorization"))
-		}
-		if token == "" {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		if _, ok := h.apiServer.AuthenticateToken(token); !ok {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-	}
-
-	if _, err := h.apiServer.SessionMgr().GetSession(sessionID); err != nil {
-		http.Error(w, "session not found", http.StatusNotFound)
-		return
-	}
-
-	conn, err := websocket.Accept(w, r, nil)
+	sessionID, conn, ctx, cancel, err := wsHandshake(h.apiServer, h.shutdownCtx, "/ws/audio/", w, r)
 	if err != nil {
 		log.Printf("[WS Audio] accept error for session %s: %v", sessionID, err)
 		return
 	}
+	if conn == nil {
+		return
+	}
 	defer conn.CloseNow()
-
-	ctx, cancel := context.WithCancel(h.shutdownCtx)
 	defer cancel()
 
 	conn.SetReadLimit(256 * 1024) // 256 KB max incoming message
