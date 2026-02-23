@@ -315,17 +315,12 @@ type stream struct {
 
 	transcriber Transcriber
 
-	segmentCh chan eventbus.AudioIngressSegmentEvent
-	ctx       context.Context
-	cancel    context.CancelFunc
-
-	wg        sync.WaitGroup
+	worker    *streammanager.Worker[eventbus.AudioIngressSegmentEvent]
 	closeOnce sync.Once
 	seq       uint64
 }
 
 func newStream(key string, svc *Service, params SessionParams, transcriber Transcriber) *stream {
-	ctx, cancel := context.WithCancel(svc.lifecycle.Context())
 	st := &stream{
 		service:     svc,
 		key:         key,
@@ -334,69 +329,38 @@ func newStream(key string, svc *Service, params SessionParams, transcriber Trans
 		format:      params.Format,
 		metadata:    maputil.Clone(params.Metadata),
 		transcriber: transcriber,
-		segmentCh:   make(chan eventbus.AudioIngressSegmentEvent, svc.segmentBuffer),
-		ctx:         ctx,
-		cancel:      cancel,
+		worker:      streammanager.NewWorker[eventbus.AudioIngressSegmentEvent](svc.lifecycle.Context(), svc.segmentBuffer),
 	}
-
-	st.wg.Add(1)
-	go st.run()
+	st.worker.Start(st.processSegment, func() {
+		st.closeTranscriber("context cancelled")
+	}, func() {
+		st.service.onStreamEnded(st.key, st)
+	})
 	return st
 }
 
 // Enqueue implements streammanager.StreamHandle.
 func (st *stream) Enqueue(segment eventbus.AudioIngressSegmentEvent) error {
-	select {
-	case <-st.ctx.Done():
-		return ErrStreamClosed
-	default:
-	}
-
-	select {
-	case st.segmentCh <- segment:
-		return nil
-	case <-st.ctx.Done():
-		return ErrStreamClosed
-	}
+	return st.worker.Enqueue(segment, ErrStreamClosed)
 }
 
 // Stop implements streammanager.StreamHandle.
 func (st *stream) Stop() {
-	st.cancel()
+	st.worker.Stop()
 }
 
 // Wait implements streammanager.StreamHandle.
 func (st *stream) Wait(ctx context.Context) {
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		st.wg.Wait()
-	}()
-
-	select {
-	case <-done:
-	case <-ctx.Done():
-	}
+	st.worker.Wait(ctx)
 }
 
-func (st *stream) run() {
-	defer st.wg.Done()
-	defer st.cancel()
-	defer st.service.onStreamEnded(st.key, st)
-
-	for {
-		select {
-		case <-st.ctx.Done():
-			st.closeTranscriber("context cancelled")
-			return
-		case segment := <-st.segmentCh:
-			st.handleSegment(segment)
-			if segment.Last {
-				st.closeTranscriber("last segment")
-				return
-			}
-		}
+func (st *stream) processSegment(segment eventbus.AudioIngressSegmentEvent) bool {
+	st.handleSegment(segment)
+	if segment.Last {
+		st.closeTranscriber("last segment")
+		return true
 	}
+	return false
 }
 
 func (st *stream) handleSegment(segment eventbus.AudioIngressSegmentEvent) {
@@ -407,7 +371,7 @@ func (st *stream) handleSegment(segment eventbus.AudioIngressSegmentEvent) {
 			Format:    st.format,
 			Metadata:  maputil.Clone(st.metadata),
 		}
-		transcriber, err := st.service.factory.Create(st.ctx, params)
+		transcriber, err := st.service.factory.Create(st.worker.Context(), params)
 		if err != nil {
 			if !errors.Is(err, ErrAdapterUnavailable) {
 				st.service.logger.Printf("[STT] reconnect transcriber session=%s stream=%s: %v", st.sessionID, st.streamID, err)
@@ -418,7 +382,7 @@ func (st *stream) handleSegment(segment eventbus.AudioIngressSegmentEvent) {
 		st.service.logger.Printf("[STT] transcriber reconnected session=%s stream=%s", st.sessionID, st.streamID)
 	}
 
-	transcripts, err := st.transcriber.OnSegment(st.ctx, segment)
+	transcripts, err := st.transcriber.OnSegment(st.worker.Context(), segment)
 
 	// Publish any transcripts returned alongside the error — the NAP
 	// contract allows partial results + error (see nap_transcriber.go:182).
