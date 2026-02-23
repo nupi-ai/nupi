@@ -8,6 +8,24 @@ export interface MappedError {
   canRetry: boolean;
 }
 
+export type ErrorLike = string | MappedError;
+
+export function toMappedError(error: ErrorLike): MappedError {
+  if (typeof error === "string") {
+    return {
+      message: error,
+      action: "none",
+      canRetry: false,
+    };
+  }
+  return error;
+}
+
+export function resolveMappedErrorAction(mapped: MappedError): ErrorAction {
+  if (mapped.action === "retry" && !mapped.canRetry) return "none";
+  return mapped.action;
+}
+
 /**
  * Maps connection errors (ConnectError, generic Error, unknown) to
  * user-friendly messages with a suggested recovery action.

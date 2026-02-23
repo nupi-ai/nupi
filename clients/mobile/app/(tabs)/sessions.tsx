@@ -8,9 +8,9 @@ import {
 } from "react-native";
 import { router } from "expo-router";
 
-import { ErrorView } from "@/components/ErrorView";
+import { ConnectionErrorView } from "@/components/ConnectionErrorView";
 import type { Session } from "@/lib/gen/nupi_pb";
-import Colors from "@/constants/Colors";
+import Colors from "@/constants/designTokens";
 import { useColorScheme } from "@/components/useColorScheme";
 import { Text, View } from "@/components/Themed";
 import { useConnection } from "@/lib/ConnectionContext";
@@ -107,16 +107,11 @@ export default function SessionsScreen() {
   if (error && sessions.length === 0 && !reconnecting) {
     return (
       <View style={styles.centered}>
-        <ErrorView
+        <ConnectionErrorView
+          variant="retry-only"
           error={error}
           onRetry={status === "connected" ? handleRetry : undefined}
-          onRePair={status === "connected" ? handleRetry : undefined}
-          onGoBack={status === "connected" ? handleRetry : undefined}
-          actionLabels={{
-            retry: "Retry",
-            "re-pair": "Retry",
-            "go-back": "Retry",
-          }}
+          useConnectionRetry={false}
           fallbackText="Reconnect on the Home tab to retry."
           accessibilityLabel="Retry loading sessions"
           accessibilityHint="Attempts to fetch the session list again"

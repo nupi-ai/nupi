@@ -8,11 +8,16 @@ import {
 
 import { Button } from "@/components/Button";
 import { Text } from "@/components/Themed";
-import Colors from "@/constants/Colors";
+import Colors from "@/constants/designTokens";
 import { useColorScheme } from "@/components/useColorScheme";
-import type { ErrorAction, MappedError } from "@/lib/errorMessages";
+import {
+  resolveMappedErrorAction,
+  toMappedError,
+  type ErrorAction,
+  type ErrorLike,
+} from "@/lib/errorMessages";
 
-type ErrorWithAction = Exclude<ErrorAction, "none">;
+export type ErrorWithAction = Exclude<ErrorAction, "none">;
 
 const DEFAULT_ACTION_LABELS: Record<ErrorWithAction, string> = {
   retry: "Retry",
@@ -21,10 +26,8 @@ const DEFAULT_ACTION_LABELS: Record<ErrorWithAction, string> = {
 };
 
 interface ErrorViewProps {
-  error: string | MappedError;
-  onRetry?: () => void;
-  onRePair?: () => void;
-  onGoBack?: () => void;
+  error: ErrorLike;
+  actionHandlers?: Partial<Record<ErrorWithAction, () => void>>;
   fallbackText?: string;
   actionLabels?: Partial<Record<ErrorWithAction, string>>;
   accessibilityLabel?: string;
@@ -40,36 +43,25 @@ interface ErrorViewProps {
   buttonTextColor?: string;
 }
 
-function toMappedError(error: string | MappedError): MappedError {
-  if (typeof error === "string") {
-    return {
-      message: error,
-      action: "none",
-      canRetry: false,
-    };
-  }
-  return error;
-}
-
 function resolveActionHandler(
   action: ErrorAction,
-  handlers: {
-    onRetry?: () => void;
-    onRePair?: () => void;
-    onGoBack?: () => void;
-  }
+  handlers?: Partial<Record<ErrorWithAction, () => void>>
 ): (() => void) | undefined {
-  if (action === "retry") return handlers.onRetry;
-  if (action === "re-pair") return handlers.onRePair;
-  if (action === "go-back") return handlers.onGoBack;
-  return undefined;
+  if (action === "none") return undefined;
+  return handlers?.[action];
+}
+
+function resolveActionLabel(
+  action: ErrorAction,
+  actionLabels?: Partial<Record<ErrorWithAction, string>>
+): string | null {
+  if (action === "none") return null;
+  return actionLabels?.[action] ?? DEFAULT_ACTION_LABELS[action];
 }
 
 export function ErrorView({
   error,
-  onRetry,
-  onRePair,
-  onGoBack,
+  actionHandlers,
   fallbackText,
   actionLabels,
   accessibilityLabel,
@@ -88,13 +80,9 @@ export function ErrorView({
   const colors = Colors[colorScheme];
   const mapped = toMappedError(error);
 
-  const action: ErrorAction =
-    mapped.action === "retry" && !mapped.canRetry ? "none" : mapped.action;
-  const onPress = resolveActionHandler(action, { onRetry, onRePair, onGoBack });
-  const actionLabel =
-    action === "none"
-      ? null
-      : actionLabels?.[action] ?? DEFAULT_ACTION_LABELS[action];
+  const action = resolveMappedErrorAction(mapped);
+  const onPress = resolveActionHandler(action, actionHandlers);
+  const actionLabel = resolveActionLabel(action, actionLabels);
   const showActionButton = Boolean(actionLabel && onPress);
 
   return (
