@@ -2,8 +2,7 @@ import { ActivityIndicator, Pressable, StyleSheet, View as RNView } from "react-
 import FontAwesome from "@expo/vector-icons/FontAwesome";
 
 import { Text } from "@/components/Themed";
-import { useColorScheme } from "@/components/useColorScheme";
-import Colors from "@/constants/Colors";
+import { useThemeColors } from "@/components/useColorScheme";
 
 interface TranscriptionBubbleProps {
   confirmedText: string;
@@ -18,14 +17,14 @@ export function TranscriptionBubble({
   isLive,
   onDismiss,
 }: TranscriptionBubbleProps) {
-  const colorScheme = useColorScheme() ?? "dark";
+  const colors = useThemeColors("dark");
   const displayText = [confirmedText, pendingText].filter(Boolean).join(" ");
 
   return (
     <RNView
       style={[
         styles.container,
-        { backgroundColor: Colors[colorScheme].surface },
+        { backgroundColor: colors.surface },
       ]}
       accessibilityRole="text"
       accessibilityLabel={
@@ -39,13 +38,13 @@ export function TranscriptionBubble({
       {isLive && (
         <ActivityIndicator
           size="small"
-          color={Colors[colorScheme].danger}
+          color={colors.danger}
           style={styles.liveIndicator}
           accessibilityLabel="Transcribing in real-time"
         />
       )}
       <Text
-        style={[styles.text, { color: Colors[colorScheme].text }]}
+        style={[styles.text, { color: colors.text }]}
         numberOfLines={4}
         ellipsizeMode="tail"
       >
@@ -68,7 +67,7 @@ export function TranscriptionBubble({
           accessibilityHint="Clears the transcribed text"
           testID="transcription-dismiss"
         >
-          <FontAwesome name="times" size={16} color={Colors[colorScheme].tint} />
+          <FontAwesome name="times" size={16} color={colors.tint} />
         </Pressable>
       )}
     </RNView>

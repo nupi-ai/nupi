@@ -5,8 +5,7 @@ import {
   type ViewStyle,
 } from "react-native";
 
-import Colors from "@/constants/Colors";
-import { useColorScheme } from "@/components/useColorScheme";
+import { useThemeColors } from "@/components/useColorScheme";
 
 export type ButtonVariant = "primary" | "danger" | "outline" | "unstyled";
 
@@ -40,8 +39,7 @@ export function Button({
   accessibilityRole,
   ...props
 }: ButtonProps) {
-  const colorScheme = useColorScheme() ?? "light";
-  const colors = Colors[colorScheme];
+  const colors = useThemeColors();
 
   const resolvedColor =
     color ?? (variant === "danger" ? colors.danger : colors.tint);

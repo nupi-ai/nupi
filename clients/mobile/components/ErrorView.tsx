@@ -8,8 +8,7 @@ import {
 
 import { Button } from "@/components/Button";
 import { Text } from "@/components/Themed";
-import Colors from "@/constants/designTokens";
-import { useColorScheme } from "@/components/useColorScheme";
+import { useThemeColors } from "@/components/useColorScheme";
 import {
   resolveMappedErrorAction,
   toMappedError,
@@ -76,8 +75,7 @@ export function ErrorView({
   buttonColor,
   buttonTextColor,
 }: ErrorViewProps) {
-  const colorScheme = useColorScheme() ?? "light";
-  const colors = Colors[colorScheme];
+  const colors = useThemeColors();
   const mapped = toMappedError(error);
 
   const action = resolveMappedErrorAction(mapped);

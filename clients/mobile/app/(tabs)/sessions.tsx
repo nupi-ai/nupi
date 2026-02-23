@@ -10,8 +10,7 @@ import { router } from "expo-router";
 
 import { ConnectionErrorView } from "@/components/ConnectionErrorView";
 import type { Session } from "@/lib/gen/nupi_pb";
-import Colors from "@/constants/designTokens";
-import { useColorScheme } from "@/components/useColorScheme";
+import { useThemeColors } from "@/components/useColorScheme";
 import { Text, View } from "@/components/Themed";
 import { useConnection } from "@/lib/ConnectionContext";
 import { SessionItem } from "@/components/SessionItem";
@@ -19,8 +18,7 @@ import type { MappedError } from "@/lib/errorMessages";
 import { mapConnectionError } from "@/lib/errorMessages";
 
 export default function SessionsScreen() {
-  const colorScheme = useColorScheme() ?? "light";
-  const colors = Colors[colorScheme];
+  const colors = useThemeColors();
   const { status, client, reconnecting, reconnectAttempts } = useConnection();
 
   const [sessions, setSessions] = useState<Session[]>([]);

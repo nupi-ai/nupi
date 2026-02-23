@@ -13,8 +13,7 @@ import Animated, {
 } from "react-native-reanimated";
 import FontAwesome from "@expo/vector-icons/FontAwesome";
 
-import { useColorScheme } from "@/components/useColorScheme";
-import Colors from "@/constants/Colors";
+import { useThemeColors } from "@/components/useColorScheme";
 import { type ModelStatus, type RecordingStatus } from "@/lib/VoiceContext";
 
 interface VoiceButtonProps {
@@ -32,7 +31,7 @@ export function VoiceButton({
   onPressOut,
   onPress,
 }: VoiceButtonProps) {
-  const colorScheme = useColorScheme() ?? "dark";
+  const colors = useThemeColors("dark");
   const scale = useSharedValue(1);
   const opacity = useSharedValue(1);
 
@@ -76,10 +75,10 @@ export function VoiceButton({
   }));
 
   const iconColor = isDisabled
-    ? Colors[colorScheme].separator
+    ? colors.separator
     : isRecording
-      ? Colors[colorScheme].danger
-      : Colors[colorScheme].tint;
+      ? colors.danger
+      : colors.tint;
 
   const accessibilityLabel = isRecording
     ? "Recording, release to stop"
@@ -99,7 +98,7 @@ export function VoiceButton({
         onPress={isDisabled ? onPress : undefined}
         style={[
           styles.button,
-          { backgroundColor: Colors[colorScheme].surface },
+          { backgroundColor: colors.surface },
         ]}
         accessibilityRole="button"
         accessibilityLabel={accessibilityLabel}

@@ -10,16 +10,14 @@ import {
 
 import { Button } from "@/components/Button";
 import { ErrorView } from "@/components/ErrorView";
-import Colors from "@/constants/designTokens";
-import { useColorScheme } from "@/components/useColorScheme";
+import { useThemeColors } from "@/components/useColorScheme";
 import { Text, View } from "@/components/Themed";
 import { useConnection } from "@/lib/ConnectionContext";
 import type { MappedError } from "@/lib/errorMessages";
 import { claimPairing, mapPairingError, parseNupiPairUrl } from "@/lib/pairing";
 
 export default function ScanScreen() {
-  const colorScheme = useColorScheme() ?? "light";
-  const colors = Colors[colorScheme];
+  const colors = useThemeColors();
   const { connect } = useConnection();
   const { width: windowWidth } = useWindowDimensions();
   const scanSize = windowWidth * 0.7;
