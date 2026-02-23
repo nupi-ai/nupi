@@ -19,22 +19,7 @@ func (s *Store) ListAdapters(ctx context.Context) ([]Adapter, error) {
 	if err != nil {
 		return nil, fmt.Errorf("config: list adapters: %w", err)
 	}
-	defer rows.Close()
-
-	var adapters []Adapter
-	for rows.Next() {
-		adapter, err := scanAdapter(rows)
-		if err != nil {
-			return nil, fmt.Errorf("config: scan adapter: %w", err)
-		}
-		adapters = append(adapters, adapter)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("config: iterate adapters: %w", err)
-	}
-
-	return adapters, nil
+	return scanList(rows, scanAdapter, "config: scan adapter", "config: iterate adapters")
 }
 
 // GetAdapter retrieves adapter metadata by identifier.
@@ -134,22 +119,7 @@ func (s *Store) ListAdapterBindings(ctx context.Context) ([]AdapterBinding, erro
 	if err != nil {
 		return nil, fmt.Errorf("config: list adapter bindings: %w", err)
 	}
-	defer rows.Close()
-
-	var bindings []AdapterBinding
-	for rows.Next() {
-		binding, err := scanAdapterBindingWithSlot(rows)
-		if err != nil {
-			return nil, fmt.Errorf("config: scan adapter binding: %w", err)
-		}
-		bindings = append(bindings, binding)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("config: iterate adapter bindings: %w", err)
-	}
-
-	return bindings, nil
+	return scanList(rows, scanAdapterBindingWithSlot, "config: scan adapter binding", "config: iterate adapter bindings")
 }
 
 // AdapterBinding retrieves a single binding entry by slot.

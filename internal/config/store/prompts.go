@@ -57,22 +57,7 @@ func (s *Store) ListPromptTemplates(ctx context.Context) ([]PromptTemplate, erro
 	if err != nil {
 		return nil, fmt.Errorf("config: list prompt templates: %w", err)
 	}
-	defer rows.Close()
-
-	var templates []PromptTemplate
-	for rows.Next() {
-		pt, err := scanPromptTemplate(rows)
-		if err != nil {
-			return nil, fmt.Errorf("config: scan prompt template row: %w", err)
-		}
-		templates = append(templates, pt)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("config: iterate prompt template rows: %w", err)
-	}
-
-	return templates, nil
+	return scanList(rows, scanPromptTemplate, "config: scan prompt template row", "config: iterate prompt template rows")
 }
 
 // DeletePromptTemplate deletes a prompt template (used before re-seeding default).

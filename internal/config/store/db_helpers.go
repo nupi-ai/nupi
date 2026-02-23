@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"strings"
 )
 
@@ -44,4 +45,28 @@ func nullWhenEmptyMap[K comparable, V any](values map[K]V) bool {
 
 func nullWhenNilMap[K comparable, V any](values map[K]V) bool {
 	return values == nil
+}
+
+// scanList scans all rows with scanFn, wraps scan/iteration errors with
+// provided operation names and always closes rows before returning.
+func scanList[T any](
+	rows *sql.Rows,
+	scanFn func(rowScanner) (T, error),
+	scanOp string,
+	iterOp string,
+) ([]T, error) {
+	defer rows.Close()
+
+	var result []T
+	for rows.Next() {
+		item, err := scanFn(rows)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", scanOp, err)
+		}
+		result = append(result, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%s: %w", iterOp, err)
+	}
+	return result, nil
 }
