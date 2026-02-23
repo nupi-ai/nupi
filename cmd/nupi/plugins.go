@@ -113,34 +113,27 @@ This shows the current state from the most recent plugin discovery scan. Warning
 disappear when manifests are fixed and the daemon reloads plugins (e.g., after restart
 or config change). For historical tracking, check daemon logs.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		gc, err := grpcclient.New()
-		if err != nil {
-			return fmt.Errorf("failed to connect to daemon: %w", err)
-		}
-		defer gc.Close()
+		return withPlainClientTimeout(constants.Duration5Seconds, "failed to connect to daemon", func(ctx context.Context, gc *grpcclient.Client) error {
+			resp, err := gc.GetPluginWarnings(ctx)
+			if err != nil {
+				return fmt.Errorf("failed to get plugin warnings: %w", err)
+			}
 
-		ctx, cancel := context.WithTimeout(context.Background(), constants.Duration5Seconds)
-		defer cancel()
+			warnings := resp.GetWarnings()
+			if len(warnings) == 0 {
+				fmt.Println("No plugin discovery warnings.")
+				fmt.Println("All plugins loaded successfully.")
+				return nil
+			}
 
-		resp, err := gc.GetPluginWarnings(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to get plugin warnings: %w", err)
-		}
+			fmt.Printf("Found %d plugin(s) with warnings:\n\n", len(warnings))
+			for i, w := range warnings {
+				fmt.Printf("%d. %s\n", i+1, w.GetDir())
+				fmt.Printf("   Error: %s\n\n", w.GetError())
+			}
 
-		warnings := resp.GetWarnings()
-		if len(warnings) == 0 {
-			fmt.Println("No plugin discovery warnings.")
-			fmt.Println("All plugins loaded successfully.")
 			return nil
-		}
-
-		fmt.Printf("Found %d plugin(s) with warnings:\n\n", len(warnings))
-		for i, w := range warnings {
-			fmt.Printf("%d. %s\n", i+1, w.GetDir())
-			fmt.Printf("   Error: %s\n\n", w.GetError())
-		}
-
-		return nil
+		})
 	},
 }
 
@@ -634,43 +627,39 @@ func listAllPlugins(pluginDir string) ([]pluginRow, error) {
 // enrichWithDaemonData tries to fetch adapter runtime data from the daemon.
 // Returns true if the daemon connection succeeded.
 func enrichWithDaemonData(rows []pluginRow) bool {
-	gc, err := grpcclient.New()
-	if err != nil {
-		return false
-	}
-	defer gc.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), constants.Duration5Seconds)
-	defer cancel()
-
-	resp, err := gc.AdaptersOverview(ctx)
-	if err != nil {
-		return false
-	}
-
-	overview := adaptersOverviewFromProto(resp)
-
-	// Build lookup map: namespace/slug -> AdapterEntry
-	adapterMap := make(map[string]int, len(overview.Adapters))
-	for i, entry := range overview.Adapters {
-		if entry.AdapterID != nil {
-			adapterMap[*entry.AdapterID] = i
+	if err := withPlainClientTimeout(constants.Duration5Seconds, "failed to connect to daemon", func(ctx context.Context, gc *grpcclient.Client) error {
+		resp, err := gc.AdaptersOverview(ctx)
+		if err != nil {
+			return err
 		}
-	}
 
-	for i := range rows {
-		if rows[i].Type != string(manifestpkg.PluginTypeAdapter) {
-			continue
-		}
-		// Try matching by namespace/slug format used in adapter registration
-		key := formatAdapterID(rows[i].Namespace, rows[i].Slug)
-		if idx, ok := adapterMap[key]; ok {
-			entry := overview.Adapters[idx]
-			rows[i].Status = entry.Status
-			if entry.Runtime != nil && strings.TrimSpace(entry.Runtime.Health) != "" {
-				rows[i].Health = entry.Runtime.Health
+		overview := adaptersOverviewFromProto(resp)
+
+		// Build lookup map: namespace/slug -> AdapterEntry
+		adapterMap := make(map[string]int, len(overview.Adapters))
+		for i, entry := range overview.Adapters {
+			if entry.AdapterID != nil {
+				adapterMap[*entry.AdapterID] = i
 			}
 		}
+
+		for i := range rows {
+			if rows[i].Type != string(manifestpkg.PluginTypeAdapter) {
+				continue
+			}
+			// Try matching by namespace/slug format used in adapter registration
+			key := formatAdapterID(rows[i].Namespace, rows[i].Slug)
+			if idx, ok := adapterMap[key]; ok {
+				entry := overview.Adapters[idx]
+				rows[i].Status = entry.Status
+				if entry.Runtime != nil && strings.TrimSpace(entry.Runtime.Health) != "" {
+					rows[i].Health = entry.Runtime.Health
+				}
+			}
+		}
+		return nil
+	}); err != nil {
+		return false
 	}
 
 	return true
@@ -738,16 +727,10 @@ func loadManifestForPlugin(pluginDir, namespace, slug string) *manifestpkg.Manif
 // triggerPluginReload attempts to tell the daemon to reload plugins.
 // Silently ignores errors (daemon may not be running).
 func triggerPluginReload() {
-	gc, err := grpcclient.New()
-	if err != nil {
-		return
-	}
-	defer gc.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), constants.Duration5Seconds)
-	defer cancel()
-
-	_, _ = gc.ReloadPlugins(ctx)
+	_ = withPlainClientTimeout(constants.Duration5Seconds, "failed to connect to daemon", func(ctx context.Context, gc *grpcclient.Client) error {
+		_, err := gc.ReloadPlugins(ctx)
+		return err
+	})
 }
 
 func init() {
