@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 
+	"github.com/nupi-ai/nupi/internal/audio/adapterutil"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 )
 
@@ -15,10 +16,10 @@ const (
 )
 
 func newMockAnalyzer(params SessionParams) (Analyzer, error) {
-	cfg := params.Config
+	cfg := adapterutil.NewConfigReader(params.Config)
 	return &mockAnalyzer{
-		threshold: floatConfig(cfg, "threshold", defaultThreshold),
-		minFrames: intConfig(cfg, "min_frames", defaultMinFrames),
+		threshold: cfg.Float64("threshold", defaultThreshold),
+		minFrames: cfg.Int("min_frames", defaultMinFrames),
 	}, nil
 }
 
@@ -94,40 +95,6 @@ func rmsPCM16(data []byte) float64 {
 	}
 	mean := sum / float64(samples)
 	return math.Sqrt(mean)
-}
-
-func floatConfig(cfg map[string]any, key string, def float64) float64 {
-	if cfg == nil {
-		return def
-	}
-	if value, ok := cfg[key]; ok {
-		switch v := value.(type) {
-		case float64:
-			return v
-		case float32:
-			return float64(v)
-		case int:
-			return float64(v)
-		}
-	}
-	return def
-}
-
-func intConfig(cfg map[string]any, key string, def int) int {
-	if cfg == nil {
-		return def
-	}
-	if value, ok := cfg[key]; ok {
-		switch v := value.(type) {
-		case int:
-			return v
-		case float64:
-			return int(v)
-		case float32:
-			return int(v)
-		}
-	}
-	return def
 }
 
 func clamp(v, min, max float64) float64 {
