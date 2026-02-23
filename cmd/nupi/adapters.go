@@ -181,26 +181,21 @@ func adaptersList(cmd *cobra.Command, _ []string) error {
 func adaptersRegister(cmd *cobra.Command, _ []string) error {
 	out := newOutputFormatter(cmd)
 
-	adapterID, _ := cmd.Flags().GetString("id")
-	adapterID = strings.TrimSpace(adapterID)
+	adapterID := getTrimmedFlag(cmd, "id")
 	if adapterID == "" {
 		return out.Error("--id is required", errors.New("missing adapter id"))
 	}
 
-	adapterType, _ := cmd.Flags().GetString("type")
-	adapterType = strings.TrimSpace(adapterType)
+	adapterType := getTrimmedFlag(cmd, "type")
 	if adapterType != "" {
 		if _, ok := allowedAdapterSlots[adapterType]; !ok {
 			return out.Error(fmt.Sprintf("invalid type %q (expected: %s)", adapterType, strings.Join(constants.AllowedAdapterSlots, ", ")), errors.New("invalid adapter type"))
 		}
 	}
 
-	name, _ := cmd.Flags().GetString("name")
-	name = strings.TrimSpace(name)
-	source, _ := cmd.Flags().GetString("source")
-	source = strings.TrimSpace(source)
-	version, _ := cmd.Flags().GetString("version")
-	version = strings.TrimSpace(version)
+	name := getTrimmedFlag(cmd, "name")
+	source := getTrimmedFlag(cmd, "source")
+	version := getTrimmedFlag(cmd, "version")
 	manifestRaw, _ := cmd.Flags().GetString("manifest")
 
 	manifest, err := parseManifest(manifestRaw)
@@ -208,12 +203,9 @@ func adaptersRegister(cmd *cobra.Command, _ []string) error {
 		return out.Error("Manifest must be valid JSON or YAML", err)
 	}
 
-	transportOpt, _ := cmd.Flags().GetString("endpoint-transport")
-	transportOpt = strings.TrimSpace(transportOpt)
-	addressOpt, _ := cmd.Flags().GetString("endpoint-address")
-	addressOpt = strings.TrimSpace(addressOpt)
-	commandOpt, _ := cmd.Flags().GetString("endpoint-command")
-	commandOpt = strings.TrimSpace(commandOpt)
+	transportOpt := getTrimmedFlag(cmd, "endpoint-transport")
+	addressOpt := getTrimmedFlag(cmd, "endpoint-address")
+	commandOpt := getTrimmedFlag(cmd, "endpoint-command")
 	argsOpt, _ := cmd.Flags().GetStringArray("endpoint-arg")
 	envOpt, _ := cmd.Flags().GetStringArray("endpoint-env")
 
@@ -297,8 +289,7 @@ func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 		cleanupWriter = io.Discard
 	}
 
-	manifestPath, _ := cmd.Flags().GetString("manifest-file")
-	manifestPath = strings.TrimSpace(manifestPath)
+	manifestPath := getTrimmedFlag(cmd, "manifest-file")
 	if manifestPath == "" {
 		return out.Error("--manifest-file is required", errors.New("missing manifest file"))
 	}
@@ -318,8 +309,7 @@ func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 		return out.Error("Failed to parse manifest", err)
 	}
 
-	adapterIDFlag, _ := cmd.Flags().GetString("id")
-	adapterID := strings.TrimSpace(adapterIDFlag)
+	adapterID := getTrimmedFlag(cmd, "id")
 	if adapterID == "" {
 		adapterID = formatAdapterID(manifest.Metadata.Namespace, manifest.Metadata.Slug)
 	}
@@ -340,8 +330,7 @@ func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 	adapterName := strings.TrimSpace(manifest.Metadata.Name)
 	copyBinary, _ := cmd.Flags().GetBool("copy-binary")
 	buildFlag, _ := cmd.Flags().GetBool("build")
-	sourceDirFlag, _ := cmd.Flags().GetString("adapter-dir")
-	sourceDir := strings.TrimSpace(sourceDirFlag)
+	sourceDir := getTrimmedFlag(cmd, "adapter-dir")
 	if sourceDir != "" {
 		sourceDir = config.ExpandPath(sourceDir)
 		absDir, err := filepath.Abs(sourceDir)
@@ -351,8 +340,7 @@ func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 		sourceDir = absDir
 	}
 
-	binaryFlag, _ := cmd.Flags().GetString("binary")
-	binaryFlag = strings.TrimSpace(binaryFlag)
+	binaryFlag := getTrimmedFlag(cmd, "binary")
 	if binaryFlag != "" {
 		binaryFlag = config.ExpandPath(binaryFlag)
 		if !filepath.IsAbs(binaryFlag) {
@@ -474,8 +462,7 @@ func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 		return out.Error(fmt.Sprintf("manifest transport %q unsupported", transport), errors.New("invalid manifest transport"))
 	}
 
-	addressFlag, _ := cmd.Flags().GetString("endpoint-address")
-	address := strings.TrimSpace(addressFlag)
+	address := getTrimmedFlag(cmd, "endpoint-address")
 	switch transport {
 	case constants.AdapterTransportGRPC, constants.AdapterTransportHTTP:
 		if address == "" {
@@ -592,14 +579,12 @@ func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	slot, _ := cmd.Flags().GetString("slot")
-	slot = strings.TrimSpace(slot)
+	slot := getTrimmedFlag(cmd, "slot")
 	if slot == "" {
 		return nil
 	}
 
-	configRaw, _ := cmd.Flags().GetString("config")
-	configRaw = strings.TrimSpace(configRaw)
+	configRaw := getTrimmedFlag(cmd, "config")
 	if configRaw != "" && !json.Valid([]byte(configRaw)) {
 		return out.Error("Config must be valid JSON", errors.New("invalid config payload"))
 	}
@@ -617,10 +602,8 @@ func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 func adaptersLogs(cmd *cobra.Command, _ []string) error {
 	out := newOutputFormatter(cmd)
 
-	slot, _ := cmd.Flags().GetString("slot")
-	adapter, _ := cmd.Flags().GetString("adapter")
-	slot = strings.TrimSpace(slot)
-	adapter = strings.TrimSpace(adapter)
+	slot := getTrimmedFlag(cmd, "slot")
+	adapter := getTrimmedFlag(cmd, "adapter")
 
 	return withOutputClient(out, daemonConnectGRPCErrorMessage, func(gc *grpcclient.Client) error {
 		ctx, cancel := context.WithCancel(context.Background())

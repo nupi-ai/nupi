@@ -29,6 +29,19 @@ const (
 	daemonConnectGRPCErrorMessage = "Failed to connect to daemon via gRPC"
 )
 
+func getTrimmedFlag(cmd *cobra.Command, name string) string {
+	val, _ := cmd.Flags().GetString(name)
+	return strings.TrimSpace(val)
+}
+
+func getRequiredFlag(cmd *cobra.Command, name string, out *OutputFormatter) (string, error) {
+	val := getTrimmedFlag(cmd, name)
+	if val == "" {
+		return "", out.Error(fmt.Sprintf("--%s is required", name), nil)
+	}
+	return val, nil
+}
+
 type ClientHandler func(client *grpcclient.Client, out *OutputFormatter) error
 
 type TimedClientHandler func(ctx context.Context, client *grpcclient.Client) (any, error)
