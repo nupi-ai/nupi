@@ -9,7 +9,6 @@ import (
 	"sort"
 	"strings"
 	"text/tabwriter"
-	"time"
 
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/constants"
@@ -120,7 +119,7 @@ or config change). For historical tracking, check daemon logs.`,
 		}
 		defer gc.Close()
 
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), constants.Duration5Seconds)
 		defer cancel()
 
 		resp, err := gc.GetPluginWarnings(ctx)
@@ -261,7 +260,7 @@ Examples:
 		pluginDir := getPluginDir()
 		inst := installer.NewInstaller(store, pluginDir)
 
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), constants.Duration5Minutes)
 		defer cancel()
 
 		var result *installer.InstallResult
@@ -327,7 +326,7 @@ var pluginsUninstallCmd = &cobra.Command{
 		pluginDir := getPluginDir()
 		inst := installer.NewInstaller(store, pluginDir)
 
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), constants.Duration30Seconds)
 		defer cancel()
 
 		if err := inst.Uninstall(ctx, namespace, slug); err != nil {
@@ -364,7 +363,7 @@ var pluginsEnableCmd = &cobra.Command{
 		}
 		defer store.Close()
 
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), constants.Duration10Seconds)
 		defer cancel()
 
 		// Check plugin exists
@@ -444,7 +443,7 @@ var pluginsDisableCmd = &cobra.Command{
 		}
 		defer store.Close()
 
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), constants.Duration10Seconds)
 		defer cancel()
 
 		if err := store.SetPluginEnabled(ctx, namespace, slug, false); err != nil {
@@ -494,7 +493,7 @@ Examples:
 
 		mClient := marketplace.NewClient(store)
 
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), constants.Duration30Seconds)
 		defer cancel()
 
 		results, err := mClient.Search(ctx, query, category, namespace)
@@ -641,7 +640,7 @@ func enrichWithDaemonData(rows []pluginRow) bool {
 	}
 	defer gc.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), constants.Duration5Seconds)
 	defer cancel()
 
 	resp, err := gc.AdaptersOverview(ctx)
@@ -686,7 +685,7 @@ func enrichWithInstallData(rows []pluginRow) {
 	}
 	defer store.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), constants.Duration2Seconds)
 	defer cancel()
 
 	installed, err := store.ListInstalledPlugins(ctx)
@@ -745,7 +744,7 @@ func triggerPluginReload() {
 	}
 	defer gc.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), constants.Duration5Seconds)
 	defer cancel()
 
 	_, _ = gc.ReloadPlugins(ctx)

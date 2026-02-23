@@ -12,6 +12,7 @@ import (
 
 	napv1 "github.com/nupi-ai/nupi/api/nap/v1"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/mapper"
 	"github.com/nupi-ai/nupi/internal/napdial"
@@ -65,7 +66,7 @@ func newNAPTranscriber(ctx context.Context, params SessionParams, endpoint confi
 	if len(params.Config) > 0 {
 		raw, err := json.Marshal(params.Config)
 		if err != nil {
-			closeCtx, closeCancel := context.WithTimeout(context.Background(), 2*time.Second)
+			closeCtx, closeCancel := context.WithTimeout(context.Background(), constants.Duration2Seconds)
 			t.Close(closeCtx)
 			closeCancel()
 			return nil, fmt.Errorf("stt: marshal adapter config: %w", err)
@@ -82,7 +83,7 @@ func newNAPTranscriber(ctx context.Context, params SessionParams, endpoint confi
 	}
 
 	if err := stream.Send(initReq); err != nil {
-		closeCtx, closeCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), constants.Duration2Seconds)
 		t.Close(closeCtx)
 		closeCancel()
 		if s, ok := status.FromError(err); ok && s.Code() == codes.Unavailable {
@@ -180,7 +181,7 @@ func (t *napTranscriber) Close(ctx context.Context) ([]Transcription, error) {
 	return transcripts, nil
 }
 
-const sttResponseGracePeriod = 10 * time.Millisecond
+const sttResponseGracePeriod = constants.Duration10Milliseconds
 
 func (t *napTranscriber) collectResponses(wait bool) []Transcription {
 	var transcripts []Transcription

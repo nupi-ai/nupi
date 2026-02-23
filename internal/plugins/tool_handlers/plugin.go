@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/jsruntime"
 )
 
@@ -118,7 +118,7 @@ func (p *JSPlugin) Detect(ctx context.Context, rt *jsruntime.Runtime, output str
 
 // callDetect calls the detect function with timeout.
 func (p *JSPlugin) callDetect(ctx context.Context, rt *jsruntime.Runtime, output string) (any, error) {
-	callCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
+	callCtx, cancel := context.WithTimeout(ctx, constants.Duration1Second)
 	defer cancel()
 	return rt.Call(callCtx, p.FilePath, "detect", output)
 }
@@ -134,7 +134,7 @@ func (p *JSPlugin) DetectIdleState(ctx context.Context, rt *jsruntime.Runtime, b
 		return nil, fmt.Errorf("tool handler %s: jsruntime not available", p.Name)
 	}
 
-	const timeout = 100 * time.Millisecond // fast check
+	const timeout = constants.Duration100Milliseconds // fast check
 
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -172,7 +172,7 @@ func (p *JSPlugin) Clean(ctx context.Context, rt *jsruntime.Runtime, output stri
 		return output, fmt.Errorf("tool handler %s: jsruntime not available", p.Name)
 	}
 
-	const timeout = 1 * time.Second
+	const timeout = constants.Duration1Second
 
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -213,7 +213,7 @@ func (p *JSPlugin) ExtractEvents(ctx context.Context, rt *jsruntime.Runtime, out
 		return nil, fmt.Errorf("tool handler %s: jsruntime not available", p.Name)
 	}
 
-	const timeout = 2 * time.Second
+	const timeout = constants.Duration2Seconds
 
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -319,7 +319,7 @@ func parseEvents(result any) ([]Event, error) {
 
 // reload reloads the plugin into the runtime.
 func (p *JSPlugin) reload(ctx context.Context, rt *jsruntime.Runtime) error {
-	reloadCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	reloadCtx, cancel := context.WithTimeout(ctx, constants.Duration5Seconds)
 	defer cancel()
 
 	_, err := rt.LoadPluginWithOptions(reloadCtx, p.FilePath, jsruntime.LoadPluginOptions{

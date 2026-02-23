@@ -4,13 +4,13 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
 
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/plugins/adapters"
 )
 
 // RuntimeLookupTimeout is the default timeout for runtime address lookups.
-const RuntimeLookupTimeout = time.Second
+const RuntimeLookupTimeout = constants.Duration1Second
 
 // AdapterRuntimeSource exposes runtime status for adapters.
 type AdapterRuntimeSource interface {

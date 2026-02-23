@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/nupi-ai/nupi/internal/audio/streammanager"
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/mapper"
 	"github.com/nupi-ai/nupi/internal/voice/slots"
@@ -25,8 +26,8 @@ var (
 
 const (
 	defaultRequestBuffer = 16
-	defaultRetryInitial  = 200 * time.Millisecond
-	defaultRetryMax      = 5 * time.Second
+	defaultRetryInitial  = constants.Duration200Milliseconds
+	defaultRetryMax      = constants.Duration5Seconds
 	maxPendingRequests   = 100
 
 	defaultStreamID = slots.TTS
@@ -584,7 +585,7 @@ func (st *stream) run() {
 				// Close synthesizer quietly — don't publish final events
 				// since the request is being rebuffered for retry.
 				if st.synthesizer != nil {
-					closeCtx, closeCancel := context.WithTimeout(context.Background(), 2*time.Second)
+					closeCtx, closeCancel := context.WithTimeout(context.Background(), constants.Duration2Seconds)
 					st.synthesizer.Close(closeCtx)
 					closeCancel()
 				}
@@ -705,7 +706,7 @@ func (st *stream) closeSynthesizer(reason string) {
 	if st.synthesizer == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), constants.Duration2Seconds)
 	defer cancel()
 	chunks, err := st.synthesizer.Close(ctx)
 	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {

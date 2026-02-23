@@ -3,8 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
-	"time"
 
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/grpcclient"
 	nupiversion "github.com/nupi-ai/nupi/internal/version"
 	"github.com/spf13/cobra"
@@ -23,7 +23,7 @@ func runVersion(cmd *cobra.Command, _ []string) error {
 	out := newOutputFormatter(cmd)
 	clientVersion := nupiversion.String()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), constants.Duration3Seconds)
 	defer cancel()
 
 	var daemonVersion string

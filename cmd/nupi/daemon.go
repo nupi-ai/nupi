@@ -118,7 +118,7 @@ func newDaemonCommand() *cobra.Command {
 
 // daemonStatus gets the daemon status via gRPC
 func daemonStatus(cmd *cobra.Command, args []string) error {
-	return withClientTimeout(cmd, 5*time.Second, func(ctx context.Context, gc *grpcclient.Client, out *OutputFormatter) (any, error) {
+	return withClientTimeout(cmd, constants.Duration5Seconds, func(ctx context.Context, gc *grpcclient.Client, out *OutputFormatter) (any, error) {
 		gc.DisableVersionCheck() // this command displays version itself; avoid duplicate RPC
 
 		resp, err := gc.DaemonStatus(ctx)
@@ -180,7 +180,7 @@ func daemonStop(cmd *cobra.Command, args []string) error {
 		apiAttempt = true
 		defer gc.Close()
 
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), constants.Duration5Seconds)
 		defer cancel()
 
 		if _, err := gc.Shutdown(ctx); err == nil {
@@ -224,7 +224,7 @@ func daemonStop(cmd *cobra.Command, args []string) error {
 }
 
 func tokensList(cmd *cobra.Command, args []string) error {
-	return withClientTimeout(cmd, 5*time.Second, func(ctx context.Context, gc *grpcclient.Client, out *OutputFormatter) (any, error) {
+	return withClientTimeout(cmd, constants.Duration5Seconds, func(ctx context.Context, gc *grpcclient.Client, out *OutputFormatter) (any, error) {
 		resp, err := gc.ListTokens(ctx)
 		if err != nil {
 			return nil, clientCallFailed("Failed to list tokens", err)
@@ -281,7 +281,7 @@ func tokensCreate(cmd *cobra.Command, args []string) error {
 		return out.Error("Role must be 'admin' or 'read-only'", nil)
 	}
 
-	return withOutputClientTimeout(out, 5*time.Second, daemonConnectErrorMessage, func(ctx context.Context, gc *grpcclient.Client) (any, error) {
+	return withOutputClientTimeout(out, constants.Duration5Seconds, daemonConnectErrorMessage, func(ctx context.Context, gc *grpcclient.Client) (any, error) {
 		resp, err := gc.CreateToken(ctx, &apiv1.CreateTokenRequest{
 			Name: strings.TrimSpace(name),
 			Role: role,
@@ -331,7 +331,7 @@ func tokensDelete(cmd *cobra.Command, args []string) error {
 		return out.Error("Provide a token or --id", nil)
 	}
 
-	return withOutputClientTimeout(out, 5*time.Second, daemonConnectErrorMessage, func(ctx context.Context, gc *grpcclient.Client) (any, error) {
+	return withOutputClientTimeout(out, constants.Duration5Seconds, daemonConnectErrorMessage, func(ctx context.Context, gc *grpcclient.Client) (any, error) {
 		if err := gc.DeleteToken(ctx, &apiv1.DeleteTokenRequest{
 			Id:    idFlag,
 			Token: token,
@@ -366,7 +366,7 @@ func daemonPairCreate(cmd *cobra.Command, args []string) error {
 		return out.Error("Pairing code validity (--expires-in) must be a positive number of seconds", nil)
 	}
 
-	return withOutputClientTimeout(out, 5*time.Second, daemonConnectErrorMessage, func(ctx context.Context, gc *grpcclient.Client) (any, error) {
+	return withOutputClientTimeout(out, constants.Duration5Seconds, daemonConnectErrorMessage, func(ctx context.Context, gc *grpcclient.Client) (any, error) {
 		resp, err := gc.CreatePairing(ctx, &apiv1.CreatePairingRequest{
 			Name:             strings.TrimSpace(name),
 			Role:             role,
@@ -405,7 +405,7 @@ func daemonPairCreate(cmd *cobra.Command, args []string) error {
 }
 
 func daemonPairList(cmd *cobra.Command, args []string) error {
-	return withClientTimeout(cmd, 5*time.Second, func(ctx context.Context, gc *grpcclient.Client, out *OutputFormatter) (any, error) {
+	return withClientTimeout(cmd, constants.Duration5Seconds, func(ctx context.Context, gc *grpcclient.Client, out *OutputFormatter) (any, error) {
 		resp, err := gc.ListPairings(ctx)
 		if err != nil {
 			return nil, clientCallFailed("Failed to list pairings", err)

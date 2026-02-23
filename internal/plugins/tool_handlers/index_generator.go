@@ -7,8 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/jsruntime"
 	"github.com/nupi-ai/nupi/internal/plugins/manifest"
 )
@@ -73,7 +73,7 @@ func (g *IndexGenerator) Generate() error {
 		// 10s timeout to prevent hanging on malformed plugins
 		var plugin *JSPlugin
 		if g.jsRuntime != nil {
-			loadCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			loadCtx, cancel := context.WithTimeout(context.Background(), constants.Duration10Seconds)
 			plugin, err = LoadPluginWithRuntime(loadCtx, g.jsRuntime, mainPath)
 			cancel()
 		} else {
@@ -146,7 +146,7 @@ func (g *IndexGenerator) ListPlugins() ([]map[string]interface{}, error) {
 		// 10s timeout to prevent hanging on malformed plugins
 		var plugin *JSPlugin
 		if g.jsRuntime != nil {
-			loadCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			loadCtx, cancel := context.WithTimeout(context.Background(), constants.Duration10Seconds)
 			plugin, err = LoadPluginWithRuntime(loadCtx, g.jsRuntime, mainPath)
 			cancel()
 		} else {

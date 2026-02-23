@@ -40,10 +40,10 @@ const (
 	SlotTunnel Slot = constants.AdapterSlotTunnel
 )
 
-const processReadyTimeout = 30 * time.Second
-const adapterStartTimeout = 2 * time.Minute
+const processReadyTimeout = constants.Duration30Seconds
+const adapterStartTimeout = constants.Duration2Minutes
 const processLaunchMaxAttempts = 3
-const processLaunchRetryDelay = 50 * time.Millisecond
+const processLaunchRetryDelay = constants.Duration50Milliseconds
 
 var defaultSlots = []Slot{SlotAI, SlotSTT, SlotTTS, SlotVAD, SlotTunnel}
 
@@ -736,7 +736,7 @@ func (m *Manager) startAdapter(ctx context.Context, plan bindingPlan) (*adapterI
 		}
 
 		stopHandle := func() {
-			stopCtx, stopCancel := context.WithTimeout(context.Background(), time.Second)
+			stopCtx, stopCancel := context.WithTimeout(context.Background(), constants.Duration1Second)
 			_ = handle.Stop(stopCtx)
 			stopCancel()
 		}
@@ -1316,14 +1316,14 @@ func waitForAdapterReady(ctx context.Context, addr string) error {
 		return &terminalHealthError{msg: fmt.Sprintf("process readiness: invalid address %q: %v", addr, splitErr), cause: splitErr}
 	}
 
-	ticker := time.NewTicker(100 * time.Millisecond)
+	ticker := time.NewTicker(constants.Duration100Milliseconds)
 	defer ticker.Stop()
 
 	var lastErr error
 	dials := 0
 	for {
 		dials++
-		conn, err := net.DialTimeout("tcp", addr, 250*time.Millisecond)
+		conn, err := net.DialTimeout("tcp", addr, constants.Duration250Milliseconds)
 		if err == nil {
 			_ = conn.Close()
 			if dials > 1 {

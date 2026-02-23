@@ -8,9 +8,9 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
-	"time"
 
 	apiv1 "github.com/nupi-ai/nupi/internal/api/grpc/v1"
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/grpcclient"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -146,7 +146,7 @@ func runCommand(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create session
-	createCtx, createCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	createCtx, createCancel := context.WithTimeout(context.Background(), constants.Duration10Seconds)
 	defer createCancel()
 
 	resp, err := c.CreateSession(createCtx, &apiv1.CreateSessionRequest{
@@ -181,7 +181,7 @@ func runCommand(cmd *cobra.Command, args []string) error {
 
 // listSessions lists all active sessions
 func listSessions(cmd *cobra.Command, args []string) error {
-	return withClientTimeout(cmd, 5*time.Second, func(ctx context.Context, c *grpcclient.Client, out *OutputFormatter) (any, error) {
+	return withClientTimeout(cmd, constants.Duration5Seconds, func(ctx context.Context, c *grpcclient.Client, out *OutputFormatter) (any, error) {
 		resp, err := c.ListSessions(ctx)
 		if err != nil {
 			return nil, clientCallFailed("Failed to list sessions", err)
@@ -473,7 +473,7 @@ func inspectCommand(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create session with inspect mode enabled
-	createCtx, createCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	createCtx, createCancel := context.WithTimeout(context.Background(), constants.Duration10Seconds)
 	defer createCancel()
 
 	resp, err := c.CreateSession(createCtx, &apiv1.CreateSessionRequest{
@@ -517,7 +517,7 @@ func inspectCommand(cmd *cobra.Command, args []string) error {
 // killSession kills a running session
 func killSession(cmd *cobra.Command, args []string) error {
 	sessionID := args[0]
-	return withClientTimeout(cmd, 5*time.Second, func(ctx context.Context, c *grpcclient.Client, out *OutputFormatter) (any, error) {
+	return withClientTimeout(cmd, constants.Duration5Seconds, func(ctx context.Context, c *grpcclient.Client, out *OutputFormatter) (any, error) {
 		if _, err := c.KillSession(ctx, sessionID); err != nil {
 			errMsg := "Failed to kill session"
 			if st, ok := status.FromError(err); ok && st.Code() == codes.NotFound {

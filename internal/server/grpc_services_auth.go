@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"log"
 	"net/url"
 	"sort"
 	"strconv"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	apiv1 "github.com/nupi-ai/nupi/internal/api/grpc/v1"
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	emptypb "google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -117,18 +119,35 @@ func (a *authService) DeleteToken(ctx context.Context, req *apiv1.DeleteTokenReq
 		return nil, status.Errorf(codes.Internal, "load tokens: %v", err)
 	}
 
-	newTokens := make([]storedToken, 0, len(tokens))
-	removed := false
-	for _, tok := range tokens {
-		if (id != "" && tok.ID == id) || (tokenValue != "" && tok.Token == tokenValue) {
-			removed = true
-			continue
+	// Fallback logic per proto contract: try ID first, then token value.
+	matchIdx := -1
+	if id != "" {
+		for i, tok := range tokens {
+			if tok.ID == id {
+				matchIdx = i
+				break
+			}
 		}
-		newTokens = append(newTokens, tok)
+	}
+	if matchIdx == -1 && tokenValue != "" {
+		for i, tok := range tokens {
+			if tok.Token == tokenValue {
+				matchIdx = i
+				break
+			}
+		}
 	}
 
-	if !removed {
+	if matchIdx == -1 {
 		return nil, status.Error(codes.NotFound, "token not found")
+	}
+
+	removedID := tokens[matchIdx].ID
+	newTokens := make([]storedToken, 0, len(tokens)-1)
+	for i, tok := range tokens {
+		if i != matchIdx {
+			newTokens = append(newTokens, tok)
+		}
 	}
 
 	if err := a.api.storeAuthTokens(ctx, newTokens); err != nil {
@@ -136,6 +155,14 @@ func (a *authService) DeleteToken(ctx context.Context, req *apiv1.DeleteTokenReq
 	}
 
 	a.api.setAuthTokens(newTokens, a.api.AuthRequired())
+
+	// Cascade: remove push tokens registered by the deleted auth token.
+	if a.api.configStore != nil {
+		if err := a.api.configStore.DeletePushTokensByAuthToken(ctx, removedID); err != nil {
+			log.Printf("[Auth] cascade push token cleanup for auth %s: %v", removedID, err)
+		}
+	}
+
 	return &emptypb.Empty{}, nil
 }
 
@@ -174,8 +201,8 @@ func (a *authService) CreatePairing(ctx context.Context, req *apiv1.CreatePairin
 	}
 
 	duration := time.Duration(req.GetExpiresInSeconds()) * time.Second
-	if duration <= 0 || duration > 30*time.Minute {
-		duration = 5 * time.Minute
+	if duration <= 0 || duration > constants.Duration30Minutes {
+		duration = constants.Duration5Minutes
 	}
 
 	code, err := generatePairingCode()

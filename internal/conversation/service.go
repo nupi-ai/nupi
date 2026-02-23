@@ -125,11 +125,11 @@ type Service struct {
 
 const (
 	defaultHistory   = 50
-	defaultDetachTTL = 5 * time.Minute
+	defaultDetachTTL = constants.Duration5Minutes
 
 	defaultSummaryThreshold = 35
 	defaultSummaryBatchSize = 20
-	summaryTimeout          = 60 * time.Second
+	summaryTimeout          = constants.Duration60Seconds
 
 	maxMetadataEntries    = 32
 	maxMetadataKeyRunes   = 64
@@ -137,7 +137,7 @@ const (
 	maxMetadataTotalBytes = 8192
 
 	// Rate limiting for SESSION_OUTPUT events
-	sessionOutputMinInterval = 2 * time.Second
+	sessionOutputMinInterval = constants.Duration2Seconds
 )
 
 // NewService creates a conversation service bound to the provided bus.

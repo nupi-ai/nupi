@@ -11,12 +11,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/procutil"
 )
 
 // DefaultGracefulShutdownTimeout is the maximum time to wait for adapter process
 // to exit after graceful termination before force-killing.
-const DefaultGracefulShutdownTimeout = 15 * time.Second
+const DefaultGracefulShutdownTimeout = constants.AdapterGracefulShutdownTimeout
 
 var (
 	// ErrAdapterBinaryUnset indicates the adapter binary path was not configured.

@@ -16,6 +16,7 @@ import (
 
 	apiv1 "github.com/nupi-ai/nupi/internal/api/grpc/v1"
 	"github.com/nupi-ai/nupi/internal/audioio"
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/grpcclient"
 	"github.com/nupi-ai/nupi/internal/voice/slots"
@@ -330,7 +331,7 @@ func voiceInterrupt(cmd *cobra.Command, defaultReason string) error {
 		streamID = slots.TTS
 	}
 
-	return withOutputClientTimeout(out, 5*time.Second, daemonConnectErrorMessage, func(ctx context.Context, gc *grpcclient.Client) (any, error) {
+	return withOutputClientTimeout(out, constants.Duration5Seconds, daemonConnectErrorMessage, func(ctx context.Context, gc *grpcclient.Client) (any, error) {
 		if err := gc.InterruptTTS(ctx, &apiv1.InterruptTTSRequest{
 			SessionId: sessionID,
 			StreamId:  streamID,
@@ -355,7 +356,7 @@ func voiceInterrupt(cmd *cobra.Command, defaultReason string) error {
 
 func voiceStatus(cmd *cobra.Command, _ []string) error {
 	sessionID := strings.TrimSpace(cmd.Flag("session").Value.String())
-	return withClientTimeout(cmd, 5*time.Second, func(ctx context.Context, gc *grpcclient.Client, out *OutputFormatter) (any, error) {
+	return withClientTimeout(cmd, constants.Duration5Seconds, func(ctx context.Context, gc *grpcclient.Client, out *OutputFormatter) (any, error) {
 		caps, err := gc.AudioCapabilities(ctx, &apiv1.GetAudioCapabilitiesRequest{
 			SessionId: sessionID,
 		})

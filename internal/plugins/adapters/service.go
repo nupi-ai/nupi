@@ -13,6 +13,7 @@ import (
 	"time"
 
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/plugins/manifest"
 	maputil "github.com/nupi-ai/nupi/internal/util/maps"
@@ -128,8 +129,8 @@ func NewService(manager *Manager, store *configstore.Store, bus *eventbus.Bus, o
 		manager:           manager,
 		store:             store,
 		bus:               bus,
-		watchInterval:     time.Second,
-		ensureInterval:    15 * time.Second,
+		watchInterval:     constants.Duration1Second,
+		ensureInterval:    constants.Duration15Seconds,
 		heartbeatInterval: defaultHeartbeatInterval,
 		state:             make(map[Slot]adapterState),
 		statuses:          make(map[Slot]runtimeStatus),

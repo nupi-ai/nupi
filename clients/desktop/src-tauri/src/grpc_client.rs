@@ -7,23 +7,25 @@ use std::{
     env, fs,
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Once,
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
-    time::Duration,
 };
 
 static TLS_INSECURE_WARN: Once = Once::new();
 
 use dirs::home_dir;
 use hound::{SampleFormat, WavSpec, WavWriter};
-use rusqlite::{params, Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, params};
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
 
 use crate::proto::nupi_api;
 use crate::settings;
+use crate::timeouts::{
+    AUDIO_STREAM_REQUEST_TIMEOUT, GRPC_CHANNEL_CONNECT_TIMEOUT, GRPC_CHANNEL_REQUEST_TIMEOUT,
+};
 
 const INSTANCE_NAME: &str = "default";
 const PROFILE_NAME: &str = "default";
@@ -655,7 +657,9 @@ impl GrpcClient {
                     req.metadata_mut().insert("authorization", val);
                 }
                 Err(_) => {
-                    eprintln!("[nupi-desktop] WARNING: auth token contains invalid characters for gRPC metadata — request will be sent without authentication");
+                    eprintln!(
+                        "[nupi-desktop] WARNING: auth token contains invalid characters for gRPC metadata — request will be sent without authentication"
+                    );
                 }
             }
         }
@@ -665,7 +669,9 @@ impl GrpcClient {
                     req.metadata_mut().insert("nupi-language", val);
                 }
                 Err(_) => {
-                    eprintln!("[nupi-desktop] WARNING: language preference contains invalid characters for gRPC metadata — request will be sent without language header");
+                    eprintln!(
+                        "[nupi-desktop] WARNING: language preference contains invalid characters for gRPC metadata — request will be sent without language header"
+                    );
                 }
             }
         }
@@ -973,21 +979,13 @@ impl GrpcClient {
         let id_str = id
             .and_then(|v| {
                 let t = v.trim().to_string();
-                if t.is_empty() {
-                    None
-                } else {
-                    Some(t)
-                }
+                if t.is_empty() { None } else { Some(t) }
             })
             .unwrap_or_default();
         let token_str = token_value
             .and_then(|v| {
                 let t = v.trim().to_string();
-                if t.is_empty() {
-                    None
-                } else {
-                    Some(t)
-                }
+                if t.is_empty() { None } else { Some(t) }
             })
             .unwrap_or_default();
 
@@ -1324,7 +1322,7 @@ impl GrpcClient {
         // Send the stream to gRPC
         let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
         let mut grpc_request = self.auth_request(stream);
-        grpc_request.set_timeout(Duration::from_secs(600));
+        grpc_request.set_timeout(AUDIO_STREAM_REQUEST_TIMEOUT);
 
         let mut client =
             nupi_api::audio_service_client::AudioServiceClient::new(self.channel.clone());
@@ -1845,8 +1843,8 @@ async fn build_channel(
 
     let endpoint = Endpoint::from_shared(effective_uri)
         .map_err(|e| GrpcClientError::Config(format!("Invalid endpoint URI: {e}")))?
-        .timeout(Duration::from_secs(10))
-        .connect_timeout(Duration::from_secs(5));
+        .timeout(GRPC_CHANNEL_REQUEST_TIMEOUT)
+        .connect_timeout(GRPC_CHANNEL_CONNECT_TIMEOUT);
 
     let endpoint = if tls_enabled && !insecure {
         if let Some(ca_path) = ca_cert_path {

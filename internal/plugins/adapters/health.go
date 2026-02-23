@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/napdial"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/backoff"
@@ -26,7 +27,7 @@ import (
 // This is NOT the overall readiness timeout — it applies to one gRPC/HTTP call.
 // When the parent context has a shorter deadline, the probe respects the
 // shorter deadline (context.WithTimeout inherits the earlier expiry).
-const healthCheckTimeout = 5 * time.Second
+const healthCheckTimeout = constants.Duration5Seconds
 
 // healthCheckPollInterval is the delay between retry attempts when a remote
 // adapter health check fails but the overall readiness timeout has not expired.
@@ -35,7 +36,7 @@ const healthCheckTimeout = 5 * time.Second
 // failing adapters benefit from a longer back-off to avoid hammering.
 // Intentionally constant (not configurable) — adaptive backoff is unnecessary
 // given the short overall readiness timeout (typically 30s).
-const healthCheckPollInterval = 500 * time.Millisecond
+const healthCheckPollInterval = constants.Duration500Milliseconds
 
 // maxHealthResponseDrain is the maximum number of bytes drained from HTTP
 // health check response bodies before closing. Draining allows the underlying

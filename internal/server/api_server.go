@@ -257,7 +257,7 @@ func (s *APIServer) RequestShutdown() {
 	s.lifecycle.shutdownMu.RUnlock()
 	if fn != nil {
 		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), constants.Duration2Seconds)
 			defer cancel()
 			if err := fn(ctx); err != nil {
 				log.Printf("[APIServer] shutdown error: %v", err)
@@ -671,7 +671,7 @@ func sanitizePairings(entries []pairingEntry, now time.Time) []pairingEntry {
 			entry.CreatedAt = now
 		}
 		if entry.ExpiresAt.IsZero() {
-			entry.ExpiresAt = entry.CreatedAt.Add(5 * time.Minute)
+			entry.ExpiresAt = entry.CreatedAt.Add(constants.Duration5Minutes)
 		}
 		if now.After(entry.ExpiresAt) {
 			continue

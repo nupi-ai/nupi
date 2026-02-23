@@ -10,6 +10,7 @@ import (
 
 	apiv1 "github.com/nupi-ai/nupi/internal/api/grpc/v1"
 	apihttp "github.com/nupi-ai/nupi/internal/api/http"
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/grpcclient"
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/types/known/wrapperspb"
@@ -65,7 +66,7 @@ func quickstartInit(cmd *cobra.Command, args []string) error {
 	}
 	defer gc.Close()
 
-	statusCtx, statusCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	statusCtx, statusCancel := context.WithTimeout(context.Background(), constants.Duration10Seconds)
 	defer statusCancel()
 
 	status, err := gc.QuickstartStatus(statusCtx)
@@ -90,7 +91,7 @@ func quickstartInit(cmd *cobra.Command, args []string) error {
 	}
 
 	// Fetch available adapters for the wizard.
-	listCtx, listCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	listCtx, listCancel := context.WithTimeout(context.Background(), constants.Duration10Seconds)
 	defer listCancel()
 
 	listResp, err := gc.ListAdapters(listCtx)
@@ -157,7 +158,7 @@ func quickstartInit(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	updateCtx, updateCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	updateCtx, updateCancel := context.WithTimeout(context.Background(), constants.Duration10Seconds)
 	defer updateCancel()
 
 	req := &apiv1.UpdateQuickstartRequest{
@@ -209,7 +210,7 @@ func quickstartStatus(cmd *cobra.Command, args []string) error {
 	}
 	defer gc.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), constants.Duration5Seconds)
 	defer cancel()
 
 	payload, err := gc.QuickstartStatus(ctx)
@@ -278,7 +279,7 @@ func quickstartComplete(cmd *cobra.Command, args []string) error {
 	completeFlag, _ := flags.GetBool("complete")
 
 	if completeFlag {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), constants.Duration5Seconds)
 		defer cancel()
 
 		status, err := gc.QuickstartStatus(ctx)
@@ -317,7 +318,7 @@ func quickstartComplete(cmd *cobra.Command, args []string) error {
 		req.Complete = wrapperspb.Bool(true)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), constants.Duration10Seconds)
 	defer cancel()
 
 	result, err := gc.UpdateQuickstart(ctx, req)

@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/audio/streammanager"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 )
@@ -23,9 +24,9 @@ var (
 
 const (
 	defaultSegmentBuffer = 16
-	defaultFlushTimeout  = 2 * time.Second
-	defaultRetryInitial  = 200 * time.Millisecond
-	defaultRetryMax      = 5 * time.Second
+	defaultFlushTimeout  = constants.Duration2Seconds
+	defaultRetryInitial  = constants.Duration200Milliseconds
+	defaultRetryMax      = constants.Duration5Seconds
 	maxPendingSegments   = 100
 )
 
@@ -438,7 +439,7 @@ func (st *stream) closeTranscriberForRecovery(reason string) {
 	if st.transcriber == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), constants.Duration2Seconds)
 	defer cancel()
 	_, err := st.transcriber.Close(ctx)
 	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {

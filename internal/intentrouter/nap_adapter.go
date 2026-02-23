@@ -7,17 +7,17 @@ import (
 	"log"
 	"net"
 	"sync"
-	"time"
 
 	napv1 "github.com/nupi-ai/nupi/api/nap/v1"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
+	"github.com/nupi-ai/nupi/internal/mapper"
 	"github.com/nupi-ai/nupi/internal/napdial"
 	maputil "github.com/nupi-ai/nupi/internal/util/maps"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // NAPAdapter implements IntentAdapter using NAP AI gRPC protocol.
@@ -39,14 +39,11 @@ type NAPAdapterParams struct {
 	Config    map[string]any
 }
 
-// connectTimeout is the minimum time for a single gRPC connection attempt to the adapter.
-const connectTimeout = 10 * time.Second
-
-// requestTimeout is the maximum time for a single ResolveIntent RPC call.
-const requestTimeout = 30 * time.Second
-
-// capabilitiesProbeTimeout is the time allowed for the best-effort capabilities probe.
-const capabilitiesProbeTimeout = 3 * time.Second
+const (
+	connectTimeout           = constants.NAPAdapterConnectTimeout
+	requestTimeout           = constants.NAPAdapterRequestTimeout
+	capabilitiesProbeTimeout = constants.NAPAdapterCapabilitiesProbeTimeout
+)
 
 // NewNAPAdapter creates a new NAP AI adapter that connects to a gRPC endpoint.
 func NewNAPAdapter(ctx context.Context, params NAPAdapterParams) (*NAPAdapter, error) {
@@ -147,7 +144,7 @@ func (a *NAPAdapter) ResolveIntent(ctx context.Context, req IntentRequest) (*Int
 		grpcReq.ConversationHistory = append(grpcReq.ConversationHistory, &napv1.ConversationTurn{
 			Origin:   contentOriginToProto(turn.Origin),
 			Text:     turn.Text,
-			At:       timestampOrNil(turn.At),
+			At:       mapper.ToProtoTimestampChecked(turn.At),
 			Metadata: maputil.Clone(turn.Meta),
 		})
 	}
@@ -186,7 +183,7 @@ func (a *NAPAdapter) ResolveIntent(ctx context.Context, req IntentRequest) (*Int
 			WorkDir:   session.WorkDir,
 			Tool:      session.Tool,
 			Status:    session.Status,
-			StartTime: timestampOrNil(session.StartTime),
+			StartTime: mapper.ToProtoTimestampChecked(session.StartTime),
 			Metadata:  maputil.Clone(session.Metadata),
 		})
 	}
@@ -311,18 +308,6 @@ func actionTypeFromProto(t napv1.ActionType) ActionType {
 	default:
 		return ActionNoop
 	}
-}
-
-// timestampOrNil converts time.Time to protobuf timestamp, returning nil for zero time.
-func timestampOrNil(t time.Time) *timestamppb.Timestamp {
-	if t.IsZero() {
-		return nil
-	}
-	ts := timestamppb.New(t)
-	if err := ts.CheckValid(); err != nil {
-		return nil
-	}
-	return ts
 }
 
 // ContextWithDialer attaches a custom dialer to the context.

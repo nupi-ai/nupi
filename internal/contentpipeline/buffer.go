@@ -3,13 +3,15 @@ package contentpipeline
 import (
 	"sync"
 	"time"
+
+	"github.com/nupi-ai/nupi/internal/constants"
 )
 
 const (
 	// DefaultBufferSize is the maximum buffer size per session (64KB).
 	DefaultBufferSize = 64 * 1024
 	// DefaultIdleTimeout is the duration after which a buffer is considered idle.
-	DefaultIdleTimeout = 500 * time.Millisecond
+	DefaultIdleTimeout = constants.Duration500Milliseconds
 )
 
 // OutputBuffer accumulates streaming chunks until idle is detected.

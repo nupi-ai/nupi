@@ -11,11 +11,11 @@ import (
 	"os"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/nupi-ai/nupi/internal/bootstrap"
 	"github.com/nupi-ai/nupi/internal/config"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/tlswarn"
 )
 
@@ -39,7 +39,7 @@ func LoadTransportSettings() (configstore.TransportConfig, []string, error) {
 	}
 	defer store.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), constants.GRPCClientConfigLoadTimeout)
 	defer cancel()
 
 	cfg, err := store.GetTransportConfig(ctx)

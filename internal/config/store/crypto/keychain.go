@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/zalando/go-keyring"
 )
 
@@ -26,7 +27,7 @@ const (
 	// operation may block. If exceeded, the keychain is disabled for the
 	// rest of the process lifetime (circuit breaker) and FallbackBackend
 	// falls back to AES for all subsequent operations.
-	keychainOpTimeout = 5 * time.Second
+	keychainOpTimeout = constants.Duration5Seconds
 )
 
 // keyringProvider abstracts go-keyring calls for testing.
@@ -269,7 +270,7 @@ func (kb *KeychainBackend) Available() bool {
 // availableDarwin checks macOS keychain via `security default-keychain`
 // which never triggers UI dialogs. A 3-second timeout prevents hangs.
 func (kb *KeychainBackend) availableDarwin() bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), constants.Duration3Seconds)
 	defer cancel()
 	if err := exec.CommandContext(ctx, "security", "default-keychain", "-d", "user").Run(); err != nil {
 		log.Printf("[Config] Keychain not available (no default keychain): %v", err)
@@ -315,7 +316,7 @@ func (kb *KeychainBackend) availableProbe() bool {
 		ch <- probeResult{ok: true}
 	}()
 
-	timer := time.NewTimer(3 * time.Second)
+	timer := time.NewTimer(constants.Duration3Seconds)
 	defer timer.Stop()
 
 	select {

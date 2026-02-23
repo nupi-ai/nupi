@@ -32,7 +32,7 @@ func (d *daemonService) Shutdown(ctx context.Context, _ *apiv1.ShutdownRequest) 
 
 	// Trigger shutdown asynchronously so we can return the response.
 	go func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), constants.Duration2Seconds)
 		defer cancel()
 		_ = shutdown(shutdownCtx)
 	}()

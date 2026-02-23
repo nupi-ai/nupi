@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"time"
+
+	"github.com/nupi-ai/nupi/internal/constants"
 )
 
 // ChangeSnapshot captures update markers for configuration tables.
@@ -40,10 +42,10 @@ func (s *Store) Watch(ctx context.Context, interval time.Duration) (<-chan Chang
 	}
 
 	if interval <= 0 {
-		interval = time.Second
+		interval = constants.Duration1Second
 	}
-	if interval < 500*time.Millisecond {
-		interval = 500 * time.Millisecond
+	if interval < constants.Duration500Milliseconds {
+		interval = constants.Duration500Milliseconds
 	}
 
 	out := make(chan ChangeEvent, 1)

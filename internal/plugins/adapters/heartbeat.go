@@ -6,13 +6,13 @@ import (
 	"net"
 	"strings"
 	"sync"
-	"time"
 
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/napdial"
 )
 
 const (
-	defaultHeartbeatInterval = 30 * time.Second // AC#2: configurable, default 30s
+	defaultHeartbeatInterval = constants.Duration30Seconds // AC#2: configurable, default 30s
 
 	// heartbeatProbeTimeout is the TCP dial timeout for process-transport probes.
 	// Aliases healthCheckTimeout (health.go) so all transport probes share a

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/nupi-ai/nupi/internal/audio/streammanager"
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/mapper"
 )
@@ -22,12 +23,12 @@ var (
 
 const (
 	defaultSegmentBuffer = 16
-	defaultRetryInitial  = 200 * time.Millisecond
-	defaultRetryMax      = 5 * time.Second
+	defaultRetryInitial  = constants.Duration200Milliseconds
+	defaultRetryMax      = constants.Duration5Seconds
 	maxPendingSegments   = 100
 	maxRetryFailures     = 10
-	maxRetryDuration     = 2 * time.Minute
-	defaultLatencyP99    = 100 * time.Millisecond
+	maxRetryDuration     = constants.Duration2Minutes
+	defaultLatencyP99    = constants.Duration100Milliseconds
 	latencyDegradeFrames = 10
 )
 
@@ -466,7 +467,7 @@ func (st *stream) closeAnalyzerForRecovery(reason string) {
 	if st.analyzer == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), constants.Duration2Seconds)
 	defer cancel()
 	_, err := st.analyzer.Close(ctx)
 	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
@@ -479,7 +480,7 @@ func (st *stream) closeAnalyzer(reason string) {
 	if st.analyzer == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), constants.Duration2Seconds)
 	defer cancel()
 
 	detections, err := st.analyzer.Close(ctx)
@@ -513,12 +514,12 @@ type latencyHistogram struct {
 func defaultLatencyBuckets() []time.Duration {
 	return []time.Duration{
 		time.Millisecond,
-		5 * time.Millisecond,
-		10 * time.Millisecond,
-		25 * time.Millisecond,
-		50 * time.Millisecond,
-		100 * time.Millisecond,
-		250 * time.Millisecond,
+		constants.Duration5Milliseconds,
+		constants.Duration10Milliseconds,
+		constants.Duration25Milliseconds,
+		constants.Duration50Milliseconds,
+		constants.Duration100Milliseconds,
+		constants.Duration250Milliseconds,
 	}
 }
 
@@ -534,6 +535,9 @@ func newLatencyHistogram(bounds []time.Duration) *latencyHistogram {
 func (h *latencyHistogram) Observe(d time.Duration) {
 	if h == nil {
 		return
+	}
+	if d < 0 {
+		d = 0
 	}
 	h.count.Add(1)
 	h.sumNanos.Add(uint64(d.Nanoseconds()))
@@ -556,6 +560,12 @@ func (h *latencyHistogram) Snapshot() LatencyHistogramSnapshot {
 	if h == nil {
 		return LatencyHistogramSnapshot{}
 	}
+	// Read count and sum first — they are incremented before bucket updates
+	// in Observe(), so reading them first provides an upper bound. Individual
+	// bucket reads are not atomic with count; the Prometheus exporter caps
+	// cumulative totals at Count to handle any transient inconsistency.
+	count := h.count.Load()
+	sum := h.sumNanos.Load()
 	counts := make([]uint64, len(h.buckets))
 	for i := range h.buckets {
 		counts[i] = h.buckets[i].Load()
@@ -565,8 +575,8 @@ func (h *latencyHistogram) Snapshot() LatencyHistogramSnapshot {
 	return LatencyHistogramSnapshot{
 		Bounds: bounds,
 		Counts: counts,
-		Sum:    time.Duration(h.sumNanos.Load()),
-		Count:  h.count.Load(),
+		Sum:    time.Duration(sum),
+		Count:  count,
 	}
 }
 

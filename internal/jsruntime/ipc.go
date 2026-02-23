@@ -6,6 +6,8 @@ import (
 	"io"
 	"net"
 	"time"
+
+	"github.com/nupi-ai/nupi/internal/constants"
 )
 
 const (
@@ -14,7 +16,7 @@ const (
 	// maxFramePayload is the maximum payload size (16 MB).
 	maxFramePayload = 16 << 20
 	// acceptTimeout is how long we wait for the JS process to connect.
-	acceptTimeout = 10 * time.Second
+	acceptTimeout = constants.Duration10Seconds
 )
 
 // acceptSingleConn waits for exactly one client to connect within the timeout.

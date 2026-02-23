@@ -5,12 +5,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 )
 
 const (
 	defaultGlobalMaxTurns = 20
-	defaultGlobalTTL      = 10 * time.Minute
+	defaultGlobalTTL      = constants.Duration10Minutes
 )
 
 // GlobalStore maintains conversation history for messages without an assigned session.
@@ -215,8 +216,8 @@ func (g *GlobalStore) Start() {
 
 	// Prune interval is half the TTL (minimum 30 seconds)
 	pruneInterval := g.ttl / 2
-	if pruneInterval < 30*time.Second {
-		pruneInterval = 30 * time.Second
+	if pruneInterval < constants.Duration30Seconds {
+		pruneInterval = constants.Duration30Seconds
 	}
 
 	g.wg.Add(1)
