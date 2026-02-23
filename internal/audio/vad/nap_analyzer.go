@@ -77,7 +77,7 @@ func newNAPAnalyzer(ctx context.Context, params SessionParams, endpoint configst
 	initReq := &napv1.DetectSpeechRequest{
 		SessionId:  params.SessionID,
 		StreamId:   params.StreamID,
-		Format:     marshalAudioFormat(params.Format),
+		Format:     mapper.ToNAPAudioFormat(params.Format),
 		ConfigJson: configJSON,
 	}
 
@@ -126,7 +126,7 @@ func (a *napAnalyzer) OnSegment(_ context.Context, segment eventbus.AudioIngress
 		SessionId: a.params.SessionID,
 		StreamId:  a.params.StreamID,
 		PcmData:   segment.Data,
-		Format:    marshalAudioFormat(segment.Format),
+		Format:    mapper.ToNAPAudioFormat(segment.Format),
 		Timestamp: mapper.ToProtoTimestampChecked(segment.EndedAt),
 	}
 
@@ -265,16 +265,6 @@ func speechEventToDetection(evt *napv1.SpeechEvent) Detection {
 		det.Active = false
 	}
 	return det
-}
-
-func marshalAudioFormat(format eventbus.AudioFormat) *napv1.AudioFormat {
-	return &napv1.AudioFormat{
-		Encoding:        string(format.Encoding),
-		SampleRate:      uint32(format.SampleRate),
-		Channels:        uint32(format.Channels),
-		BitDepth:        uint32(format.BitDepth),
-		FrameDurationMs: uint32(format.FrameDuration / time.Millisecond),
-	}
 }
 
 // ContextWithDialer attaches a custom dialer to the context.

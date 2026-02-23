@@ -77,7 +77,7 @@ func newNAPTranscriber(ctx context.Context, params SessionParams, endpoint confi
 	initReq := &napv1.StreamTranscriptionRequest{
 		SessionId:  params.SessionID,
 		StreamId:   params.StreamID,
-		Format:     marshalFormat(params.Format),
+		Format:     mapper.ToNAPAudioFormat(params.Format),
 		Metadata:   maputil.Clone(params.Metadata),
 		ConfigJson: configJSON,
 	}
@@ -276,16 +276,6 @@ func (t *napTranscriber) drainError() error {
 		return fmt.Errorf("stt: receive transcript: %w", err)
 	default:
 		return nil
-	}
-}
-
-func marshalFormat(format eventbus.AudioFormat) *napv1.AudioFormat {
-	return &napv1.AudioFormat{
-		Encoding:        string(format.Encoding),
-		SampleRate:      uint32(format.SampleRate),
-		Channels:        uint32(format.Channels),
-		BitDepth:        uint32(format.BitDepth),
-		FrameDurationMs: uint32(format.FrameDuration / time.Millisecond),
 	}
 }
 
