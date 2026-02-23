@@ -4,13 +4,13 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"maps"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/nupi-ai/nupi/internal/eventbus"
+	maputil "github.com/nupi-ai/nupi/internal/util/maps"
 )
 
 // Option configures the coordinator behaviour.
@@ -199,7 +199,7 @@ func (s *Service) handleVADEvent(event eventbus.SpeechVADEvent) {
 		return
 	}
 
-	meta := cloneMetadata(event.Metadata)
+	meta := maputil.Clone(event.Metadata)
 	if event.StreamID != "" {
 		if meta == nil {
 			meta = map[string]string{"vad_stream_id": event.StreamID}
@@ -394,13 +394,6 @@ func splitStreamKey(key string) (string, string) {
 		return key[:idx], key[idx+len(sep):]
 	}
 	return key, ""
-}
-
-func cloneMetadata(src map[string]string) map[string]string {
-	if len(src) == 0 {
-		return nil
-	}
-	return maps.Clone(src)
 }
 
 // Metrics reports aggregated statistics for the barge-in service.

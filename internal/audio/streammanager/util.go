@@ -2,11 +2,11 @@ package streammanager
 
 import (
 	"fmt"
-	"maps"
 	"strings"
 	"time"
 
 	"github.com/nupi-ai/nupi/internal/eventbus"
+	maputil "github.com/nupi-ai/nupi/internal/util/maps"
 )
 
 // SessionParams describes context for establishing an audio stream.
@@ -37,10 +37,7 @@ func SplitStreamKey(key string) (string, string) {
 // CopyMetadata returns a shallow copy of the metadata map.
 // Returns nil for empty/nil input.
 func CopyMetadata(src map[string]string) map[string]string {
-	if len(src) == 0 {
-		return nil
-	}
-	return maps.Clone(src)
+	return maputil.Clone(src)
 }
 
 // RetryConfig holds backoff parameters for pending stream retries.

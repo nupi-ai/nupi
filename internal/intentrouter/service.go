@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/nupi-ai/nupi/internal/eventbus"
+	maputil "github.com/nupi-ai/nupi/internal/util/maps"
 )
 
 var (
@@ -681,7 +682,7 @@ func (s *Service) executeSpeak(ctx context.Context, prompt eventbus.Conversation
 	// so that TTS adapters receive the client's language preference.
 	// Prompt language (from client header) intentionally overrides any
 	// language keys that may already exist in action.Metadata.
-	speakMeta := copyStringMap(action.Metadata)
+	speakMeta := maputil.Clone(action.Metadata)
 	for k, v := range prompt.Metadata {
 		if strings.HasPrefix(k, "nupi.lang.") {
 			if speakMeta == nil {

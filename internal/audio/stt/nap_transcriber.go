@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"net"
 	"sync"
 	"time"
@@ -15,6 +14,7 @@ import (
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/napdial"
+	maputil "github.com/nupi-ai/nupi/internal/util/maps"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -77,7 +77,7 @@ func newNAPTranscriber(ctx context.Context, params SessionParams, endpoint confi
 		SessionId:  params.SessionID,
 		StreamId:   params.StreamID,
 		Format:     marshalFormat(params.Format),
-		Metadata:   copyStringMap(params.Metadata),
+		Metadata:   maputil.Clone(params.Metadata),
 		ConfigJson: configJSON,
 	}
 
@@ -115,7 +115,7 @@ func (t *napTranscriber) startReceiver() {
 				Text:       resp.GetText(),
 				Confidence: resp.GetConfidence(),
 				Final:      resp.GetFinal(),
-				Metadata:   copyStringMap(resp.GetMetadata()),
+				Metadata:   maputil.Clone(resp.GetMetadata()),
 			}
 			if resp.GetStartedAt() != nil {
 				tr.StartedAt = resp.GetStartedAt().AsTime()
@@ -142,7 +142,7 @@ func (t *napTranscriber) OnSegment(ctx context.Context, segment eventbus.AudioIn
 			Audio:      segment.Data,
 			First:      segment.First,
 			Last:       segment.Last,
-			Metadata:   copyStringMap(segment.Metadata),
+			Metadata:   maputil.Clone(segment.Metadata),
 			DurationMs: uint32(segment.Duration / time.Millisecond),
 			StartedAt:  timestampOrNil(segment.StartedAt),
 			EndedAt:    timestampOrNil(segment.EndedAt),
@@ -286,13 +286,6 @@ func marshalFormat(format eventbus.AudioFormat) *napv1.AudioFormat {
 		BitDepth:        uint32(format.BitDepth),
 		FrameDurationMs: uint32(format.FrameDuration / time.Millisecond),
 	}
-}
-
-func copyStringMap(src map[string]string) map[string]string {
-	if len(src) == 0 {
-		return nil
-	}
-	return maps.Clone(src)
 }
 
 func timestampOrNil(t time.Time) *timestamppb.Timestamp {

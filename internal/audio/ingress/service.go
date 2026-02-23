@@ -5,13 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"maps"
 	"math"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/nupi-ai/nupi/internal/eventbus"
+	maputil "github.com/nupi-ai/nupi/internal/util/maps"
 )
 
 // Service ingests raw audio streams, segments them and publishes events on the bus.
@@ -107,7 +107,7 @@ func (s *Service) OpenStream(sessionID, streamID string, format eventbus.AudioFo
 		sessionID:  sessionID,
 		streamID:   streamID,
 		format:     format,
-		metadata:   copyMetadata(metadata),
+		metadata:   maputil.Clone(metadata),
 		segmentDur: s.segmentDuration,
 		first:      true,
 	}
@@ -221,7 +221,7 @@ func (st *Stream) publishRaw(data []byte, received time.Time) {
 		Format:    st.format,
 		Data:      data,
 		Received:  received,
-		Metadata:  copyMetadata(st.metadata),
+		Metadata:  maputil.Clone(st.metadata),
 	}
 	eventbus.Publish(context.Background(), st.service.bus, eventbus.Audio.IngressRaw, eventbus.SourceAudioIngress, evt)
 }
@@ -274,7 +274,7 @@ func (st *Stream) emitSegment(data []byte, duration time.Duration, final bool) {
 		Last:      final && len(segmentCopy) > 0,
 		StartedAt: startedAt,
 		EndedAt:   endedAt,
-		Metadata:  copyMetadata(st.metadata),
+		Metadata:  maputil.Clone(st.metadata),
 	}
 	st.first = false
 	st.segmentStart = endedAt
@@ -301,7 +301,7 @@ func (st *Stream) emitTerminalLocked() {
 		Last:      true,
 		StartedAt: start,
 		EndedAt:   start,
-		Metadata:  copyMetadata(st.metadata),
+		Metadata:  maputil.Clone(st.metadata),
 	}
 	st.first = false
 	st.lastSent = true
@@ -345,13 +345,6 @@ func durationForBytes(b int, format eventbus.AudioFormat) time.Duration {
 	}
 	seconds := float64(b) / float64(bytesPerSecond)
 	return time.Duration(seconds * float64(time.Second))
-}
-
-func copyMetadata(src map[string]string) map[string]string {
-	if len(src) == 0 {
-		return nil
-	}
-	return maps.Clone(src)
 }
 
 // Metrics reports aggregated ingress statistics.
