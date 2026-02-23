@@ -80,11 +80,7 @@ func (s *Store) GetAdapter(ctx context.Context, adapterID string) (Adapter, erro
 
 // UpsertAdapter inserts or updates metadata for the given adapter.
 func (s *Store) UpsertAdapter(ctx context.Context, adapter Adapter) error {
-	if s.readOnly {
-		return fmt.Errorf("config: upsert adapter: store opened read-only")
-	}
-
-	return s.withTx(ctx, func(tx *sql.Tx) error {
+	return s.withWriteTx(ctx, "upsert adapter", func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, `
             INSERT INTO adapters (id, source, version, type, name, manifest, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
@@ -112,11 +108,7 @@ func (s *Store) UpsertAdapter(ctx context.Context, adapter Adapter) error {
 
 // RemoveAdapter deletes adapter metadata and clears related bindings.
 func (s *Store) RemoveAdapter(ctx context.Context, adapterID string) error {
-	if s.readOnly {
-		return fmt.Errorf("config: remove adapter: store opened read-only")
-	}
-
-	return s.withTx(ctx, func(tx *sql.Tx) error {
+	return s.withWriteTx(ctx, "remove adapter", func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `
             UPDATE adapter_bindings
             SET adapter_id = NULL,
@@ -247,8 +239,8 @@ func (s *Store) AdapterBinding(ctx context.Context, slot string) (*AdapterBindin
 
 // SetActiveAdapter binds an adapter to a slot with optional JSON configuration.
 func (s *Store) SetActiveAdapter(ctx context.Context, slot string, adapterID string, config map[string]any) error {
-	if s.readOnly {
-		return fmt.Errorf("config: set active adapter: store opened read-only")
+	if err := s.ensureWritable("set active adapter"); err != nil {
+		return err
 	}
 
 	payload, err := encodeJSON(config, nullWhenNilMap[string, any])
@@ -279,11 +271,7 @@ func (s *Store) SetActiveAdapter(ctx context.Context, slot string, adapterID str
 
 // ClearAdapterBinding removes the adapter from the slot and marks it inactive.
 func (s *Store) ClearAdapterBinding(ctx context.Context, slot string) error {
-	if s.readOnly {
-		return fmt.Errorf("config: clear adapter: store opened read-only")
-	}
-
-	return s.withTx(ctx, func(tx *sql.Tx) error {
+	return s.withWriteTx(ctx, "clear adapter", func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx, `
             UPDATE adapter_bindings
             SET adapter_id = NULL,
@@ -304,8 +292,8 @@ func (s *Store) ClearAdapterBinding(ctx context.Context, slot string) error {
 
 // UpdateAdapterBindingStatus updates the status flag for the binding without altering adapter assignment.
 func (s *Store) UpdateAdapterBindingStatus(ctx context.Context, slot string, status string) error {
-	if s.readOnly {
-		return fmt.Errorf("config: update binding status: store opened read-only")
+	if err := s.ensureWritable("update binding status"); err != nil {
+		return err
 	}
 
 	status = strings.TrimSpace(strings.ToLower(status))

@@ -140,8 +140,8 @@ func (s *Store) SaveAudioSettings(ctx context.Context, settings AudioSettings) e
 	if s == nil || s.db == nil {
 		return sql.ErrConnDone
 	}
-	if s.readOnly {
-		return fmt.Errorf("config: save audio settings: store opened read-only")
+	if err := s.ensureWritable("save audio settings"); err != nil {
+		return err
 	}
 
 	normalized, _ := normalizeAudioSettings(settings)
