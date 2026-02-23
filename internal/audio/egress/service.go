@@ -403,7 +403,7 @@ func (s *Service) createStreamHandle(ctx context.Context, key string, params Ses
 	return newStream(key, s, params, synth), nil
 }
 
-// onStreamClosed is called from the stream's run() goroutine when it exits.
+// onStreamClosed is called from the stream worker goroutine when it exits.
 func (s *Service) onStreamClosed(key string, st *stream) {
 	if s.manager != nil {
 		s.manager.RemoveStream(key, st)
@@ -423,17 +423,9 @@ func (s *Service) onStreamClosed(key string, st *stream) {
 		Format:    st.format,
 		Metadata:  maputil.Clone(st.metadata),
 	}
-	for {
-		select {
-		case req, ok := <-st.requestCh:
-			if !ok {
-				return
-			}
-			s.manager.BufferPending(st.key, params, req)
-		default:
-			return
-		}
-	}
+	st.worker.DrainNonBlocking(func(req speakRequest) {
+		s.manager.BufferPending(st.key, params, req)
+	})
 }
 
 type stream struct {
@@ -446,13 +438,10 @@ type stream struct {
 	metadata    map[string]string
 	synthesizer Synthesizer
 
-	requestCh chan speakRequest
-	ctx       context.Context
-	cancel    context.CancelFunc
+	worker *streammanager.Worker[speakRequest]
 
 	mu sync.RWMutex
 
-	wg          sync.WaitGroup
 	seq         uint64
 	stopped     bool
 	keepPending bool
@@ -464,7 +453,6 @@ type stream struct {
 }
 
 func newStream(key string, svc *Service, params SessionParams, synth Synthesizer) *stream {
-	ctx, cancel := context.WithCancel(svc.lifecycle.Context())
 	st := &stream{
 		service:     svc,
 		key:         key,
@@ -473,12 +461,13 @@ func newStream(key string, svc *Service, params SessionParams, synth Synthesizer
 		format:      params.Format,
 		metadata:    maputil.Clone(params.Metadata),
 		synthesizer: synth,
-		requestCh:   make(chan speakRequest, defaultRequestBuffer),
-		ctx:         ctx,
-		cancel:      cancel,
+		worker:      streammanager.NewWorker[speakRequest](svc.lifecycle.Context(), defaultRequestBuffer),
 	}
-	st.wg.Add(1)
-	go st.run()
+	st.worker.Start(st.processRequest, func() {
+		st.closeSynthesizer("context cancelled")
+	}, func() {
+		st.service.onStreamClosed(st.key, st)
+	})
 	return st
 }
 
@@ -490,7 +479,7 @@ func (st *stream) interrupt(reason string, ts time.Time, metadata map[string]str
 	st.interruptTimestamp = ts
 	st.interruptMeta = maputil.Clone(metadata)
 	st.mu.Unlock()
-	st.cancel()
+	st.worker.Stop()
 }
 
 func (st *stream) decorateMetadata(meta map[string]string) map[string]string {
@@ -531,18 +520,7 @@ func (st *stream) Enqueue(req speakRequest) error {
 		return errStreamRebuffering
 	}
 
-	select {
-	case <-st.ctx.Done():
-		return context.Canceled
-	default:
-	}
-
-	select {
-	case st.requestCh <- req:
-		return nil
-	case <-st.ctx.Done():
-		return context.Canceled
-	}
+	return st.worker.Enqueue(req, context.Canceled)
 }
 
 // Stop implements streammanager.StreamHandle.
@@ -550,54 +528,33 @@ func (st *stream) Stop() {
 	st.mu.Lock()
 	st.stopped = true
 	st.mu.Unlock()
-	st.cancel()
+	st.worker.Stop()
 }
 
 // Wait implements streammanager.StreamHandle.
 func (st *stream) Wait(ctx context.Context) {
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		st.wg.Wait()
-	}()
-	select {
-	case <-done:
-	case <-ctx.Done():
-	}
+	st.worker.Wait(ctx)
 }
 
-func (st *stream) run() {
-	defer st.wg.Done()
-	defer st.service.onStreamClosed(st.key, st)
-	for {
-		select {
-		case <-st.ctx.Done():
-			st.closeSynthesizer("context cancelled")
-			return
-		case req, ok := <-st.requestCh:
-			if !ok {
-				st.closeSynthesizer("queue closed")
-				return
-			}
-			if st.handleRequest(req) {
-				// Close synthesizer quietly — don't publish final events
-				// since the request is being rebuffered for retry.
-				if st.synthesizer != nil {
-					closeCtx, closeCancel := context.WithTimeout(context.Background(), constants.Duration2Seconds)
-					st.synthesizer.Close(closeCtx)
-					closeCancel()
-				}
-				st.rebufferPending(req)
-				return
-			}
+func (st *stream) processRequest(req speakRequest) bool {
+	if st.handleRequest(req) {
+		// Close synthesizer quietly — don't publish final events
+		// since the request is being rebuffered for retry.
+		if st.synthesizer != nil {
+			closeCtx, closeCancel := context.WithTimeout(context.Background(), constants.Duration2Seconds)
+			st.synthesizer.Close(closeCtx)
+			closeCancel()
 		}
+		st.rebufferPending(req)
+		return true
 	}
+	return false
 }
 
 // handleRequest returns true if the error is ErrAdapterUnavailable, signalling
 // the caller to rebuffer the request and close the stream.
 func (st *stream) handleRequest(req speakRequest) bool {
-	ctx := st.ctx
+	ctx := st.worker.Context()
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -684,20 +641,12 @@ func (st *stream) rebufferPending(failedReq speakRequest) {
 	// see ctx.Done in their first select and fail fast.  Any request
 	// that still slips through the nondeterministic second select will
 	// land in the channel buffer and be caught by the drain below.
-	st.cancel()
+	st.worker.Stop()
 
 	// Drain any remaining queued requests into the pending buffer.
-	for {
-		select {
-		case req, ok := <-st.requestCh:
-			if !ok {
-				return
-			}
-			st.service.manager.BufferPending(st.key, params, req)
-		default:
-			return
-		}
-	}
+	st.worker.DrainNonBlocking(func(req speakRequest) {
+		st.service.manager.BufferPending(st.key, params, req)
+	})
 }
 
 func (st *stream) closeSynthesizer(reason string) {

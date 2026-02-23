@@ -450,7 +450,10 @@ func TestEnqueueRejectsAfterRebufferStarted(t *testing.T) {
 		t.Fatalf("create stream: %v", err)
 	}
 	st := h.(*stream)
-	t.Cleanup(func() { svc.Shutdown(context.Background()); st.wg.Wait() })
+	t.Cleanup(func() {
+		svc.Shutdown(context.Background())
+		st.Wait(context.Background())
+	})
 
 	// Simulate rebuffer: set stopped = true under lock.
 	st.mu.Lock()
@@ -552,7 +555,10 @@ func TestHandleSpeakRequestBuffersOnRebuffering(t *testing.T) {
 		t.Fatalf("create stream: %v", err)
 	}
 	st := h.(*stream)
-	t.Cleanup(func() { svc.Shutdown(context.Background()); st.wg.Wait() })
+	t.Cleanup(func() {
+		svc.Shutdown(context.Background())
+		st.Wait(context.Background())
+	})
 
 	// Simulate rebuffer state.
 	st.mu.Lock()

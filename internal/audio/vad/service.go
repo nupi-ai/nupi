@@ -297,51 +297,38 @@ type stream struct {
 	streamID  string
 	analyzer  Analyzer
 
-	requestCh chan eventbus.AudioIngressSegmentEvent
-	ctx       context.Context
-	cancel    context.CancelFunc
-
-	wg sync.WaitGroup
+	worker *streammanager.Worker[eventbus.AudioIngressSegmentEvent]
 
 	slowConsecutive int
 }
 
 func newStream(key string, svc *Service, params SessionParams, analyzer Analyzer) *stream {
-	ctx, cancel := context.WithCancel(svc.lifecycle.Context())
 	st := &stream{
 		service:   svc,
 		key:       key,
 		sessionID: params.SessionID,
 		streamID:  params.StreamID,
 		analyzer:  analyzer,
-		requestCh: make(chan eventbus.AudioIngressSegmentEvent, defaultSegmentBuffer),
-		ctx:       ctx,
-		cancel:    cancel,
+		worker:    streammanager.NewWorker[eventbus.AudioIngressSegmentEvent](svc.lifecycle.Context(), defaultSegmentBuffer),
 	}
-	st.wg.Add(1)
-	go st.run()
+	st.worker.Start(st.processSegment, func() {
+		st.closeAnalyzer("context cancelled")
+	}, func() {
+		if st.service.manager != nil {
+			st.service.manager.RemoveStream(st.key, st)
+		}
+	})
 	return st
 }
 
 // Enqueue implements streammanager.StreamHandle.
 func (st *stream) Enqueue(segment eventbus.AudioIngressSegmentEvent) error {
-	select {
-	case <-st.ctx.Done():
-		return context.Canceled
-	default:
-	}
-
-	select {
-	case st.requestCh <- segment:
-		return nil
-	case <-st.ctx.Done():
-		return context.Canceled
-	}
+	return st.worker.Enqueue(segment, context.Canceled)
 }
 
 // Stop implements streammanager.StreamHandle.
 func (st *stream) Stop() {
-	st.cancel()
+	st.worker.Stop()
 	if st.service.logger != nil {
 		st.service.logger.Printf("[VAD] analyzer stopping session=%s stream=%s", st.sessionID, st.streamID)
 	}
@@ -349,37 +336,12 @@ func (st *stream) Stop() {
 
 // Wait implements streammanager.StreamHandle.
 func (st *stream) Wait(ctx context.Context) {
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		st.wg.Wait()
-	}()
-	select {
-	case <-done:
-	case <-ctx.Done():
-	}
+	st.worker.Wait(ctx)
 }
 
-func (st *stream) run() {
-	defer st.wg.Done()
-	defer func() {
-		if st.service.manager != nil {
-			st.service.manager.RemoveStream(st.key, st)
-		}
-	}()
-	for {
-		select {
-		case <-st.ctx.Done():
-			st.closeAnalyzer("context cancelled")
-			return
-		case segment, ok := <-st.requestCh:
-			if !ok {
-				st.closeAnalyzer("queue closed")
-				return
-			}
-			st.handleSegment(segment)
-		}
-	}
+func (st *stream) processSegment(segment eventbus.AudioIngressSegmentEvent) bool {
+	st.handleSegment(segment)
+	return false
 }
 
 func (st *stream) handleSegment(segment eventbus.AudioIngressSegmentEvent) {
@@ -390,7 +352,7 @@ func (st *stream) handleSegment(segment eventbus.AudioIngressSegmentEvent) {
 			Format:    segment.Format,
 			Metadata:  maputil.Clone(segment.Metadata),
 		}
-		analyzer, err := st.service.factory.Create(st.ctx, params)
+		analyzer, err := st.service.factory.Create(st.worker.Context(), params)
 		if err != nil {
 			if !errors.Is(err, ErrAdapterUnavailable) {
 				st.service.logger.Printf("[VAD] reconnect analyzer session=%s stream=%s: %v", st.sessionID, st.streamID, err)
@@ -402,7 +364,7 @@ func (st *stream) handleSegment(segment eventbus.AudioIngressSegmentEvent) {
 	}
 
 	startedAt := time.Now()
-	detections, err := st.analyzer.OnSegment(st.ctx, segment)
+	detections, err := st.analyzer.OnSegment(st.worker.Context(), segment)
 	latency := time.Since(startedAt)
 	st.service.recordLatency(latency)
 	st.handleLatencyDiagnostics(latency, segment)
@@ -457,8 +419,11 @@ func (st *stream) handleLatencyDiagnostics(latency time.Duration, segment eventb
 		ThresholdMs: threshold.Milliseconds(),
 		ObservedMs:  latency.Milliseconds(),
 		Consecutive: latencyDegradeFrames,
-		Timestamp:   time.Now().UTC(),
+		Timestamp:   segment.EndedAt,
 		Metadata:    maputil.Clone(segment.Metadata),
+	}
+	if evt.Timestamp.IsZero() {
+		evt.Timestamp = time.Now().UTC()
 	}
 
 	eventbus.Publish(context.Background(), st.service.bus, eventbus.Voice.Diagnostics, eventbus.SourceSpeechVAD, evt)
@@ -506,6 +471,7 @@ func mergeMetadata(base map[string]string, override map[string]string) map[strin
 }
 
 type latencyHistogram struct {
+	mu       sync.Mutex
 	bounds   []time.Duration
 	buckets  []atomic.Uint64
 	sumNanos atomic.Uint64
@@ -540,6 +506,8 @@ func (h *latencyHistogram) Observe(d time.Duration) {
 	if d < 0 {
 		d = 0
 	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	h.count.Add(1)
 	h.sumNanos.Add(uint64(d.Nanoseconds()))
 	for i, bound := range h.bounds {
@@ -561,10 +529,9 @@ func (h *latencyHistogram) Snapshot() LatencyHistogramSnapshot {
 	if h == nil {
 		return LatencyHistogramSnapshot{}
 	}
-	// Read count and sum first — they are incremented before bucket updates
-	// in Observe(), so reading them first provides an upper bound. Individual
-	// bucket reads are not atomic with count; the Prometheus exporter caps
-	// cumulative totals at Count to handle any transient inconsistency.
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
 	count := h.count.Load()
 	sum := h.sumNanos.Load()
 	counts := make([]uint64, len(h.buckets))
