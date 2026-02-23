@@ -11,6 +11,7 @@ import (
 	"time"
 
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/validate"
 )
 
@@ -34,7 +35,7 @@ func NewClient(store *configstore.Store) *Client {
 		store:    store,
 		cacheTTL: DefaultCacheTTL,
 		http: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: constants.Duration30Seconds,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				if len(via) >= 10 {
 					return errors.New("too many redirects")
@@ -228,7 +229,7 @@ func (c *Client) Search(ctx context.Context, query string, category string, name
 			// Try refreshing if has URL, with a per-marketplace timeout to prevent
 			// slow/unreachable sources from blocking the entire search.
 			if m.URL != "" {
-				refreshCtx, refreshCancel := context.WithTimeout(ctx, 10*time.Second)
+				refreshCtx, refreshCancel := context.WithTimeout(ctx, constants.Duration10Seconds)
 				if err := c.refreshOne(refreshCtx, m); err != nil {
 					log.Printf("[Marketplace] WARNING: refresh %s during search failed: %v", m.Namespace, err)
 				}
@@ -361,4 +362,3 @@ func (c *Client) isCacheFresh(lastRefreshed string) bool {
 	}
 	return time.Since(t) < c.cacheTTL
 }
-

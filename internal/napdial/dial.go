@@ -19,6 +19,7 @@ import (
 	"time"
 
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/tlswarn"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -44,8 +45,8 @@ type QoSConfig struct {
 // DefaultQoS returns sensible QoS defaults for NAP adapter connections.
 func DefaultQoS() *QoSConfig {
 	return &QoSConfig{
-		KeepaliveTime:    30 * time.Second,
-		KeepaliveTimeout: 10 * time.Second,
+		KeepaliveTime:    constants.Duration30Seconds,
+		KeepaliveTimeout: constants.Duration10Seconds,
 	}
 }
 

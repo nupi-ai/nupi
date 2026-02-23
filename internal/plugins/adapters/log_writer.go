@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 )
 
@@ -20,7 +21,7 @@ const (
 	// Maximum burst size (bucket capacity).
 	rateLimitBurstSize = 100
 	// Interval for reporting dropped messages.
-	droppedMessagesReportInterval = 5 * time.Second
+	droppedMessagesReportInterval = constants.Duration5Seconds
 )
 
 // adapterLogWriter publishes adapter stdout/stderr lines on the event bus.

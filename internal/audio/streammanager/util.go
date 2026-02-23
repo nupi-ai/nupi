@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	maputil "github.com/nupi-ai/nupi/internal/util/maps"
 )
@@ -51,8 +52,8 @@ type RetryConfig struct {
 // DefaultRetryConfig returns sensible retry defaults.
 func DefaultRetryConfig() RetryConfig {
 	return RetryConfig{
-		Initial: 200 * time.Millisecond,
-		Max:     5 * time.Second,
+		Initial: constants.Duration200Milliseconds,
+		Max:     constants.Duration5Seconds,
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/pty"
 	"github.com/nupi-ai/nupi/internal/server"
@@ -316,14 +317,14 @@ func (h *wsSessionHandler) pumpInput(
 // pumpPing sends periodic WebSocket pings to detect dead connections on
 // mobile networks where NAT gateways drop idle connections.
 func (h *wsSessionHandler) pumpPing(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, sessionID string) {
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(constants.Duration30Seconds)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			pingCtx, pingCancel := context.WithTimeout(ctx, 5*time.Second)
+			pingCtx, pingCancel := context.WithTimeout(ctx, constants.Duration5Seconds)
 			err := conn.Ping(pingCtx)
 			pingCancel()
 			if err != nil {

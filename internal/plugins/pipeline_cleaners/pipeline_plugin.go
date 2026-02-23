@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/jsruntime"
 )
 
@@ -46,7 +46,7 @@ func LoadPipelinePluginWithRuntime(ctx context.Context, rt *jsruntime.Runtime, p
 	}
 
 	// Add 10s deadline to prevent hanging on malformed plugins
-	loadCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	loadCtx, cancel := context.WithTimeout(ctx, constants.Duration10Seconds)
 	defer cancel()
 
 	meta, err := rt.LoadPluginWithOptions(loadCtx, path, jsruntime.LoadPluginOptions{
@@ -139,7 +139,7 @@ func (p *PipelinePlugin) Transform(ctx context.Context, rt *jsruntime.Runtime, i
 
 // callTransform calls the transform function with timeout.
 func (p *PipelinePlugin) callTransform(ctx context.Context, rt *jsruntime.Runtime, input TransformInput) (any, error) {
-	callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	callCtx, cancel := context.WithTimeout(ctx, constants.Duration5Seconds)
 	defer cancel()
 	return rt.Call(callCtx, p.FilePath, "transform", map[string]any{
 		"text":        input.Text,
@@ -149,7 +149,7 @@ func (p *PipelinePlugin) callTransform(ctx context.Context, rt *jsruntime.Runtim
 
 // reload reloads the plugin into the runtime.
 func (p *PipelinePlugin) reload(ctx context.Context, rt *jsruntime.Runtime) error {
-	reloadCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	reloadCtx, cancel := context.WithTimeout(ctx, constants.Duration5Seconds)
 	defer cancel()
 
 	_, err := rt.LoadPluginWithOptions(reloadCtx, p.FilePath, jsruntime.LoadPluginOptions{

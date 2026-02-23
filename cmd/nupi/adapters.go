@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -268,7 +269,7 @@ func adaptersRegister(cmd *cobra.Command, _ []string) error {
 		Endpoint:     endpoint,
 	}
 
-	resp, err := adaptersRegisterGRPC(out, req)
+	resp, err := adaptersRegisterGRPCFunc(out, req)
 	if err != nil {
 		return err
 	}
@@ -430,7 +431,7 @@ func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 		command = strings.TrimSpace(manifest.Adapter.Entrypoint.Command)
 		if command != "" {
 			command = config.ExpandPath(command)
-			if !filepath.IsAbs(command) && strings.Contains(command, string(os.PathSeparator)) {
+			if !filepath.IsAbs(command) && containsPathSeparator(command) {
 				baseDir := sourceDir
 				if baseDir == "" {
 					baseDir = manifestDir
@@ -535,6 +536,11 @@ func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 		command = destPath
 	}
 
+	// Normalize command to an absolute path so that the registered endpoint
+	// and sanityCheck both operate on the same resolved binary. This avoids
+	// mismatches when daemon PATH differs from install-time PATH.
+	command = normalizeCommand(command)
+
 	regReq := &apiv1.RegisterAdapterRequest{
 		AdapterId:    adapterID,
 		Source:       "local",
@@ -550,7 +556,7 @@ func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 		},
 	}
 
-	resp, err := adaptersRegisterGRPC(out, regReq)
+	resp, err := adaptersRegisterGRPCFunc(out, regReq)
 	if err != nil {
 		if binaryCopied {
 			cleanupAdapterDir(cleanupWriter, adapterHome, destPath, adapterDirExisted, destFileExisted)
@@ -571,12 +577,13 @@ func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 		Adapter:     adapterRegistrationResultFromProto(resp).Adapter,
 		SanityCheck: sc,
 	}
+	stdout := cmd.OutOrStdout()
 	if err := out.Render(CommandResult{
 		Data: result,
 		HumanReadable: func() error {
-			fmt.Printf("Installed local adapter %s (%s)\n", resp.GetName(), resp.GetAdapterId())
+			fmt.Fprintf(stdout, "Installed local adapter %s (%s)\n", resp.GetName(), resp.GetAdapterId())
 			if sc != nil {
-				printSanityCheckResult(os.Stdout, *sc)
+				printSanityCheckResult(stdout, *sc)
 			}
 			return nil
 		},
@@ -796,9 +803,13 @@ func adaptersStop(cmd *cobra.Command, args []string) error {
 
 // --- gRPC transport handlers ---
 
+// adaptersRegisterGRPCFunc is the package-level function variable used for adapter registration.
+// Tests can replace it to avoid requiring a running daemon.
+var adaptersRegisterGRPCFunc = adaptersRegisterGRPC
+
 func adaptersRegisterGRPC(out *OutputFormatter, req *apiv1.RegisterAdapterRequest) (*apiv1.RegisterAdapterResponse, error) {
 	var resp *apiv1.RegisterAdapterResponse
-	if err := withOutputClientTimeout(out, 5*time.Second, daemonConnectGRPCErrorMessage, func(ctx context.Context, gc *grpcclient.Client) (any, error) {
+	if err := withOutputClientTimeout(out, constants.Duration5Seconds, daemonConnectGRPCErrorMessage, func(ctx context.Context, gc *grpcclient.Client) (any, error) {
 		var err error
 		resp, err = gc.RegisterAdapter(ctx, req)
 		if err != nil {
@@ -824,7 +835,7 @@ func adapterRegistrationResultFromProto(resp *apiv1.RegisterAdapterResponse) api
 }
 
 func adaptersListGRPC(out *OutputFormatter) error {
-	return withOutputClientTimeout(out, 5*time.Second, daemonConnectGRPCErrorMessage, func(ctx context.Context, gc *grpcclient.Client) (any, error) {
+	return withOutputClientTimeout(out, constants.Duration5Seconds, daemonConnectGRPCErrorMessage, func(ctx context.Context, gc *grpcclient.Client) (any, error) {
 		resp, err := gc.AdaptersOverview(ctx)
 		if err != nil {
 			return nil, clientCallFailed("Failed to fetch adapters overview via gRPC", err)
@@ -848,7 +859,7 @@ func adaptersListGRPC(out *OutputFormatter) error {
 }
 
 func adaptersBindGRPC(out *OutputFormatter, slot, adapter, cfg string) error {
-	return withOutputClientTimeout(out, 5*time.Second, daemonConnectGRPCErrorMessage, func(ctx context.Context, gc *grpcclient.Client) (any, error) {
+	return withOutputClientTimeout(out, constants.Duration5Seconds, daemonConnectGRPCErrorMessage, func(ctx context.Context, gc *grpcclient.Client) (any, error) {
 		req := &apiv1.BindAdapterRequest{
 			Slot:       slot,
 			AdapterId:  adapter,
@@ -872,7 +883,7 @@ func adaptersBindGRPC(out *OutputFormatter, slot, adapter, cfg string) error {
 }
 
 func adaptersStartGRPC(out *OutputFormatter, slot string) error {
-	return withOutputClientTimeout(out, 5*time.Second, daemonConnectGRPCErrorMessage, func(ctx context.Context, gc *grpcclient.Client) (any, error) {
+	return withOutputClientTimeout(out, constants.Duration5Seconds, daemonConnectGRPCErrorMessage, func(ctx context.Context, gc *grpcclient.Client) (any, error) {
 		resp, err := gc.StartAdapter(ctx, slot)
 		if err != nil {
 			return nil, clientCallFailed("Failed to start adapter via gRPC", err)
@@ -890,7 +901,7 @@ func adaptersStartGRPC(out *OutputFormatter, slot string) error {
 }
 
 func adaptersStopGRPC(out *OutputFormatter, slot string) error {
-	return withOutputClientTimeout(out, 5*time.Second, daemonConnectGRPCErrorMessage, func(ctx context.Context, gc *grpcclient.Client) (any, error) {
+	return withOutputClientTimeout(out, constants.Duration5Seconds, daemonConnectGRPCErrorMessage, func(ctx context.Context, gc *grpcclient.Client) (any, error) {
 		resp, err := gc.StopAdapter(ctx, slot)
 		if err != nil {
 			return nil, clientCallFailed("Failed to stop adapter via gRPC", err)
@@ -1351,6 +1362,37 @@ type sanityCheckEntry struct {
 	Remediation string `json:"remediation,omitempty"`
 }
 
+// containsPathSeparator reports whether s contains a path separator character.
+// It checks both forward slash and backslash so that relative paths like
+// "./bin/adapter" are correctly recognised on Windows (where os.PathSeparator
+// is '\\' and a forward-slash-only path would otherwise be treated as a bare
+// command name).
+func containsPathSeparator(s string) bool {
+	return strings.ContainsAny(s, `/\`)
+}
+
+// normalizeCommand resolves a command string to an absolute path. Bare command
+// names (no path separator) are resolved via exec.LookPath; relative paths with
+// a separator are resolved via filepath.Abs. Already-absolute or empty commands
+// are returned unchanged. If resolution fails the original value is returned.
+func normalizeCommand(command string) string {
+	if command == "" || filepath.IsAbs(command) {
+		return command
+	}
+	if !containsPathSeparator(command) {
+		// Bare command name — resolve via PATH.
+		if p, err := exec.LookPath(command); err == nil {
+			return p
+		}
+	} else {
+		// Relative path with separator — resolve to absolute.
+		if p, err := filepath.Abs(command); err == nil {
+			return p
+		}
+	}
+	return command
+}
+
 // sanityCheckResult holds the outcome of a post-install binary sanity check.
 // BinaryPath is always populated (even on failure) for diagnostic purposes.
 type sanityCheckResult struct {
@@ -1360,16 +1402,32 @@ type sanityCheckResult struct {
 }
 
 func sanityCheck(binaryPath string) sanityCheckResult {
+	// binaryPath is expected to be already normalized to an absolute path by
+	// normalizeCommand (called before registration). No additional LookPath
+	// resolution is needed here.
+	resolved := binaryPath
+
 	result := sanityCheckResult{
 		Passed:     true,
-		BinaryPath: binaryPath,
+		BinaryPath: resolved,
 	}
 
 	// Check 1: Binary exists at expected path and is a regular file.
 	// os.Stat intentionally follows symlinks — a symlink to a valid executable is fine
 	// for process transport (exec will resolve it). copyFile uses Lstat to reject symlinks
 	// only when physically copying the binary into the instance directory.
-	info, err := os.Stat(binaryPath)
+	info, err := os.Stat(resolved)
+	if err != nil && runtime.GOOS == "windows" {
+		// On Windows, exec resolves PATHEXT automatically, so a path like
+		// "C:\...\adapter" works at runtime even if only "adapter.exe" exists.
+		// Try appending known executable extensions before reporting failure.
+		if alt, altInfo, ok := resolveWindowsPATHEXT(resolved); ok {
+			resolved = alt
+			result.BinaryPath = alt
+			info = altInfo
+			err = nil
+		}
+	}
 	if err != nil {
 		result.Passed = false
 		entry := sanityCheckEntry{
@@ -1377,11 +1435,11 @@ func sanityCheck(binaryPath string) sanityCheckResult {
 			Passed: false,
 		}
 		if errors.Is(err, os.ErrNotExist) {
-			entry.Message = fmt.Sprintf("binary not found at %s", binaryPath)
-			entry.Remediation = fmt.Sprintf("binary not found at %s — check --binary flag or build output", binaryPath)
+			entry.Message = fmt.Sprintf("binary not found at %s", resolved)
+			entry.Remediation = fmt.Sprintf("binary not found at %s — check --binary flag or build output", resolved)
 		} else {
-			entry.Message = fmt.Sprintf("cannot access binary at %s: %v", binaryPath, err)
-			entry.Remediation = fmt.Sprintf("cannot access binary at %s: %v — check file permissions", binaryPath, err)
+			entry.Message = fmt.Sprintf("cannot access binary at %s: %v", resolved, err)
+			entry.Remediation = fmt.Sprintf("cannot access binary at %s: %v — check file permissions", resolved, err)
 		}
 		result.Checks = append(result.Checks, entry)
 		return result // Cannot check further if binary is inaccessible.
@@ -1391,35 +1449,92 @@ func sanityCheck(binaryPath string) sanityCheckResult {
 		result.Checks = append(result.Checks, sanityCheckEntry{
 			Name:        "binary_exists",
 			Passed:      false,
-			Message:     fmt.Sprintf("path %s is not a regular file", binaryPath),
-			Remediation: fmt.Sprintf("path %s is not a regular file — check --binary flag or build output", binaryPath),
+			Message:     fmt.Sprintf("path %s is not a regular file", resolved),
+			Remediation: fmt.Sprintf("path %s is not a regular file — check --binary flag or build output", resolved),
 		})
 		return result // Cannot check executable if not a regular file.
 	}
 	result.Checks = append(result.Checks, sanityCheckEntry{
 		Name:    "binary_exists",
 		Passed:  true,
-		Message: fmt.Sprintf("binary found at %s", binaryPath),
+		Message: fmt.Sprintf("binary found at %s", resolved),
 	})
 
 	// Check 2: Binary has executable permission.
-	if info.Mode().Perm()&0111 == 0 {
-		result.Passed = false
-		result.Checks = append(result.Checks, sanityCheckEntry{
-			Name:        "binary_executable",
-			Passed:      false,
-			Message:     fmt.Sprintf("binary at %s is not executable", binaryPath),
-			Remediation: fmt.Sprintf("binary at %s is not executable — run: chmod +x %s", binaryPath, binaryPath),
-		})
+	if runtime.GOOS == "windows" {
+		// On Windows, POSIX execute bits are meaningless — the OS determines
+		// executability from file extension.
+		entry := checkWindowsExecutableExtension(resolved)
+		if !entry.Passed {
+			result.Passed = false
+		}
+		result.Checks = append(result.Checks, entry)
 	} else {
-		result.Checks = append(result.Checks, sanityCheckEntry{
-			Name:    "binary_executable",
-			Passed:  true,
-			Message: "binary is executable",
-		})
+		if info.Mode().Perm()&0111 == 0 {
+			result.Passed = false
+			result.Checks = append(result.Checks, sanityCheckEntry{
+				Name:        "binary_executable",
+				Passed:      false,
+				Message:     fmt.Sprintf("binary at %s is not executable", resolved),
+				Remediation: fmt.Sprintf("binary at %s is not executable — run: chmod +x %s", resolved, resolved),
+			})
+		} else {
+			result.Checks = append(result.Checks, sanityCheckEntry{
+				Name:    "binary_executable",
+				Passed:  true,
+				Message: "binary is executable",
+			})
+		}
 	}
 
 	return result
+}
+
+// windowsExecutableExtensions lists file extensions that Windows treats as
+// directly executable. Shared by checkWindowsExecutableExtension and
+// resolveWindowsPATHEXT to keep the recognised set in one place.
+var windowsExecutableExtensions = []string{".exe", ".bat", ".cmd", ".com"}
+
+// checkWindowsExecutableExtension checks whether a file has a known Windows
+// executable extension. It returns a passing sanityCheckEntry when the extension
+// is recognised or a failed entry when it is not. Extracted as a standalone
+// helper so it can be unit-tested cross-platform.
+func checkWindowsExecutableExtension(path string) sanityCheckEntry {
+	ext := strings.ToLower(filepath.Ext(path))
+	for _, winExt := range windowsExecutableExtensions {
+		if ext == winExt {
+			return sanityCheckEntry{
+				Name:    "binary_executable",
+				Passed:  true,
+				Message: fmt.Sprintf("binary has executable extension %s", ext),
+			}
+		}
+	}
+	return sanityCheckEntry{
+		Name:        "binary_executable",
+		Passed:      false,
+		Message:     fmt.Sprintf("binary at %s does not have a Windows executable extension", path),
+		Remediation: fmt.Sprintf("binary at %s does not have a recognised Windows executable extension (%s)", path, strings.Join(windowsExecutableExtensions, ", ")),
+	}
+}
+
+// resolveWindowsPATHEXT tries appending common Windows executable extensions to
+// path and returns the first match that os.Stat succeeds on. This mirrors the
+// PATHEXT resolution that os/exec performs at runtime, preventing false-negative
+// sanity check failures for paths like "C:\...\adapter" when "adapter.exe" exists.
+func resolveWindowsPATHEXT(path string) (string, os.FileInfo, bool) {
+	// Only attempt resolution when the path has no extension — if it already
+	// has one (e.g. ".sh"), the user explicitly chose it.
+	if filepath.Ext(path) != "" {
+		return "", nil, false
+	}
+	for _, ext := range windowsExecutableExtensions {
+		candidate := path + ext
+		if info, err := os.Stat(candidate); err == nil && info.Mode().IsRegular() {
+			return candidate, info, true
+		}
+	}
+	return "", nil, false
 }
 
 // installLocalResult wraps registration output with optional sanity check for JSON mode.

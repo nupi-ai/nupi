@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"os"
 	"text/tabwriter"
-	"time"
 
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/marketplace"
 	"github.com/nupi-ai/nupi/internal/validate"
 	"github.com/spf13/cobra"
@@ -79,7 +79,7 @@ func marketplaceList(cmd *cobra.Command, _ []string) error {
 	}
 	defer store.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), constants.Duration5Seconds)
 	defer cancel()
 
 	marketplaces, err := store.ListMarketplaces(ctx)
@@ -137,7 +137,7 @@ func marketplaceAdd(cmd *cobra.Command, args []string) error {
 		return out.Error("Invalid marketplace URL", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), constants.Duration30Seconds)
 	defer cancel()
 
 	m, err := client.Add(ctx, args[0])
@@ -163,7 +163,7 @@ func marketplaceRemove(cmd *cobra.Command, args []string) error {
 	}
 	defer store.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), constants.Duration5Seconds)
 	defer cancel()
 
 	if err := client.Remove(ctx, args[0]); err != nil {
@@ -184,7 +184,7 @@ func marketplaceRefresh(cmd *cobra.Command, _ []string) error {
 	}
 	defer store.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), constants.Duration60Seconds)
 	defer cancel()
 
 	if err := client.Refresh(ctx); err != nil {

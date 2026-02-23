@@ -3,9 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
-	"time"
 
 	apiv1 "github.com/nupi-ai/nupi/internal/api/grpc/v1"
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/grpcclient"
 	"github.com/spf13/cobra"
 )
@@ -53,7 +53,7 @@ func configTransport(cmd *cobra.Command, args []string) error {
 			flags.Changed("grpc-port") || flags.Changed("grpc-binding")
 
 		if hasUpdate {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), constants.Duration5Seconds)
 			defer cancel()
 
 			updateCfg := &apiv1.TransportConfig{}
@@ -84,7 +84,7 @@ func configTransport(cmd *cobra.Command, args []string) error {
 		}
 
 		// Fetch current config.
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), constants.Duration5Seconds)
 		defer cancel()
 
 		cfg, err := gc.TransportConfig(ctx)
@@ -124,7 +124,7 @@ func configTransport(cmd *cobra.Command, args []string) error {
 }
 
 func configMigrate(cmd *cobra.Command, _ []string) error {
-	return withClientTimeout(cmd, 5*time.Second, func(ctx context.Context, gc *grpcclient.Client, out *OutputFormatter) (any, error) {
+	return withClientTimeout(cmd, constants.Duration5Seconds, func(ctx context.Context, gc *grpcclient.Client, out *OutputFormatter) (any, error) {
 		resp, err := gc.Migrate(ctx, &apiv1.ConfigMigrateRequest{})
 		if err != nil {
 			return nil, clientCallFailed("Failed to run configuration migration", err)

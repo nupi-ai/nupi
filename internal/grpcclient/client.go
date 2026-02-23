@@ -10,11 +10,11 @@ import (
 	"os"
 	"strings"
 	"sync"
-	"time"
 
 	apiv1 "github.com/nupi-ai/nupi/internal/api/grpc/v1"
 	"github.com/nupi-ai/nupi/internal/bootstrap"
 	"github.com/nupi-ai/nupi/internal/config"
+	"github.com/nupi-ai/nupi/internal/constants"
 	nupiversion "github.com/nupi-ai/nupi/internal/version"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -27,17 +27,17 @@ import (
 const passthroughPrefix = "passthrough:///"
 
 type Client struct {
-	conn           *grpc.ClientConn
-	daemon         apiv1.DaemonServiceClient
-	sessions       apiv1.SessionsServiceClient
-	config         apiv1.ConfigServiceClient
-	adapters       apiv1.AdaptersServiceClient
-	quickstart     apiv1.QuickstartServiceClient
-	adapterRuntime apiv1.AdapterRuntimeServiceClient
-	audio          apiv1.AudioServiceClient
-	auth           apiv1.AuthServiceClient
-	recordings     apiv1.RecordingsServiceClient
-	token          string
+	conn            *grpc.ClientConn
+	daemon          apiv1.DaemonServiceClient
+	sessions        apiv1.SessionsServiceClient
+	config          apiv1.ConfigServiceClient
+	adapters        apiv1.AdaptersServiceClient
+	quickstart      apiv1.QuickstartServiceClient
+	adapterRuntime  apiv1.AdapterRuntimeServiceClient
+	audio           apiv1.AudioServiceClient
+	auth            apiv1.AuthServiceClient
+	recordings      apiv1.RecordingsServiceClient
+	token           string
 	versionMu       sync.Mutex
 	versionChecked  bool
 	versionChecking bool // guards against duplicate concurrent RPCs
@@ -98,7 +98,7 @@ func dialUnixSocket(sockPath string, token string) (*Client, error) {
 	opts := []grpc.DialOption{
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithContextDialer(func(ctx context.Context, addr string) (net.Conn, error) {
-			return net.DialTimeout("unix", sockPath, 5*time.Second)
+			return net.DialTimeout("unix", sockPath, constants.GRPCClientUnixDialTimeout)
 		}),
 	}
 
@@ -188,7 +188,7 @@ func newExplicit(raw string, boot *bootstrap.Config) (*Client, error) {
 func dial(address string, tlsConfig *tls.Config, token string) (*Client, error) {
 	opts := []grpc.DialOption{
 		grpc.WithConnectParams(grpc.ConnectParams{
-			MinConnectTimeout: 5 * time.Second,
+			MinConnectTimeout: constants.GRPCClientMinConnectTimeout,
 		}),
 	}
 	if tlsConfig != nil {
@@ -259,7 +259,7 @@ func (c *Client) ensureVersionChecked() {
 	c.versionChecking = true
 	c.versionMu.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), constants.GRPCClientVersionCheckTimeout)
 	defer cancel()
 	ctx = c.withToken(ctx)
 	resp, err := c.daemon.Status(ctx, &apiv1.DaemonStatusRequest{})

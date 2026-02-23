@@ -13,6 +13,7 @@ import (
 	"time"
 
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	adapters "github.com/nupi-ai/nupi/internal/plugins/adapters"
 	"github.com/nupi-ai/nupi/internal/plugins/manifest"
@@ -27,10 +28,10 @@ const (
 	maxConsecutiveErrors = 3
 
 	// baseBackoffDelay is the initial backoff delay after maxConsecutiveErrors.
-	baseBackoffDelay = 500 * time.Millisecond
+	baseBackoffDelay = constants.Duration500Milliseconds
 
 	// maxBackoffDelay caps the exponential backoff.
-	maxBackoffDelay = 30 * time.Second
+	maxBackoffDelay = constants.Duration30Seconds
 )
 
 // AdaptersController provides access to adapter binding state for initial sync.
@@ -87,7 +88,7 @@ type manifestCacheEntry struct {
 }
 
 // defaultManifestCacheTTL is how long manifest options are cached before re-fetching.
-const defaultManifestCacheTTL = 30 * time.Second
+const defaultManifestCacheTTL = constants.Duration30Seconds
 
 // NewAdapterBridge creates a bridge that connects adapter bindings to the intent router.
 // The controller is used for initial sync with current adapter state.
@@ -164,7 +165,7 @@ func (b *AdapterBridge) syncWithCurrentBindings(ctx context.Context) {
 		return
 	}
 
-	syncCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	syncCtx, cancel := context.WithTimeout(ctx, constants.Duration5Seconds)
 	defer cancel()
 
 	statuses, err := b.controller.Overview(syncCtx)
@@ -598,7 +599,7 @@ func (b *AdapterBridge) lookupAdapterConfig(ctx context.Context, adapterID strin
 		return &adapterConfigInfo{version: computeConfigVersion("", "")}, nil
 	}
 
-	lookupCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	lookupCtx, cancel := context.WithTimeout(ctx, constants.Duration2Seconds)
 	defer cancel()
 
 	statuses, err := b.controller.Overview(lookupCtx)

@@ -17,16 +17,16 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"time"
 
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/marketplace"
 	manifestpkg "github.com/nupi-ai/nupi/internal/plugins/manifest"
 	"github.com/nupi-ai/nupi/internal/validate"
 )
 
 const (
-	maxArchiveSize      = 500 * 1024 * 1024 // 500 MB per file
+	maxArchiveSize      = 500 * 1024 * 1024      // 500 MB per file
 	maxTotalExtractSize = 2 * 1024 * 1024 * 1024 // 2 GB cumulative extraction limit
 	maxFileCount        = 10000
 )
@@ -46,7 +46,7 @@ func NewInstaller(store *configstore.Store, pluginDir string) *Installer {
 		pluginDir:        pluginDir,
 		computeChecksums: computeChecksums,
 		http: &http.Client{
-			Timeout: 5 * time.Minute,
+			Timeout: constants.Duration5Minutes,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				if len(via) >= 10 {
 					return errors.New("too many redirects")

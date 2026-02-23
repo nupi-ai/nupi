@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	maputil "github.com/nupi-ai/nupi/internal/util/maps"
 )
@@ -51,6 +52,7 @@ type Service struct {
 	promptEngine       PromptEngine
 	toolRegistry       ToolRegistry
 	coreMemoryProvider CoreMemoryProvider
+	onboardingProvider OnboardingProvider
 
 	mu     sync.RWMutex
 	cancel context.CancelFunc
@@ -280,7 +282,7 @@ func (s *Service) getConversationSession() string {
 	s.mu.RUnlock()
 
 	// Consider session stale after 5 minutes of inactivity
-	if time.Since(sessionTime) > 5*time.Minute {
+	if time.Since(sessionTime) > constants.Duration5Minutes {
 		return ""
 	}
 	return session
@@ -338,6 +340,7 @@ func (s *Service) handlePrompt(ctx context.Context, prompt eventbus.Conversation
 	promptEngine := s.promptEngine
 	toolRegistry := s.toolRegistry
 	coreMemoryProvider := s.coreMemoryProvider
+	onboardingProvider := s.onboardingProvider
 	s.mu.RUnlock()
 
 	atomic.AddUint64(&s.requestsTotal, 1)
@@ -358,13 +361,19 @@ func (s *Service) handlePrompt(ctx context.Context, prompt eventbus.Conversation
 	}
 
 	// Build the intent request
-	req := s.buildIntentRequest(prompt, sessionProvider, promptEngine)
+	req := s.buildIntentRequest(prompt, sessionProvider, promptEngine, onboardingProvider)
 
 	// Prepend core memory to system prompt (awareness injection)
 	if coreMemoryProvider != nil {
 		if cm := coreMemoryProvider.CoreMemory(); cm != "" {
 			req.SystemPrompt = cm + "\n\n" + req.SystemPrompt
 		}
+	}
+
+	// Inject BOOTSTRAP.md content for onboarding events.
+	// Placed AFTER the prompt template (which references the ONBOARDING section).
+	if req.EventType == EventTypeOnboarding {
+		req.SystemPrompt = injectBootstrapContent(req.SystemPrompt, onboardingProvider)
 	}
 
 	// Inject available tools filtered by event type
@@ -454,7 +463,7 @@ func (s *Service) handlePrompt(ctx context.Context, prompt eventbus.Conversation
 	s.publishError(prompt.SessionID, prompt.PromptID, ErrMaxToolIterations)
 }
 
-func (s *Service) buildIntentRequest(prompt eventbus.ConversationPromptEvent, provider SessionProvider, engine PromptEngine) IntentRequest {
+func (s *Service) buildIntentRequest(prompt eventbus.ConversationPromptEvent, provider SessionProvider, engine PromptEngine, onboarding OnboardingProvider) IntentRequest {
 	// Determine event type from metadata
 	eventType := EventTypeUserIntent
 	if et, ok := prompt.Metadata["event_type"]; ok {
@@ -474,6 +483,12 @@ func (s *Service) buildIntentRequest(prompt eventbus.ConversationPromptEvent, pr
 		case "onboarding":
 			eventType = EventTypeOnboarding
 		}
+	}
+
+	// Override user_intent → onboarding when BOOTSTRAP.md exists AND this session
+	// holds (or can claim) the onboarding lock. Other sessions stay as user_intent.
+	if eventType == EventTypeUserIntent && onboarding != nil && onboarding.IsOnboardingSession(prompt.SessionID) {
+		eventType = EventTypeOnboarding
 	}
 
 	// Use smart session routing to determine target session
@@ -894,4 +909,31 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return string(runes[:maxLen]) + "..."
+}
+
+// injectBootstrapContent appends BOOTSTRAP.md content under an ## ONBOARDING
+// header. All H1 headings (lines starting with "# ") are stripped to prevent
+// markdown hierarchy inversion (e.g., "# Welcome" under "## ONBOARDING").
+func injectBootstrapContent(systemPrompt string, provider OnboardingProvider) string {
+	if provider == nil {
+		return systemPrompt
+	}
+	bc := provider.BootstrapContent()
+	if bc == "" {
+		return systemPrompt
+	}
+
+	// Strip all H1 headings to prevent hierarchy inversion under ## ONBOARDING.
+	var filtered []string
+	for _, line := range strings.Split(bc, "\n") {
+		if !strings.HasPrefix(line, "# ") {
+			filtered = append(filtered, line)
+		}
+	}
+	bc = strings.TrimSpace(strings.Join(filtered, "\n"))
+
+	if bc == "" {
+		return systemPrompt
+	}
+	return systemPrompt + "\n\n## ONBOARDING\n" + bc
 }

@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/language"
 	"github.com/nupi-ai/nupi/internal/server"
 	"google.golang.org/grpc"
@@ -223,9 +224,9 @@ func (g *Gateway) Start(ctx context.Context) (*Info, error) {
 		mux.Handle("/", http.MaxBytesHandler(transcoder, 4<<20)) // 4 MB body limit
 		connectServer = &http.Server{
 			Handler:        mux,
-			ReadTimeout:    30 * time.Second,
-			WriteTimeout:   30 * time.Second,
-			IdleTimeout:    120 * time.Second,
+			ReadTimeout:    constants.Duration30Seconds,
+			WriteTimeout:   constants.Duration30Seconds,
+			IdleTimeout:    constants.Duration120Seconds,
 			MaxHeaderBytes: 1 << 20,                                                                       // 1 MB
 			ErrorLog:       log.New(log.Default().Writer(), "Transport gateway Connect: ", log.LstdFlags), // writer captured at Start time
 		}
@@ -296,7 +297,7 @@ func (g *Gateway) serveGRPC(ctx context.Context, grpcServer *grpc.Server, listen
 
 		select {
 		case <-done:
-		case <-time.After(5 * time.Second):
+		case <-time.After(constants.Duration5Seconds):
 			grpcServer.Stop()
 		}
 	}()
@@ -311,7 +312,7 @@ func (g *Gateway) serveConnect(ctx context.Context, srv *http.Server, listener n
 
 	go func() {
 		<-ctx.Done()
-		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		shutCtx, cancel := context.WithTimeout(context.Background(), constants.Duration5Seconds)
 		defer cancel()
 		if err := srv.Shutdown(shutCtx); err != nil {
 			// Forcibly close active connections that didn't drain in time,
@@ -386,7 +387,7 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 	}
 
 	if connectServer != nil {
-		shutCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		shutCtx, cancel := context.WithTimeout(ctx, constants.Duration5Seconds)
 		defer cancel()
 		_ = connectServer.Shutdown(shutCtx)
 	}
@@ -402,7 +403,7 @@ func (g *Gateway) Shutdown(ctx context.Context) error {
 		}()
 		select {
 		case <-done:
-		case <-time.After(5 * time.Second):
+		case <-time.After(constants.Duration5Seconds):
 			grpcServer.Stop()
 		}
 	}

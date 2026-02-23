@@ -11,6 +11,7 @@ import (
 
 	apiv1 "github.com/nupi-ai/nupi/internal/api/grpc/v1"
 	"github.com/nupi-ai/nupi/internal/bootstrap"
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/grpcclient"
 	"github.com/spf13/cobra"
 )
@@ -228,7 +229,7 @@ func pairClaim(cmd *cobra.Command, _ []string) error {
 	}
 	defer gc.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), constants.Duration10Seconds)
 	defer cancel()
 
 	resp, err := gc.ClaimPairing(ctx, &apiv1.ClaimPairingRequest{

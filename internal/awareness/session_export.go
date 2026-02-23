@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 )
 
@@ -21,7 +22,7 @@ const maxExportContentBytes = 20 * 1024 // 20 KB
 
 // defaultSlugTimeout is the default timeout for AI slug generation.
 // Shorter than flush timeout (30s) because slug generation is a simple task.
-const defaultSlugTimeout = 10 * time.Second
+const defaultSlugTimeout = constants.Duration10Seconds
 
 type exportState struct {
 	sessionID string

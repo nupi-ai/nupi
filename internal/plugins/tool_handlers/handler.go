@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/jsruntime"
 	"github.com/nupi-ai/nupi/internal/plugins/manifest"
 )
@@ -185,20 +186,20 @@ func (d *ToolHandler) OnOutput(data []byte) {
 	now := time.Now()
 
 	// Enter throttle mode after 30s of operation
-	if !d.throttleMode && now.Sub(d.startTime) > 30*time.Second {
+	if !d.throttleMode && now.Sub(d.startTime) > constants.Duration30Seconds {
 		d.throttleMode = true
 		log.Printf("[Handler] Entering throttle mode after 30s")
 	}
 
 	// Debounce: always wait at least 200ms between detection checks
 	// This prevents excessive detection attempts on rapid output bursts
-	const debounceInterval = 200 * time.Millisecond
+	const debounceInterval = constants.Duration200Milliseconds
 	if now.Sub(d.lastCheck) < debounceInterval {
 		return
 	}
 
 	// In throttle mode: check every 5s (both initial and continuous detection per architecture 4.3.1)
-	throttleInterval := 5 * time.Second
+	throttleInterval := constants.Duration5Seconds
 
 	if d.throttleMode && now.Sub(d.lastCheck) < throttleInterval {
 		return
@@ -215,7 +216,7 @@ func (d *ToolHandler) OnOutput(data []byte) {
 	results := d.runParallelDetection(d.plugins, output)
 
 	// Rate limit tool_changed publications to prevent spamming bus/UI
-	const toolChangeMinInterval = 5 * time.Second
+	const toolChangeMinInterval = constants.Duration5Seconds
 
 	for _, result := range results {
 		if result.detected {
@@ -354,7 +355,7 @@ func (d *ToolHandler) runParallelDetection(plugins map[string]*JSPlugin, output 
 
 	results := make(chan DetectionResult, len(plugins))
 	// Use a timeout context for detection operations
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), constants.Duration2Seconds)
 	defer cancel()
 
 	for filename, plugin := range plugins {
@@ -370,7 +371,7 @@ func (d *ToolHandler) runParallelDetection(plugins map[string]*JSPlugin, output 
 	}
 
 	var allResults []DetectionResult
-	timeout := time.After(2 * time.Second)
+	timeout := time.After(constants.Duration2Seconds)
 
 	for i := 0; i < len(plugins); i++ {
 		select {

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	toolhandlers "github.com/nupi-ai/nupi/internal/plugins/tool_handlers"
 	"github.com/nupi-ai/nupi/internal/pty"
@@ -190,6 +191,7 @@ func (m *Manager) getBus() *eventbus.Bus {
 func (m *Manager) publishLifecycle(session *Session, state eventbus.SessionState, exitCode *int, reason string) {
 	eventbus.Publish(context.Background(), m.getBus(), eventbus.Sessions.Lifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{
 		SessionID: session.ID,
+		Label:     session.Command,
 		State:     state,
 		ExitCode:  exitCode,
 		Reason:    reason,
@@ -371,7 +373,7 @@ func (m *Manager) KillSession(id string) error {
 	}
 
 	// Stop PTY with 5 second timeout
-	if err := session.PTY.Stop(5 * time.Second); err != nil {
+	if err := session.PTY.Stop(constants.Duration5Seconds); err != nil {
 		return fmt.Errorf("failed to stop session: %w", err)
 	}
 

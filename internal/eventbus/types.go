@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/nupi-ai/nupi/internal/constants"
 )
 
 // Topic identifies a logical channel on the bus.
@@ -29,6 +31,7 @@ const (
 	TopicSpeechTranscriptFinal   Topic = "speech.transcript.final"
 	TopicSpeechVADDetected       Topic = "speech.vad.detected"
 	TopicSpeechBargeIn           Topic = "speech.barge_in"
+	TopicVoiceDiagnostics        Topic = "voice.diagnostics"
 	TopicConversationSpeak       Topic = "conversation.speak"
 	TopicIntentRouterDiagnostics Topic = "intentrouter.diagnostics"
 	TopicPairingCreated          Topic = "pairing.created"
@@ -118,6 +121,7 @@ type SessionOutputEvent struct {
 // SessionLifecycleEvent notifies consumers about session state transitions.
 type SessionLifecycleEvent struct {
 	SessionID string
+	Label     string // Human-readable session label (e.g., command name).
 	State     SessionState
 	ExitCode  *int
 	Reason    string
@@ -462,6 +466,13 @@ var Speech = struct {
 	BargeIn:           NewTopicDef[SpeechBargeInEvent](TopicSpeechBargeIn),
 }
 
+// Voice groups voice-specific diagnostic topic descriptors.
+var Voice = struct {
+	Diagnostics TopicDef[VoiceDiagnosticsEvent]
+}{
+	Diagnostics: NewTopicDef[VoiceDiagnosticsEvent](TopicVoiceDiagnostics),
+}
+
 // Adapters groups adapter topic descriptors.
 var Adapters = struct {
 	Status TopicDef[AdapterStatusEvent]
@@ -514,9 +525,31 @@ type BridgeDiagnosticEvent struct {
 	Extra map[string]string
 }
 
+// VoiceDiagnosticType describes high-level voice diagnostics categories.
+type VoiceDiagnosticType string
+
+const (
+	VoiceDiagnosticTypeVADLatencyDegradation VoiceDiagnosticType = "vad_latency_degradation"
+)
+
+// VoiceDiagnosticsEvent reports diagnostics for voice processing components.
+type VoiceDiagnosticsEvent struct {
+	SessionID string
+	StreamID  string
+	Type      VoiceDiagnosticType
+	Message   string
+
+	ThresholdMs int64
+	ObservedMs  int64
+	Consecutive int
+
+	Timestamp time.Time
+	Metadata  map[string]string
+}
+
 // DefaultFlushTimeout is the default timeout for memory flush operations.
 // Shared between awareness and conversation services to keep them in sync.
-const DefaultFlushTimeout = 30 * time.Second
+const DefaultFlushTimeout = constants.Duration30Seconds
 
 // MemoryFlushRequestEvent asks the awareness service to save important context
 // before conversation compaction discards old turns.

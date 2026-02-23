@@ -5,6 +5,8 @@ import (
 	"log"
 	"sync"
 	"time"
+
+	"github.com/nupi-ai/nupi/internal/constants"
 )
 
 // SupervisedRuntime wraps Runtime with automatic restart on failure.
@@ -42,8 +44,8 @@ type SupervisedConfig struct {
 
 var defaultSupervisedConfig = SupervisedConfig{
 	MaxRestarts:        0, // Unlimited
-	MinRestartInterval: 1 * time.Second,
-	MaxRestartInterval: 30 * time.Second,
+	MinRestartInterval: constants.Duration1Second,
+	MaxRestartInterval: constants.Duration30Seconds,
 }
 
 // NewSupervised creates a supervised runtime that auto-restarts on failure.

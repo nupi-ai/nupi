@@ -13,6 +13,7 @@ import (
 	napv1 "github.com/nupi-ai/nupi/api/nap/v1"
 	"github.com/nupi-ai/nupi/internal/audio/streammanager"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/mapper"
 	"github.com/nupi-ai/nupi/internal/napdial"
@@ -65,7 +66,7 @@ func newNAPAnalyzer(ctx context.Context, params SessionParams, endpoint configst
 	if len(params.Config) > 0 {
 		raw, err := json.Marshal(params.Config)
 		if err != nil {
-			closeCtx, closeCancel := context.WithTimeout(context.Background(), 2*time.Second)
+			closeCtx, closeCancel := context.WithTimeout(context.Background(), constants.Duration2Seconds)
 			a.Close(closeCtx)
 			closeCancel()
 			return nil, fmt.Errorf("vad: marshal adapter config: %w", err)
@@ -81,7 +82,7 @@ func newNAPAnalyzer(ctx context.Context, params SessionParams, endpoint configst
 	}
 
 	if err := stream.Send(initReq); err != nil {
-		closeCtx, closeCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), constants.Duration2Seconds)
 		a.Close(closeCtx)
 		closeCancel()
 		if s, ok := status.FromError(err); ok && s.Code() == codes.Unavailable {
@@ -154,7 +155,7 @@ func (a *napAnalyzer) Close(ctx context.Context) ([]Detection, error) {
 	return detections, nil
 }
 
-const vadResponseGracePeriod = 10 * time.Millisecond
+const vadResponseGracePeriod = constants.Duration10Milliseconds
 
 func (a *napAnalyzer) collectDetections(wait bool) []Detection {
 	var detections []Detection

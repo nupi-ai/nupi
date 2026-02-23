@@ -8,16 +8,16 @@ import (
 	"log"
 	"os"
 	"sync/atomic"
-	"time"
 
 	_ "modernc.org/sqlite"
 
 	"github.com/nupi-ai/nupi/internal/config"
 	storecrypto "github.com/nupi-ai/nupi/internal/config/store/crypto"
+	"github.com/nupi-ai/nupi/internal/constants"
 )
 
 const (
-	defaultBusyTimeout        = 5 * time.Second
+	defaultBusyTimeout        = constants.Duration5Seconds
 	defaultConnectionLifetime = 0 // unlimited
 )
 
@@ -154,7 +154,7 @@ func Open(opts Options) (*Store, error) {
 	db.SetConnMaxLifetime(defaultConnectionLifetime)
 	db.SetConnMaxIdleTime(defaultConnectionLifetime)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), constants.Duration5Seconds)
 	defer cancel()
 
 	if err := applyPragmas(ctx, db, opts.ReadOnly); err != nil {

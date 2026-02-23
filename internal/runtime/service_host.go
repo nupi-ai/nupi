@@ -7,6 +7,7 @@ import (
 	"time"
 
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
+	"github.com/nupi-ai/nupi/internal/constants"
 )
 
 // ServiceFactory constructs a service instance. It is invoked on every start or restart.
@@ -65,7 +66,7 @@ func (h *ServiceHost) Register(name string, factory ServiceFactory, opts ...Opti
 	reg := &serviceRegistration{
 		name:            name,
 		factory:         factory,
-		shutdownTimeout: 5 * time.Second,
+		shutdownTimeout: constants.Duration5Seconds,
 	}
 	for _, opt := range opts {
 		opt(reg)
@@ -140,7 +141,7 @@ func (h *ServiceHost) Stop(ctx context.Context) error {
 
 		timeout := reg.shutdownTimeout
 		if timeout <= 0 {
-			timeout = 5 * time.Second
+			timeout = constants.Duration5Seconds
 		}
 
 		stopCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -176,7 +177,7 @@ func (h *ServiceHost) Restart(ctx context.Context, name string) error {
 	if reg.service != nil {
 		timeout := reg.shutdownTimeout
 		if timeout <= 0 {
-			timeout = 5 * time.Second
+			timeout = constants.Duration5Seconds
 		}
 
 		stopCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -282,7 +283,7 @@ func (h *ServiceHost) watchErrors(reg *serviceRegistration) {
 }
 
 func (h *ServiceHost) stopStarted(started []*serviceRegistration) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), constants.Duration5Seconds)
 	defer cancel()
 	for i := len(started) - 1; i >= 0; i-- {
 		if started[i].service != nil {
