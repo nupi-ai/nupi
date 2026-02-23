@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { LanguageInfo } from "../api";
+import { theme } from "../designTokens";
 import { useLanguagePreference } from "../hooks/useLanguagePreference";
 import * as styles from "./voicePanelStyles";
 
@@ -49,7 +50,7 @@ export function LanguageSelector() {
         <span style={{ ...styles.labelText, marginRight: "8px" }}>
           Current:
         </span>
-        <span style={{ color: language ? "#4ade80" : "#9ca3af" }}>
+        <span style={{ color: language ? theme.text.success : theme.text.secondary }}>
           {selectedLabel}
         </span>
         {language && (
@@ -91,8 +92,8 @@ export function LanguageSelector() {
                 onClick={() => setLanguage(lang.iso1)}
                 style={{
                   ...styles.languageOptionBase,
-                  backgroundColor: isSelected ? "#1e3a5f" : "transparent",
-                  color: isSelected ? "#60a5fa" : "#e5e7eb",
+                  backgroundColor: isSelected ? theme.bg.languageSelected : theme.bg.transparent,
+                  color: isSelected ? theme.text.languageSelected : theme.text.secondaryButton,
                 }}
               >
                 {lang.native_name} ({lang.english_name})
