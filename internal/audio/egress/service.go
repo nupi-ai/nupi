@@ -144,6 +144,7 @@ type Service struct {
 	speakSub     *eventbus.TypedSubscription[eventbus.ConversationSpeakEvent]
 	lifecycleSub *eventbus.TypedSubscription[eventbus.SessionLifecycleEvent]
 	bargeSub     *eventbus.TypedSubscription[eventbus.SpeechBargeInEvent]
+	subs         eventbus.SubscriptionGroup
 	wg           sync.WaitGroup
 
 	manager *streammanager.Manager[speakRequest]
@@ -220,6 +221,7 @@ func (s *Service) Start(ctx context.Context) error {
 	s.speakSub = eventbus.Subscribe[eventbus.ConversationSpeakEvent](s.bus, eventbus.TopicConversationSpeak, eventbus.WithSubscriptionName("audio_egress_speak"))
 	s.lifecycleSub = eventbus.Subscribe[eventbus.SessionLifecycleEvent](s.bus, eventbus.TopicSessionsLifecycle, eventbus.WithSubscriptionName("audio_egress_lifecycle"))
 	s.bargeSub = eventbus.Subscribe[eventbus.SpeechBargeInEvent](s.bus, eventbus.TopicSpeechBargeIn, eventbus.WithSubscriptionName("audio_egress_barge"))
+	s.subs.Add(s.replySub, s.speakSub, s.lifecycleSub, s.bargeSub)
 
 	s.wg.Add(4)
 	go s.consumeReplies()
@@ -234,29 +236,10 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	if s.cancel != nil {
 		s.cancel()
 	}
-	if s.replySub != nil {
-		s.replySub.Close()
-	}
-	if s.speakSub != nil {
-		s.speakSub.Close()
-	}
-	if s.lifecycleSub != nil {
-		s.lifecycleSub.Close()
-	}
-	if s.bargeSub != nil {
-		s.bargeSub.Close()
-	}
+	s.subs.CloseAll()
 
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		s.wg.Wait()
-	}()
-
-	select {
-	case <-done:
-	case <-ctx.Done():
-		return ctx.Err()
+	if err := eventbus.WaitForWorkers(ctx, &s.wg); err != nil {
+		return err
 	}
 
 	var handles []streammanager.StreamHandle[speakRequest]
