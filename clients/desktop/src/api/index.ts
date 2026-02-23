@@ -7,6 +7,12 @@ type InvokeArgs = object | undefined;
 export type JsonValue = unknown;
 export type { LanguageInfo, Recording } from '../types/protoDtos';
 
+export interface CommandErrorPayload {
+  code: string;
+  message: string;
+  details?: unknown;
+}
+
 export interface VoiceStreamFromFileRequest {
   sessionId: string;
   streamId: string | null;
@@ -23,9 +29,42 @@ export interface VoiceInterruptRequest {
   metadata: Record<string, string>;
 }
 
+function asCommandErrorPayload(value: unknown): CommandErrorPayload | null {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate.code !== 'string' || typeof candidate.message !== 'string') {
+    return null;
+  }
+
+  return {
+    code: candidate.code,
+    message: candidate.message,
+    details: candidate.details,
+  };
+}
+
 function normalizeInvokeError(error: unknown): Error {
   if (error instanceof Error) {
     return error;
+  }
+
+  const direct = asCommandErrorPayload(error);
+  if (direct) {
+    const parsed = new Error(direct.message);
+    parsed.name = direct.code;
+    return parsed;
+  }
+
+  if (error && typeof error === 'object') {
+    const nested = asCommandErrorPayload((error as Record<string, unknown>).error);
+    if (nested) {
+      const parsed = new Error(nested.message);
+      parsed.name = nested.code;
+      return parsed;
+    }
   }
 
   return new Error(String(error));
@@ -33,6 +72,11 @@ function normalizeInvokeError(error: unknown): Error {
 
 export function toErrorMessage(error: unknown): string {
   return normalizeInvokeError(error).message;
+}
+
+export function toErrorCode(error: unknown): string | null {
+  const normalized = normalizeInvokeError(error);
+  return normalized.name === 'Error' ? null : normalized.name;
 }
 
 async function ipc<T>(command: string, args?: InvokeArgs): Promise<T> {

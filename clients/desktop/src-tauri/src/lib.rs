@@ -1,22 +1,16 @@
 use grpc_client::{
-    claim_pairing_grpc, ClaimedToken, CreatedPairing, CreatedToken, GrpcClient, GrpcClientError,
-    LanguageEntry, PairingEntry, RecordingInfo, SessionInfo, TokenEntry, VoiceStreamRequest,
+    ClaimedToken, CreatedPairing, CreatedToken, GrpcClient, GrpcClientError, LanguageEntry,
+    PairingEntry, RecordingInfo, SessionInfo, TokenEntry, VoiceStreamRequest, claim_pairing_grpc,
 };
 use once_cell::sync::Lazy;
-use serde_json::{json, to_value, Value};
-use std::{
-    collections::HashMap,
-    env,
-    path::PathBuf,
-    process::Stdio,
-    sync::Mutex,
-    time::{Duration, Instant},
-};
+use serde::Serialize;
+use serde_json::{Value, json, to_value};
+use std::{collections::HashMap, env, path::PathBuf, process::Stdio, sync::Mutex, time::Instant};
 use tauri::{
+    Emitter, Manager,
     image::Image,
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
-    Emitter, Manager,
 };
 use tauri_plugin_shell::ShellExt;
 use tokio::sync::watch;
@@ -25,9 +19,11 @@ mod grpc_client;
 mod installer;
 mod proto;
 mod settings;
+mod timeouts;
 
 use proto::nupi_api;
 use settings::ClientSettings;
+use timeouts::{DAEMON_READINESS_RETRY_DELAY, STALE_OPERATION_TIMEOUT};
 
 // ---------------------------------------------------------------------------
 // Session stream management
@@ -44,8 +40,91 @@ struct AppState {
     active_streams: tokio::sync::Mutex<HashMap<String, SessionStream>>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CommandError {
+    code: &'static str,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    details: Option<Value>,
+}
+
+type CommandResult<T> = Result<T, CommandError>;
+
+impl CommandError {
+    fn new(code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            details: None,
+        }
+    }
+
+    fn invalid_argument(message: impl Into<String>) -> Self {
+        Self::new("INVALID_ARGUMENT", message)
+    }
+
+    fn internal(message: impl Into<String>) -> Self {
+        Self::new("INTERNAL", message)
+    }
+}
+
+impl std::fmt::Display for CommandError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for CommandError {}
+
+impl From<GrpcClientError> for CommandError {
+    fn from(value: GrpcClientError) -> Self {
+        match value {
+            GrpcClientError::MissingHomeDir => {
+                Self::new("CONFIG_ERROR", "Unable to determine user home directory")
+            }
+            GrpcClientError::Config(msg) => Self::new("CONFIG_ERROR", msg),
+            GrpcClientError::Io(err) => {
+                if err.kind() == std::io::ErrorKind::NotFound {
+                    Self::new("NOT_FOUND", err.to_string())
+                } else {
+                    Self::new("IO_ERROR", err.to_string())
+                }
+            }
+            GrpcClientError::Sql(err) => Self::new("DATABASE_ERROR", err.to_string()),
+            GrpcClientError::Grpc(status) => {
+                Self::new(grpc_code_to_command_code(status.code()), status.to_string())
+            }
+            GrpcClientError::Transport(err) => Self::new("UNAVAILABLE", err.to_string()),
+            GrpcClientError::Audio(err) => Self::new("AUDIO_ERROR", err),
+            GrpcClientError::VoiceNotReady {
+                message,
+                diagnostics,
+            } => Self {
+                code: "FAILED_PRECONDITION",
+                message,
+                details: Some(json!({ "diagnostics": diagnostics })),
+            },
+        }
+    }
+}
+
+fn grpc_code_to_command_code(code: tonic::Code) -> &'static str {
+    match code {
+        tonic::Code::InvalidArgument => "INVALID_ARGUMENT",
+        tonic::Code::NotFound => "NOT_FOUND",
+        tonic::Code::AlreadyExists => "CONFLICT",
+        tonic::Code::PermissionDenied => "FORBIDDEN",
+        tonic::Code::Unauthenticated => "UNAUTHORIZED",
+        tonic::Code::FailedPrecondition => "FAILED_PRECONDITION",
+        tonic::Code::DeadlineExceeded => "TIMEOUT",
+        tonic::Code::Unavailable => "UNAVAILABLE",
+        tonic::Code::ResourceExhausted => "RATE_LIMITED",
+        _ => "GRPC_ERROR",
+    }
+}
+
 const CANCELLED_MESSAGE: &str = "Voice stream cancelled by user";
-const STALE_OPERATION_TIMEOUT: Duration = Duration::from_secs(3600);
 /// Tauri event name for version mismatch between app and daemon.
 /// Keep in sync with: clients/desktop/src/App.tsx (listen call).
 const EVENT_VERSION_MISMATCH: &str = "version-mismatch";
@@ -62,18 +141,21 @@ fn cleanup_stale_operations(registry: &mut HashMap<String, VoiceOperation>) {
     registry.retain(|_, op| op.started.elapsed() < STALE_OPERATION_TIMEOUT);
 }
 
-fn register_voice_operation(operation_id: &str) -> Result<(String, watch::Receiver<bool>), String> {
+fn register_voice_operation(operation_id: &str) -> CommandResult<(String, watch::Receiver<bool>)> {
     let trimmed = operation_id.trim();
     if trimmed.is_empty() {
-        return Err("operation_id is required".into());
+        return Err(CommandError::invalid_argument("operation_id is required"));
     }
 
     let mut registry = ACTIVE_VOICE_STREAMS
         .lock()
-        .map_err(|_| "voice operation registry poisoned".to_string())?;
+        .map_err(|_| CommandError::internal("voice operation registry poisoned"))?;
     cleanup_stale_operations(&mut registry);
     if registry.contains_key(trimmed) {
-        return Err("a voice upload is already active for this identifier".into());
+        return Err(CommandError::new(
+            "CONFLICT",
+            "a voice upload is already active for this identifier",
+        ));
     }
     let (sender, receiver) = watch::channel(false);
     registry.insert(
@@ -92,14 +174,14 @@ fn complete_voice_operation(operation_id: &str) {
     }
 }
 
-fn cancel_voice_operation(operation_id: &str) -> Result<bool, String> {
+fn cancel_voice_operation(operation_id: &str) -> CommandResult<bool> {
     let trimmed = operation_id.trim();
     if trimmed.is_empty() {
-        return Err("operation_id is required".into());
+        return Err(CommandError::invalid_argument("operation_id is required"));
     }
     let mut registry = ACTIVE_VOICE_STREAMS
         .lock()
-        .map_err(|_| "voice operation registry poisoned".to_string())?;
+        .map_err(|_| CommandError::internal("voice operation registry poisoned"))?;
     cleanup_stale_operations(&mut registry);
     if let Some(operation) = registry.remove(trimmed) {
         let _ = operation.sender.send(true);
@@ -109,21 +191,21 @@ fn cancel_voice_operation(operation_id: &str) -> Result<bool, String> {
     }
 }
 
-fn stringify_error<E: std::fmt::Display>(err: E) -> String {
-    err.to_string()
+fn stringify_error<E: std::fmt::Display>(err: E) -> CommandError {
+    CommandError::internal(err.to_string())
 }
 
-async fn discover_client() -> Result<GrpcClient, String> {
-    GrpcClient::discover().await.map_err(stringify_error)
+async fn discover_client() -> CommandResult<GrpcClient> {
+    GrpcClient::discover().await.map_err(CommandError::from)
 }
 
-async fn with_client<F, Fut, T>(f: F) -> Result<T, String>
+async fn with_client<F, Fut, T>(f: F) -> CommandResult<T>
 where
     F: FnOnce(GrpcClient) -> Fut,
     Fut: std::future::Future<Output = Result<T, GrpcClientError>>,
 {
     let client = discover_client().await?;
-    f(client).await.map_err(stringify_error)
+    f(client).await.map_err(CommandError::from)
 }
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
@@ -136,7 +218,7 @@ fn greet(name: &str) -> String {
 async fn start_daemon(
     _app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
-) -> Result<String, String> {
+) -> CommandResult<String> {
     if let Ok(client) = GrpcClient::discover().await {
         if client.is_reachable().await {
             *state.daemon_pid.lock().unwrap() = None;
@@ -147,13 +229,16 @@ async fn start_daemon(
 
     // Use installed nupid from ~/.nupi/bin/ instead of sidecar
     // This way the daemon uses the same binaries as CLI
-    let home = env::var("HOME").map_err(|_| "HOME not set".to_string())?;
+    let home = env::var("HOME").map_err(|_| CommandError::new("CONFIG_ERROR", "HOME not set"))?;
     let nupid_path = std::path::PathBuf::from(&home).join(".nupi/bin/nupid");
 
     if !nupid_path.exists() {
-        return Err(format!(
-            "nupid not found at {}. Please install binaries first.",
-            nupid_path.display()
+        return Err(CommandError::new(
+            "NOT_FOUND",
+            format!(
+                "nupid not found at {}. Please install binaries first.",
+                nupid_path.display()
+            ),
         ));
     }
 
@@ -169,7 +254,10 @@ async fn start_daemon(
             // Drop the child handle to allow the daemon to outlive the app.
             Ok("Daemon started".to_string())
         }
-        Err(e) => Err(format!("Failed to start daemon: {}", e)),
+        Err(e) => Err(CommandError::internal(format!(
+            "Failed to start daemon: {}",
+            e
+        ))),
     }
 }
 
@@ -177,7 +265,7 @@ async fn start_daemon(
 async fn stop_daemon(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
-) -> Result<String, String> {
+) -> CommandResult<String> {
     if let Ok(client) = GrpcClient::discover().await {
         match client.shutdown_daemon().await {
             Ok(()) => {
@@ -196,7 +284,10 @@ async fn stop_daemon(
                 // Fallback handled below
             }
             Err(GrpcClientError::Grpc(ref s)) if s.code() == tonic::Code::Unauthenticated => {
-                return Err("Daemon rejected shutdown request (unauthorized)".into());
+                return Err(CommandError::new(
+                    "UNAUTHORIZED",
+                    "Daemon rejected shutdown request (unauthorized)",
+                ));
             }
             Err(err) => {
                 println!("[nupi-desktop] API shutdown failed, falling back: {err}");
@@ -208,7 +299,7 @@ async fn stop_daemon(
 
     match shell
         .sidecar("nupi")
-        .map_err(|e| e.to_string())?
+        .map_err(stringify_error)?
         .args(["daemon", "stop", "--json"])
         .output()
         .await
@@ -222,33 +313,35 @@ async fn stop_daemon(
                 Ok(stdout.to_string())
             } else {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                Err(format!("Failed to stop daemon: {}", stderr))
+                Err(CommandError::internal(format!(
+                    "Failed to stop daemon: {}",
+                    stderr
+                )))
             }
         }
-        Err(e) => Err(format!("Failed to execute nupi: {}", e)),
+        Err(e) => Err(CommandError::internal(format!(
+            "Failed to execute nupi: {}",
+            e
+        ))),
     }
 }
 
 #[tauri::command]
-async fn get_client_settings() -> Result<ClientSettings, String> {
+async fn get_client_settings() -> CommandResult<ClientSettings> {
     Ok(settings::load())
 }
 
 #[tauri::command]
-async fn set_base_url(base_url: Option<String>) -> Result<ClientSettings, String> {
+async fn set_base_url(base_url: Option<String>) -> CommandResult<ClientSettings> {
     let trimmed = base_url.and_then(|value| {
         let t = value.trim().to_string();
-        if t.is_empty() {
-            None
-        } else {
-            Some(t)
-        }
+        if t.is_empty() { None } else { Some(t) }
     });
     let val = trimmed.clone();
     let settings = settings::modify(|s| {
         s.base_url = val;
     })
-    .map_err(|e| e.to_string())?;
+    .map_err(stringify_error)?;
     match trimmed {
         Some(ref value) => unsafe { env::set_var("NUPI_BASE_URL", value) },
         None => unsafe { env::remove_var("NUPI_BASE_URL") },
@@ -257,20 +350,16 @@ async fn set_base_url(base_url: Option<String>) -> Result<ClientSettings, String
 }
 
 #[tauri::command]
-async fn set_api_token(token: Option<String>) -> Result<ClientSettings, String> {
+async fn set_api_token(token: Option<String>) -> CommandResult<ClientSettings> {
     let cleaned = token.and_then(|value| {
         let t = value.trim().to_string();
-        if t.is_empty() {
-            None
-        } else {
-            Some(t)
-        }
+        if t.is_empty() { None } else { Some(t) }
     });
     let val = cleaned.clone();
     let settings = settings::modify(|s| {
         s.api_token = val;
     })
-    .map_err(|e| e.to_string())?;
+    .map_err(stringify_error)?;
     match cleaned {
         Some(ref value) => unsafe { env::set_var("NUPI_API_TOKEN", value) },
         None => unsafe { env::remove_var("NUPI_API_TOKEN") },
@@ -279,26 +368,24 @@ async fn set_api_token(token: Option<String>) -> Result<ClientSettings, String> 
 }
 
 #[tauri::command]
-async fn get_language() -> Result<Option<String>, String> {
+async fn get_language() -> CommandResult<Option<String>> {
     Ok(settings::load().language.and_then(|v| {
         let t = v.trim().to_lowercase();
-        if t.is_empty() {
-            None
-        } else {
-            Some(t)
-        }
+        if t.is_empty() { None } else { Some(t) }
     }))
 }
 
 #[tauri::command]
-async fn set_language(language: Option<String>) -> Result<ClientSettings, String> {
+async fn set_language(language: Option<String>) -> CommandResult<ClientSettings> {
     let cleaned = match language {
         Some(v) => {
             let t = v.trim().to_string();
             if t.is_empty() {
                 None
             } else if t.chars().count() > 35 {
-                return Err("language value too long (max 35 characters)".into());
+                return Err(CommandError::invalid_argument(
+                    "language value too long (max 35 characters)",
+                ));
             } else {
                 Some(t.to_lowercase())
             }
@@ -309,17 +396,17 @@ async fn set_language(language: Option<String>) -> Result<ClientSettings, String
     let settings = settings::modify(|s| {
         s.language = val;
     })
-    .map_err(|e| e.to_string())?;
+    .map_err(stringify_error)?;
     Ok(settings)
 }
 
 #[tauri::command]
-async fn list_languages() -> Result<Vec<LanguageEntry>, String> {
+async fn list_languages() -> CommandResult<Vec<LanguageEntry>> {
     with_client(|client| async move { client.list_languages().await }).await
 }
 
 #[tauri::command]
-async fn list_api_tokens() -> Result<Vec<TokenEntry>, String> {
+async fn list_api_tokens() -> CommandResult<Vec<TokenEntry>> {
     with_client(|client| async move { client.list_tokens().await }).await
 }
 
@@ -327,20 +414,20 @@ async fn list_api_tokens() -> Result<Vec<TokenEntry>, String> {
 async fn create_api_token(
     name: Option<String>,
     role: Option<String>,
-) -> Result<CreatedToken, String> {
+) -> CommandResult<CreatedToken> {
     let created =
         with_client(|client| async move { client.create_token(name, role).await }).await?;
     let token_value = created.token.clone();
     settings::modify(|s| {
         s.api_token = Some(token_value);
     })
-    .map_err(|e| e.to_string())?;
+    .map_err(stringify_error)?;
     unsafe { env::set_var("NUPI_API_TOKEN", created.token.as_str()) };
     Ok(created)
 }
 
 #[tauri::command]
-async fn delete_api_token(id: Option<String>, token: Option<String>) -> Result<(), String> {
+async fn delete_api_token(id: Option<String>, token: Option<String>) -> CommandResult<()> {
     let delete_id = id.clone();
     let delete_token = token.clone();
     with_client(|client| async move { client.delete_token(delete_id, delete_token).await }).await?;
@@ -351,7 +438,7 @@ async fn delete_api_token(id: Option<String>, token: Option<String>) -> Result<(
                 s.api_token = None;
             }
         })
-        .map_err(|e| e.to_string())?;
+        .map_err(stringify_error)?;
         // Remove env var if it was cleared
         let current = settings::load();
         if current.api_token.is_none() {
@@ -362,7 +449,7 @@ async fn delete_api_token(id: Option<String>, token: Option<String>) -> Result<(
 }
 
 #[tauri::command]
-async fn list_pairings() -> Result<Vec<PairingEntry>, String> {
+async fn list_pairings() -> CommandResult<Vec<PairingEntry>> {
     with_client(|client| async move { client.list_pairings().await }).await
 }
 
@@ -371,7 +458,7 @@ async fn create_pairing(
     name: Option<String>,
     role: Option<String>,
     expires_in_seconds: Option<u32>,
-) -> Result<CreatedPairing, String> {
+) -> CommandResult<CreatedPairing> {
     with_client(|client| async move { client.create_pairing(name, role, expires_in_seconds).await })
         .await
 }
@@ -382,16 +469,18 @@ async fn claim_pairing(
     code: String,
     name: Option<String>,
     insecure: bool,
-) -> Result<ClaimedToken, String> {
+) -> CommandResult<ClaimedToken> {
     let trimmed_base = base_url.trim().to_string();
     let trimmed_code = code.trim().to_string();
     if trimmed_base.is_empty() || trimmed_code.is_empty() {
-        return Err("Base URL and pairing code are required".into());
+        return Err(CommandError::invalid_argument(
+            "Base URL and pairing code are required",
+        ));
     }
 
     let claimed = claim_pairing_grpc(&trimmed_base, &trimmed_code, name, insecure)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(CommandError::from)?;
 
     let url_val = trimmed_base.clone();
     let token_val = claimed.token.clone();
@@ -399,7 +488,7 @@ async fn claim_pairing(
         s.base_url = Some(url_val);
         s.api_token = Some(token_val);
     })
-    .map_err(|e| e.to_string())?;
+    .map_err(stringify_error)?;
     unsafe {
         env::set_var("NUPI_BASE_URL", trimmed_base);
         env::set_var("NUPI_API_TOKEN", claimed.token.as_str());
@@ -441,10 +530,10 @@ async fn attach_session(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     session_id: String,
-) -> Result<(), String> {
+) -> CommandResult<()> {
     let trimmed = session_id.trim().to_string();
     if trimmed.is_empty() {
-        return Err("session_id is required".into());
+        return Err(CommandError::invalid_argument("session_id is required"));
     }
 
     // If already attached, detach first
@@ -535,19 +624,19 @@ async fn send_input(
     state: tauri::State<'_, AppState>,
     session_id: String,
     input: Vec<u8>,
-) -> Result<(), String> {
+) -> CommandResult<()> {
     let trimmed = session_id.trim().to_string();
     if trimmed.is_empty() {
-        return Err("session_id is required".into());
+        return Err(CommandError::invalid_argument("session_id is required"));
     }
     if input.len() > 64 * 1024 {
-        return Err("input exceeds 64 KiB limit".into());
+        return Err(CommandError::invalid_argument("input exceeds 64 KiB limit"));
     }
 
     let streams = state.active_streams.lock().await;
     let stream = streams
         .get(&trimmed)
-        .ok_or("Not attached to this session")?;
+        .ok_or_else(|| CommandError::new("NOT_FOUND", "Not attached to this session"))?;
 
     stream
         .sender
@@ -555,7 +644,7 @@ async fn send_input(
             payload: Some(nupi_api::attach_session_request::Payload::Input(input)),
         })
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(stringify_error)?;
 
     Ok(())
 }
@@ -566,19 +655,21 @@ async fn resize_session(
     session_id: String,
     cols: u32,
     rows: u32,
-) -> Result<(), String> {
+) -> CommandResult<()> {
     let trimmed = session_id.trim().to_string();
     if trimmed.is_empty() {
-        return Err("session_id is required".into());
+        return Err(CommandError::invalid_argument("session_id is required"));
     }
     if cols == 0 || cols > 500 || rows == 0 || rows > 500 {
-        return Err("cols and rows must be between 1 and 500".into());
+        return Err(CommandError::invalid_argument(
+            "cols and rows must be between 1 and 500",
+        ));
     }
 
     let streams = state.active_streams.lock().await;
     let stream = streams
         .get(&trimmed)
-        .ok_or("Not attached to this session")?;
+        .ok_or_else(|| CommandError::new("NOT_FOUND", "Not attached to this session"))?;
 
     stream
         .sender
@@ -593,7 +684,7 @@ async fn resize_session(
             )),
         })
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(stringify_error)?;
 
     Ok(())
 }
@@ -602,10 +693,10 @@ async fn resize_session(
 async fn detach_session(
     state: tauri::State<'_, AppState>,
     session_id: String,
-) -> Result<(), String> {
+) -> CommandResult<()> {
     let trimmed = session_id.trim().to_string();
     if trimmed.is_empty() {
-        return Err("session_id is required".into());
+        return Err(CommandError::invalid_argument("session_id is required"));
     }
 
     let mut streams = state.active_streams.lock().await;
@@ -630,15 +721,15 @@ async fn detach_session(
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-async fn list_sessions() -> Result<Vec<SessionInfo>, String> {
+async fn list_sessions() -> CommandResult<Vec<SessionInfo>> {
     with_client(|client| async move { client.list_sessions().await }).await
 }
 
 #[tauri::command]
-async fn get_session(session_id: String) -> Result<SessionInfo, String> {
+async fn get_session(session_id: String) -> CommandResult<SessionInfo> {
     let trimmed = session_id.trim();
     if trimmed.is_empty() {
-        return Err("session_id is required".into());
+        return Err(CommandError::invalid_argument("session_id is required"));
     }
     with_client(|client| async move { client.get_session(trimmed).await }).await
 }
@@ -651,10 +742,10 @@ async fn create_session(
     rows: Option<u32>,
     work_dir: Option<String>,
     detached: Option<bool>,
-) -> Result<SessionInfo, String> {
+) -> CommandResult<SessionInfo> {
     let trimmed = command.trim();
     if trimmed.is_empty() {
-        return Err("command is required".into());
+        return Err(CommandError::invalid_argument("command is required"));
     }
     with_client(|client| async move {
         client
@@ -674,10 +765,10 @@ async fn create_session(
 }
 
 #[tauri::command]
-async fn kill_session(session_id: String) -> Result<(), String> {
+async fn kill_session(session_id: String) -> CommandResult<()> {
     let trimmed = session_id.trim();
     if trimmed.is_empty() {
-        return Err("session_id is required".into());
+        return Err(CommandError::invalid_argument("session_id is required"));
     }
     with_client(|client| async move { client.kill_session(trimmed).await }).await
 }
@@ -687,7 +778,7 @@ async fn kill_session(session_id: String) -> Result<(), String> {
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-async fn list_recordings(session_id: Option<String>) -> Result<Vec<RecordingInfo>, String> {
+async fn list_recordings(session_id: Option<String>) -> CommandResult<Vec<RecordingInfo>> {
     let filter = session_id
         .as_ref()
         .map(|v| v.trim())
@@ -696,10 +787,10 @@ async fn list_recordings(session_id: Option<String>) -> Result<Vec<RecordingInfo
 }
 
 #[tauri::command]
-async fn get_recording(session_id: String) -> Result<String, String> {
+async fn get_recording(session_id: String) -> CommandResult<String> {
     let trimmed = session_id.trim();
     if trimmed.is_empty() {
-        return Err("session_id is required".into());
+        return Err(CommandError::invalid_argument("session_id is required"));
     }
     with_client(|client| async move { client.get_recording(trimmed).await }).await
 }
@@ -718,14 +809,14 @@ async fn voice_stream_from_file(
     disable_playback: Option<bool>,
     metadata: Option<HashMap<String, String>>,
     operation_id: Option<String>,
-) -> Result<Value, String> {
+) -> CommandResult<Value> {
     let trimmed_session = session_id.trim();
     if trimmed_session.is_empty() {
-        return Err("session_id is required".into());
+        return Err(CommandError::invalid_argument("session_id is required"));
     }
     let trimmed_input = input_path.trim();
     if trimmed_input.is_empty() {
-        return Err("input_path is required".into());
+        return Err(CommandError::invalid_argument("input_path is required"));
     }
 
     let client = discover_client().await?;
@@ -773,12 +864,12 @@ async fn voice_stream_from_file(
     }
 
     result
-        .map_err(stringify_error)
+        .map_err(CommandError::from)
         .and_then(|summary| to_value(summary).map_err(stringify_error))
 }
 
 #[tauri::command]
-async fn voice_cancel_stream(_app: tauri::AppHandle, operation_id: String) -> Result<bool, String> {
+async fn voice_cancel_stream(_app: tauri::AppHandle, operation_id: String) -> CommandResult<bool> {
     cancel_voice_operation(&operation_id)
 }
 
@@ -789,10 +880,10 @@ async fn voice_interrupt_command(
     stream_id: Option<String>,
     reason: Option<String>,
     metadata: Option<HashMap<String, String>>,
-) -> Result<Value, String> {
+) -> CommandResult<Value> {
     let trimmed_session = session_id.trim();
     if trimmed_session.is_empty() {
-        return Err("session_id is required".into());
+        return Err(CommandError::invalid_argument("session_id is required"));
     }
 
     let summary = with_client(|client| async move {
@@ -820,7 +911,7 @@ async fn voice_interrupt_command(
 async fn voice_status_command(
     _app: tauri::AppHandle,
     session_id: Option<String>,
-) -> Result<Value, String> {
+) -> CommandResult<Value> {
     let filter = session_id
         .as_ref()
         .map(|value| value.trim())
@@ -831,7 +922,7 @@ async fn voice_status_command(
 }
 
 #[tauri::command]
-async fn daemon_status(_app: tauri::AppHandle) -> Result<bool, String> {
+async fn daemon_status(_app: tauri::AppHandle) -> CommandResult<bool> {
     match GrpcClient::discover().await {
         Ok(client) => Ok(client.is_reachable().await),
         Err(err) => {
@@ -842,13 +933,15 @@ async fn daemon_status(_app: tauri::AppHandle) -> Result<bool, String> {
 }
 
 #[tauri::command]
-async fn check_binaries_installed(_app: tauri::AppHandle) -> Result<bool, String> {
+async fn check_binaries_installed(_app: tauri::AppHandle) -> CommandResult<bool> {
     Ok(installer::binaries_installed())
 }
 
 #[tauri::command]
-async fn install_binaries(app: tauri::AppHandle) -> Result<String, String> {
-    installer::ensure_binaries_installed(&app).await
+async fn install_binaries(app: tauri::AppHandle) -> CommandResult<String> {
+    installer::ensure_binaries_installed(&app)
+        .await
+        .map_err(stringify_error)
 }
 
 /// Strips the `v` prefix and any trailing git-describe suffix (`-N-gHASH`)
@@ -1017,7 +1110,7 @@ pub fn run() {
 
             tauri::async_runtime::spawn(async move {
                 // Small delay to ensure UI is ready
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                tokio::time::sleep(DAEMON_READINESS_RETRY_DELAY).await;
 
                 // Check and install binaries if needed
                 if !installer::binaries_installed() {
@@ -1090,7 +1183,7 @@ pub fn run() {
                             tokio::spawn(async move {
                                 let mut checked = false;
                                 for _ in 0..10 {
-                                    tokio::time::sleep(Duration::from_millis(500)).await;
+                                    tokio::time::sleep(DAEMON_READINESS_RETRY_DELAY).await;
                                     if let Ok(client) = GrpcClient::discover().await {
                                         if let Ok(status) = client.daemon_status().await {
                                             emit_version_mismatch_if_needed(&ah, &status.version);
