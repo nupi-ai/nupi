@@ -5,6 +5,7 @@ import { Sessions } from "./components/Sessions";
 import { History } from "./components/History";
 import { AsciinemaPlayer } from "./components/AsciinemaPlayer";
 import { VoicePanel } from "./components/VoicePanel";
+import * as styles from "./appStyles";
 import "./App.css";
 
 type ViewMode = "sessions" | "history" | "voice";
@@ -97,99 +98,45 @@ function App() {
   }
 
   return (
-    <div style={{
-      display: "flex",
-      flexDirection: "column",
-      height: "100vh",
-      minHeight: 0,
-      overflow: "hidden"
-    }}>
-      <main style={{
-        flex: 1,
-        display: 'flex',
-        flexDirection: 'column',
-        padding: 0,
-        minHeight: 0,
-        overflow: 'hidden'
-      }}>
+    <div style={styles.root}>
+      <main style={styles.main}>
         {/* Only show content if daemon is running */}
         {daemonRunning ? (
           <>
             {/* Navigation tabs */}
-            <div style={{
-              display: 'flex',
-              backgroundColor: '#1a1a1a',
-              borderBottom: '1px solid #333',
-              padding: '8px 16px',
-              gap: '8px'
-            }}>
+            <div style={styles.navTabs}>
               <button
-                onClick={() => setViewMode('sessions')}
-                style={{
-                  padding: '6px 16px',
-                  backgroundColor: viewMode === 'sessions' ? '#333' : 'transparent',
-                  color: viewMode === 'sessions' ? '#fff' : '#999',
-                  border: 'none',
-                  borderRadius: '4px',
-                  cursor: 'pointer',
-                  fontSize: '14px',
-                  transition: 'all 0.2s'
-                }}
+                onClick={() => setViewMode("sessions")}
+                style={styles.navButton(viewMode === "sessions")}
               >
                 Sessions
               </button>
               <button
-                onClick={() => setViewMode('history')}
-                style={{
-                  padding: '6px 16px',
-                  backgroundColor: viewMode === 'history' ? '#333' : 'transparent',
-                  color: viewMode === 'history' ? '#fff' : '#999',
-                  border: 'none',
-                  borderRadius: '4px',
-                  cursor: 'pointer',
-                  fontSize: '14px',
-                  transition: 'all 0.2s'
-                }}
+                onClick={() => setViewMode("history")}
+                style={styles.navButton(viewMode === "history")}
               >
                 History
               </button>
               <button
-                onClick={() => setViewMode('voice')}
-                style={{
-                  padding: '6px 16px',
-                  backgroundColor: viewMode === 'voice' ? '#333' : 'transparent',
-                  color: viewMode === 'voice' ? '#fff' : '#999',
-                  border: 'none',
-                  borderRadius: '4px',
-                  cursor: 'pointer',
-                  fontSize: '14px',
-                  transition: 'all 0.2s'
-                }}
+                onClick={() => setViewMode("voice")}
+                style={styles.navButton(viewMode === "voice")}
               >
                 Voice
               </button>
             </div>
 
             {/* Content */}
-            {viewMode === 'sessions' && (
-              <Sessions
-                onPlayRecording={handlePlayRecording}
-              />
-            )}
-            {viewMode === 'history' && (
-              <History />
-            )}
-            {viewMode === 'voice' && (
-              <VoicePanel />
-            )}
+            {viewMode === "sessions" && <Sessions onPlayRecording={handlePlayRecording} />}
+            {viewMode === "history" && <History />}
+            {viewMode === "voice" && <VoicePanel />}
           </>
         ) : (
-          <div className="container" style={{ paddingBottom: "40px" }}>
+          <div className="container" style={styles.waitingContainer}>
             <h1>Nupi Desktop</h1>
-            <p style={{ fontSize: '1.2rem', marginTop: '2rem' }}>
+            <p style={styles.waitingTitle}>
               Waiting for daemon to start...
             </p>
-            <p style={{ fontSize: '0.9rem', color: '#666', marginTop: '1rem' }}>
+            <p style={styles.waitingDescription}>
               The daemon will start automatically.
             </p>
           </div>
@@ -197,29 +144,12 @@ function App() {
       </main>
 
       {/* Status bar at the bottom */}
-      <div style={{
-        height: "32px",
-        backgroundColor: "#1a1a1a",
-        borderTop: "1px solid #333",
-        display: "flex",
-        alignItems: "center",
-        paddingLeft: "12px",
-        fontSize: "13px",
-        fontFamily: "system-ui, -apple-system, sans-serif",
-        flexShrink: 0
-      }}>
-        <span style={{
-          display: "flex",
-          alignItems: "center",
-          gap: "6px",
-          color: "#999"
-        }}>
-          <span style={{ fontSize: "16px" }}>
-            {daemonError ? "🔴" : (daemonRunning ? "🟢" : "🟡")}
+      <div style={styles.statusBar}>
+        <span style={styles.statusLabelGroup}>
+          <span style={styles.statusIcon}>
+            {daemonError ? "🔴" : daemonRunning ? "🟢" : "🟡"}
           </span>
-          <span style={{
-            color: daemonError ? "#f87171" : (daemonRunning ? "#4ade80" : "#fbbf24")
-          }}>
+          <span style={styles.statusText(!!daemonError, daemonRunning)}>
             {daemonStatus}
           </span>
         </span>
@@ -228,36 +158,13 @@ function App() {
       {/* Version mismatch toast */}
       {versionMismatch && (
         <div
-          style={{
-            position: 'fixed',
-            top: '16px',
-            right: '16px',
-            backgroundColor: '#78350f',
-            color: '#fef3c7',
-            padding: '12px 16px',
-            borderRadius: '8px',
-            fontSize: '13px',
-            zIndex: 2000,
-            maxWidth: '400px',
-            boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-          }}
+          style={styles.versionToast}
         >
-          <span style={{ flexShrink: 0 }}>&#9888;</span>
-          <span style={{ flex: 1 }}>{versionMismatch}</span>
+          <span style={styles.versionToastIcon}>&#9888;</span>
+          <span style={styles.versionToastMessage}>{versionMismatch}</span>
           <button
             onClick={() => setVersionMismatch(null)}
-            style={{
-              background: 'none',
-              border: 'none',
-              color: '#fef3c7',
-              cursor: 'pointer',
-              fontSize: '16px',
-              padding: '0 4px',
-              flexShrink: 0,
-            }}
+            style={styles.versionToastClose}
           >
             &#10005;
           </button>
@@ -267,19 +174,7 @@ function App() {
       {/* Recording player modal */}
       {playingRecording && (
         <div
-          style={{
-            position: 'fixed',
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            backgroundColor: 'rgba(0, 0, 0, 0.9)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: 1000,
-            padding: '32px'
-          }}
+          style={styles.recordingOverlay}
           onClick={(event) => {
             if (event.target === event.currentTarget) {
               setPlayingRecording(null);
@@ -288,51 +183,21 @@ function App() {
           }}
         >
           <div
-            style={{
-              width: '90%',
-              height: '90%',
-              maxWidth: '1200px',
-              maxHeight: '800px',
-              backgroundColor: '#0d1117',
-              borderRadius: '8px',
-              display: 'flex',
-              flexDirection: 'column'
-            }}
+            style={styles.recordingModal}
           >
-            <div style={{
-              padding: '12px 16px',
-              borderBottom: '1px solid #333',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              backgroundColor: '#1a1a1a'
-            }}>
-              <h3 style={{ margin: 0, fontSize: '16px' }}>Recording Playback</h3>
+            <div style={styles.recordingHeader}>
+              <h3 style={styles.recordingTitle}>Recording Playback</h3>
               <button
-                onClick={() => { setPlayingRecording(null); setPlayingCastData(null); }}
-                style={{
-                  padding: '4px 12px',
-                  backgroundColor: '#333',
-                  border: 'none',
-                  borderRadius: '4px',
-                  color: '#fff',
-                  cursor: 'pointer',
-                  fontSize: '14px'
+                onClick={() => {
+                  setPlayingRecording(null);
+                  setPlayingCastData(null);
                 }}
+                style={styles.recordingCloseButton}
               >
                 Close
               </button>
             </div>
-            <div style={{
-              flex: 1,
-              padding: '16px',
-              backgroundColor: '#0d1117',
-              position: 'relative',
-              minHeight: 0,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center'
-            }}>
+            <div style={styles.recordingContent}>
               {playingCastData ? (
                 <AsciinemaPlayer
                   data={playingCastData}
@@ -345,7 +210,7 @@ function App() {
                   controls={true}
                 />
               ) : (
-                <div style={{ color: '#999' }}>Loading recording...</div>
+                <div style={styles.recordingLoadingText}>Loading recording...</div>
               )}
             </div>
           </div>
