@@ -1,10 +1,10 @@
 package runtimebridge
 
 import (
+	"container/heap"
 	"errors"
 	"fmt"
 	"log"
-	"sort"
 	"sync"
 
 	"github.com/nupi-ai/nupi/internal/audio/egress"
@@ -226,9 +226,11 @@ func CommandExecutor(manager *session.Manager) intentrouter.CommandExecutor {
 	a := &commandExecutorAdapter{
 		manager: manager,
 		logger:  log.Default(),
+		queue:   make(commandPriorityQueue, 0),
 		notify:  make(chan struct{}, 1),
 		done:    make(chan struct{}),
 	}
+	heap.Init(&a.queue)
 	go a.drain()
 	return a
 }
@@ -238,7 +240,7 @@ type commandExecutorAdapter struct {
 	logger  *log.Logger
 
 	mu    sync.Mutex
-	queue []commandEntry
+	queue commandPriorityQueue
 	seq   uint64
 
 	notify   chan struct{} // signals new entry available
@@ -264,8 +266,14 @@ func (a *commandExecutorAdapter) QueueCommand(sessionID string, command string, 
 	}
 
 	a.mu.Lock()
+	select {
+	case <-a.done:
+		a.mu.Unlock()
+		return fmt.Errorf("command rejected: executor is stopped")
+	default:
+	}
 	a.seq++
-	a.queue = append(a.queue, commandEntry{
+	heap.Push(&a.queue, commandEntry{
 		sessionID: sessionID,
 		command:   command,
 		origin:    origin,
@@ -300,33 +308,25 @@ func (a *commandExecutorAdapter) drain() {
 		case <-a.notify:
 		}
 
-		a.drainBatch()
+		a.drainQueue()
 	}
 }
 
-// drainBatch takes a snapshot of the current queue, sorts it once by priority
-// (stable FIFO within same priority), and executes each entry. Checks the done
-// channel between items so Stop() is respected promptly.
-func (a *commandExecutorAdapter) drainBatch() {
-	a.mu.Lock()
-	if len(a.queue) == 0 {
-		a.mu.Unlock()
-		return
-	}
-	batch := a.queue
-	a.queue = nil
-	a.mu.Unlock()
-
-	// Sort once for the entire batch.
-	sortByPriority(batch)
-
-	for i, entry := range batch {
-		// Check for shutdown between items.
+// drainQueue pops commands from the priority queue and executes them.
+// It checks done between items and clears pending commands on shutdown.
+func (a *commandExecutorAdapter) drainQueue() {
+	for {
 		select {
 		case <-a.done:
-			a.logger.Printf("[CommandExecutor] shutdown: dropping %d remaining commands", len(batch)-i)
+			dropped := a.clearPending()
+			a.logger.Printf("[CommandExecutor] shutdown: dropping %d remaining commands", dropped)
 			return
 		default:
+		}
+
+		entry, ok := a.popNext()
+		if !ok {
+			return
 		}
 
 		a.logger.Printf("[CommandExecutor] executing command origin=%s session=%s cmd=%q",
@@ -339,14 +339,44 @@ func (a *commandExecutorAdapter) drainBatch() {
 	}
 }
 
-// sortByPriority sorts entries by priority ascending, then by seq ascending
-// for FIFO within the same priority level.
-func sortByPriority(entries []commandEntry) {
-	sort.SliceStable(entries, func(i, j int) bool {
-		if entries[i].priority != entries[j].priority {
-			return entries[i].priority < entries[j].priority
-		}
-		return entries[i].seq < entries[j].seq
-	})
+func (a *commandExecutorAdapter) popNext() (commandEntry, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.queue) == 0 {
+		return commandEntry{}, false
+	}
+	return heap.Pop(&a.queue).(commandEntry), true
 }
 
+func (a *commandExecutorAdapter) clearPending() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	dropped := len(a.queue)
+	a.queue = a.queue[:0]
+	return dropped
+}
+
+type commandPriorityQueue []commandEntry
+
+func (pq commandPriorityQueue) Len() int { return len(pq) }
+
+func (pq commandPriorityQueue) Less(i, j int) bool {
+	if pq[i].priority != pq[j].priority {
+		return pq[i].priority < pq[j].priority
+	}
+	return pq[i].seq < pq[j].seq
+}
+
+func (pq commandPriorityQueue) Swap(i, j int) { pq[i], pq[j] = pq[j], pq[i] }
+
+func (pq *commandPriorityQueue) Push(x any) {
+	*pq = append(*pq, x.(commandEntry))
+}
+
+func (pq *commandPriorityQueue) Pop() any {
+	old := *pq
+	n := len(old)
+	item := old[n-1]
+	*pq = old[:n-1]
+	return item
+}

@@ -2,6 +2,7 @@ package runtimebridge
 
 import (
 	"bytes"
+	"container/heap"
 	"context"
 	"errors"
 	"io"
@@ -217,8 +218,8 @@ func TestOriginPriority(t *testing.T) {
 }
 
 func TestCommandExecutorPriorityOrdering(t *testing.T) {
-	// Verify that the batch sort produces the correct priority order:
-	// user > tool > ai > system, with FIFO within same priority.
+	// Verify priority queue ordering: user > tool > ai > system,
+	// with FIFO within same priority.
 	type entry struct {
 		cmd    string
 		origin eventbus.ContentOrigin
@@ -231,27 +232,26 @@ func TestCommandExecutorPriorityOrdering(t *testing.T) {
 		{"tool-cmd", eventbus.OriginTool},
 	}
 
-	batch := make([]commandEntry, len(entries))
+	pq := make(commandPriorityQueue, 0, len(entries))
+	heap.Init(&pq)
 	for i, e := range entries {
-		batch[i] = commandEntry{
+		heap.Push(&pq, commandEntry{
 			sessionID: "test",
 			command:   e.cmd,
 			origin:    e.origin,
 			priority:  originPriority(e.origin),
 			seq:       uint64(i + 1),
-		}
+		})
 	}
-
-	// Same sort used by drainBatch.
-	sortByPriority(batch)
 
 	expected := []string{"user-cmd", "tool-cmd", "ai-cmd-1", "ai-cmd-2", "system-cmd"}
-	if len(batch) != len(expected) {
-		t.Fatalf("expected %d commands, got %d", len(batch), len(expected))
-	}
 	for i, cmd := range expected {
-		if batch[i].command != cmd {
-			t.Errorf("position %d: expected %q, got %q", i, cmd, batch[i].command)
+		if pq.Len() == 0 {
+			t.Fatalf("expected command %q at position %d, queue is empty", cmd, i)
+		}
+		got := heap.Pop(&pq).(commandEntry).command
+		if got != cmd {
+			t.Errorf("position %d: expected %q, got %q", i, cmd, got)
 		}
 	}
 }
@@ -259,22 +259,23 @@ func TestCommandExecutorPriorityOrdering(t *testing.T) {
 func TestCommandExecutorFIFOWithinSamePriority(t *testing.T) {
 	// Verify FIFO ordering is preserved for entries at the same priority.
 	cmds := []string{"first", "second", "third"}
-	batch := make([]commandEntry, len(cmds))
+	pq := make(commandPriorityQueue, 0, len(cmds))
+	heap.Init(&pq)
 	for i, cmd := range cmds {
-		batch[i] = commandEntry{
+		heap.Push(&pq, commandEntry{
 			sessionID: "test",
 			command:   cmd,
 			origin:    eventbus.OriginAI,
 			priority:  originPriority(eventbus.OriginAI),
 			seq:       uint64(i + 1),
-		}
+		})
 	}
 
-	sortByPriority(batch)
-
-	for i, cmd := range cmds {
-		if batch[i].command != cmd {
-			t.Errorf("position %d: expected %q, got %q (FIFO violated)", i, cmd, batch[i].command)
+	for i := range cmds {
+		got := heap.Pop(&pq).(commandEntry).command
+		if got != cmds[i] {
+			cmd := cmds[i]
+			t.Errorf("position %d: expected %q, got %q (FIFO violated)", i, cmd, got)
 		}
 	}
 }
