@@ -1,10 +1,9 @@
-use once_cell::sync::Lazy;
 use grpc_client::{
-    ClaimedToken, CreatedPairing, CreatedToken, GrpcClient, GrpcClientError, LanguageEntry,
-    PairingEntry, RecordingInfo, SessionInfo, TokenEntry, VoiceStreamRequest,
-    claim_pairing_grpc,
+    claim_pairing_grpc, ClaimedToken, CreatedPairing, CreatedToken, GrpcClient, GrpcClientError,
+    LanguageEntry, PairingEntry, RecordingInfo, SessionInfo, TokenEntry, VoiceStreamRequest,
 };
-use serde_json::{Value, json, to_value};
+use once_cell::sync::Lazy;
+use serde_json::{json, to_value, Value};
 use std::{
     collections::HashMap,
     env,
@@ -14,10 +13,10 @@ use std::{
     time::{Duration, Instant},
 };
 use tauri::{
-    Emitter, Manager,
     image::Image,
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
+    Emitter, Manager,
 };
 use tauri_plugin_shell::ShellExt;
 use tokio::sync::watch;
@@ -110,6 +109,23 @@ fn cancel_voice_operation(operation_id: &str) -> Result<bool, String> {
     }
 }
 
+fn stringify_error<E: std::fmt::Display>(err: E) -> String {
+    err.to_string()
+}
+
+async fn discover_client() -> Result<GrpcClient, String> {
+    GrpcClient::discover().await.map_err(stringify_error)
+}
+
+async fn with_client<F, Fut, T>(f: F) -> Result<T, String>
+where
+    F: FnOnce(GrpcClient) -> Fut,
+    Fut: std::future::Future<Output = Result<T, GrpcClientError>>,
+{
+    let client = discover_client().await?;
+    f(client).await.map_err(stringify_error)
+}
+
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -175,14 +191,11 @@ async fn stop_daemon(
                 return Ok(payload.to_string());
             }
             Err(GrpcClientError::Grpc(ref s))
-                if s.code() == tonic::Code::Unimplemented
-                    || s.code() == tonic::Code::NotFound =>
+                if s.code() == tonic::Code::Unimplemented || s.code() == tonic::Code::NotFound =>
             {
                 // Fallback handled below
             }
-            Err(GrpcClientError::Grpc(ref s))
-                if s.code() == tonic::Code::Unauthenticated =>
-            {
+            Err(GrpcClientError::Grpc(ref s)) if s.code() == tonic::Code::Unauthenticated => {
                 return Err("Daemon rejected shutdown request (unauthorized)".into());
             }
             Err(err) => {
@@ -225,10 +238,17 @@ async fn get_client_settings() -> Result<ClientSettings, String> {
 async fn set_base_url(base_url: Option<String>) -> Result<ClientSettings, String> {
     let trimmed = base_url.and_then(|value| {
         let t = value.trim().to_string();
-        if t.is_empty() { None } else { Some(t) }
+        if t.is_empty() {
+            None
+        } else {
+            Some(t)
+        }
     });
     let val = trimmed.clone();
-    let settings = settings::modify(|s| { s.base_url = val; }).map_err(|e| e.to_string())?;
+    let settings = settings::modify(|s| {
+        s.base_url = val;
+    })
+    .map_err(|e| e.to_string())?;
     match trimmed {
         Some(ref value) => unsafe { env::set_var("NUPI_BASE_URL", value) },
         None => unsafe { env::remove_var("NUPI_BASE_URL") },
@@ -240,10 +260,17 @@ async fn set_base_url(base_url: Option<String>) -> Result<ClientSettings, String
 async fn set_api_token(token: Option<String>) -> Result<ClientSettings, String> {
     let cleaned = token.and_then(|value| {
         let t = value.trim().to_string();
-        if t.is_empty() { None } else { Some(t) }
+        if t.is_empty() {
+            None
+        } else {
+            Some(t)
+        }
     });
     let val = cleaned.clone();
-    let settings = settings::modify(|s| { s.api_token = val; }).map_err(|e| e.to_string())?;
+    let settings = settings::modify(|s| {
+        s.api_token = val;
+    })
+    .map_err(|e| e.to_string())?;
     match cleaned {
         Some(ref value) => unsafe { env::set_var("NUPI_API_TOKEN", value) },
         None => unsafe { env::remove_var("NUPI_API_TOKEN") },
@@ -255,7 +282,11 @@ async fn set_api_token(token: Option<String>) -> Result<ClientSettings, String> 
 async fn get_language() -> Result<Option<String>, String> {
     Ok(settings::load().language.and_then(|v| {
         let t = v.trim().to_lowercase();
-        if t.is_empty() { None } else { Some(t) }
+        if t.is_empty() {
+            None
+        } else {
+            Some(t)
+        }
     }))
 }
 
@@ -275,20 +306,21 @@ async fn set_language(language: Option<String>) -> Result<ClientSettings, String
         None => None,
     };
     let val = cleaned.clone();
-    let settings = settings::modify(|s| { s.language = val; }).map_err(|e| e.to_string())?;
+    let settings = settings::modify(|s| {
+        s.language = val;
+    })
+    .map_err(|e| e.to_string())?;
     Ok(settings)
 }
 
 #[tauri::command]
 async fn list_languages() -> Result<Vec<LanguageEntry>, String> {
-    let client = GrpcClient::discover().await.map_err(|e| e.to_string())?;
-    client.list_languages().await.map_err(|e| e.to_string())
+    with_client(|client| async move { client.list_languages().await }).await
 }
 
 #[tauri::command]
 async fn list_api_tokens() -> Result<Vec<TokenEntry>, String> {
-    let client = GrpcClient::discover().await.map_err(|e| e.to_string())?;
-    client.list_tokens().await.map_err(|e| e.to_string())
+    with_client(|client| async move { client.list_tokens().await }).await
 }
 
 #[tauri::command]
@@ -296,31 +328,30 @@ async fn create_api_token(
     name: Option<String>,
     role: Option<String>,
 ) -> Result<CreatedToken, String> {
-    let client = GrpcClient::discover().await.map_err(|e| e.to_string())?;
-    let created = client
-        .create_token(name, role)
-        .await
-        .map_err(|e| e.to_string())?;
+    let created =
+        with_client(|client| async move { client.create_token(name, role).await }).await?;
     let token_value = created.token.clone();
-    settings::modify(|s| { s.api_token = Some(token_value); }).map_err(|e| e.to_string())?;
+    settings::modify(|s| {
+        s.api_token = Some(token_value);
+    })
+    .map_err(|e| e.to_string())?;
     unsafe { env::set_var("NUPI_API_TOKEN", created.token.as_str()) };
     Ok(created)
 }
 
 #[tauri::command]
 async fn delete_api_token(id: Option<String>, token: Option<String>) -> Result<(), String> {
-    let client = GrpcClient::discover().await.map_err(|e| e.to_string())?;
-    client
-        .delete_token(id.clone(), token.clone())
-        .await
-        .map_err(|e| e.to_string())?;
+    let delete_id = id.clone();
+    let delete_token = token.clone();
+    with_client(|client| async move { client.delete_token(delete_id, delete_token).await }).await?;
 
     if let Some(candidate) = token {
         settings::modify(|s| {
             if s.api_token.as_deref() == Some(candidate.as_str()) {
                 s.api_token = None;
             }
-        }).map_err(|e| e.to_string())?;
+        })
+        .map_err(|e| e.to_string())?;
         // Remove env var if it was cleared
         let current = settings::load();
         if current.api_token.is_none() {
@@ -332,8 +363,7 @@ async fn delete_api_token(id: Option<String>, token: Option<String>) -> Result<(
 
 #[tauri::command]
 async fn list_pairings() -> Result<Vec<PairingEntry>, String> {
-    let client = GrpcClient::discover().await.map_err(|e| e.to_string())?;
-    client.list_pairings().await.map_err(|e| e.to_string())
+    with_client(|client| async move { client.list_pairings().await }).await
 }
 
 #[tauri::command]
@@ -342,11 +372,8 @@ async fn create_pairing(
     role: Option<String>,
     expires_in_seconds: Option<u32>,
 ) -> Result<CreatedPairing, String> {
-    let client = GrpcClient::discover().await.map_err(|e| e.to_string())?;
-    client
-        .create_pairing(name, role, expires_in_seconds)
+    with_client(|client| async move { client.create_pairing(name, role, expires_in_seconds).await })
         .await
-        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -371,7 +398,8 @@ async fn claim_pairing(
     settings::modify(|s| {
         s.base_url = Some(url_val);
         s.api_token = Some(token_val);
-    }).map_err(|e| e.to_string())?;
+    })
+    .map_err(|e| e.to_string())?;
     unsafe {
         env::set_var("NUPI_BASE_URL", trimmed_base);
         env::set_var("NUPI_API_TOKEN", claimed.token.as_str());
@@ -435,9 +463,7 @@ async fn attach_session(
         }
     }
 
-    let client = GrpcClient::discover()
-        .await
-        .map_err(|e| e.to_string())?;
+    let client = discover_client().await?;
 
     let (tx, rx) = tokio::sync::mpsc::channel::<nupi_api::AttachSessionRequest>(64);
 
@@ -451,7 +477,7 @@ async fn attach_session(
         )),
     })
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(stringify_error)?;
 
     // Open bidirectional gRPC stream
     let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
@@ -462,7 +488,7 @@ async fn attach_session(
     let response = sessions_client
         .attach_session(request)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(stringify_error)?;
     let mut resp_stream = response.into_inner();
 
     // Spawn background task to forward output/events to frontend
@@ -493,11 +519,13 @@ async fn attach_session(
         state.active_streams.lock().await.remove(&sid);
     });
 
-    state
-        .active_streams
-        .lock()
-        .await
-        .insert(trimmed, SessionStream { sender: tx, task_handle });
+    state.active_streams.lock().await.insert(
+        trimmed,
+        SessionStream {
+            sender: tx,
+            task_handle,
+        },
+    );
 
     Ok(())
 }
@@ -603,10 +631,7 @@ async fn detach_session(
 
 #[tauri::command]
 async fn list_sessions() -> Result<Vec<SessionInfo>, String> {
-    let client = GrpcClient::discover()
-        .await
-        .map_err(|e| e.to_string())?;
-    client.list_sessions().await.map_err(|e| e.to_string())
+    with_client(|client| async move { client.list_sessions().await }).await
 }
 
 #[tauri::command]
@@ -615,10 +640,7 @@ async fn get_session(session_id: String) -> Result<SessionInfo, String> {
     if trimmed.is_empty() {
         return Err("session_id is required".into());
     }
-    let client = GrpcClient::discover()
-        .await
-        .map_err(|e| e.to_string())?;
-    client.get_session(trimmed).await.map_err(|e| e.to_string())
+    with_client(|client| async move { client.get_session(trimmed).await }).await
 }
 
 #[tauri::command]
@@ -634,22 +656,21 @@ async fn create_session(
     if trimmed.is_empty() {
         return Err("command is required".into());
     }
-    let client = GrpcClient::discover()
-        .await
-        .map_err(|e| e.to_string())?;
-    client
-        .create_session(
-            trimmed,
-            args.unwrap_or_default(),
-            cols.unwrap_or(80),
-            rows.unwrap_or(24),
-            work_dir,
-            Vec::new(),
-            detached.unwrap_or(false),
-            false,
-        )
-        .await
-        .map_err(|e| e.to_string())
+    with_client(|client| async move {
+        client
+            .create_session(
+                trimmed,
+                args.unwrap_or_default(),
+                cols.unwrap_or(80),
+                rows.unwrap_or(24),
+                work_dir,
+                Vec::new(),
+                detached.unwrap_or(false),
+                false,
+            )
+            .await
+    })
+    .await
 }
 
 #[tauri::command]
@@ -658,13 +679,7 @@ async fn kill_session(session_id: String) -> Result<(), String> {
     if trimmed.is_empty() {
         return Err("session_id is required".into());
     }
-    let client = GrpcClient::discover()
-        .await
-        .map_err(|e| e.to_string())?;
-    client
-        .kill_session(trimmed)
-        .await
-        .map_err(|e| e.to_string())
+    with_client(|client| async move { client.kill_session(trimmed).await }).await
 }
 
 // ---------------------------------------------------------------------------
@@ -673,17 +688,11 @@ async fn kill_session(session_id: String) -> Result<(), String> {
 
 #[tauri::command]
 async fn list_recordings(session_id: Option<String>) -> Result<Vec<RecordingInfo>, String> {
-    let client = GrpcClient::discover()
-        .await
-        .map_err(|e| e.to_string())?;
     let filter = session_id
         .as_ref()
         .map(|v| v.trim())
         .filter(|v| !v.is_empty());
-    client
-        .list_recordings(filter)
-        .await
-        .map_err(|e| e.to_string())
+    with_client(|client| async move { client.list_recordings(filter).await }).await
 }
 
 #[tauri::command]
@@ -692,13 +701,7 @@ async fn get_recording(session_id: String) -> Result<String, String> {
     if trimmed.is_empty() {
         return Err("session_id is required".into());
     }
-    let client = GrpcClient::discover()
-        .await
-        .map_err(|e| e.to_string())?;
-    client
-        .get_recording(trimmed)
-        .await
-        .map_err(|e| e.to_string())
+    with_client(|client| async move { client.get_recording(trimmed).await }).await
 }
 
 // ---------------------------------------------------------------------------
@@ -725,9 +728,7 @@ async fn voice_stream_from_file(
         return Err("input_path is required".into());
     }
 
-    let client = GrpcClient::discover()
-        .await
-        .map_err(|err| err.to_string())?;
+    let client = discover_client().await?;
 
     let request = VoiceStreamRequest {
         session_id: trimmed_session.to_string(),
@@ -772,8 +773,8 @@ async fn voice_stream_from_file(
     }
 
     result
-        .map_err(|err| err.to_string())
-        .and_then(|summary| to_value(summary).map_err(|err| err.to_string()))
+        .map_err(stringify_error)
+        .and_then(|summary| to_value(summary).map_err(stringify_error))
 }
 
 #[tauri::command]
@@ -794,26 +795,25 @@ async fn voice_interrupt_command(
         return Err("session_id is required".into());
     }
 
-    let client = GrpcClient::discover()
-        .await
-        .map_err(|err| err.to_string())?;
+    let summary = with_client(|client| async move {
+        client
+            .voice_interrupt(
+                trimmed_session,
+                stream_id
+                    .as_ref()
+                    .map(|value| value.trim())
+                    .filter(|value| !value.is_empty()),
+                reason
+                    .as_ref()
+                    .map(|value| value.trim())
+                    .filter(|value| !value.is_empty()),
+                metadata.unwrap_or_default(),
+            )
+            .await
+    })
+    .await?;
 
-    client
-        .voice_interrupt(
-            trimmed_session,
-            stream_id
-                .as_ref()
-                .map(|value| value.trim())
-                .filter(|value| !value.is_empty()),
-            reason
-                .as_ref()
-                .map(|value| value.trim())
-                .filter(|value| !value.is_empty()),
-            metadata.unwrap_or_default(),
-        )
-        .await
-        .map_err(|err| err.to_string())
-        .and_then(|summary| to_value(summary).map_err(|err| err.to_string()))
+    to_value(summary).map_err(stringify_error)
 }
 
 #[tauri::command]
@@ -821,20 +821,13 @@ async fn voice_status_command(
     _app: tauri::AppHandle,
     session_id: Option<String>,
 ) -> Result<Value, String> {
-    let client = GrpcClient::discover()
-        .await
-        .map_err(|err| err.to_string())?;
-
     let filter = session_id
         .as_ref()
         .map(|value| value.trim())
         .filter(|value| !value.is_empty());
 
-    client
-        .audio_capabilities(filter)
-        .await
-        .map_err(|err| err.to_string())
-        .and_then(|caps| to_value(caps).map_err(|err| err.to_string()))
+    let caps = with_client(|client| async move { client.audio_capabilities(filter).await }).await?;
+    to_value(caps).map_err(stringify_error)
 }
 
 #[tauri::command]
@@ -857,8 +850,6 @@ async fn check_binaries_installed(_app: tauri::AppHandle) -> Result<bool, String
 async fn install_binaries(app: tauri::AppHandle) -> Result<String, String> {
     installer::ensure_binaries_installed(&app).await
 }
-
-
 
 /// Strips the `v` prefix and any trailing git-describe suffix (`-N-gHASH`)
 /// so that versions like "v0.3.0-5-gabcdef" and "0.3.0" compare as equal.
@@ -901,9 +892,9 @@ fn versions_mismatch(app_ver: &str, daemon_ver: &str) -> bool {
 
 /// Emit a `version-mismatch` event if the app and daemon versions differ.
 /// Skips the check when either side reports "dev" (development builds).
-fn emit_version_mismatch_if_needed(handle: &impl Emitter, daemon_version: &Option<String>) {
+fn emit_version_mismatch_if_needed(handle: &tauri::AppHandle, daemon_version: &Option<String>) {
     let app_ver = grpc_client::APP_VERSION;
-    if let Some(ref dv) = daemon_version {
+    if let Some(dv) = daemon_version {
         if versions_mismatch(app_ver, dv) {
             eprintln!("[nupi-desktop] Version mismatch: app v{app_ver}, daemon v{dv}");
             let _ = handle.emit(
