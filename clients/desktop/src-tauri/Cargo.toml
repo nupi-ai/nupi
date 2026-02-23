@@ -34,3 +34,4 @@ once_cell = "1"
 tonic = { version = "0.12", features = ["channel", "transport", "tls"] }
 prost = "0.13"
 prost-types = "0.13"
+parking_lot = "0.12"

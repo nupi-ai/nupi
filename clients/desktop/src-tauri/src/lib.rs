@@ -3,9 +3,10 @@ use grpc_client::{
     PairingEntry, RecordingInfo, SessionInfo, TokenEntry, VoiceStreamRequest, claim_pairing_grpc,
 };
 use once_cell::sync::Lazy;
+use parking_lot::Mutex;
 use serde::Serialize;
 use serde_json::{Value, json, to_value};
-use std::{collections::HashMap, env, path::PathBuf, process::Stdio, sync::Mutex, time::Instant};
+use std::{collections::HashMap, env, path::PathBuf, process::Stdio, time::Instant};
 use tauri::{
     Emitter, Manager,
     image::Image,
@@ -142,14 +143,9 @@ fn cleanup_stale_operations(registry: &mut HashMap<String, VoiceOperation>) {
 }
 
 fn register_voice_operation(operation_id: &str) -> CommandResult<(String, watch::Receiver<bool>)> {
-    let trimmed = operation_id.trim();
-    if trimmed.is_empty() {
-        return Err(CommandError::invalid_argument("operation_id is required"));
-    }
+    let trimmed = require_not_empty(operation_id, "operation_id")?;
 
-    let mut registry = ACTIVE_VOICE_STREAMS
-        .lock()
-        .map_err(|_| CommandError::internal("voice operation registry poisoned"))?;
+    let mut registry = ACTIVE_VOICE_STREAMS.lock();
     cleanup_stale_operations(&mut registry);
     if registry.contains_key(trimmed) {
         return Err(CommandError::new(
@@ -169,19 +165,12 @@ fn register_voice_operation(operation_id: &str) -> CommandResult<(String, watch:
 }
 
 fn complete_voice_operation(operation_id: &str) {
-    if let Ok(mut registry) = ACTIVE_VOICE_STREAMS.lock() {
-        registry.remove(operation_id);
-    }
+    ACTIVE_VOICE_STREAMS.lock().remove(operation_id);
 }
 
 fn cancel_voice_operation(operation_id: &str) -> CommandResult<bool> {
-    let trimmed = operation_id.trim();
-    if trimmed.is_empty() {
-        return Err(CommandError::invalid_argument("operation_id is required"));
-    }
-    let mut registry = ACTIVE_VOICE_STREAMS
-        .lock()
-        .map_err(|_| CommandError::internal("voice operation registry poisoned"))?;
+    let trimmed = require_not_empty(operation_id, "operation_id")?;
+    let mut registry = ACTIVE_VOICE_STREAMS.lock();
     cleanup_stale_operations(&mut registry);
     if let Some(operation) = registry.remove(trimmed) {
         let _ = operation.sender.send(true);
@@ -208,6 +197,17 @@ where
     f(client).await.map_err(CommandError::from)
 }
 
+fn require_not_empty<'a>(val: &'a str, field_name: &str) -> CommandResult<&'a str> {
+    let trimmed = val.trim();
+    if trimmed.is_empty() {
+        Err(CommandError::invalid_argument(format!(
+            "{field_name} is required"
+        )))
+    } else {
+        Ok(trimmed)
+    }
+}
+
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -221,8 +221,8 @@ async fn start_daemon(
 ) -> CommandResult<String> {
     if let Ok(client) = GrpcClient::discover().await {
         if client.is_reachable().await {
-            *state.daemon_pid.lock().unwrap() = None;
-            *state.daemon_running.lock().unwrap() = true;
+            *state.daemon_pid.lock() = None;
+            *state.daemon_running.lock() = true;
             return Ok("Daemon already running".to_string());
         }
     }
@@ -249,8 +249,8 @@ async fn start_daemon(
 
     match std_command.spawn() {
         Ok(child) => {
-            *state.daemon_pid.lock().unwrap() = Some(child.id());
-            *state.daemon_running.lock().unwrap() = true;
+            *state.daemon_pid.lock() = Some(child.id());
+            *state.daemon_running.lock() = true;
             // Drop the child handle to allow the daemon to outlive the app.
             Ok("Daemon started".to_string())
         }
@@ -269,8 +269,8 @@ async fn stop_daemon(
     if let Ok(client) = GrpcClient::discover().await {
         match client.shutdown_daemon().await {
             Ok(()) => {
-                *state.daemon_pid.lock().unwrap() = None;
-                *state.daemon_running.lock().unwrap() = false;
+                *state.daemon_pid.lock() = None;
+                *state.daemon_running.lock() = false;
                 let payload = json!({
                     "success": true,
                     "message": "Shutdown request sent to daemon",
@@ -306,8 +306,8 @@ async fn stop_daemon(
     {
         Ok(output) => {
             if output.status.success() {
-                *state.daemon_pid.lock().unwrap() = None;
-                *state.daemon_running.lock().unwrap() = false;
+                *state.daemon_pid.lock() = None;
+                *state.daemon_running.lock() = false;
 
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 Ok(stdout.to_string())
@@ -535,10 +535,7 @@ async fn attach_session(
     state: tauri::State<'_, AppState>,
     session_id: String,
 ) -> CommandResult<()> {
-    let trimmed = session_id.trim().to_string();
-    if trimmed.is_empty() {
-        return Err(CommandError::invalid_argument("session_id is required"));
-    }
+    let trimmed = require_not_empty(&session_id, "session_id")?.to_string();
 
     // If already attached, detach first
     {
@@ -629,10 +626,7 @@ async fn send_input(
     session_id: String,
     input: Vec<u8>,
 ) -> CommandResult<()> {
-    let trimmed = session_id.trim().to_string();
-    if trimmed.is_empty() {
-        return Err(CommandError::invalid_argument("session_id is required"));
-    }
+    let trimmed = require_not_empty(&session_id, "session_id")?.to_string();
     if input.len() > 64 * 1024 {
         return Err(CommandError::invalid_argument("input exceeds 64 KiB limit"));
     }
@@ -660,10 +654,7 @@ async fn resize_session(
     cols: u32,
     rows: u32,
 ) -> CommandResult<()> {
-    let trimmed = session_id.trim().to_string();
-    if trimmed.is_empty() {
-        return Err(CommandError::invalid_argument("session_id is required"));
-    }
+    let trimmed = require_not_empty(&session_id, "session_id")?.to_string();
     if cols == 0 || cols > 500 || rows == 0 || rows > 500 {
         return Err(CommandError::invalid_argument(
             "cols and rows must be between 1 and 500",
@@ -698,10 +689,7 @@ async fn detach_session(
     state: tauri::State<'_, AppState>,
     session_id: String,
 ) -> CommandResult<()> {
-    let trimmed = session_id.trim().to_string();
-    if trimmed.is_empty() {
-        return Err(CommandError::invalid_argument("session_id is required"));
-    }
+    let trimmed = require_not_empty(&session_id, "session_id")?.to_string();
 
     let mut streams = state.active_streams.lock().await;
     if let Some(stream) = streams.remove(&trimmed) {
@@ -731,10 +719,7 @@ async fn list_sessions() -> CommandResult<Vec<SessionInfo>> {
 
 #[tauri::command]
 async fn get_session(session_id: String) -> CommandResult<SessionInfo> {
-    let trimmed = session_id.trim();
-    if trimmed.is_empty() {
-        return Err(CommandError::invalid_argument("session_id is required"));
-    }
+    let trimmed = require_not_empty(&session_id, "session_id")?;
     with_client(|client| async move { client.get_session(trimmed).await }).await
 }
 
@@ -747,10 +732,7 @@ async fn create_session(
     work_dir: Option<String>,
     detached: Option<bool>,
 ) -> CommandResult<SessionInfo> {
-    let trimmed = command.trim();
-    if trimmed.is_empty() {
-        return Err(CommandError::invalid_argument("command is required"));
-    }
+    let trimmed = require_not_empty(&command, "command")?;
     with_client(|client| async move {
         client
             .create_session(
@@ -770,10 +752,7 @@ async fn create_session(
 
 #[tauri::command]
 async fn kill_session(session_id: String) -> CommandResult<()> {
-    let trimmed = session_id.trim();
-    if trimmed.is_empty() {
-        return Err(CommandError::invalid_argument("session_id is required"));
-    }
+    let trimmed = require_not_empty(&session_id, "session_id")?;
     with_client(|client| async move { client.kill_session(trimmed).await }).await
 }
 
@@ -792,10 +771,7 @@ async fn list_recordings(session_id: Option<String>) -> CommandResult<Vec<Record
 
 #[tauri::command]
 async fn get_recording(session_id: String) -> CommandResult<String> {
-    let trimmed = session_id.trim();
-    if trimmed.is_empty() {
-        return Err(CommandError::invalid_argument("session_id is required"));
-    }
+    let trimmed = require_not_empty(&session_id, "session_id")?;
     with_client(|client| async move { client.get_recording(trimmed).await }).await
 }
 
@@ -814,14 +790,8 @@ async fn voice_stream_from_file(
     metadata: Option<HashMap<String, String>>,
     operation_id: Option<String>,
 ) -> CommandResult<Value> {
-    let trimmed_session = session_id.trim();
-    if trimmed_session.is_empty() {
-        return Err(CommandError::invalid_argument("session_id is required"));
-    }
-    let trimmed_input = input_path.trim();
-    if trimmed_input.is_empty() {
-        return Err(CommandError::invalid_argument("input_path is required"));
-    }
+    let trimmed_session = require_not_empty(&session_id, "session_id")?;
+    let trimmed_input = require_not_empty(&input_path, "input_path")?;
 
     let client = discover_client().await?;
 
@@ -885,10 +855,7 @@ async fn voice_interrupt_command(
     reason: Option<String>,
     metadata: Option<HashMap<String, String>>,
 ) -> CommandResult<Value> {
-    let trimmed_session = session_id.trim();
-    if trimmed_session.is_empty() {
-        return Err(CommandError::invalid_argument("session_id is required"));
-    }
+    let trimmed_session = require_not_empty(&session_id, "session_id")?;
 
     let summary = with_client(|client| async move {
         client
@@ -1165,7 +1132,7 @@ pub fn run() {
 
                 if is_running {
                     let state = app_handle.state::<AppState>();
-                    *state.daemon_running.lock().unwrap() = true;
+                    *state.daemon_running.lock() = true;
                     println!("Daemon already running");
                     update_tray_menu(&app_handle, true).ok();
                     let _ = app_handle.emit("daemon-started", ());

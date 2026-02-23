@@ -1,8 +1,8 @@
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
-use std::sync::Mutex;
 
 const SETTINGS_DIR: &str = ".nupi/desktop";
 const SETTINGS_FILE: &str = "settings.json";
@@ -43,7 +43,7 @@ pub fn modify<F>(mutate: F) -> io::Result<ClientSettings>
 where
     F: FnOnce(&mut ClientSettings),
 {
-    let _guard = SETTINGS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = SETTINGS_LOCK.lock();
     let mut settings = load();
     mutate(&mut settings);
     save(&settings)?;
@@ -58,8 +58,8 @@ fn save(settings: &ClientSettings) -> io::Result<()> {
         fs::create_dir_all(parent)?;
     }
 
-    let payload = serde_json::to_vec_pretty(settings)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let payload =
+        serde_json::to_vec_pretty(settings).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
 
     // Atomic write: write to a temporary file, then rename into place.
     // This prevents corruption if the process crashes mid-write.
