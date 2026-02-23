@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -161,19 +160,7 @@ func (s *sessionsService) AttachSession(stream apiv1.SessionsService_AttachSessi
 
 		// Send initial resize state to the newly attached client.
 		if state := s.api.resizeManager.Snapshot(sessionID); state != nil && state.Host != nil {
-			_ = sender.Send(&apiv1.AttachSessionResponse{
-				Payload: &apiv1.AttachSessionResponse_Event{
-					Event: &apiv1.SessionEvent{
-						Type:      apiv1.SessionEventType_SESSION_EVENT_TYPE_RESIZE_INSTRUCTION,
-						SessionId: sessionID,
-						Data: map[string]string{
-							"cols":   strconv.Itoa(state.Host.Size.Cols),
-							"rows":   strconv.Itoa(state.Host.Size.Rows),
-							"reason": "host_lock_sync",
-						},
-					},
-				},
-			})
+			_ = sender.Send(resizeInstructionEventResponse(sessionID, state.Host.Size.Cols, state.Host.Size.Rows, "host_lock_sync"))
 		}
 	}
 
@@ -277,22 +264,7 @@ func (s *sessionsService) AttachSession(stream apiv1.SessionsService_AttachSessi
 			if eventType == apiv1.SessionEventType_SESSION_EVENT_TYPE_UNSPECIFIED {
 				continue
 			}
-			data := map[string]string{}
-			if evt.ExitCode != nil {
-				data["exit_code"] = strconv.Itoa(*evt.ExitCode)
-			}
-			if evt.Reason != "" {
-				data["reason"] = evt.Reason
-			}
-			_ = sender.Send(&apiv1.AttachSessionResponse{
-				Payload: &apiv1.AttachSessionResponse_Event{
-					Event: &apiv1.SessionEvent{
-						Type:      eventType,
-						SessionId: sessionID,
-						Data:      data,
-					},
-				},
-			})
+			_ = sender.Send(attachSessionEventResponse(eventType, sessionID, sessionLifecycleEventData(evt)))
 
 			// If the session stopped, end the stream.
 			if evt.State == eventbus.SessionStateStopped {
@@ -308,18 +280,7 @@ func (s *sessionsService) AttachSession(stream apiv1.SessionsService_AttachSessi
 			if evt.SessionID != sessionID {
 				continue
 			}
-			_ = sender.Send(&apiv1.AttachSessionResponse{
-				Payload: &apiv1.AttachSessionResponse_Event{
-					Event: &apiv1.SessionEvent{
-						Type:      apiv1.SessionEventType_SESSION_EVENT_TYPE_TOOL_DETECTED,
-						SessionId: sessionID,
-						Data: map[string]string{
-							"previous_tool": evt.PreviousTool,
-							"new_tool":      evt.NewTool,
-						},
-					},
-				},
-			})
+			_ = sender.Send(attachSessionEventResponse(apiv1.SessionEventType_SESSION_EVENT_TYPE_TOOL_DETECTED, sessionID, sessionToolChangedEventData(evt)))
 		}
 	}
 }
@@ -371,19 +332,7 @@ func (s *sessionsService) handleStreamResize(sessionID, clientID string, resize 
 	// Send resize instructions as events.
 	if len(decision.Broadcast) > 0 {
 		for _, instruction := range decision.Broadcast {
-			_ = sender.Send(&apiv1.AttachSessionResponse{
-				Payload: &apiv1.AttachSessionResponse_Event{
-					Event: &apiv1.SessionEvent{
-						Type:      apiv1.SessionEventType_SESSION_EVENT_TYPE_RESIZE_INSTRUCTION,
-						SessionId: sessionID,
-						Data: map[string]string{
-							"cols":   strconv.Itoa(instruction.Size.Cols),
-							"rows":   strconv.Itoa(instruction.Size.Rows),
-							"reason": instruction.Reason,
-						},
-					},
-				},
-			})
+			_ = sender.Send(resizeInstructionEventResponse(sessionID, instruction.Size.Cols, instruction.Size.Rows, instruction.Reason))
 		}
 	}
 }

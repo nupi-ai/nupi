@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -20,15 +19,12 @@ import (
 	"github.com/nupi-ai/nupi/internal/plugins/adapters"
 	"github.com/nupi-ai/nupi/internal/protocol"
 	maputil "github.com/nupi-ai/nupi/internal/util/maps"
-	"github.com/nupi-ai/nupi/internal/session"
 	"github.com/nupi-ai/nupi/internal/voice/slots"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/proto"
 	emptypb "google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
-	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 type daemonService struct {
@@ -596,42 +592,12 @@ func (s *sessionsService) GetConversation(ctx context.Context, req *apiv1.GetCon
 
 	resp := &apiv1.GetConversationResponse{
 		SessionId:  sessionID,
-		Turns:      make([]*apiv1.ConversationTurn, 0, len(turns)),
+		Turns:      conversationTurnsToProto(turns),
 		Offset:     uint32(offset),
 		Limit:      uint32(pageLimit),
 		Total:      uint32(total),
 		HasMore:    offset+len(turns) < total,
 		NextOffset: 0,
-	}
-
-	for _, turn := range turns {
-		var ts *timestamppb.Timestamp
-		if !turn.At.IsZero() {
-			ts = timestamppb.New(turn.At)
-		}
-
-		metadata := make([]*apiv1.ConversationMetadata, 0, len(turn.Meta))
-		if len(turn.Meta) > 0 {
-			keys := make([]string, 0, len(turn.Meta))
-			for k := range turn.Meta {
-				keys = append(keys, k)
-			}
-			sort.Strings(keys)
-			metadata = make([]*apiv1.ConversationMetadata, 0, len(keys))
-			for _, key := range keys {
-				metadata = append(metadata, &apiv1.ConversationMetadata{
-					Key:   key,
-					Value: turn.Meta[key],
-				})
-			}
-		}
-
-		resp.Turns = append(resp.Turns, &apiv1.ConversationTurn{
-			Origin:   string(turn.Origin),
-			Text:     turn.Text,
-			At:       ts,
-			Metadata: metadata,
-		})
 	}
 
 	if !resp.HasMore {
@@ -667,42 +633,12 @@ func (s *sessionsService) GetGlobalConversation(ctx context.Context, req *apiv1.
 	}
 
 	resp := &apiv1.GetGlobalConversationResponse{
-		Turns:      make([]*apiv1.ConversationTurn, 0, len(turns)),
+		Turns:      conversationTurnsToProto(turns),
 		Offset:     uint32(offset),
 		Limit:      uint32(pageLimit),
 		Total:      uint32(total),
 		HasMore:    offset+len(turns) < total,
 		NextOffset: 0,
-	}
-
-	for _, turn := range turns {
-		var ts *timestamppb.Timestamp
-		if !turn.At.IsZero() {
-			ts = timestamppb.New(turn.At)
-		}
-
-		var metadata []*apiv1.ConversationMetadata
-		if len(turn.Meta) > 0 {
-			keys := make([]string, 0, len(turn.Meta))
-			for k := range turn.Meta {
-				keys = append(keys, k)
-			}
-			sort.Strings(keys)
-			metadata = make([]*apiv1.ConversationMetadata, 0, len(keys))
-			for _, key := range keys {
-				metadata = append(metadata, &apiv1.ConversationMetadata{
-					Key:   key,
-					Value: turn.Meta[key],
-				})
-			}
-		}
-
-		resp.Turns = append(resp.Turns, &apiv1.ConversationTurn{
-			Origin:   string(turn.Origin),
-			Text:     turn.Text,
-			At:       ts,
-			Metadata: metadata,
-		})
 	}
 
 	if !resp.HasMore {
@@ -986,16 +922,7 @@ func (a *adaptersService) ListAdapters(ctx context.Context, _ *emptypb.Empty) (*
 
 	resp := &apiv1.ListAdaptersResponse{Adapters: make([]*apiv1.Adapter, 0, len(records))}
 	for _, record := range records {
-		resp.Adapters = append(resp.Adapters, &apiv1.Adapter{
-			Id:        record.ID,
-			Source:    record.Source,
-			Version:   record.Version,
-			Type:      record.Type,
-			Name:      record.Name,
-			Manifest:  record.Manifest,
-			CreatedAt: parseTimestampString(record.CreatedAt),
-			UpdatedAt: parseTimestampString(record.UpdatedAt),
-		})
+		resp.Adapters = append(resp.Adapters, adapterRecordToProto(record))
 	}
 	return resp, nil
 }
@@ -1011,17 +938,7 @@ func (a *adaptersService) ListAdapterBindings(ctx context.Context, _ *emptypb.Em
 
 	resp := &apiv1.ListAdapterBindingsResponse{Bindings: make([]*apiv1.AdapterBinding, 0, len(records))}
 	for _, binding := range records {
-		adapterID := ""
-		if binding.AdapterID != nil {
-			adapterID = *binding.AdapterID
-		}
-		resp.Bindings = append(resp.Bindings, &apiv1.AdapterBinding{
-			Slot:       binding.Slot,
-			AdapterId:  adapterID,
-			Status:     binding.Status,
-			ConfigJson: binding.Config,
-			UpdatedAt:  parseTimestampString(binding.UpdatedAt),
-		})
+		resp.Bindings = append(resp.Bindings, adapterBindingToProto(binding))
 	}
 	return resp, nil
 }
@@ -1079,17 +996,7 @@ func (a *adaptersService) bindingForSlot(ctx context.Context, slot string) (*api
 		if binding.Slot != slot {
 			continue
 		}
-		adapterID := ""
-		if binding.AdapterID != nil {
-			adapterID = *binding.AdapterID
-		}
-		return &apiv1.AdapterBinding{
-			Slot:       binding.Slot,
-			AdapterId:  adapterID,
-			Status:     binding.Status,
-			ConfigJson: binding.Config,
-			UpdatedAt:  parseTimestampString(binding.UpdatedAt),
-		}, nil
+		return adapterBindingToProto(binding), nil
 	}
 	return nil, status.Errorf(codes.NotFound, "binding for slot %s not found", slot)
 }
@@ -1293,77 +1200,6 @@ func (m *adapterRuntimeService) StopAdapter(ctx context.Context, req *apiv1.Adap
 	}
 
 	return &apiv1.AdapterActionResponse{Adapter: bindingStatusToProto(*statusEntry)}, nil
-}
-
-func bindingStatusToProto(status adapters.BindingStatus) *apiv1.AdapterEntry {
-	entry := &apiv1.AdapterEntry{
-		Slot:       string(status.Slot),
-		Status:     status.Status,
-		ConfigJson: status.Config,
-		UpdatedAt:  parseTimestampString(status.UpdatedAt),
-	}
-	if status.AdapterID != nil {
-		if id := strings.TrimSpace(*status.AdapterID); id != "" {
-			entry.AdapterId = proto.String(id)
-		}
-	}
-	if status.Runtime != nil {
-		entry.Runtime = runtimeStatusToProto(status.Runtime)
-	}
-	return entry
-}
-
-func runtimeStatusToProto(rt *adapters.RuntimeStatus) *apiv1.AdapterRuntime {
-	if rt == nil {
-		return nil
-	}
-	result := &apiv1.AdapterRuntime{
-		AdapterId: rt.AdapterID,
-		Health:    string(rt.Health),
-		Message:   rt.Message,
-		Extra:     map[string]string{},
-	}
-	if rt.Extra != nil {
-		for k, v := range rt.Extra {
-			result.Extra[k] = v
-		}
-	}
-	if rt.StartedAt != nil && !rt.StartedAt.IsZero() {
-		result.StartedAt = timestamppb.New(rt.StartedAt.UTC())
-	}
-	if !rt.UpdatedAt.IsZero() {
-		result.UpdatedAt = timestamppb.New(rt.UpdatedAt.UTC())
-	}
-	return result
-}
-
-// dtoToSessionProto converts a SessionDTO to a proto Session message, populating all fields.
-func dtoToSessionProto(dto api.SessionDTO, apiServer *APIServer) *apiv1.Session {
-	pb := &apiv1.Session{
-		Id:           dto.ID,
-		Command:      dto.Command,
-		Args:         append([]string(nil), dto.Args...),
-		Status:       dto.Status,
-		Pid:          int32(dto.PID),
-		WorkDir:      dto.WorkDir,
-		Tool:         dto.Tool,
-		ToolIcon:     dto.ToolIcon,
-		ToolIconData: dto.ToolIconData,
-		Mode:         dto.Mode,
-	}
-	if !dto.StartTime.IsZero() {
-		pb.StartTime = timestamppb.New(dto.StartTime.UTC())
-	}
-	// Set exit_code only when process has actually exited (status == "stopped").
-	// Without this guard, proto3 default 0 is ambiguous with "exited with code 0".
-	if dto.Status == string(session.StatusStopped) {
-		pb.ExitCode = wrapperspb.Int32(int32(dto.ExitCode))
-	}
-	// Populate mode from resize manager if available and not already set.
-	if pb.Mode == "" && apiServer != nil && apiServer.resizeManager != nil {
-		pb.Mode = apiServer.resizeManager.GetSessionMode(dto.ID)
-	}
-	return pb
 }
 
 // parseTimestampString parses a timestamp string into a protobuf Timestamp.
