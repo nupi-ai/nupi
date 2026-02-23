@@ -5,6 +5,13 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+
+	"github.com/nupi-ai/nupi/internal/constants"
+)
+
+var (
+	adapterTransportCheckConstraint = sqlSingleQuotedValues(constants.AllowedAdapterTransports)
+	promptEventTypeCheckConstraint  = sqlSingleQuotedValues(constants.PromptEventTypes)
 )
 
 var schemaStatements = []string{
@@ -74,9 +81,9 @@ var schemaStatements = []string{
 		FOREIGN KEY (instance_name, profile_name) REFERENCES profiles(instance_name, name) ON DELETE CASCADE,
 		FOREIGN KEY (adapter_id) REFERENCES adapters(id)
 	)`,
-	`CREATE TABLE IF NOT EXISTS adapter_endpoints (
+	fmt.Sprintf(`CREATE TABLE IF NOT EXISTS adapter_endpoints (
 		adapter_id TEXT PRIMARY KEY,
-		transport TEXT NOT NULL DEFAULT 'process' CHECK (transport IN ('process', 'grpc', 'http')),
+		transport TEXT NOT NULL DEFAULT '%s' CHECK (transport IN (%s)),
 		address TEXT NOT NULL DEFAULT '',
 		command TEXT,
 		args TEXT,
@@ -88,7 +95,7 @@ var schemaStatements = []string{
 		created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		FOREIGN KEY (adapter_id) REFERENCES adapters(id) ON DELETE CASCADE
-	)`,
+	)`, constants.DefaultAdapterTransport, adapterTransportCheckConstraint),
 	`CREATE TABLE IF NOT EXISTS security_settings (
 		instance_name TEXT NOT NULL,
 		profile_name TEXT NOT NULL,
@@ -98,16 +105,16 @@ var schemaStatements = []string{
 		PRIMARY KEY (instance_name, profile_name, key),
 		FOREIGN KEY (instance_name, profile_name) REFERENCES profiles(instance_name, name) ON DELETE CASCADE
 	)`,
-	`CREATE TABLE IF NOT EXISTS prompt_templates (
+	fmt.Sprintf(`CREATE TABLE IF NOT EXISTS prompt_templates (
 		instance_name TEXT NOT NULL,
 		profile_name TEXT NOT NULL,
-		event_type TEXT NOT NULL CHECK (event_type IN ('user_intent', 'session_output', 'history_summary', 'clarification', 'memory_flush', 'session_slug')),
+		event_type TEXT NOT NULL CHECK (event_type IN (%s)),
 		content TEXT NOT NULL,
 		is_custom INTEGER NOT NULL DEFAULT 0,
 		updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		PRIMARY KEY (instance_name, profile_name, event_type),
 		FOREIGN KEY (instance_name, profile_name) REFERENCES profiles(instance_name, name) ON DELETE CASCADE
-	)`,
+	)`, promptEventTypeCheckConstraint),
 	`CREATE TABLE IF NOT EXISTS marketplaces (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		instance_name TEXT NOT NULL,
@@ -137,6 +144,13 @@ var schemaStatements = []string{
 		created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		PRIMARY KEY (plugin_id, file_path),
 		FOREIGN KEY (plugin_id) REFERENCES installed_plugins(id) ON DELETE CASCADE
+	)`,
+	`CREATE TABLE IF NOT EXISTS push_tokens (
+		device_id TEXT PRIMARY KEY,
+		token TEXT NOT NULL,
+		enabled_events TEXT NOT NULL DEFAULT '[]',
+		created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 	)`,
 }
 
@@ -190,4 +204,12 @@ func abbreviate(stmt string) string {
 		return trimmed
 	}
 	return trimmed[:maxLen] + "…"
+}
+
+func sqlSingleQuotedValues(values []string) string {
+	quoted := make([]string, 0, len(values))
+	for _, value := range values {
+		quoted = append(quoted, "'"+value+"'")
+	}
+	return strings.Join(quoted, ", ")
 }

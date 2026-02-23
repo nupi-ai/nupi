@@ -12,12 +12,13 @@ import (
 	"time"
 
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/grpcclient"
 	"github.com/nupi-ai/nupi/internal/marketplace"
 	"github.com/nupi-ai/nupi/internal/plugins/installer"
-	"github.com/nupi-ai/nupi/internal/validate"
 	manifestpkg "github.com/nupi-ai/nupi/internal/plugins/manifest"
 	toolhandlers "github.com/nupi-ai/nupi/internal/plugins/tool_handlers"
+	"github.com/nupi-ai/nupi/internal/validate"
 	"github.com/spf13/cobra"
 )
 
@@ -35,11 +36,11 @@ type pluginRow struct {
 
 // Adapter slot categories where only one plugin can be active at a time.
 var adapterSlotCategories = map[string]bool{
-	"stt":    true,
-	"tts":    true,
-	"ai":     true,
-	"vad":    true,
-	"tunnel": true,
+	constants.AdapterSlotSTT:    true,
+	constants.AdapterSlotTTS:    true,
+	constants.AdapterSlotAI:     true,
+	constants.AdapterSlotVAD:    true,
+	constants.AdapterSlotTunnel: true,
 }
 
 // pluginsCmd represents the plugins command group
@@ -287,18 +288,19 @@ Examples:
 			return out.Error("Failed to install plugin", err)
 		}
 
-		if out.jsonMode {
-			return out.Print(result)
-		}
-
-		version := result.Version
-		if version == "" {
-			version = "unknown"
-		}
-		fmt.Printf("Installed: %s/%s v%s (disabled)\n", result.Namespace, result.Slug, version)
-		fmt.Printf("\nTo activate run:\n  nupi plugins enable %s/%s\n", result.Namespace, result.Slug)
-		triggerPluginReload()
-		return nil
+		return out.Render(CommandResult{
+			Data: result,
+			HumanReadable: func() error {
+				version := result.Version
+				if version == "" {
+					version = "unknown"
+				}
+				fmt.Printf("Installed: %s/%s v%s (disabled)\n", result.Namespace, result.Slug, version)
+				fmt.Printf("\nTo activate run:\n  nupi plugins enable %s/%s\n", result.Namespace, result.Slug)
+				triggerPluginReload()
+				return nil
+			},
+		})
 	},
 }
 
@@ -501,38 +503,41 @@ Examples:
 		}
 
 		if len(results) == 0 {
-			if out.jsonMode {
-				return out.Print([]interface{}{})
-			}
-			fmt.Println("No plugins found.")
-			return nil
+			return out.Render(CommandResult{
+				Data: []interface{}{},
+				HumanReadable: func() error {
+					fmt.Println("No plugins found.")
+					return nil
+				},
+			})
 		}
 
-		if out.jsonMode {
-			return out.Print(results)
-		}
-
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "NAMESPACE/SLUG\tNAME\tCATEGORY\tVERSION\tDESCRIPTION")
-		for _, r := range results {
-			desc := r.Plugin.Description
-			if len(desc) > 60 {
-				desc = desc[:57] + "..."
-			}
-			version := r.Plugin.Latest.Version
-			if version == "" {
-				version = "-"
-			}
-			fmt.Fprintf(w, "%s/%s\t%s\t%s\t%s\t%s\n",
-				r.Namespace, r.Plugin.Slug,
-				r.Plugin.DisplayName(),
-				r.Plugin.Category,
-				version,
-				desc,
-			)
-		}
-		w.Flush()
-		return nil
+		return out.Render(CommandResult{
+			Data: results,
+			HumanReadable: func() error {
+				w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+				fmt.Fprintln(w, "NAMESPACE/SLUG\tNAME\tCATEGORY\tVERSION\tDESCRIPTION")
+				for _, r := range results {
+					desc := r.Plugin.Description
+					if len(desc) > 60 {
+						desc = desc[:57] + "..."
+					}
+					version := r.Plugin.Latest.Version
+					if version == "" {
+						version = "-"
+					}
+					fmt.Fprintf(w, "%s/%s\t%s\t%s\t%s\t%s\n",
+						r.Namespace, r.Plugin.Slug,
+						r.Plugin.DisplayName(),
+						r.Plugin.Category,
+						version,
+						desc,
+					)
+				}
+				w.Flush()
+				return nil
+			},
+		})
 	},
 }
 

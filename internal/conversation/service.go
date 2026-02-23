@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 )
 
@@ -416,13 +417,14 @@ func (s *Service) shouldTriggerSessionOutput(sessionID string) bool {
 }
 
 // validEventTypes are the event types supported by the prompts engine.
-var validEventTypes = map[string]bool{
-	"user_intent":     true,
-	"session_output":  true,
-	"history_summary": true,
-	"clarification":   true,
-	"memory_flush":    true,
-	"session_slug":    true,
+var validEventTypes = boolSet(constants.PromptEventTypes)
+
+func boolSet(values []string) map[string]bool {
+	set := make(map[string]bool, len(values))
+	for _, value := range values {
+		set[value] = true
+	}
+	return set
 }
 
 func (s *Service) publishPrompt(sessionID string, ctxTurns []eventbus.ConversationTurn, newTurn eventbus.ConversationTurn) {

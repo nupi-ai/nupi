@@ -10,6 +10,7 @@ import (
 
 	apiv1 "github.com/nupi-ai/nupi/internal/api/grpc/v1"
 	"github.com/nupi-ai/nupi/internal/config"
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/grpcclient"
 	"github.com/nupi-ai/nupi/internal/procutil"
 	nupiversion "github.com/nupi-ai/nupi/internal/version"
@@ -17,6 +18,8 @@ import (
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
 )
+
+var allowedTokenRoles = constants.StringSet(constants.AllowedTokenRoles)
 
 func newDaemonCommand() *cobra.Command {
 	daemonCmd := &cobra.Command{
@@ -66,7 +69,7 @@ func newDaemonCommand() *cobra.Command {
 		RunE:          tokensCreate,
 	}
 	tokensCreateCmd.Flags().String("name", "", "Optional display name for the token")
-	tokensCreateCmd.Flags().String("role", "admin", "Token role (admin|read-only)")
+	tokensCreateCmd.Flags().String("role", constants.TokenRoleAdmin, "Token role (admin|read-only)")
 
 	tokensDeleteCmd := &cobra.Command{
 		Use:           "delete",
@@ -96,7 +99,7 @@ func newDaemonCommand() *cobra.Command {
 		RunE:          daemonPairCreate,
 	}
 	pairCreateCmd.Flags().String("name", "", "Label for the device that will claim the code")
-	pairCreateCmd.Flags().String("role", "read-only", "Role granted to the new token (admin|read-only)")
+	pairCreateCmd.Flags().String("role", constants.TokenRoleReadOnly, "Role granted to the new token (admin|read-only)")
 	pairCreateCmd.Flags().Int("expires-in", 300, "Validity window for the pairing code in seconds")
 
 	pairListCmd := &cobra.Command{
@@ -144,22 +147,23 @@ func daemonStatus(cmd *cobra.Command, args []string) error {
 			status["tls_enabled"] = true
 		}
 
-		if out.jsonMode {
-			return out.Print(status)
-		}
-
-		fmt.Println("Daemon Status:")
-		fmt.Printf("  Version: %s\n", nupiversion.FormatVersion(resp.GetVersion()))
-		fmt.Printf("  Sessions: %v\n", status["sessions_count"])
-		fmt.Printf("  Port: %v\n", status["port"])
-		fmt.Printf("  gRPC Port: %v\n", status["grpc_port"])
-		fmt.Printf("  Binding: %v\n", status["binding"])
-		fmt.Printf("  gRPC Binding: %v\n", status["grpc_binding"])
-		fmt.Printf("  Auth Required: %v\n", status["auth_required"])
-		if uptime, ok := status["uptime"]; ok {
-			fmt.Printf("  Uptime: %v seconds\n", uptime)
-		}
-		return nil
+		return out.Render(CommandResult{
+			Data: status,
+			HumanReadable: func() error {
+				fmt.Println("Daemon Status:")
+				fmt.Printf("  Version: %s\n", nupiversion.FormatVersion(resp.GetVersion()))
+				fmt.Printf("  Sessions: %v\n", status["sessions_count"])
+				fmt.Printf("  Port: %v\n", status["port"])
+				fmt.Printf("  gRPC Port: %v\n", status["grpc_port"])
+				fmt.Printf("  Binding: %v\n", status["binding"])
+				fmt.Printf("  gRPC Binding: %v\n", status["grpc_binding"])
+				fmt.Printf("  Auth Required: %v\n", status["auth_required"])
+				if uptime, ok := status["uptime"]; ok {
+					fmt.Printf("  Uptime: %v seconds\n", uptime)
+				}
+				return nil
+			},
+		})
 	})
 }
 
@@ -228,38 +232,39 @@ func tokensList(cmd *cobra.Command, args []string) error {
 
 		tokens := resp.GetTokens()
 
-		if out.jsonMode {
-			list := make([]map[string]interface{}, 0, len(tokens))
-			for _, tok := range tokens {
-				entry := map[string]interface{}{
-					"id":           tok.GetId(),
-					"name":         tok.GetName(),
-					"role":         tok.GetRole(),
-					"masked_token": tok.GetMaskedValue(),
-				}
-				if tok.GetCreatedAt() != nil {
-					entry["created_at"] = tok.GetCreatedAt().AsTime().UTC().Format(time.RFC3339)
-				}
-				list = append(list, entry)
-			}
-			return out.Print(map[string]interface{}{"tokens": list})
-		}
-
-		if len(tokens) == 0 {
-			fmt.Println("No API tokens configured")
-			return nil
-		}
-
-		fmt.Println("API tokens:")
+		list := make([]map[string]interface{}, 0, len(tokens))
 		for _, tok := range tokens {
-			name := tok.GetName()
-			if strings.TrimSpace(name) == "" {
-				name = "-"
+			entry := map[string]interface{}{
+				"id":           tok.GetId(),
+				"name":         tok.GetName(),
+				"role":         tok.GetRole(),
+				"masked_token": tok.GetMaskedValue(),
 			}
-			fmt.Printf("  ID: %-12s  Role: %-9s  Name: %-20s  Token: %s\n", tok.GetId(), tok.GetRole(), name, tok.GetMaskedValue())
+			if tok.GetCreatedAt() != nil {
+				entry["created_at"] = tok.GetCreatedAt().AsTime().UTC().Format(time.RFC3339)
+			}
+			list = append(list, entry)
 		}
 
-		return nil
+		return out.Render(CommandResult{
+			Data: map[string]interface{}{"tokens": list},
+			HumanReadable: func() error {
+				if len(tokens) == 0 {
+					fmt.Println("No API tokens configured")
+					return nil
+				}
+
+				fmt.Println("API tokens:")
+				for _, tok := range tokens {
+					name := tok.GetName()
+					if strings.TrimSpace(name) == "" {
+						name = "-"
+					}
+					fmt.Printf("  ID: %-12s  Role: %-9s  Name: %-20s  Token: %s\n", tok.GetId(), tok.GetRole(), name, tok.GetMaskedValue())
+				}
+				return nil
+			},
+		})
 	})
 }
 
@@ -270,9 +275,9 @@ func tokensCreate(cmd *cobra.Command, args []string) error {
 	role, _ := cmd.Flags().GetString("role")
 	role = strings.ToLower(strings.TrimSpace(role))
 	if role == "" {
-		role = "admin"
+		role = constants.TokenRoleAdmin
 	}
-	if role != "admin" && role != "read-only" {
+	if _, ok := allowedTokenRoles[role]; !ok {
 		return out.Error("Role must be 'admin' or 'read-only'", nil)
 	}
 
@@ -285,29 +290,31 @@ func tokensCreate(cmd *cobra.Command, args []string) error {
 			return out.Error("Failed to create token", err)
 		}
 
-		if out.jsonMode {
-			payload := map[string]interface{}{
-				"token": resp.GetToken(),
-			}
-			if info := resp.GetInfo(); info != nil {
-				payload["id"] = info.GetId()
-				payload["name"] = info.GetName()
-				payload["role"] = info.GetRole()
-			}
-			return out.Print(payload)
+		payload := map[string]interface{}{
+			"token": resp.GetToken(),
+		}
+		if info := resp.GetInfo(); info != nil {
+			payload["id"] = info.GetId()
+			payload["name"] = info.GetName()
+			payload["role"] = info.GetRole()
 		}
 
-		fmt.Println("New API token:")
-		fmt.Printf("  Token: %s\n", resp.GetToken())
-		if info := resp.GetInfo(); info != nil {
-			fmt.Printf("  ID:    %s\n", info.GetId())
-			if strings.TrimSpace(info.GetName()) != "" {
-				fmt.Printf("  Name:  %s\n", info.GetName())
-			}
-			fmt.Printf("  Role:  %s\n", info.GetRole())
-		}
-		fmt.Println("Store this token securely; it will not be shown again.")
-		return nil
+		return out.Render(CommandResult{
+			Data: payload,
+			HumanReadable: func() error {
+				fmt.Println("New API token:")
+				fmt.Printf("  Token: %s\n", resp.GetToken())
+				if info := resp.GetInfo(); info != nil {
+					fmt.Printf("  ID:    %s\n", info.GetId())
+					if strings.TrimSpace(info.GetName()) != "" {
+						fmt.Printf("  Name:  %s\n", info.GetName())
+					}
+					fmt.Printf("  Role:  %s\n", info.GetRole())
+				}
+				fmt.Println("Store this token securely; it will not be shown again.")
+				return nil
+			},
+		})
 	})
 }
 
@@ -332,12 +339,13 @@ func tokensDelete(cmd *cobra.Command, args []string) error {
 			return out.Error("Failed to delete token", err)
 		}
 
-		if out.jsonMode {
-			return out.Print(map[string]any{"deleted": true})
-		}
-
-		fmt.Println("Token deleted")
-		return nil
+		return out.Render(CommandResult{
+			Data: map[string]any{"deleted": true},
+			HumanReadable: func() error {
+				fmt.Println("Token deleted")
+				return nil
+			},
+		})
 	})
 }
 
@@ -348,9 +356,9 @@ func daemonPairCreate(cmd *cobra.Command, args []string) error {
 	role, _ := cmd.Flags().GetString("role")
 	role = strings.ToLower(strings.TrimSpace(role))
 	if role == "" {
-		role = "read-only"
+		role = constants.TokenRoleReadOnly
 	}
-	if role != "admin" && role != "read-only" {
+	if _, ok := allowedTokenRoles[role]; !ok {
 		return out.Error("Role must be 'admin' or 'read-only'", nil)
 	}
 	expiresIn, _ := cmd.Flags().GetInt("expires-in")
@@ -368,29 +376,31 @@ func daemonPairCreate(cmd *cobra.Command, args []string) error {
 			return out.Error("Failed to create pairing", err)
 		}
 
-		if out.jsonMode {
-			payload := map[string]interface{}{
-				"pair_code": resp.GetCode(),
-				"name":      resp.GetName(),
-				"role":      resp.GetRole(),
-			}
-			if resp.GetExpiresAt() != nil {
-				payload["expires_at"] = resp.GetExpiresAt().AsTime().UTC().Format(time.RFC3339)
-			}
-			return out.Print(payload)
+		payload := map[string]interface{}{
+			"pair_code": resp.GetCode(),
+			"name":      resp.GetName(),
+			"role":      resp.GetRole(),
+		}
+		if resp.GetExpiresAt() != nil {
+			payload["expires_at"] = resp.GetExpiresAt().AsTime().UTC().Format(time.RFC3339)
 		}
 
-		fmt.Println("Pairing code created:")
-		fmt.Printf("  Code:   %s\n", resp.GetCode())
-		if strings.TrimSpace(resp.GetName()) != "" {
-			fmt.Printf("  Name:   %s\n", resp.GetName())
-		}
-		fmt.Printf("  Role:   %s\n", resp.GetRole())
-		if resp.GetExpiresAt() != nil {
-			fmt.Printf("  Expires: %s\n", resp.GetExpiresAt().AsTime().UTC().Format(time.RFC3339))
-		}
-		fmt.Println("Share this code with the device you want to pair.")
-		return nil
+		return out.Render(CommandResult{
+			Data: payload,
+			HumanReadable: func() error {
+				fmt.Println("Pairing code created:")
+				fmt.Printf("  Code:   %s\n", resp.GetCode())
+				if strings.TrimSpace(resp.GetName()) != "" {
+					fmt.Printf("  Name:   %s\n", resp.GetName())
+				}
+				fmt.Printf("  Role:   %s\n", resp.GetRole())
+				if resp.GetExpiresAt() != nil {
+					fmt.Printf("  Expires: %s\n", resp.GetExpiresAt().AsTime().UTC().Format(time.RFC3339))
+				}
+				fmt.Println("Share this code with the device you want to pair.")
+				return nil
+			},
+		})
 	})
 }
 
@@ -403,42 +413,44 @@ func daemonPairList(cmd *cobra.Command, args []string) error {
 
 		pairings := resp.GetPairings()
 
-		if out.jsonMode {
-			list := make([]map[string]interface{}, 0, len(pairings))
-			for _, p := range pairings {
-				entry := map[string]interface{}{
-					"code": p.GetCode(),
-					"name": p.GetName(),
-					"role": p.GetRole(),
-				}
-				if p.GetCreatedAt() != nil {
-					entry["created_at"] = p.GetCreatedAt().AsTime().UTC().Format(time.RFC3339)
-				}
-				if p.GetExpiresAt() != nil {
-					entry["expires_at"] = p.GetExpiresAt().AsTime().UTC().Format(time.RFC3339)
-				}
-				list = append(list, entry)
-			}
-			return out.Print(map[string]interface{}{"pairings": list})
-		}
-
-		if len(pairings) == 0 {
-			fmt.Println("No active pairing codes")
-			return nil
-		}
-
-		fmt.Println("Active pairing codes:")
+		list := make([]map[string]interface{}, 0, len(pairings))
 		for _, p := range pairings {
-			name := p.GetName()
-			if strings.TrimSpace(name) == "" {
-				name = "-"
+			entry := map[string]interface{}{
+				"code": p.GetCode(),
+				"name": p.GetName(),
+				"role": p.GetRole(),
 			}
-			expiresAt := ""
+			if p.GetCreatedAt() != nil {
+				entry["created_at"] = p.GetCreatedAt().AsTime().UTC().Format(time.RFC3339)
+			}
 			if p.GetExpiresAt() != nil {
-				expiresAt = p.GetExpiresAt().AsTime().UTC().Format(time.RFC3339)
+				entry["expires_at"] = p.GetExpiresAt().AsTime().UTC().Format(time.RFC3339)
 			}
-			fmt.Printf("  Code: %s  Role: %-9s  Name: %-20s  Expires: %s\n", p.GetCode(), p.GetRole(), name, expiresAt)
+			list = append(list, entry)
 		}
-		return nil
+
+		return out.Render(CommandResult{
+			Data: map[string]interface{}{"pairings": list},
+			HumanReadable: func() error {
+				if len(pairings) == 0 {
+					fmt.Println("No active pairing codes")
+					return nil
+				}
+
+				fmt.Println("Active pairing codes:")
+				for _, p := range pairings {
+					name := p.GetName()
+					if strings.TrimSpace(name) == "" {
+						name = "-"
+					}
+					expiresAt := ""
+					if p.GetExpiresAt() != nil {
+						expiresAt = p.GetExpiresAt().AsTime().UTC().Format(time.RFC3339)
+					}
+					fmt.Printf("  Code: %s  Role: %-9s  Name: %-20s  Expires: %s\n", p.GetCode(), p.GetRole(), name, expiresAt)
+				}
+				return nil
+			},
+		})
 	})
 }

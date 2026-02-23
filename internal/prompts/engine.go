@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/nupi-ai/nupi/internal/config/store"
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 )
 
@@ -18,22 +19,25 @@ type EventType string
 
 const (
 	// EventTypeUserIntent is for interpreting user voice/text commands.
-	EventTypeUserIntent EventType = "user_intent"
+	EventTypeUserIntent EventType = constants.PromptEventUserIntent
 
 	// EventTypeSessionOutput is for analyzing session output.
-	EventTypeSessionOutput EventType = "session_output"
+	EventTypeSessionOutput EventType = constants.PromptEventSessionOutput
 
 	// EventTypeHistorySummary is for summarizing conversation history.
-	EventTypeHistorySummary EventType = "history_summary"
+	EventTypeHistorySummary EventType = constants.PromptEventHistorySummary
 
 	// EventTypeClarification is for handling user responses to clarification requests.
-	EventTypeClarification EventType = "clarification"
+	EventTypeClarification EventType = constants.PromptEventClarification
 
 	// EventTypeMemoryFlush is for extracting important context before conversation compaction.
-	EventTypeMemoryFlush EventType = "memory_flush"
+	EventTypeMemoryFlush EventType = constants.PromptEventMemoryFlush
 
 	// EventTypeSessionSlug is for generating a session slug and summary on session close.
-	EventTypeSessionSlug EventType = "session_slug"
+	EventTypeSessionSlug EventType = constants.PromptEventSessionSlug
+
+	// EventTypeOnboarding is for the first-time user setup conversation.
+	EventTypeOnboarding EventType = constants.PromptEventOnboarding
 )
 
 // SessionInfo provides context about an available session.

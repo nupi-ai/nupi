@@ -20,6 +20,7 @@ import (
 	apiv1 "github.com/nupi-ai/nupi/internal/api/grpc/v1"
 	apihttp "github.com/nupi-ai/nupi/internal/api/http"
 	"github.com/nupi-ai/nupi/internal/config"
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/grpcclient"
 	manifestpkg "github.com/nupi-ai/nupi/internal/plugins/manifest"
 	"github.com/spf13/cobra"
@@ -63,7 +64,7 @@ func newAdaptersCommand() *cobra.Command {
 	adaptersRegisterCmd.Flags().String("source", "external", "Adapter source/provider")
 	adaptersRegisterCmd.Flags().String("version", "", "Adapter version")
 	adaptersRegisterCmd.Flags().String("manifest", "", "Optional manifest JSON payload")
-	adaptersRegisterCmd.Flags().String("endpoint-transport", "grpc", "Adapter endpoint transport (process|grpc|http)")
+	adaptersRegisterCmd.Flags().String("endpoint-transport", constants.AdapterTransportGRPC, "Adapter endpoint transport (process|grpc|http)")
 	adaptersRegisterCmd.Flags().String("endpoint-address", "", "Adapter endpoint address (for grpc/http transports)")
 	adaptersRegisterCmd.Flags().String("endpoint-command", "", "Command to launch adapter (process transport)")
 	adaptersRegisterCmd.Flags().StringArray("endpoint-arg", nil, "Argument for adapter command (repeatable)")
@@ -168,9 +169,9 @@ Examples:
 func adaptersList(cmd *cobra.Command, _ []string) error {
 	out := newOutputFormatter(cmd)
 
-	if !out.jsonMode {
+	out.PrintText(func() {
 		fmt.Fprintln(os.Stderr, "Hint: use 'nupi plugins list' for a unified view of all plugins")
-	}
+	})
 
 	return adaptersListGRPC(out)
 }
@@ -188,7 +189,7 @@ func adaptersRegister(cmd *cobra.Command, _ []string) error {
 	adapterType = strings.TrimSpace(adapterType)
 	if adapterType != "" {
 		if _, ok := allowedAdapterSlots[adapterType]; !ok {
-			return out.Error(fmt.Sprintf("invalid type %q (expected: stt, tts, ai, vad, tunnel, tool-handler, pipeline-cleaner)", adapterType), errors.New("invalid adapter type"))
+			return out.Error(fmt.Sprintf("invalid type %q (expected: %s)", adapterType, strings.Join(constants.AllowedAdapterSlots, ", ")), errors.New("invalid adapter type"))
 		}
 	}
 
@@ -225,21 +226,21 @@ func adaptersRegister(cmd *cobra.Command, _ []string) error {
 			return out.Error("--endpoint-transport required when endpoint flags are specified", errors.New("missing transport"))
 		}
 		if _, ok := allowedEndpointTransports[transportOpt]; !ok {
-			return out.Error(fmt.Sprintf("invalid transport: %s (expected: grpc, http, process)", transportOpt), errors.New("invalid transport"))
+			return out.Error(fmt.Sprintf("invalid transport: %s (expected: %s)", transportOpt, strings.Join(constants.AllowedAdapterTransports, ", ")), errors.New("invalid transport"))
 		}
 		switch transportOpt {
-		case "grpc":
+		case constants.AdapterTransportGRPC:
 			if addressOpt == "" {
 				return out.Error("--endpoint-address required for grpc transport", errors.New("missing address"))
 			}
-		case "http":
+		case constants.AdapterTransportHTTP:
 			if addressOpt == "" {
 				return out.Error("--endpoint-address required for http transport", errors.New("missing address"))
 			}
 			if commandOpt != "" || len(argsOpt) > 0 {
 				return out.Error("--endpoint-command/--endpoint-arg not allowed for http transport", errors.New("conflicting endpoint flags"))
 			}
-		case "process":
+		case constants.AdapterTransportProcess:
 			if commandOpt == "" {
 				return out.Error("--endpoint-command required for process transport", errors.New("missing command"))
 			}
@@ -272,16 +273,18 @@ func adaptersRegister(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	if out.jsonMode {
-		return out.Print(adapterRegistrationResultFromProto(resp))
-	}
-
-	fmt.Printf("Registered adapter %s", resp.GetAdapterId())
-	if resp.GetType() != "" {
-		fmt.Printf(" (%s)", resp.GetType())
-	}
-	fmt.Println()
-	return nil
+	result := adapterRegistrationResultFromProto(resp)
+	return out.Render(CommandResult{
+		Data: result,
+		HumanReadable: func() error {
+			fmt.Printf("Registered adapter %s", resp.GetAdapterId())
+			if resp.GetType() != "" {
+				fmt.Printf(" (%s)", resp.GetType())
+			}
+			fmt.Println()
+			return nil
+		},
+	})
 }
 
 func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
@@ -463,7 +466,7 @@ func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 		transport = strings.TrimSpace(manifest.Adapter.Entrypoint.Transport)
 	}
 	if transport == "" {
-		transport = "process"
+		transport = constants.DefaultAdapterTransport
 	}
 	if _, ok := allowedEndpointTransports[transport]; !ok {
 		return out.Error(fmt.Sprintf("manifest transport %q unsupported", transport), errors.New("invalid manifest transport"))
@@ -472,11 +475,11 @@ func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 	addressFlag, _ := cmd.Flags().GetString("endpoint-address")
 	address := strings.TrimSpace(addressFlag)
 	switch transport {
-	case "grpc", "http":
+	case constants.AdapterTransportGRPC, constants.AdapterTransportHTTP:
 		if address == "" {
 			return out.Error(fmt.Sprintf("--endpoint-address required for %s transport", transport), errors.New("missing endpoint address"))
 		}
-	case "process":
+	case constants.AdapterTransportProcess:
 		if command == "" {
 			return out.Error("--binary or manifest entrypoint.command required for process transport", errors.New("missing command"))
 		}
@@ -555,12 +558,30 @@ func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	if out.jsonMode {
-		if err := out.Print(adapterRegistrationResultFromProto(resp)); err != nil {
-			return err
-		}
-	} else {
-		fmt.Printf("Installed local adapter %s (%s)\n", resp.GetName(), resp.GetAdapterId())
+	// Sanity check: only runs for process transport or when a binary was copied locally.
+	// Remote (gRPC/HTTP) adapters without --copy-binary have no local binary to verify,
+	// so sc stays nil and JSON output omits the sanity_check key (omitempty).
+	var sc *sanityCheckResult
+	if transport == constants.AdapterTransportProcess || binaryCopied {
+		r := sanityCheck(command)
+		sc = &r
+	}
+
+	result := installLocalResult{
+		Adapter:     adapterRegistrationResultFromProto(resp).Adapter,
+		SanityCheck: sc,
+	}
+	if err := out.Render(CommandResult{
+		Data: result,
+		HumanReadable: func() error {
+			fmt.Printf("Installed local adapter %s (%s)\n", resp.GetName(), resp.GetAdapterId())
+			if sc != nil {
+				printSanityCheckResult(os.Stdout, *sc)
+			}
+			return nil
+		},
+	}); err != nil {
+		return err
 	}
 
 	slot, _ := cmd.Flags().GetString("slot")
@@ -579,9 +600,9 @@ func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	if !out.jsonMode {
+	out.PrintText(func() {
 		fmt.Printf("Bound adapter %s to %s\n", adapterID, slot)
-	}
+	})
 	return nil
 }
 
@@ -810,18 +831,19 @@ func adaptersListGRPC(out *OutputFormatter) error {
 		}
 
 		overview := adaptersOverviewFromProto(resp)
-		if out.jsonMode {
-			return out.Print(overview)
-		}
+		return out.Render(CommandResult{
+			Data: overview,
+			HumanReadable: func() error {
+				if len(overview.Adapters) == 0 {
+					fmt.Println("No adapter slots found.")
+					return nil
+				}
 
-		if len(overview.Adapters) == 0 {
-			fmt.Println("No adapter slots found.")
-			return nil
-		}
-
-		printAdapterTable(overview.Adapters)
-		printAdapterRuntimeMessages(overview.Adapters)
-		return nil
+				printAdapterTable(overview.Adapters)
+				printAdapterRuntimeMessages(overview.Adapters)
+				return nil
+			},
+		})
 	})
 }
 
@@ -839,12 +861,13 @@ func adaptersBindGRPC(out *OutputFormatter, slot, adapter, cfg string) error {
 		}
 
 		entry := adapterEntryFromProto(resp.GetAdapter())
-		if out.jsonMode {
-			return out.Print(apihttp.AdapterActionResult{Adapter: entry})
-		}
-
-		printAdapterSummary("Bound", entry)
-		return nil
+		return out.Render(CommandResult{
+			Data: apihttp.AdapterActionResult{Adapter: entry},
+			HumanReadable: func() error {
+				printAdapterSummary("Bound", entry)
+				return nil
+			},
+		})
 	})
 }
 
@@ -856,12 +879,13 @@ func adaptersStartGRPC(out *OutputFormatter, slot string) error {
 		}
 
 		entry := adapterEntryFromProto(resp.GetAdapter())
-		if out.jsonMode {
-			return out.Print(apihttp.AdapterActionResult{Adapter: entry})
-		}
-
-		printAdapterSummary("Started", entry)
-		return nil
+		return out.Render(CommandResult{
+			Data: apihttp.AdapterActionResult{Adapter: entry},
+			HumanReadable: func() error {
+				printAdapterSummary("Started", entry)
+				return nil
+			},
+		})
 	})
 }
 
@@ -873,12 +897,13 @@ func adaptersStopGRPC(out *OutputFormatter, slot string) error {
 		}
 
 		entry := adapterEntryFromProto(resp.GetAdapter())
-		if out.jsonMode {
-			return out.Print(apihttp.AdapterActionResult{Adapter: entry})
-		}
-
-		printAdapterSummary("Stopped", entry)
-		return nil
+		return out.Render(CommandResult{
+			Data: apihttp.AdapterActionResult{Adapter: entry},
+			HumanReadable: func() error {
+				printAdapterSummary("Stopped", entry)
+				return nil
+			},
+		})
 	})
 }
 
@@ -902,9 +927,9 @@ func adapterEntryFromProto(entry *apiv1.AdapterEntry) apihttp.AdapterEntry {
 		return apihttp.AdapterEntry{}
 	}
 	out := apihttp.AdapterEntry{
-		Slot:      entry.GetSlot(),
-		Status:    entry.GetStatus(),
-		Config:    entry.GetConfigJson(),
+		Slot:   entry.GetSlot(),
+		Status: entry.GetStatus(),
+		Config: entry.GetConfigJson(),
 		UpdatedAt: func() string {
 			if ts := entry.GetUpdatedAt(); ts != nil {
 				return ts.AsTime().UTC().Format(time.RFC3339)
@@ -1317,3 +1342,113 @@ func cleanupAdapterDir(w io.Writer, adapterHome, destPath string, adapterDirExis
 	}
 }
 
+// --- Sanity check ---
+
+type sanityCheckEntry struct {
+	Name        string `json:"name"`
+	Passed      bool   `json:"passed"`
+	Message     string `json:"message,omitempty"`
+	Remediation string `json:"remediation,omitempty"`
+}
+
+// sanityCheckResult holds the outcome of a post-install binary sanity check.
+// BinaryPath is always populated (even on failure) for diagnostic purposes.
+type sanityCheckResult struct {
+	Passed     bool               `json:"passed"`
+	BinaryPath string             `json:"binary_path"`
+	Checks     []sanityCheckEntry `json:"checks"`
+}
+
+func sanityCheck(binaryPath string) sanityCheckResult {
+	result := sanityCheckResult{
+		Passed:     true,
+		BinaryPath: binaryPath,
+	}
+
+	// Check 1: Binary exists at expected path and is a regular file.
+	// os.Stat intentionally follows symlinks — a symlink to a valid executable is fine
+	// for process transport (exec will resolve it). copyFile uses Lstat to reject symlinks
+	// only when physically copying the binary into the instance directory.
+	info, err := os.Stat(binaryPath)
+	if err != nil {
+		result.Passed = false
+		entry := sanityCheckEntry{
+			Name:   "binary_exists",
+			Passed: false,
+		}
+		if errors.Is(err, os.ErrNotExist) {
+			entry.Message = fmt.Sprintf("binary not found at %s", binaryPath)
+			entry.Remediation = fmt.Sprintf("binary not found at %s — check --binary flag or build output", binaryPath)
+		} else {
+			entry.Message = fmt.Sprintf("cannot access binary at %s: %v", binaryPath, err)
+			entry.Remediation = fmt.Sprintf("cannot access binary at %s: %v — check file permissions", binaryPath, err)
+		}
+		result.Checks = append(result.Checks, entry)
+		return result // Cannot check further if binary is inaccessible.
+	}
+	if !info.Mode().IsRegular() {
+		result.Passed = false
+		result.Checks = append(result.Checks, sanityCheckEntry{
+			Name:        "binary_exists",
+			Passed:      false,
+			Message:     fmt.Sprintf("path %s is not a regular file", binaryPath),
+			Remediation: fmt.Sprintf("path %s is not a regular file — check --binary flag or build output", binaryPath),
+		})
+		return result // Cannot check executable if not a regular file.
+	}
+	result.Checks = append(result.Checks, sanityCheckEntry{
+		Name:    "binary_exists",
+		Passed:  true,
+		Message: fmt.Sprintf("binary found at %s", binaryPath),
+	})
+
+	// Check 2: Binary has executable permission.
+	if info.Mode().Perm()&0111 == 0 {
+		result.Passed = false
+		result.Checks = append(result.Checks, sanityCheckEntry{
+			Name:        "binary_executable",
+			Passed:      false,
+			Message:     fmt.Sprintf("binary at %s is not executable", binaryPath),
+			Remediation: fmt.Sprintf("binary at %s is not executable — run: chmod +x %s", binaryPath, binaryPath),
+		})
+	} else {
+		result.Checks = append(result.Checks, sanityCheckEntry{
+			Name:    "binary_executable",
+			Passed:  true,
+			Message: "binary is executable",
+		})
+	}
+
+	return result
+}
+
+// installLocalResult wraps registration output with optional sanity check for JSON mode.
+type installLocalResult struct {
+	Adapter     apihttp.AdapterDescriptor `json:"adapter"`
+	SanityCheck *sanityCheckResult        `json:"sanity_check,omitempty"`
+}
+
+func printSanityCheckResult(w io.Writer, result sanityCheckResult) {
+	if result.Passed {
+		// Build human-readable summary from check names (underscore → space).
+		// Currently only "binary_executable" passes through (binary_exists is filtered).
+		var parts []string
+		for _, c := range result.Checks {
+			if c.Passed && c.Name != "binary_exists" {
+				parts = append(parts, strings.ReplaceAll(c.Name, "_", " "))
+			}
+		}
+		if len(parts) == 0 {
+			fmt.Fprintln(w, "✓ Sanity check passed")
+		} else {
+			fmt.Fprintf(w, "✓ Sanity check passed: %s\n", strings.Join(parts, ", "))
+		}
+		return
+	}
+	fmt.Fprintln(w, "⚠ Sanity check failed:")
+	for _, c := range result.Checks {
+		if !c.Passed {
+			fmt.Fprintf(w, "  %s\n", c.Remediation)
+		}
+	}
+}

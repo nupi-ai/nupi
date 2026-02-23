@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 )
 
@@ -26,14 +27,14 @@ const (
 
 // SessionInfo provides context about an available session.
 type SessionInfo struct {
-	ID         string            `json:"id"`
-	Command    string            `json:"command"`
-	Args       []string          `json:"args,omitempty"`
-	WorkDir    string            `json:"work_dir,omitempty"`
-	Tool       string            `json:"tool,omitempty"`
-	Status     string            `json:"status"`
-	StartTime  time.Time         `json:"start_time"`
-	Metadata   map[string]string `json:"metadata,omitempty"`
+	ID        string            `json:"id"`
+	Command   string            `json:"command"`
+	Args      []string          `json:"args,omitempty"`
+	WorkDir   string            `json:"work_dir,omitempty"`
+	Tool      string            `json:"tool,omitempty"`
+	Status    string            `json:"status"`
+	StartTime time.Time         `json:"start_time"`
+	Metadata  map[string]string `json:"metadata,omitempty"`
 }
 
 // ToolDefinition describes a tool available to the AI for invocation.
@@ -90,21 +91,21 @@ type EventType string
 
 const (
 	// EventTypeUserIntent is the default - user voice/text requiring interpretation.
-	EventTypeUserIntent EventType = "user_intent"
+	EventTypeUserIntent EventType = constants.PromptEventUserIntent
 	// EventTypeSessionOutput is for notable terminal output needing AI analysis.
-	EventTypeSessionOutput EventType = "session_output"
+	EventTypeSessionOutput EventType = constants.PromptEventSessionOutput
 	// EventTypeHistorySummary requests summarizing conversation history.
-	EventTypeHistorySummary EventType = "history_summary"
+	EventTypeHistorySummary EventType = constants.PromptEventHistorySummary
 	// EventTypeClarification follows a previous clarification request.
-	EventTypeClarification EventType = "clarification"
+	EventTypeClarification EventType = constants.PromptEventClarification
 	// EventTypeMemoryFlush saves memories before conversation compaction.
-	EventTypeMemoryFlush EventType = "memory_flush"
+	EventTypeMemoryFlush EventType = constants.PromptEventMemoryFlush
 	// EventTypeScheduledTask is for periodic background tasks.
 	EventTypeScheduledTask EventType = "scheduled_task"
 	// EventTypeSessionSlug generates session file names.
-	EventTypeSessionSlug EventType = "session_slug"
+	EventTypeSessionSlug EventType = constants.PromptEventSessionSlug
 	// EventTypeOnboarding is for first-time user setup.
-	EventTypeOnboarding EventType = "onboarding"
+	EventTypeOnboarding EventType = constants.PromptEventOnboarding
 )
 
 // IntentRequest contains the context sent to the AI adapter for intent resolution.
@@ -304,5 +305,18 @@ func WithCoreMemoryProvider(provider CoreMemoryProvider) Option {
 func WithToolRegistry(registry ToolRegistry) Option {
 	return func(s *Service) {
 		s.toolRegistry = registry
+	}
+}
+
+// OnboardingProvider checks onboarding state and provides bootstrap content.
+type OnboardingProvider interface {
+	IsOnboarding() bool
+	BootstrapContent() string
+}
+
+// WithOnboardingProvider sets the onboarding provider for first-time setup detection.
+func WithOnboardingProvider(p OnboardingProvider) Option {
+	return func(s *Service) {
+		s.onboardingProvider = p
 	}
 }

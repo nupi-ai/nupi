@@ -6,6 +6,8 @@ import (
 	"embed"
 	"fmt"
 	"maps"
+
+	"github.com/nupi-ai/nupi/internal/constants"
 )
 
 //go:embed prompts/*.txt
@@ -15,12 +17,13 @@ var defaultPromptTemplates map[string]string
 
 func init() {
 	defaultPromptTemplates = map[string]string{
-		"user_intent":     mustReadPrompt("prompts/user_intent.txt"),
-		"session_output":  mustReadPrompt("prompts/session_output.txt"),
-		"history_summary": mustReadPrompt("prompts/history_summary.txt"),
-		"clarification":   mustReadPrompt("prompts/clarification.txt"),
-		"memory_flush":    mustReadPrompt("prompts/memory_flush.txt"),
-		"session_slug":    mustReadPrompt("prompts/session_slug.txt"),
+		constants.PromptEventUserIntent:     mustReadPrompt("prompts/user_intent.txt"),
+		constants.PromptEventSessionOutput:  mustReadPrompt("prompts/session_output.txt"),
+		constants.PromptEventHistorySummary: mustReadPrompt("prompts/history_summary.txt"),
+		constants.PromptEventClarification:  mustReadPrompt("prompts/clarification.txt"),
+		constants.PromptEventMemoryFlush:    mustReadPrompt("prompts/memory_flush.txt"),
+		constants.PromptEventSessionSlug:    mustReadPrompt("prompts/session_slug.txt"),
+		constants.PromptEventOnboarding:     mustReadPrompt("prompts/onboarding.txt"),
 	}
 }
 
@@ -32,13 +35,7 @@ func mustReadPrompt(name string) string {
 	return string(data)
 }
 
-var requiredAdapterSlots = []string{
-	"stt",
-	"ai",
-	"tts",
-	"vad",
-	"tunnel",
-}
+var requiredAdapterSlots = append([]string(nil), constants.RequiredAdapterSlots...)
 
 // DefaultPromptTemplates returns a copy of the default prompt templates.
 // Used by prompts.Engine for reset operations and CLI.
@@ -49,12 +46,13 @@ func DefaultPromptTemplates() map[string]string {
 // promptEventDescriptions maps event types to human-readable descriptions.
 // This is the single source of truth for event type descriptions.
 var promptEventDescriptions = map[string]string{
-	"user_intent":     "Interprets user voice/text commands",
-	"session_output":  "Analyzes terminal output for notifications",
-	"history_summary": "Summarizes conversation history",
-	"clarification":   "Handles follow-up responses",
-	"memory_flush":    "Saves important context before conversation compaction",
-	"session_slug":    "Generates a session slug and summary on session close",
+	constants.PromptEventUserIntent:     "Interprets user voice/text commands",
+	constants.PromptEventSessionOutput:  "Analyzes terminal output for notifications",
+	constants.PromptEventHistorySummary: "Summarizes conversation history",
+	constants.PromptEventClarification:  "Handles follow-up responses",
+	constants.PromptEventMemoryFlush:    "Saves important context before conversation compaction",
+	constants.PromptEventSessionSlug:    "Generates a session slug and summary on session close",
+	constants.PromptEventOnboarding:     "First-time setup conversation with a new user",
 }
 
 // PromptEventDescriptions returns a copy of the event type descriptions.

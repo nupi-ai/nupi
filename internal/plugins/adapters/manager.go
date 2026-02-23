@@ -19,6 +19,7 @@ import (
 
 	"github.com/nupi-ai/nupi/internal/config"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/jsrunner"
 	"github.com/nupi-ai/nupi/internal/napdial"
@@ -31,11 +32,11 @@ import (
 type Slot string
 
 const (
-	SlotAI     Slot = "ai"
+	SlotAI     Slot = constants.AdapterSlotAI
 	SlotSTT    Slot = slots.STT
 	SlotTTS    Slot = slots.TTS
 	SlotVAD    Slot = slots.VAD
-	SlotTunnel Slot = "tunnel"
+	SlotTunnel Slot = constants.AdapterSlotTunnel
 )
 
 const processReadyTimeout = 30 * time.Second

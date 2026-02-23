@@ -6,13 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/nupi-ai/nupi/internal/constants"
 )
 
-var allowedAdapterTransports = map[string]struct{}{
-	"process": {},
-	"grpc":    {},
-	"http":    {},
-}
+var allowedAdapterTransports = constants.StringSet(constants.AllowedAdapterTransports)
 
 // NormalizeAdapterTransport trims whitespace, applies the default ("process" when empty)
 // and verifies the transport is one of the allowed values.
@@ -23,7 +21,7 @@ func NormalizeAdapterTransport(value string) (string, error) {
 func sanitizeTransport(value string) (string, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
-		value = "process"
+		value = constants.DefaultAdapterTransport
 	}
 	if _, ok := allowedAdapterTransports[value]; !ok {
 		return "", fmt.Errorf("config: invalid adapter transport %q", value)
