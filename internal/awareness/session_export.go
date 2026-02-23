@@ -9,11 +9,11 @@ import (
 	"regexp"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
+	"github.com/nupi-ai/nupi/internal/sanitize"
 )
 
 // maxExportContentBytes is the maximum size of a session export markdown file.
@@ -288,10 +288,7 @@ func (s *Service) writeSessionExport(ctx context.Context, sessionID, slug, aiSum
 		if cutAt < 0 {
 			cutAt = 0
 		}
-		truncated := content[:cutAt]
-		for len(truncated) > 0 && !utf8.ValidString(truncated) {
-			truncated = truncated[:len(truncated)-1]
-		}
+		truncated := sanitize.TruncateUTF8(content, cutAt)
 		content = truncated + truncationNotice
 	}
 

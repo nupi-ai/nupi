@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"github.com/nupi-ai/nupi/internal/sanitize"
 	"strings"
 	"testing"
 )
@@ -212,8 +213,8 @@ func TestSanitizeAdapterSlug(t *testing.T) {
 	}
 
 	for input, expected := range cases {
-		if actual := sanitizeAdapterSlug(input); actual != expected {
-			t.Fatalf("sanitizeAdapterSlug(%q) = %q, expected %q", input, actual, expected)
+		if actual := sanitize.SafeSlug(input); actual != expected {
+			t.Fatalf("sanitize.SafeSlug(%q) = %q, expected %q", input, actual, expected)
 		}
 	}
 }

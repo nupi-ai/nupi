@@ -23,6 +23,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/config"
 	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/grpcclient"
+	"github.com/nupi-ai/nupi/internal/sanitize"
 	manifestpkg "github.com/nupi-ai/nupi/internal/plugins/manifest"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -382,7 +383,7 @@ func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 	if slugSource == "" {
 		slugSource = adapterID
 	}
-	slug := sanitizeAdapterSlug(slugSource)
+	slug := sanitize.SafeSlug(slugSource)
 
 	var command string
 	if buildFlag {
@@ -1215,29 +1216,6 @@ func parseKeyValuePairs(values []string) (map[string]string, error) {
 }
 
 // --- File utilities ---
-
-func sanitizeAdapterSlug(value string) string {
-	value = strings.ToLower(strings.TrimSpace(value))
-	var b strings.Builder
-	for _, r := range value {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
-			b.WriteRune(r)
-		case r == '-' || r == '_':
-			b.WriteRune(r)
-		case r == ' ' || r == '.' || r == '/':
-			b.WriteRune('-')
-		}
-	}
-	res := strings.Trim(b.String(), "-_")
-	if res == "" {
-		return "adapter"
-	}
-	if len(res) > adapterSlugMaxLength {
-		return res[:adapterSlugMaxLength]
-	}
-	return res
-}
 
 func copyFile(src, dst string, perm fs.FileMode) error {
 	cleanSrc := filepath.Clean(src)

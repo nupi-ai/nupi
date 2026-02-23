@@ -11,6 +11,7 @@ import (
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
+	"github.com/nupi-ai/nupi/internal/sanitize"
 )
 
 const (
@@ -319,10 +320,7 @@ func dedupKey(sessionID, eventType, body string) string {
 	if sessionID != "" {
 		return sessionID + ":" + eventType
 	}
-	hint := body
-	if len(hint) > 64 {
-		hint = hint[:64]
-	}
+	hint := sanitize.TruncateUTF8(body, 64)
 	return ":" + eventType + ":" + hint
 }
 
