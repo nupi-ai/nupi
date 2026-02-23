@@ -7,8 +7,8 @@ use std::{
     env, fs,
     path::PathBuf,
     sync::{
-        Arc, Once,
         atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc, Once,
     },
     time::Duration,
 };
@@ -17,7 +17,7 @@ static TLS_INSECURE_WARN: Once = Once::new();
 
 use dirs::home_dir;
 use hound::{SampleFormat, WavSpec, WavWriter};
-use rusqlite::{Connection, OpenFlags, params};
+use rusqlite::{params, Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tonic::transport::{Channel, ClientTlsConfig, Endpoint};
@@ -36,11 +36,6 @@ const DEFAULT_PLAYBACK_STREAM_ID: &str = "tts";
 const SLOT_STT: &str = "stt";
 const SLOT_TTS: &str = "tts";
 const CANCELLED_MESSAGE: &str = "Voice stream cancelled by user";
-
-const MAX_METADATA_ENTRIES: usize = 32;
-const MAX_METADATA_KEY_CHARS: usize = 64;
-const MAX_METADATA_VALUE_CHARS: usize = 512;
-const MAX_METADATA_TOTAL_BYTES: usize = 4096;
 
 const AUDIO_CHUNK_SIZE: usize = 4096;
 
@@ -554,7 +549,7 @@ fn format_timestamp(ts: prost_types::Timestamp) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Metadata validation (mirrored from rest_client.rs)
+// Metadata normalization
 // ---------------------------------------------------------------------------
 
 fn normalize_metadata_map(
@@ -569,45 +564,10 @@ fn normalize_metadata_map(
         }
         normalized.insert(trimmed_key.to_string(), value.trim().to_string());
     }
-    if normalized.len() < MAX_METADATA_ENTRIES {
-        normalized
-            .entry("client".to_string())
-            .or_insert_with(|| client_label.to_string());
-    }
     normalized
-}
-
-fn validate_metadata_map(metadata: &HashMap<String, String>) -> Result<(), GrpcClientError> {
-    if metadata.len() > MAX_METADATA_ENTRIES {
-        return Err(GrpcClientError::Config(format!(
-            "metadata has {} entries, max {}",
-            metadata.len(),
-            MAX_METADATA_ENTRIES
-        )));
-    }
-
-    let mut total_bytes: usize = 0;
-    for (key, value) in metadata {
-        if key.chars().count() > MAX_METADATA_KEY_CHARS {
-            return Err(GrpcClientError::Config(format!(
-                "metadata key {key:?} exceeds {MAX_METADATA_KEY_CHARS} characters",
-            )));
-        }
-        if value.chars().count() > MAX_METADATA_VALUE_CHARS {
-            return Err(GrpcClientError::Config(format!(
-                "metadata value for key {key:?} exceeds {MAX_METADATA_VALUE_CHARS} characters",
-            )));
-        }
-        total_bytes += key.len() + value.len();
-    }
-
-    if total_bytes > MAX_METADATA_TOTAL_BYTES {
-        return Err(GrpcClientError::Config(format!(
-            "metadata total size exceeds {MAX_METADATA_TOTAL_BYTES} bytes",
-        )));
-    }
-
-    Ok(())
+        .entry("client".to_string())
+        .or_insert_with(|| client_label.to_string());
+    normalized
 }
 
 fn default_capture_format_summary() -> AudioFormatSummary {
@@ -746,14 +706,26 @@ impl GrpcClient {
         // 1. NUPI_BASE_URL env → explicit endpoint
         if let Ok(raw) = env::var("NUPI_BASE_URL") {
             if !raw.trim().is_empty() {
-                return Self::from_explicit(raw.trim(), persisted.api_token.clone(), None, language).await;
+                return Self::from_explicit(
+                    raw.trim(),
+                    persisted.api_token.clone(),
+                    None,
+                    language,
+                )
+                .await;
             }
         }
 
         // 2. Persisted settings
         if let Some(base) = persisted.base_url.as_ref() {
             if !base.trim().is_empty() {
-                return Self::from_explicit(base.trim(), persisted.api_token.clone(), None, language).await;
+                return Self::from_explicit(
+                    base.trim(),
+                    persisted.api_token.clone(),
+                    None,
+                    language,
+                )
+                .await;
             }
         }
 
@@ -771,7 +743,13 @@ impl GrpcClient {
                     .map(|v| v.trim().to_string())
                     .filter(|v| !v.is_empty());
 
-                return Self::from_explicit(base, fallback_token, bootstrap.tls.as_ref(), language.clone()).await;
+                return Self::from_explicit(
+                    base,
+                    fallback_token,
+                    bootstrap.tls.as_ref(),
+                    language.clone(),
+                )
+                .await;
             }
         }
 
@@ -811,8 +789,13 @@ impl GrpcClient {
             .map(|v| v == "1")
             .unwrap_or(false);
 
-        let channel = build_channel(&uri, tls_enabled, insecure, snapshot.tls_cert_path.as_deref())
-            .await?;
+        let channel = build_channel(
+            &uri,
+            tls_enabled,
+            insecure,
+            snapshot.tls_cert_path.as_deref(),
+        )
+        .await?;
 
         let mut token = resolve_token(snapshot.tokens);
         if token.is_none() {
@@ -822,7 +805,11 @@ impl GrpcClient {
                 .filter(|s| !s.is_empty());
         }
 
-        Ok(Self { channel, token, language })
+        Ok(Self {
+            channel,
+            token,
+            language,
+        })
     }
 
     async fn from_explicit(
@@ -882,7 +869,11 @@ impl GrpcClient {
             .filter(|v| !v.is_empty());
         let token = env_token.or(fallback_token);
 
-        Ok(Self { channel, token, language })
+        Ok(Self {
+            channel,
+            token,
+            language,
+        })
     }
 
     // -----------------------------------------------------------------------
@@ -901,11 +892,7 @@ impl GrpcClient {
     pub async fn is_reachable(&self) -> bool {
         match self.daemon_status().await {
             Ok(_) => true,
-            Err(GrpcClientError::Grpc(ref s))
-                if s.code() == tonic::Code::Unauthenticated =>
-            {
-                true
-            }
+            Err(GrpcClientError::Grpc(ref s)) if s.code() == tonic::Code::Unauthenticated => true,
             Err(_) => false,
         }
     }
@@ -986,13 +973,21 @@ impl GrpcClient {
         let id_str = id
             .and_then(|v| {
                 let t = v.trim().to_string();
-                if t.is_empty() { None } else { Some(t) }
+                if t.is_empty() {
+                    None
+                } else {
+                    Some(t)
+                }
             })
             .unwrap_or_default();
         let token_str = token_value
             .and_then(|v| {
                 let t = v.trim().to_string();
-                if t.is_empty() { None } else { Some(t) }
+                if t.is_empty() {
+                    None
+                } else {
+                    Some(t)
+                }
             })
             .unwrap_or_default();
 
@@ -1058,27 +1053,35 @@ impl GrpcClient {
         let session = session_id
             .and_then(|v| {
                 let t = v.trim();
-                if t.is_empty() { None } else { Some(t.to_string()) }
+                if t.is_empty() {
+                    None
+                } else {
+                    Some(t.to_string())
+                }
             })
             .unwrap_or_default();
 
         let mut client =
             nupi_api::audio_service_client::AudioServiceClient::new(self.channel.clone());
         let result = client
-            .get_audio_capabilities(
-                self.auth_request(nupi_api::GetAudioCapabilitiesRequest {
-                    session_id: session,
-                }),
-            )
+            .get_audio_capabilities(self.auth_request(nupi_api::GetAudioCapabilitiesRequest {
+                session_id: session,
+            }))
             .await;
 
         match result {
             Ok(response) => {
                 let inner = response.into_inner();
-                let capture: Vec<AudioCapabilitySummary> =
-                    inner.capture.into_iter().map(AudioCapabilitySummary::from).collect();
-                let playback: Vec<AudioCapabilitySummary> =
-                    inner.playback.into_iter().map(AudioCapabilitySummary::from).collect();
+                let capture: Vec<AudioCapabilitySummary> = inner
+                    .capture
+                    .into_iter()
+                    .map(AudioCapabilitySummary::from)
+                    .collect();
+                let playback: Vec<AudioCapabilitySummary> = inner
+                    .playback
+                    .into_iter()
+                    .map(AudioCapabilitySummary::from)
+                    .collect();
 
                 let capture_enabled = capture.iter().any(|c| {
                     c.metadata
@@ -1186,7 +1189,6 @@ impl GrpcClient {
         }
 
         let metadata_norm = normalize_metadata_map(metadata, "desktop");
-        validate_metadata_map(&metadata_norm)?;
         let subscribe_playback = !disable_playback || playback_output.is_some();
 
         let capabilities = self.audio_capabilities(Some(trimmed_session)).await?;
@@ -1267,10 +1269,8 @@ impl GrpcClient {
 
                 if pcm_buffer.len() >= AUDIO_CHUNK_SIZE {
                     bytes_counter.fetch_add(pcm_buffer.len() as u64, Ordering::SeqCst);
-                    let chunk_data = std::mem::replace(
-                        &mut pcm_buffer,
-                        Vec::with_capacity(AUDIO_CHUNK_SIZE),
-                    );
+                    let chunk_data =
+                        std::mem::replace(&mut pcm_buffer, Vec::with_capacity(AUDIO_CHUNK_SIZE));
                     let req = nupi_api::StreamAudioInRequest {
                         session_id: session_for_stream.clone(),
                         stream_id: stream_id_for_stream.clone(),
@@ -1498,11 +1498,7 @@ impl GrpcClient {
         let mut wav_writer: Option<WavWriter<std::io::BufWriter<std::fs::File>>> = None;
         let mut playback_path = playback_output;
 
-        while let Some(msg) = stream
-            .message()
-            .await
-            .map_err(GrpcClientError::Grpc)?
-        {
+        while let Some(msg) = stream.message().await.map_err(GrpcClientError::Grpc)? {
             // Extract format from first message
             if format_summary.is_none() {
                 if let Some(fmt) = &msg.format {
@@ -1626,7 +1622,6 @@ impl GrpcClient {
         });
 
         let metadata_norm = normalize_metadata_map(metadata, "desktop");
-        validate_metadata_map(&metadata_norm)?;
 
         let capabilities = self.audio_capabilities(Some(trimmed_session)).await?;
         if !capabilities.playback_enabled {
@@ -1760,10 +1755,7 @@ impl GrpcClient {
             .collect())
     }
 
-    pub async fn get_recording(
-        &self,
-        session_id: &str,
-    ) -> Result<String, GrpcClientError> {
+    pub async fn get_recording(&self, session_id: &str) -> Result<String, GrpcClientError> {
         const MAX_RECORDING_SIZE: usize = 100 * 1024 * 1024; // 100 MiB
 
         let mut client =
@@ -1988,11 +1980,7 @@ fn parse_tokens(raw: String) -> Vec<String> {
     if let Ok(structured) = serde_json::from_str::<Vec<serde_json::Value>>(trimmed) {
         let collected = structured
             .into_iter()
-            .filter_map(|v| {
-                v.get("token")
-                    .and_then(|t| t.as_str())
-                    .map(str::to_owned)
-            })
+            .filter_map(|v| v.get("token").and_then(|t| t.as_str()).map(str::to_owned))
             .collect::<Vec<_>>();
         return sanitize_tokens(collected);
     }
@@ -2074,71 +2062,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn validate_metadata_map_accepts_valid() {
-        let mut m = HashMap::new();
-        m.insert("key1".to_string(), "value1".to_string());
-        m.insert("client".to_string(), "desktop".to_string());
-        assert!(validate_metadata_map(&m).is_ok());
-    }
-
-    #[test]
-    fn validate_metadata_map_accepts_empty() {
-        let m = HashMap::new();
-        assert!(validate_metadata_map(&m).is_ok());
-    }
-
-    #[test]
-    fn validate_metadata_map_rejects_too_many_entries() {
-        let mut m = HashMap::new();
-        for i in 0..=MAX_METADATA_ENTRIES {
-            m.insert(format!("k{i}"), "v".to_string());
-        }
-        let err = validate_metadata_map(&m).unwrap_err();
-        assert!(err.to_string().contains("entries"));
-    }
-
-    #[test]
-    fn validate_metadata_map_rejects_long_key() {
-        let mut m = HashMap::new();
-        let long_key: String = "a".repeat(MAX_METADATA_KEY_CHARS + 1);
-        m.insert(long_key, "v".to_string());
-        let err = validate_metadata_map(&m).unwrap_err();
-        assert!(err.to_string().contains("key"));
-    }
-
-    #[test]
-    fn validate_metadata_map_rejects_long_value() {
-        let mut m = HashMap::new();
-        let long_val: String = "b".repeat(MAX_METADATA_VALUE_CHARS + 1);
-        m.insert("k".to_string(), long_val);
-        let err = validate_metadata_map(&m).unwrap_err();
-        assert!(err.to_string().contains("value"));
-    }
-
-    #[test]
-    fn validate_metadata_map_rejects_total_bytes_exceeded() {
-        let mut m = HashMap::new();
-        for i in 0..21 {
-            m.insert(format!("{i:02}"), "x".repeat(200));
-        }
-        let err = validate_metadata_map(&m).unwrap_err();
-        assert!(err.to_string().contains("total size"));
-    }
-
-    #[test]
-    fn validate_metadata_map_key_limit_counts_chars_not_bytes() {
-        let mut m = HashMap::new();
-        let emoji_key: String = "\u{1F600}".repeat(MAX_METADATA_KEY_CHARS);
-        m.insert(emoji_key, "v".to_string());
-        assert!(validate_metadata_map(&m).is_ok());
-
-        let mut m2 = HashMap::new();
-        let long_emoji_key: String = "\u{1F600}".repeat(MAX_METADATA_KEY_CHARS + 1);
-        m2.insert(long_emoji_key, "v".to_string());
-        assert!(validate_metadata_map(&m2).is_err());
-    }
-
-    #[test]
     fn normalize_metadata_map_trims_and_injects_client() {
         let mut m = HashMap::new();
         m.insert("  foo  ".to_string(), "  bar  ".to_string());
@@ -2151,28 +2074,26 @@ mod tests {
     }
 
     #[test]
-    fn normalize_metadata_map_skips_client_at_max_entries() {
+    fn normalize_metadata_map_injects_client_for_large_maps() {
         let mut m = HashMap::new();
-        for i in 0..MAX_METADATA_ENTRIES {
+        for i in 0..128 {
             m.insert(format!("k{i}"), "v".to_string());
         }
         let result = normalize_metadata_map(m, "desktop");
-        assert_eq!(result.len(), MAX_METADATA_ENTRIES);
-        assert!(!result.contains_key("client"));
-        assert!(validate_metadata_map(&result).is_ok());
+        assert_eq!(result.get("client"), Some(&"desktop".to_string()));
+        assert_eq!(result.len(), 129);
     }
 
     #[test]
     fn normalize_metadata_map_preserves_existing_client() {
         let mut m = HashMap::new();
-        for i in 0..MAX_METADATA_ENTRIES - 1 {
+        for i in 0..16 {
             m.insert(format!("k{i}"), "v".to_string());
         }
         m.insert("client".to_string(), "custom".to_string());
         let result = normalize_metadata_map(m, "desktop");
-        assert_eq!(result.len(), MAX_METADATA_ENTRIES);
+        assert_eq!(result.len(), 17);
         assert_eq!(result.get("client"), Some(&"custom".to_string()));
-        assert!(validate_metadata_map(&result).is_ok());
     }
 
     #[test]
@@ -2284,7 +2205,11 @@ mod tests {
 
     #[test]
     fn resolve_token_sorts_and_picks_first() {
-        let tokens = vec!["charlie".to_string(), "alpha".to_string(), "bravo".to_string()];
+        let tokens = vec![
+            "charlie".to_string(),
+            "alpha".to_string(),
+            "bravo".to_string(),
+        ];
         let result = resolve_token(tokens);
         // After sorting: alpha, bravo, charlie → picks "alpha" (unless env overrides).
         let env_token = env::var("NUPI_API_TOKEN")

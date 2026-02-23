@@ -621,6 +621,94 @@ func TestAudioServiceStreamAudioIn(t *testing.T) {
 	expectNoEnvelope(t, segSub)
 }
 
+func TestAudioServiceStreamAudioInRejectsInvalidMetadata(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	enableVoiceAdapters(t, apiServer.configStore)
+	bus := eventbus.New()
+	ingressSvc := ingress.New(bus)
+	apiServer.SetAudioIngress(newTestAudioIngressProvider(ingressSvc))
+	apiServer.sessionManager = &stubSessionManager{}
+
+	service := newAudioService(apiServer)
+
+	baseRequest := func(meta map[string]string) *apiv1.StreamAudioInRequest {
+		return &apiv1.StreamAudioInRequest{
+			SessionId: "sess-metadata",
+			StreamId:  "mic",
+			Format: &apiv1.AudioFormat{
+				Encoding:        "pcm_s16le",
+				SampleRate:      16000,
+				Channels:        1,
+				BitDepth:        16,
+				FrameDurationMs: 20,
+			},
+			Chunk: &apiv1.AudioChunk{
+				Data:     []byte{1, 2, 3, 4},
+				Sequence: 1,
+				Metadata: meta,
+			},
+		}
+	}
+
+	tooManyEntries := make(map[string]string, maxAudioChunkMetadataEntries+1)
+	for i := range maxAudioChunkMetadataEntries + 1 {
+		tooManyEntries[fmt.Sprintf("k%02d", i)] = "v"
+	}
+
+	totalBytesExceeded := make(map[string]string, 17)
+	for i := range 17 {
+		totalBytesExceeded[fmt.Sprintf("%02d", i)] = strings.Repeat("x", 510)
+	}
+
+	tests := []struct {
+		name         string
+		metadata     map[string]string
+		wantContains string
+	}{
+		{
+			name:         "too_many_entries",
+			metadata:     tooManyEntries,
+			wantContains: "metadata exceeds maximum",
+		},
+		{
+			name:         "key_too_long",
+			metadata:     map[string]string{strings.Repeat("k", maxAudioChunkMetadataKeyRunes+1): "v"},
+			wantContains: "metadata key",
+		},
+		{
+			name:         "value_too_long",
+			metadata:     map[string]string{"k": strings.Repeat("ź", maxAudioChunkMetadataValueRunes+1)},
+			wantContains: "metadata value",
+		},
+		{
+			name:         "total_bytes_exceeded",
+			metadata:     totalBytesExceeded,
+			wantContains: "metadata total size exceeds",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			stream := &fakeAudioInStream{
+				ctx: context.WithValue(context.Background(), authContextKey{}, storedToken{Role: string(roleAdmin)}),
+				reqs: []*apiv1.StreamAudioInRequest{
+					baseRequest(tc.metadata),
+				},
+			}
+			err := service.StreamAudioIn(stream)
+			if err == nil {
+				t.Fatal("expected error for invalid metadata")
+			}
+			if status.Code(err) != codes.InvalidArgument {
+				t.Fatalf("expected InvalidArgument, got %v", status.Code(err))
+			}
+			if !strings.Contains(err.Error(), tc.wantContains) {
+				t.Fatalf("expected %q in error, got %v", tc.wantContains, err)
+			}
+		})
+	}
+}
+
 func TestAudioServiceStreamAudioOut(t *testing.T) {
 	apiServer, _ := newTestAPIServer(t)
 	enableVoiceAdapters(t, apiServer.configStore)
