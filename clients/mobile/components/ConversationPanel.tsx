@@ -18,8 +18,7 @@ import Animated, {
 } from "react-native-reanimated";
 
 import { Text } from "@/components/Themed";
-import { useColorScheme } from "@/components/useColorScheme";
-import Colors from "@/constants/Colors";
+import { useThemeColors } from "@/components/useColorScheme";
 import type { ConversationTurn } from "@/lib/useConversation";
 
 interface ConversationPanelProps {
@@ -96,19 +95,19 @@ function ThinkingIndicator({ visible }: { visible: boolean }) {
     opacity: opacity.value,
   }));
 
-  const colorScheme = useColorScheme() ?? "dark";
+  const colors = useThemeColors("dark");
 
   if (!visible) return null;
 
   return (
     <RNView
-      style={[styles.aiBubble, { backgroundColor: Colors[colorScheme].surface }]}
+      style={[styles.aiBubble, { backgroundColor: colors.surface }]}
       accessibilityRole="text"
       accessibilityLabel="AI is thinking"
       accessibilityLiveRegion="polite"
     >
       <Animated.View style={animatedStyle}>
-        <Text style={[styles.thinkingDots, { color: Colors[colorScheme].text }]}>
+        <Text style={[styles.thinkingDots, { color: colors.text }]}>
           {"\u2022\u2022\u2022"}
         </Text>
       </Animated.View>
@@ -117,7 +116,7 @@ function ThinkingIndicator({ visible }: { visible: boolean }) {
 }
 
 const MessageBubble = memo(function MessageBubble({ turn, index }: { turn: ConversationTurn; index: number }) {
-  const colorScheme = useColorScheme() ?? "dark";
+  const colors = useThemeColors("dark");
 
   // System/tool messages: centered, italic
   if (turn.origin === "system" || turn.origin === "tool") {
@@ -128,10 +127,10 @@ const MessageBubble = memo(function MessageBubble({ turn, index }: { turn: Conve
         accessibilityLabel={`${turn.origin} says: ${turn.text}`}
         testID={`conversation-message-${index}`}
       >
-        <Text style={[styles.systemText, { color: Colors[colorScheme].text }]}>
+        <Text style={[styles.systemText, { color: colors.text }]}>
           {turn.text}
         </Text>
-        <Text style={[styles.timestamp, { color: Colors[colorScheme].text }]}>
+        <Text style={[styles.timestamp, { color: colors.text }]}>
           {formatTime(turn.at)}
         </Text>
       </RNView>
@@ -145,7 +144,7 @@ const MessageBubble = memo(function MessageBubble({ turn, index }: { turn: Conve
         style={[
           styles.userBubble,
           {
-            backgroundColor: Colors[colorScheme].tint,
+            backgroundColor: colors.tint,
             opacity: turn.isOptimistic ? 0.7 : 1,
           },
         ]}
@@ -153,10 +152,10 @@ const MessageBubble = memo(function MessageBubble({ turn, index }: { turn: Conve
         accessibilityLabel={`user says: ${turn.text}`}
         testID={`conversation-message-${index}`}
       >
-        <Text style={[styles.userText, { color: Colors[colorScheme].background }]}>
+        <Text style={[styles.userText, { color: colors.background }]}>
           {turn.text}
         </Text>
-        <Text style={[styles.timestamp, { color: Colors[colorScheme].background }]}>
+        <Text style={[styles.timestamp, { color: colors.background }]}>
           {formatTime(turn.at)}
         </Text>
       </RNView>
@@ -174,20 +173,20 @@ const MessageBubble = memo(function MessageBubble({ turn, index }: { turn: Conve
       accessibilityLiveRegion="polite"
       testID={`conversation-message-${index}`}
     >
-      <RNView style={[styles.aiBubble, { backgroundColor: Colors[colorScheme].surface }]}>
-        <Text style={[styles.aiText, { color: Colors[colorScheme].text }]}>
+      <RNView style={[styles.aiBubble, { backgroundColor: colors.surface }]}>
+        <Text style={[styles.aiText, { color: colors.text }]}>
           {turn.text}
         </Text>
       </RNView>
       {annotations.map((annotation, i) => (
         <Text
           key={i}
-          style={[styles.actionAnnotation, { color: Colors[colorScheme].tint }]}
+          style={[styles.actionAnnotation, { color: colors.tint }]}
         >
           [{annotation}]
         </Text>
       ))}
-      <Text style={[styles.timestamp, { color: Colors[colorScheme].text }]}>
+      <Text style={[styles.timestamp, { color: colors.text }]}>
         {formatTime(turn.at)}
       </Text>
     </RNView>
@@ -195,7 +194,7 @@ const MessageBubble = memo(function MessageBubble({ turn, index }: { turn: Conve
 });
 
 export function ConversationPanel({ turns, isThinking, pollError, sendError, style }: ConversationPanelProps) {
-  const colorScheme = useColorScheme() ?? "dark";
+  const colors = useThemeColors("dark");
   const { height: windowHeight } = useWindowDimensions();
   const maxHeight = windowHeight * MAX_HEIGHT_RATIO;
   const listRef = useRef<FlatList<ConversationTurn>>(null);
@@ -260,7 +259,7 @@ export function ConversationPanel({ turns, isThinking, pollError, sendError, sty
             {sendError ? (
               <RNView style={styles.errorRow}>
                 <Text
-                  style={[styles.errorText, { color: Colors[colorScheme].danger }]}
+                  style={[styles.errorText, { color: colors.danger }]}
                   accessibilityRole="alert"
                   testID="conversation-send-error"
                 >
@@ -271,7 +270,7 @@ export function ConversationPanel({ turns, isThinking, pollError, sendError, sty
             {pollError ? (
               <RNView style={styles.errorRow}>
                 <Text
-                  style={[styles.errorText, { color: Colors[colorScheme].danger }]}
+                  style={[styles.errorText, { color: colors.danger }]}
                   accessibilityRole="alert"
                   testID="conversation-poll-error"
                 >

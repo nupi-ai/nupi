@@ -4,13 +4,12 @@ import { router } from "expo-router";
 import { Button } from "@/components/Button";
 import { ConnectionErrorView } from "@/components/ConnectionErrorView";
 import Colors from "@/constants/designTokens";
-import { useColorScheme } from "@/components/useColorScheme";
+import { useThemeColors } from "@/components/useColorScheme";
 import { Text, View } from "@/components/Themed";
 import { useConnection } from "@/lib/ConnectionContext";
 
 export default function HomeScreen() {
-  const colorScheme = useColorScheme() ?? "light";
-  const colors = Colors[colorScheme];
+  const colors = useThemeColors();
   const connection = useConnection();
 
   const isReconnecting = connection.reconnecting;

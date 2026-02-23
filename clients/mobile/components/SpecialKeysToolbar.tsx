@@ -8,8 +8,7 @@ import {
   View as RNView,
 } from "react-native";
 
-import { useColorScheme } from "@/components/useColorScheme";
-import Colors from "@/constants/Colors";
+import { useThemeColors } from "@/components/useColorScheme";
 
 /** Escape sequences for special terminal keys. */
 const KEYS = {
@@ -32,7 +31,7 @@ export function SpecialKeysToolbar({
   ctrlActive,
   onCtrlToggle,
 }: SpecialKeysToolbarProps) {
-  const colorScheme = useColorScheme() ?? "dark";
+  const colors = useThemeColors("dark");
 
   const sendKey = useCallback(
     (seq: string) => {
@@ -41,18 +40,18 @@ export function SpecialKeysToolbar({
     [onSendInput]
   );
 
-  const keyColor = Colors[colorScheme].text;
-  const bgColor = Colors[colorScheme].surface;
+  const keyColor = colors.text;
+  const bgColor = colors.surface;
   const ctrlBg = ctrlActive
-    ? Colors[colorScheme].tint
-    : Colors[colorScheme].surface;
+    ? colors.tint
+    : colors.surface;
   const ctrlTextColor = ctrlActive
-    ? Colors[colorScheme].background
-    : Colors[colorScheme].text;
+    ? colors.background
+    : colors.text;
 
   return (
     <RNView
-      style={[styles.container, { backgroundColor: Colors[colorScheme].terminalBackground }]}
+      style={[styles.container, { backgroundColor: colors.terminalBackground }]}
       accessibilityRole="toolbar"
       accessibilityLabel="Special keys toolbar"
     >

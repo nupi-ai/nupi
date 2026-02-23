@@ -8,8 +8,7 @@ import {
 } from "react-native";
 
 import { Text } from "@/components/Themed";
-import { useColorScheme } from "@/components/useColorScheme";
-import Colors from "@/constants/Colors";
+import { useThemeColors } from "@/components/useColorScheme";
 import {
   MODEL_SIZE_MB,
   GGML_MODEL_SIZE_MB,
@@ -63,7 +62,7 @@ export function ModelDownloadSheet({
   onCancel,
   error,
 }: ModelDownloadSheetProps) {
-  const colorScheme = useColorScheme() ?? "dark";
+  const colors = useThemeColors("dark");
   // Compute remaining size once when the sheet first renders (before download
   // starts). Stored in a ref so re-renders during download don't re-read the
   // filesystem (file existence may be in flux) and the displayed value stays
@@ -78,7 +77,7 @@ export function ModelDownloadSheet({
     <RNView
       style={[
         styles.overlay,
-        { backgroundColor: Colors[colorScheme].overlay },
+        { backgroundColor: colors.overlay },
       ]}
       accessibilityLabel="Voice model download prompt"
     >
@@ -87,17 +86,17 @@ export function ModelDownloadSheet({
       <RNView
         style={[
           styles.sheet,
-          { backgroundColor: Colors[colorScheme].surface },
+          { backgroundColor: colors.surface },
         ]}
       >
         <Text
-          style={[styles.title, { color: Colors[colorScheme].text }]}
+          style={[styles.title, { color: colors.text }]}
           accessibilityRole="header"
         >
           Download Voice Model
         </Text>
 
-        <Text style={[styles.description, { color: Colors[colorScheme].text }]}>
+        <Text style={[styles.description, { color: colors.text }]}>
           {isInitializing && !isDownloading
             ? "Voice model downloaded — preparing for first use. This may take a moment."
             : <>
@@ -112,7 +111,7 @@ export function ModelDownloadSheet({
 
         {error && (
           <Text
-            style={[styles.errorText, { color: Colors[colorScheme].danger }]}
+            style={[styles.errorText, { color: colors.danger }]}
             numberOfLines={2}
             ellipsizeMode="tail"
             accessibilityLiveRegion="assertive"
@@ -125,11 +124,11 @@ export function ModelDownloadSheet({
           <RNView style={styles.progressContainer}>
             <ActivityIndicator
               size="small"
-              color={Colors[colorScheme].tint}
+              color={colors.tint}
               accessibilityLabel="Downloading voice model"
             />
             <Text
-              style={[styles.progressText, { color: Colors[colorScheme].text }]}
+              style={[styles.progressText, { color: colors.text }]}
             >
               {getDownloadingLabel(downloadStage)}... {downloadProgress}%
             </Text>
@@ -140,11 +139,11 @@ export function ModelDownloadSheet({
           <RNView style={styles.progressContainer}>
             <ActivityIndicator
               size="small"
-              color={Colors[colorScheme].tint}
+              color={colors.tint}
               accessibilityLabel="Initializing voice model"
             />
             <Text
-              style={[styles.progressText, { color: Colors[colorScheme].text }]}
+              style={[styles.progressText, { color: colors.text }]}
             >
               Initializing voice model...
             </Text>
@@ -158,7 +157,7 @@ export function ModelDownloadSheet({
               style={({ pressed }) => [
                 styles.downloadButton,
                 {
-                  backgroundColor: Colors[colorScheme].tint,
+                  backgroundColor: colors.tint,
                   opacity: pressed ? 0.7 : 1,
                 },
               ]}
@@ -170,7 +169,7 @@ export function ModelDownloadSheet({
               <Text
                 style={[
                   styles.downloadButtonText,
-                  { color: Colors[colorScheme].background },
+                  { color: colors.background },
                 ]}
               >
                 Download (~{formatSize(remainingMB)})
@@ -183,7 +182,7 @@ export function ModelDownloadSheet({
             style={({ pressed }) => [
               styles.cancelButton,
               {
-                borderColor: Colors[colorScheme].separator,
+                borderColor: colors.separator,
                 opacity: pressed ? 0.7 : 1,
               },
             ]}
@@ -191,7 +190,7 @@ export function ModelDownloadSheet({
             accessibilityLabel={isDownloading || isInitializing ? "Hide progress" : "Close download prompt"}
             testID="model-download-cancel"
           >
-            <Text style={[styles.cancelButtonText, { color: Colors[colorScheme].text }]}>
+            <Text style={[styles.cancelButtonText, { color: colors.text }]}>
               {isDownloading || isInitializing ? "Hide" : "Not Now"}
             </Text>
           </Pressable>

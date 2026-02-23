@@ -4,8 +4,8 @@ import { router } from "expo-router";
 import Constants from "expo-constants";
 
 import { Button } from "@/components/Button";
-import Colors from "@/constants/Colors";
-import { useColorScheme } from "@/components/useColorScheme";
+import Colors from "@/constants/designTokens";
+import { useThemeColors } from "@/components/useColorScheme";
 import { Text, View } from "@/components/Themed";
 import { useConnection } from "@/lib/ConnectionContext";
 import { useNotifications } from "@/lib/NotificationContext";
@@ -15,7 +15,6 @@ import {
   saveNotificationPreferences,
   type NotificationPreferences,
 } from "@/lib/storage";
-import { registerPushToken } from "@/lib/notifications";
 
 interface DaemonInfo {
   version: string;
@@ -73,8 +72,7 @@ function InfoRow({
 }
 
 export default function SettingsScreen() {
-  const colorScheme = useColorScheme() ?? "light";
-  const colors = Colors[colorScheme];
+  const colors = useThemeColors();
   const connection = useConnection();
 
   const mountedRef = useRef(true);
@@ -83,12 +81,13 @@ export default function SettingsScreen() {
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
-  const { permissionGranted, requestPermission } = useNotifications();
+  const { permissionGranted, requestPermission, invalidateRegistration } = useNotifications();
   const [notifPrefs, setNotifPrefs] = useState<NotificationPreferences>({
     completion: true,
     inputNeeded: true,
     error: true,
   });
+  const [notifSyncError, setNotifSyncError] = useState<string | null>(null);
 
   // Load notification preferences on mount.
   useEffect(() => {
@@ -98,17 +97,29 @@ export default function SettingsScreen() {
     })();
   }, []);
 
+  const notifPrefsRef = useRef(notifPrefs);
+  notifPrefsRef.current = notifPrefs;
+
   const updateNotifPref = useCallback(
     async (key: keyof NotificationPreferences, value: boolean) => {
-      const next = { ...notifPrefs, [key]: value };
+      const prev = notifPrefsRef.current;
+      const next = { ...prev, [key]: value };
       setNotifPrefs(next);
-      await saveNotificationPreferences(next);
-      // Re-register push token with updated preferences so daemon respects them.
-      if (connection.client && connection.status === "connected") {
-        registerPushToken(connection.client);
+      notifPrefsRef.current = next;
+      setNotifSyncError(null);
+      try {
+        await saveNotificationPreferences(next);
+        if (connection.status === "connected") {
+          invalidateRegistration();
+        }
+      } catch (err) {
+        console.warn("[Settings] Failed to save notification preferences:", err);
+        setNotifPrefs(prev);
+        notifPrefsRef.current = prev;
+        setNotifSyncError("Failed to save preferences");
       }
     },
-    [notifPrefs, connection.client, connection.status]
+    [connection.status, invalidateRegistration]
   );
 
   const isConnected = connection.status === "connected";
@@ -332,7 +343,9 @@ export default function SettingsScreen() {
               value={notifPrefs.completion}
               onValueChange={(v) => updateNotifPref("completion", v)}
               trackColor={{ true: colors.tint }}
+              disabled={!permissionGranted}
               accessibilityLabel="Enable task completion notifications"
+              accessibilityHint={!permissionGranted ? "Requires notification permission" : undefined}
               testID="settings-notif-completion"
             />
           </RNView>
@@ -346,7 +359,9 @@ export default function SettingsScreen() {
               value={notifPrefs.inputNeeded}
               onValueChange={(v) => updateNotifPref("inputNeeded", v)}
               trackColor={{ true: colors.tint }}
+              disabled={!permissionGranted}
               accessibilityLabel="Enable input needed notifications"
+              accessibilityHint={!permissionGranted ? "Requires notification permission" : undefined}
               testID="settings-notif-input-needed"
             />
           </RNView>
@@ -360,11 +375,23 @@ export default function SettingsScreen() {
               value={notifPrefs.error}
               onValueChange={(v) => updateNotifPref("error", v)}
               trackColor={{ true: colors.tint }}
+              disabled={!permissionGranted}
               accessibilityLabel="Enable error notifications"
+              accessibilityHint={!permissionGranted ? "Requires notification permission" : undefined}
               testID="settings-notif-error"
             />
           </RNView>
         </RNView>
+
+        {notifSyncError && (
+          <Text
+            style={[styles.fetchErrorText, { color: colors.danger }]}
+            accessibilityRole="alert"
+            accessibilityLiveRegion="assertive"
+          >
+            {notifSyncError}
+          </Text>
+        )}
 
         {/* ACTIONS section */}
         <Text

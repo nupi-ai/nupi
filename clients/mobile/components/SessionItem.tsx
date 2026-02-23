@@ -1,8 +1,8 @@
 import { Pressable, StyleSheet, View as RNView } from "react-native";
 
 import type { Session } from "@/lib/gen/nupi_pb";
-import Colors from "@/constants/Colors";
-import { useColorScheme } from "@/components/useColorScheme";
+import Colors from "@/constants/designTokens";
+import { useThemeColors } from "@/components/useColorScheme";
 import { Text } from "@/components/Themed";
 import { formatRelativeTime } from "@/lib/time";
 
@@ -28,8 +28,7 @@ function getStatusColor(
 }
 
 export function SessionItem({ session, onPress }: SessionItemProps) {
-  const colorScheme = useColorScheme() ?? "light";
-  const colors = Colors[colorScheme];
+  const colors = useThemeColors();
   const statusColor = getStatusColor(session.status, colors);
 
   const displayName = session.tool || session.command || "unknown";
