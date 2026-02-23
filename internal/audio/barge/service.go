@@ -61,13 +61,10 @@ type Service struct {
 	cooldown      time.Duration
 	quietPeriod   time.Duration
 
-	ctx    context.Context
-	cancel context.CancelFunc
-
 	vadSub      *eventbus.TypedSubscription[eventbus.SpeechVADEvent]
 	clientSub   *eventbus.TypedSubscription[eventbus.AudioInterruptEvent]
 	playbackSub *eventbus.TypedSubscription[eventbus.AudioEgressPlaybackEvent]
-	wg          sync.WaitGroup
+	lifecycle   eventbus.ServiceLifecycle
 
 	mu             sync.Mutex
 	lastEvent      map[string]time.Time
@@ -110,55 +107,32 @@ func (s *Service) Start(ctx context.Context) error {
 	if s.bus == nil {
 		return nil
 	}
-	s.ctx, s.cancel = context.WithCancel(ctx)
+	s.lifecycle.Start(ctx)
 	s.vadSub = eventbus.Subscribe[eventbus.SpeechVADEvent](s.bus, eventbus.TopicSpeechVADDetected, eventbus.WithSubscriptionName("barge_vad"))
 	s.clientSub = eventbus.Subscribe[eventbus.AudioInterruptEvent](s.bus, eventbus.TopicAudioInterrupt, eventbus.WithSubscriptionName("barge_client"))
 	s.playbackSub = eventbus.Subscribe[eventbus.AudioEgressPlaybackEvent](s.bus, eventbus.TopicAudioEgressPlayback, eventbus.WithSubscriptionName("barge_playback"))
-	s.wg.Add(3)
-	go s.consumeVAD()
-	go s.consumeClient()
-	go s.consumePlayback()
+	s.lifecycle.AddSubscriptions(s.vadSub, s.clientSub, s.playbackSub)
+	s.lifecycle.Go(s.consumeVAD)
+	s.lifecycle.Go(s.consumeClient)
+	s.lifecycle.Go(s.consumePlayback)
 	return nil
 }
 
 // Shutdown stops background processing.
 func (s *Service) Shutdown(ctx context.Context) error {
-	if s.cancel != nil {
-		s.cancel()
-	}
-	if s.vadSub != nil {
-		s.vadSub.Close()
-	}
-	if s.clientSub != nil {
-		s.clientSub.Close()
-	}
-	if s.playbackSub != nil {
-		s.playbackSub.Close()
-	}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		s.wg.Wait()
-	}()
-
-	select {
-	case <-done:
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-	return nil
+	return s.lifecycle.Shutdown(ctx)
 }
 
-func (s *Service) consumeVAD() {
-	eventbus.Consume(s.ctx, s.vadSub, &s.wg, s.handleVADEvent)
+func (s *Service) consumeVAD(ctx context.Context) {
+	eventbus.Consume(ctx, s.vadSub, nil, s.handleVADEvent)
 }
 
-func (s *Service) consumeClient() {
-	eventbus.Consume(s.ctx, s.clientSub, &s.wg, s.handleClientEvent)
+func (s *Service) consumeClient(ctx context.Context) {
+	eventbus.Consume(ctx, s.clientSub, nil, s.handleClientEvent)
 }
 
-func (s *Service) consumePlayback() {
-	eventbus.ConsumeEnvelope(s.ctx, s.playbackSub, &s.wg, func(env eventbus.TypedEnvelope[eventbus.AudioEgressPlaybackEvent]) {
+func (s *Service) consumePlayback(ctx context.Context) {
+	eventbus.ConsumeEnvelope(ctx, s.playbackSub, nil, func(env eventbus.TypedEnvelope[eventbus.AudioEgressPlaybackEvent]) {
 		ts := env.Timestamp
 		if ts.IsZero() {
 			ts = time.Now().UTC()

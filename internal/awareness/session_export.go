@@ -37,7 +37,7 @@ var slugSanitizeRe = regexp.MustCompile(`[^a-z0-9-]`)
 var multiHyphenRe = regexp.MustCompile(`-{2,}`)
 
 func (s *Service) consumeExportRequests(ctx context.Context) {
-	eventbus.Consume(ctx, s.exportSub, &s.wg, func(event eventbus.SessionExportRequestEvent) {
+	eventbus.Consume(ctx, s.exportSub, nil, func(event eventbus.SessionExportRequestEvent) {
 		s.handleExportRequest(ctx, event)
 	})
 }
@@ -118,7 +118,7 @@ func (s *Service) handleExportRequest(ctx context.Context, event eventbus.Sessio
 }
 
 func (s *Service) consumeExportReplies(ctx context.Context) {
-	eventbus.Consume(ctx, s.exportReplySub, &s.wg, func(reply eventbus.ConversationReplyEvent) {
+	eventbus.Consume(ctx, s.exportReplySub, nil, func(reply eventbus.ConversationReplyEvent) {
 		// Only process session_slug replies.
 		if reply.Metadata["event_type"] != "session_slug" {
 			return

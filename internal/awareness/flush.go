@@ -26,7 +26,7 @@ type flushState struct {
 }
 
 func (s *Service) consumeFlushRequests(ctx context.Context) {
-	eventbus.Consume(ctx, s.flushSub, &s.wg, func(event eventbus.MemoryFlushRequestEvent) {
+	eventbus.Consume(ctx, s.flushSub, nil, func(event eventbus.MemoryFlushRequestEvent) {
 		s.handleFlushRequest(ctx, event)
 	})
 }
@@ -110,7 +110,7 @@ func (s *Service) handleFlushRequest(ctx context.Context, event eventbus.MemoryF
 }
 
 func (s *Service) consumeFlushReplies(ctx context.Context) {
-	eventbus.Consume(ctx, s.flushReplySub, &s.wg, func(reply eventbus.ConversationReplyEvent) {
+	eventbus.Consume(ctx, s.flushReplySub, nil, func(reply eventbus.ConversationReplyEvent) {
 		// Only process memory_flush replies.
 		if reply.Metadata["event_type"] != "memory_flush" {
 			return

@@ -35,14 +35,12 @@ type Service struct {
 	// output event to ensure proper ordering in the conversation
 	lastSeenBySession sync.Map // sessionID -> lastSeenMeta
 
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	lifecycle eventbus.ServiceLifecycle
 
 	toolSub       *eventbus.TypedSubscription[eventbus.SessionToolEvent]
 	outputSub     *eventbus.TypedSubscription[eventbus.SessionOutputEvent]
 	lifecycleSub  *eventbus.TypedSubscription[eventbus.SessionLifecycleEvent]
 	transcriptSub *eventbus.TypedSubscription[eventbus.SpeechTranscriptEvent]
-	subs          eventbus.SubscriptionGroup
 
 	logger          *log.Logger
 	metricsInterval time.Duration
@@ -106,21 +104,20 @@ func (s *Service) Start(ctx context.Context) error {
 		return errors.New("content pipeline: event bus not configured")
 	}
 
-	derivedCtx, cancel := context.WithCancel(ctx)
-	s.cancel = cancel
+	s.lifecycle.Start(ctx)
+	s.stopped.Store(false)
 
 	s.toolSub = eventbus.Subscribe[eventbus.SessionToolEvent](s.bus, eventbus.TopicSessionsTool, eventbus.WithSubscriptionName("pipeline_tool"))
 	s.outputSub = eventbus.Subscribe[eventbus.SessionOutputEvent](s.bus, eventbus.TopicSessionsOutput, eventbus.WithSubscriptionName("pipeline_output"))
 	s.lifecycleSub = eventbus.Subscribe[eventbus.SessionLifecycleEvent](s.bus, eventbus.TopicSessionsLifecycle, eventbus.WithSubscriptionName("pipeline_lifecycle"))
 	s.transcriptSub = eventbus.Subscribe[eventbus.SpeechTranscriptEvent](s.bus, eventbus.TopicSpeechTranscriptFinal, eventbus.WithSubscriptionName("pipeline_transcripts"))
-	s.subs.Add(s.toolSub, s.outputSub, s.lifecycleSub, s.transcriptSub)
+	s.lifecycle.AddSubscriptions(s.toolSub, s.outputSub, s.lifecycleSub, s.transcriptSub)
 
-	s.wg.Add(4)
-	go s.consumeToolEvents(derivedCtx)
-	go s.consumeOutputEvents(derivedCtx)
-	go s.consumeLifecycleEvents(derivedCtx)
-	go s.consumeTranscriptEvents(derivedCtx)
-	s.startMetricsReporter(derivedCtx)
+	s.lifecycle.Go(s.consumeToolEvents)
+	s.lifecycle.Go(s.consumeOutputEvents)
+	s.lifecycle.Go(s.consumeLifecycleEvents)
+	s.lifecycle.Go(s.consumeTranscriptEvents)
+	s.startMetricsReporter()
 
 	return nil
 }
@@ -130,9 +127,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	// Set stopped flag first to prevent any new timer callbacks from executing
 	s.stopped.Store(true)
 
-	if s.cancel != nil {
-		s.cancel()
-	}
+	s.lifecycle.Stop()
 
 	// Stop all idle timers to prevent events after shutdown
 	s.idleTimers.Range(func(key, value any) bool {
@@ -153,12 +148,11 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		return true
 	})
 
-	s.subs.CloseAll()
-	return eventbus.WaitForWorkers(ctx, &s.wg)
+	return s.lifecycle.Wait(ctx)
 }
 
 func (s *Service) consumeToolEvents(ctx context.Context) {
-	eventbus.Consume(ctx, s.toolSub, &s.wg, func(payload eventbus.SessionToolEvent) {
+	eventbus.Consume(ctx, s.toolSub, nil, func(payload eventbus.SessionToolEvent) {
 		if payload.SessionID == "" {
 			return
 		}
@@ -184,13 +178,13 @@ func (s *Service) consumeToolEvents(ctx context.Context) {
 }
 
 func (s *Service) consumeOutputEvents(ctx context.Context) {
-	eventbus.Consume(ctx, s.outputSub, &s.wg, func(event eventbus.SessionOutputEvent) {
+	eventbus.Consume(ctx, s.outputSub, nil, func(event eventbus.SessionOutputEvent) {
 		s.handleSessionOutput(ctx, event)
 	})
 }
 
 func (s *Service) consumeLifecycleEvents(ctx context.Context) {
-	eventbus.Consume(ctx, s.lifecycleSub, &s.wg, func(payload eventbus.SessionLifecycleEvent) {
+	eventbus.Consume(ctx, s.lifecycleSub, nil, func(payload eventbus.SessionLifecycleEvent) {
 		if payload.SessionID == "" {
 			return
 		}
@@ -207,7 +201,7 @@ func (s *Service) consumeLifecycleEvents(ctx context.Context) {
 }
 
 func (s *Service) consumeTranscriptEvents(ctx context.Context) {
-	eventbus.Consume(ctx, s.transcriptSub, &s.wg, s.handleTranscript)
+	eventbus.Consume(ctx, s.transcriptSub, nil, s.handleTranscript)
 }
 
 func (s *Service) handleSessionOutput(ctx context.Context, evt eventbus.SessionOutputEvent) {
@@ -582,7 +576,7 @@ func (s *Service) Metrics() Metrics {
 	}
 }
 
-func (s *Service) startMetricsReporter(ctx context.Context) {
+func (s *Service) startMetricsReporter() {
 	if s.metricsInterval <= 0 {
 		return
 	}
@@ -590,9 +584,7 @@ func (s *Service) startMetricsReporter(ctx context.Context) {
 	if logger == nil {
 		logger = log.Default()
 	}
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
+	s.lifecycle.Go(func(ctx context.Context) {
 		ticker := time.NewTicker(s.metricsInterval)
 		defer ticker.Stop()
 		for {
@@ -604,7 +596,7 @@ func (s *Service) startMetricsReporter(ctx context.Context) {
 				logger.Printf("[ContentPipeline] metrics processed_total=%d error_total=%d", metrics.Processed, metrics.Errors)
 			}
 		}
-	}()
+	})
 }
 
 func (s *Service) toolName(sessionID string) (string, bool) {
