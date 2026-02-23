@@ -41,6 +41,7 @@ var (
 )
 
 // maxToolIterations is the safety cap for the multi-turn tool-use loop (NFR32).
+// With per-iteration requestTimeout (30s), worst-case wall time is 10 × 30s = 5 min.
 const maxToolIterations = 10
 
 const (
@@ -345,10 +346,12 @@ func (s *Service) handlePrompt(ctx context.Context, prompt eventbus.Conversation
 	// Build the intent request
 	req := s.buildIntentRequest(prompt, sessionProvider, promptEngine, onboardingProvider)
 
-	// Prepend core memory to system prompt (awareness injection)
+	// Prepend core memory to system prompt (awareness injection).
+	// Wrapped in <core-memory> tag so headings inside don't conflict with
+	// the surrounding prompt template or other injected sections.
 	if coreMemoryProvider != nil {
 		if cm := coreMemoryProvider.CoreMemory(); cm != "" {
-			req.SystemPrompt = cm + "\n\n" + req.SystemPrompt
+			req.SystemPrompt = "<core-memory>\n" + cm + "\n</core-memory>\n\n" + req.SystemPrompt
 		}
 	}
 
@@ -893,31 +896,17 @@ func truncate(s string, maxLen int) string {
 	return string(runes[:maxLen]) + "..."
 }
 
-// injectBootstrapContent appends BOOTSTRAP.md content under an ## ONBOARDING
-// header. All H1 headings (lines starting with "# ") are stripped to prevent
-// markdown hierarchy inversion (e.g., "# Welcome" under "## ONBOARDING").
+// injectBootstrapContent appends BOOTSTRAP.md content wrapped in an
+// <onboarding> XML tag. The tag boundary eliminates markdown heading
+// hierarchy conflicts — any headings inside the tag are scoped to that
+// section and don't interfere with the surrounding system prompt.
 func injectBootstrapContent(systemPrompt string, provider OnboardingProvider) string {
 	if provider == nil {
 		return systemPrompt
 	}
-	bc := provider.BootstrapContent()
+	bc := strings.TrimSpace(provider.BootstrapContent())
 	if bc == "" {
 		return systemPrompt
 	}
-
-	// Strip all H1 headings to prevent hierarchy inversion under ## ONBOARDING.
-	// Matches "# Title" (standard ATX) and bare "#" (empty H1 per CommonMark).
-	var filtered []string
-	for _, line := range strings.Split(bc, "\n") {
-		if strings.HasPrefix(line, "# ") || line == "#" {
-			continue
-		}
-		filtered = append(filtered, line)
-	}
-	bc = strings.TrimSpace(strings.Join(filtered, "\n"))
-
-	if bc == "" {
-		return systemPrompt
-	}
-	return systemPrompt + "\n\n## ONBOARDING\n" + bc
+	return systemPrompt + "\n\n<onboarding>\n" + bc + "\n</onboarding>"
 }

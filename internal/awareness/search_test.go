@@ -32,7 +32,7 @@ func setupSearchIndex(t *testing.T) (*Indexer, context.Context) {
 
 	for relPath, content := range files {
 		absPath := filepath.Join(dir, relPath)
-		if err := os.WriteFile(absPath, []byte(content), 0o644); err != nil {
+		if err := os.WriteFile(absPath, []byte(content), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -328,7 +328,7 @@ func TestSearchFTSPerformance(t *testing.T) {
 			"## Details\n\nPerformance testing of FTS5 full-text search with many documents.\n\n"+
 			"## Notes\n\nAdditional content for chunk %d generation and indexing validation.", i, i, i)
 		filename := fmt.Sprintf("2026-01-%03d.md", i)
-		if err := os.WriteFile(filepath.Join(dailyDir, filename), []byte(content), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(dailyDir, filename), []byte(content), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -396,7 +396,7 @@ func setupSearchIndexWithEmbeddings(t *testing.T) (*Indexer, context.Context) {
 
 	for relPath, content := range files {
 		absPath := filepath.Join(dir, relPath)
-		if err := os.WriteFile(absPath, []byte(content), 0o644); err != nil {
+		if err := os.WriteFile(absPath, []byte(content), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}

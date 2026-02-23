@@ -1086,7 +1086,7 @@ func TestUninstall_Success(t *testing.T) {
 	}
 
 	// Verify directory is removed
-	if _, err := os.Stat(pluginPath); !os.IsNotExist(err) {
+	if _, err := os.Stat(pluginPath); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("plugin directory should be removed, got err: %v", err)
 	}
 
@@ -1176,7 +1176,7 @@ func TestUninstall_CleansEmptyNamespaceDir(t *testing.T) {
 	}
 
 	// Namespace directory should be cleaned up
-	if _, err := os.Stat(nsDir); !os.IsNotExist(err) {
+	if _, err := os.Stat(nsDir); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("empty namespace directory should be removed, got err: %v", err)
 	}
 }
@@ -1892,7 +1892,7 @@ func TestInstallFromPath_ComputeChecksumsError_CleansUp(t *testing.T) {
 
 	// Verify cleanup: plugin directory removed
 	destDir := filepath.Join(pluginDir, "others", "cleanup-chk-err")
-	if _, statErr := os.Stat(destDir); !os.IsNotExist(statErr) {
+	if _, statErr := os.Stat(destDir); !errors.Is(statErr, os.ErrNotExist) {
 		t.Errorf("plugin directory should be cleaned up after failed install, stat err: %v", statErr)
 	}
 
@@ -1930,7 +1930,7 @@ func TestInstallFromPath_SetChecksumsError_CleansUp(t *testing.T) {
 
 	// Verify cleanup: plugin directory removed
 	destDir := filepath.Join(pluginDir, "others", "cleanup-set-err")
-	if _, statErr := os.Stat(destDir); !os.IsNotExist(statErr) {
+	if _, statErr := os.Stat(destDir); !errors.Is(statErr, os.ErrNotExist) {
 		t.Errorf("plugin directory should be cleaned up after failed install, stat err: %v", statErr)
 	}
 

@@ -43,7 +43,7 @@ func writeMemoryFile(t *testing.T, svc *Service, relPath, content string) {
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(fullPath, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(fullPath, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -253,7 +253,7 @@ func TestMemoryGetHandlerSymlinkBypass(t *testing.T) {
 	if err := os.MkdirAll(secretDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(secretDir, "creds.txt"), []byte("s3cret"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(secretDir, "creds.txt"), []byte("s3cret"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -375,7 +375,7 @@ func TestMemoryWriteHandlerAppendExisting(t *testing.T) {
 	date := time.Now().UTC().Format("2006-01-02")
 	dailyDir := filepath.Join(svc.awarenessDir, "memory", "daily")
 	initialContent := "# Daily Log " + date + "\n\n## Initial Entry\n\nInitial content."
-	if err := os.WriteFile(filepath.Join(dailyDir, date+".md"), []byte(initialContent), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dailyDir, date+".md"), []byte(initialContent), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -457,7 +457,7 @@ func TestCoreMemoryUpdateHandlerReplace(t *testing.T) {
 	svc, ctx := setupToolsService(t)
 
 	// Create initial SOUL.md.
-	if err := os.WriteFile(filepath.Join(svc.awarenessDir, "SOUL.md"), []byte("old soul"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(svc.awarenessDir, "SOUL.md"), []byte("old soul"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	svc.loadCoreMemory("")
@@ -498,7 +498,7 @@ func TestCoreMemoryUpdateHandlerAppend(t *testing.T) {
 	svc, ctx := setupToolsService(t)
 
 	// Create initial USER.md.
-	if err := os.WriteFile(filepath.Join(svc.awarenessDir, "USER.md"), []byte("initial user info"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(svc.awarenessDir, "USER.md"), []byte("initial user info"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -551,7 +551,7 @@ func TestCoreMemoryUpdateHandlerDefaultAppend(t *testing.T) {
 	svc, ctx := setupToolsService(t)
 
 	// Create initial GLOBAL.md.
-	if err := os.WriteFile(filepath.Join(svc.awarenessDir, "GLOBAL.md"), []byte("global rules"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(svc.awarenessDir, "GLOBAL.md"), []byte("global rules"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -591,15 +591,16 @@ func TestToolSpecs(t *testing.T) {
 
 	specs := svc.ToolSpecs()
 
-	if len(specs) != 4 {
-		t.Fatalf("Expected 4 tool specs, got %d", len(specs))
+	if len(specs) != 5 {
+		t.Fatalf("Expected 5 tool specs, got %d", len(specs))
 	}
 
 	expectedNames := map[string]bool{
-		"memory_search":      false,
-		"memory_get":         false,
-		"memory_write":       false,
-		"core_memory_update": false,
+		"memory_search":        false,
+		"memory_get":           false,
+		"memory_write":         false,
+		"core_memory_update":   false,
+		"onboarding_complete":  false,
 	}
 
 	for _, spec := range specs {
@@ -682,5 +683,119 @@ func TestToolSpecsParametersJSONValid(t *testing.T) {
 		if _, ok := schema["properties"]; !ok {
 			t.Fatalf("ToolSpec %q: missing 'properties' in schema", spec.Name)
 		}
+	}
+}
+
+func TestOnboardingCompleteToolSpec(t *testing.T) {
+	svc, _ := setupToolsService(t)
+
+	spec := findSpec(t, svc.ToolSpecs(), "onboarding_complete")
+
+	if spec.Description == "" {
+		t.Fatal("onboarding_complete has empty Description")
+	}
+	if spec.Handler == nil {
+		t.Fatal("onboarding_complete has nil Handler")
+	}
+}
+
+func TestOnboardingCompleteToolHandler(t *testing.T) {
+	svc, ctx := setupToolsService(t)
+
+	// Confirm BOOTSTRAP.md exists (created by scaffoldCoreFiles in Start).
+	if !svc.isOnboarding() {
+		t.Fatal("Expected isOnboarding() = true after Start")
+	}
+
+	spec := findSpec(t, svc.ToolSpecs(), "onboarding_complete")
+
+	result, err := spec.Handler(ctx, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("Handler error: %v", err)
+	}
+
+	var parsed map[string]string
+	if err := json.Unmarshal(result, &parsed); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	if parsed["status"] != "ok" {
+		t.Fatalf("Expected status 'ok', got %v", parsed)
+	}
+	if parsed["message"] != "Onboarding complete. BOOTSTRAP.md removed." {
+		t.Fatalf("Expected removal message, got %q", parsed["message"])
+	}
+
+	// BOOTSTRAP.md must be gone.
+	if svc.isOnboarding() {
+		t.Fatal("Expected isOnboarding() = false after handler call")
+	}
+}
+
+func TestOnboardingCompleteToolHandlerConcurrentComplete(t *testing.T) {
+	svc, ctx := setupToolsService(t)
+
+	if !svc.isOnboarding() {
+		t.Fatal("Expected isOnboarding() = true after Start")
+	}
+
+	spec := findSpec(t, svc.ToolSpecs(), "onboarding_complete")
+
+	// Simulate a race: complete onboarding from another goroutine while
+	// the tool handler is about to execute. CompleteOnboarding is idempotent
+	// so both calls must succeed without error.
+	removed, err := svc.CompleteOnboarding()
+	if err != nil {
+		t.Fatalf("direct CompleteOnboarding: %v", err)
+	}
+	if !removed {
+		t.Fatal("first CompleteOnboarding should report removed=true")
+	}
+
+	// Now the handler should see already-complete state.
+	result, err := spec.Handler(ctx, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("Handler error after concurrent completion: %v", err)
+	}
+
+	var parsed map[string]string
+	if err := json.Unmarshal(result, &parsed); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if parsed["status"] != "ok" {
+		t.Fatalf("Expected status 'ok', got %v", parsed)
+	}
+	if parsed["message"] != "Onboarding was already complete." {
+		t.Fatalf("Expected already-complete message, got %q", parsed["message"])
+	}
+}
+
+func TestOnboardingCompleteToolHandlerAlreadyComplete(t *testing.T) {
+	svc, ctx := setupToolsService(t)
+
+	// Remove BOOTSTRAP.md to simulate already-completed onboarding.
+	os.Remove(filepath.Join(svc.awarenessDir, "BOOTSTRAP.md"))
+
+	if svc.isOnboarding() {
+		t.Fatal("Expected isOnboarding() = false after removing BOOTSTRAP.md")
+	}
+
+	spec := findSpec(t, svc.ToolSpecs(), "onboarding_complete")
+
+	result, err := spec.Handler(ctx, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("Handler error: %v", err)
+	}
+
+	var parsed map[string]string
+	if err := json.Unmarshal(result, &parsed); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	if parsed["status"] != "ok" {
+		t.Fatalf("Expected status 'ok', got %v", parsed)
+	}
+	if parsed["message"] != "Onboarding was already complete." {
+		t.Fatalf("Expected already-complete message, got %q", parsed["message"])
 	}
 }

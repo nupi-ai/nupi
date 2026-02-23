@@ -157,7 +157,7 @@ func TestIndexerSyncWithEmbeddings(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := os.WriteFile(filepath.Join(dailyDir, "test.md"), []byte("## Test\n\nSome content for embedding."), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dailyDir, "test.md"), []byte("## Test\n\nSome content for embedding."), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -197,7 +197,7 @@ func TestIndexerSyncWithoutProvider(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := os.WriteFile(filepath.Join(dailyDir, "test.md"), []byte("## Test\n\nFTS only."), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dailyDir, "test.md"), []byte("## Test\n\nFTS only."), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -243,7 +243,7 @@ func TestIndexerFileDeleteClearsEmbeddings(t *testing.T) {
 	}
 
 	filePath := filepath.Join(dailyDir, "test.md")
-	if err := os.WriteFile(filePath, []byte("## Test\n\nContent to embed."), 0o644); err != nil {
+	if err := os.WriteFile(filePath, []byte("## Test\n\nContent to embed."), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -295,7 +295,7 @@ func TestIndexerFileUpdateReEmbeds(t *testing.T) {
 	}
 
 	filePath := filepath.Join(dailyDir, "test.md")
-	if err := os.WriteFile(filePath, []byte("## V1\n\nOriginal."), 0o644); err != nil {
+	if err := os.WriteFile(filePath, []byte("## V1\n\nOriginal."), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -316,7 +316,7 @@ func TestIndexerFileUpdateReEmbeds(t *testing.T) {
 	callsBefore := mock.callCount
 
 	// Modify file with explicit future mtime.
-	if err := os.WriteFile(filePath, []byte("## V2\n\nUpdated content.\n\n## New Section\n\nMore content."), 0o644); err != nil {
+	if err := os.WriteFile(filePath, []byte("## V2\n\nUpdated content.\n\n## New Section\n\nMore content."), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	// Use os.Chtimes to ensure mtime change is detected.
@@ -350,7 +350,7 @@ func TestIndexerRebuildClearsEmbeddings(t *testing.T) {
 	if err := os.MkdirAll(dailyDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dailyDir, "test.md"), []byte("## Test\n\nContent."), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dailyDir, "test.md"), []byte("## Test\n\nContent."), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -394,7 +394,7 @@ func TestBackfillMissingEmbeddings(t *testing.T) {
 	if err := os.MkdirAll(dailyDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dailyDir, "test.md"), []byte("## Test\n\nContent for backfill."), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dailyDir, "test.md"), []byte("## Test\n\nContent for backfill."), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -442,7 +442,7 @@ func TestBackfillWithErrors(t *testing.T) {
 	if err := os.MkdirAll(dailyDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dailyDir, "test.md"), []byte("## Test\n\nContent."), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dailyDir, "test.md"), []byte("## Test\n\nContent."), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -481,7 +481,7 @@ func TestBackfillNoOpWhenAllEmbedded(t *testing.T) {
 	if err := os.MkdirAll(dailyDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dailyDir, "test.md"), []byte("## Test\n\nContent."), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dailyDir, "test.md"), []byte("## Test\n\nContent."), 0o600); err != nil {
 		t.Fatal(err)
 	}
 

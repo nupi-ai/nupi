@@ -84,6 +84,10 @@ func (s *Store) SavePushTokenOwned(ctx context.Context, deviceID, token string, 
 	if err := s.ensureWritable("save push token"); err != nil {
 		return false, err
 	}
+	// M14/L1 fix: reject empty authTokenID to prevent ownership WHERE clause bypass.
+	if authTokenID == "" {
+		return false, fmt.Errorf("config: save push token owned: auth_token_id required")
+	}
 	deviceID, token, eventsJSON, err := validatePushTokenInput(deviceID, token, enabledEvents)
 	if err != nil {
 		return false, err
@@ -155,6 +159,34 @@ func (s *Store) DeletePushTokenOwned(ctx context.Context, deviceID, authTokenID 
 	rows, err := result.RowsAffected()
 	if err != nil {
 		return false, fmt.Errorf("config: delete push token owned: check rows: %w", err)
+	}
+	return rows > 0, nil
+}
+
+// DeletePushTokenIfMatch removes a push token only if the stored token value
+// matches the given token string. Returns true if deleted, false if not found
+// or the stored token has changed since the caller last read it.
+// This prevents M6 (stale token cleanup deleting a freshly re-registered token).
+func (s *Store) DeletePushTokenIfMatch(ctx context.Context, deviceID, token string) (bool, error) {
+	if err := s.ensureWritable("delete push token if match"); err != nil {
+		return false, err
+	}
+	deviceID = strings.TrimSpace(deviceID)
+	if deviceID == "" {
+		return false, fmt.Errorf("config: delete push token if match: device_id required")
+	}
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return false, fmt.Errorf("config: delete push token if match: token required")
+	}
+
+	result, err := s.db.ExecContext(ctx, `DELETE FROM push_tokens WHERE device_id = ? AND token = ?`, deviceID, token)
+	if err != nil {
+		return false, fmt.Errorf("config: delete push token if match: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("config: delete push token if match: check rows: %w", err)
 	}
 	return rows > 0, nil
 }

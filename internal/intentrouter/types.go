@@ -101,6 +101,8 @@ const (
 	// EventTypeMemoryFlush saves memories before conversation compaction.
 	EventTypeMemoryFlush EventType = constants.PromptEventMemoryFlush
 	// EventTypeScheduledTask is for periodic background tasks.
+	// TODO(story-15.3): Replace string literal with constants.PromptEventScheduledTask
+	// once the scheduler constant and prompt template are added.
 	EventTypeScheduledTask EventType = "scheduled_task"
 	// EventTypeSessionSlug generates session file names.
 	EventTypeSessionSlug EventType = constants.PromptEventSessionSlug
@@ -310,7 +312,7 @@ func WithToolRegistry(registry ToolRegistry) Option {
 
 // OnboardingProvider checks onboarding state and provides bootstrap content.
 type OnboardingProvider interface {
-	IsOnboarding() bool
+	IsOnboardingSession(sessionID string) bool
 	BootstrapContent() string
 }
 

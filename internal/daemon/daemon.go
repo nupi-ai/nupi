@@ -42,6 +42,10 @@ import (
 	"github.com/nupi-ai/nupi/internal/session"
 )
 
+// Compile-time interface assertions.
+var _ intentrouter.OnboardingProvider = (*awareness.Service)(nil)
+var _ intentrouter.CoreMemoryProvider = (*awareness.Service)(nil)
+
 // Options groups dependencies required to construct a Daemon.
 type Options struct {
 	Store *configstore.Store
@@ -116,18 +120,25 @@ func loadVADLatencyThreshold(store *configstore.Store) (time.Duration, bool) {
 	case float64:
 		thresholdMs = val
 	case string:
-		parsed, err := strconv.ParseFloat(strings.TrimSpace(val), 64)
+		trimmed := strings.TrimSpace(val)
+		parsed, err := strconv.ParseFloat(trimmed, 64)
 		if err != nil {
-			log.Printf("[Daemon] parse VAD latency threshold %q: %v", val, err)
-			return 0, false
+			duration, durErr := time.ParseDuration(trimmed)
+			if durErr != nil {
+				log.Printf("[Daemon] parse VAD latency threshold %q: %v", val, err)
+				return 0, false
+			}
+			thresholdMs = duration.Seconds() * 1000
+		} else {
+			thresholdMs = parsed
 		}
-		thresholdMs = parsed
 	default:
 		log.Printf("[Daemon] unsupported VAD latency threshold type %T", raw)
 		return 0, false
 	}
 
 	if thresholdMs <= 0 {
+		log.Printf("[Daemon] invalid VAD latency threshold %.2fms; using default", thresholdMs)
 		return 0, false
 	}
 
@@ -394,7 +405,11 @@ func New(opts Options) (*Daemon, error) {
 	}
 
 	// Notification service — sends push notifications via Expo Push API.
-	notificationService := notification.NewService(opts.Store, bus)
+	var notifOpts []notification.ExpoClientOption
+	if expoToken := os.Getenv("NUPI_EXPO_ACCESS_TOKEN"); expoToken != "" {
+		notifOpts = append(notifOpts, notification.WithAccessToken(expoToken))
+	}
+	notificationService := notification.NewService(opts.Store, bus, notifOpts...)
 	if err := host.Register("notification", func(ctx context.Context) (daemonruntime.Service, error) {
 		return notificationService, nil
 	}); err != nil {
@@ -551,7 +566,7 @@ func cleanupInstallerTempFiles() {
 	for _, p := range paths {
 		info, statErr := os.Lstat(p)
 		if statErr != nil {
-			if !os.IsNotExist(statErr) {
+			if !errors.Is(statErr, os.ErrNotExist) {
 				log.Printf("[Daemon] failed to stat temp file %s: %v", p, statErr)
 			}
 			continue
@@ -560,7 +575,7 @@ func cleanupInstallerTempFiles() {
 			log.Printf("[Daemon] skipping temp cleanup for directory %s", p)
 			continue
 		}
-		if rmErr := os.Remove(p); rmErr != nil && !os.IsNotExist(rmErr) {
+		if rmErr := os.Remove(p); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
 			log.Printf("[Daemon] failed to remove stale installer temp file %s: %v", p, rmErr)
 			continue
 		}

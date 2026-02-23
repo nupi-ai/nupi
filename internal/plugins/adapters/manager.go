@@ -842,7 +842,7 @@ func ensureDir(path string, perm os.FileMode) (bool, error) {
 		}
 		return false, nil
 	}
-	if !os.IsNotExist(err) {
+	if !errors.Is(err, os.ErrNotExist) {
 		return false, fmt.Errorf("adapters: stat %s: %w", path, err)
 	}
 	if err := os.MkdirAll(path, perm); err != nil {

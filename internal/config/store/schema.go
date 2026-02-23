@@ -149,9 +149,11 @@ var schemaStatements = []string{
 		device_id TEXT PRIMARY KEY,
 		token TEXT NOT NULL,
 		enabled_events TEXT NOT NULL DEFAULT '[]',
+		auth_token_id TEXT NOT NULL DEFAULT '',
 		created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
 		updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 	)`,
+	`CREATE INDEX IF NOT EXISTS idx_push_tokens_auth_token_id ON push_tokens(auth_token_id)`,
 }
 
 func applyPragmas(ctx context.Context, db *sql.DB, readOnly bool) error {

@@ -2,6 +2,7 @@ package plugins_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -78,7 +79,7 @@ func TestServiceStartCreatesPluginDir(t *testing.T) {
 	pluginDir := filepath.Join(root, "plugins")
 
 	// Verify plugin dir does not exist yet.
-	if _, err := os.Stat(pluginDir); !os.IsNotExist(err) {
+	if _, err := os.Stat(pluginDir); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected plugin dir to not exist before Start, stat err: %v", err)
 	}
 

@@ -386,7 +386,7 @@ func (inst *Installer) downloadToTemp(ctx context.Context, rawURL string) (strin
 	defer func() {
 		if !success {
 			tmpFile.Close()
-			if rmErr := os.Remove(name); rmErr != nil && !os.IsNotExist(rmErr) {
+			if rmErr := os.Remove(name); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
 				log.Printf("[Installer] WARNING: failed to remove temp file %s: %v", name, rmErr)
 			}
 		}

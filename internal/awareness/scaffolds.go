@@ -18,8 +18,9 @@ type scaffoldFile struct {
 // coreScaffolds lists the identity files created on first startup.
 // These bootstrap the AI's personality and enable onboarding.
 // NOTE: BOOTSTRAP.md is intentionally NOT in coreMemoryFiles (core_memory.go).
-// It is an onboarding sentinel — consumed and deleted by Story 15.2 — and must
-// never be injected into the AI system prompt.
+// It is an onboarding sentinel — consumed and deleted after onboarding completes.
+// It must never be loaded via the core memory pipeline (loadCoreMemory).
+// During onboarding, its content is injected separately by the intent router.
 var coreScaffolds = []scaffoldFile{
 	{filename: "SOUL.md", content: defaultSoulContent},
 	{filename: "IDENTITY.md", content: defaultIdentityContent},
@@ -30,9 +31,16 @@ var coreScaffolds = []scaffoldFile{
 
 // scaffoldCoreFiles creates default core memory files that do not yet exist.
 // It is idempotent: existing files are never overwritten.
+// BOOTSTRAP.md is skipped entirely when the .onboarding_done marker exists,
+// preventing onboarding from restarting after a daemon restart.
 func (s *Service) scaffoldCoreFiles() error {
+	onboardingDone := s.isOnboardingDone()
+
 	var created []string
 	for _, sf := range coreScaffolds {
+		if sf.filename == "BOOTSTRAP.md" && onboardingDone {
+			continue
+		}
 		path := filepath.Join(s.awarenessDir, sf.filename)
 
 		_, err := os.Stat(path)
@@ -51,7 +59,19 @@ func (s *Service) scaffoldCoreFiles() error {
 	if len(created) > 0 {
 		log.Printf("[Awareness] scaffolded %d of %d core memory files: %s", len(created), len(coreScaffolds), strings.Join(created, ", "))
 	}
+
+	// Refresh onboarding cache so IsOnboardingSession avoids I/O under mutex.
+	s.onboardingMu.Lock()
+	s.onboardingActive = s.isOnboarding()
+	s.onboardingMu.Unlock()
+
 	return nil
+}
+
+// isOnboardingDone returns true if the .onboarding_done marker file exists.
+func (s *Service) isOnboardingDone() bool {
+	_, err := os.Stat(filepath.Join(s.awarenessDir, ".onboarding_done"))
+	return err == nil
 }
 
 // Default content for core memory scaffolds.

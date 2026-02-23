@@ -2,6 +2,7 @@ package awareness
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -202,7 +203,7 @@ func (s *Service) writeFlushContent(ctx context.Context, sessionID, content stri
 	if err == nil {
 		// Append with separator.
 		data = append(existing, []byte("\n\n---\n\n"+content)...)
-	} else if os.IsNotExist(err) {
+	} else if errors.Is(err, os.ErrNotExist) {
 		// New file with header.
 		data = []byte(fmt.Sprintf("# Daily Log %s\n\n%s", date, content))
 	} else {
@@ -213,7 +214,7 @@ func (s *Service) writeFlushContent(ctx context.Context, sessionID, content stri
 	// process crashes mid-write (os.WriteFile uses O_TRUNC which would
 	// destroy previous content on partial write).
 	tmpPath := filename + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
+	if err := os.WriteFile(tmpPath, data, 0o600); err != nil {
 		os.Remove(tmpPath) // clean up partial file on write failure
 		return fmt.Errorf("write temp file: %w", err)
 	}
