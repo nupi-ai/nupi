@@ -16,6 +16,117 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+type bidiStream[Req, Resp any] interface {
+	Send(*Req) error
+	Recv() (*Resp, error)
+	CloseSend() error
+}
+
+type BidiClient[Req, Resp, Out any] struct {
+	prefix                string
+	conn                  *grpc.ClientConn
+	stream                bidiStream[Req, Resp]
+	ctx                   context.Context
+	cancel                context.CancelFunc
+	responses             chan Out
+	errCh                 chan error
+	wg                    sync.WaitGroup
+	grace                 time.Duration
+	errAdapterUnavailable error
+	recvOp                string
+}
+
+func NewBidiClient[Req, Resp, Out any, Stream bidiStream[Req, Resp]](
+	ctx context.Context,
+	endpoint configstore.AdapterEndpoint,
+	prefix string,
+	openOp string,
+	recvOp string,
+	errAdapterUnavailable error,
+	open func(context.Context, *grpc.ClientConn) (Stream, error),
+	mapper func(*Resp) Out,
+	responseBuffer int,
+	errBuffer int,
+	grace time.Duration,
+) (*BidiClient[Req, Resp, Out], error) {
+	conn, stream, streamCtx, cancel, err := OpenBidi(
+		ctx,
+		endpoint,
+		prefix,
+		openOp,
+		errAdapterUnavailable,
+		open,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	client := &BidiClient[Req, Resp, Out]{
+		prefix:                prefix,
+		conn:                  conn,
+		stream:                stream,
+		ctx:                   streamCtx,
+		cancel:                cancel,
+		responses:             make(chan Out, responseBuffer),
+		errCh:                 make(chan error, errBuffer),
+		grace:                 grace,
+		errAdapterUnavailable: errAdapterUnavailable,
+		recvOp:                recvOp,
+	}
+
+	StartReceiver(
+		client.ctx,
+		&client.wg,
+		client.stream.Recv,
+		client.responses,
+		client.errCh,
+		mapper,
+	)
+
+	return client, nil
+}
+
+func (c *BidiClient[Req, Resp, Out]) Send(req *Req, op string) error {
+	if err := c.stream.Send(req); err != nil {
+		return WrapGRPCError(c.prefix, op, err, c.errAdapterUnavailable)
+	}
+	return nil
+}
+
+func (c *BidiClient[Req, Resp, Out]) RawSend(req *Req) error {
+	return c.stream.Send(req)
+}
+
+func (c *BidiClient[Req, Resp, Out]) Collect(wait bool) []Out {
+	return CollectBufferedOrGrace(c.responses, wait, c.grace)
+}
+
+func (c *BidiClient[Req, Resp, Out]) Drain(ctx context.Context) []Out {
+	return DrainUntilDone(ctx, c.responses)
+}
+
+func (c *BidiClient[Req, Resp, Out]) DrainError() error {
+	return DrainReceiveError(c.errCh, c.prefix, c.recvOp, c.errAdapterUnavailable)
+}
+
+func (c *BidiClient[Req, Resp, Out]) Close(ctx context.Context, preClose func()) ([]Out, error) {
+	if preClose != nil {
+		preClose()
+	}
+	_ = c.stream.CloseSend()
+
+	out := c.Drain(ctx)
+	c.cancel()
+	c.wg.Wait()
+	if err := c.conn.Close(); err != nil {
+		return out, fmt.Errorf("%s: close connection: %w", c.prefix, err)
+	}
+	if err := c.DrainError(); err != nil && !errors.Is(err, c.errAdapterUnavailable) {
+		return out, err
+	}
+	return out, nil
+}
+
 // OpenBidi opens a NAP bidi stream with a dedicated cancelable stream context.
 func OpenBidi[Stream any](
 	ctx context.Context,
