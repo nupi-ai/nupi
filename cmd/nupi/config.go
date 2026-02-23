@@ -124,7 +124,7 @@ func configTransport(cmd *cobra.Command, args []string) error {
 }
 
 func configMigrate(cmd *cobra.Command, _ []string) error {
-	return withClientTimeout(cmd, constants.Duration5Seconds, func(ctx context.Context, gc *grpcclient.Client, out *OutputFormatter) (any, error) {
+	return withClientTimeout(cmd, constants.Duration5Seconds, func(ctx context.Context, gc *grpcclient.Client) (any, error) {
 		resp, err := gc.Migrate(ctx, &apiv1.ConfigMigrateRequest{})
 		if err != nil {
 			return nil, clientCallFailed("Failed to run configuration migration", err)

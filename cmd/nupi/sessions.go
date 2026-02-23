@@ -181,7 +181,7 @@ func runCommand(cmd *cobra.Command, args []string) error {
 
 // listSessions lists all active sessions
 func listSessions(cmd *cobra.Command, args []string) error {
-	return withClientTimeout(cmd, constants.Duration5Seconds, func(ctx context.Context, c *grpcclient.Client, out *OutputFormatter) (any, error) {
+	return withClientTimeout(cmd, constants.Duration5Seconds, func(ctx context.Context, c *grpcclient.Client) (any, error) {
 		resp, err := c.ListSessions(ctx)
 		if err != nil {
 			return nil, clientCallFailed("Failed to list sessions", err)
@@ -517,7 +517,7 @@ func inspectCommand(cmd *cobra.Command, args []string) error {
 // killSession kills a running session
 func killSession(cmd *cobra.Command, args []string) error {
 	sessionID := args[0]
-	return withClientTimeout(cmd, constants.Duration5Seconds, func(ctx context.Context, c *grpcclient.Client, out *OutputFormatter) (any, error) {
+	return withClientTimeout(cmd, constants.Duration5Seconds, func(ctx context.Context, c *grpcclient.Client) (any, error) {
 		if _, err := c.KillSession(ctx, sessionID); err != nil {
 			errMsg := "Failed to kill session"
 			if st, ok := status.FromError(err); ok && st.Code() == codes.NotFound {

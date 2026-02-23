@@ -356,7 +356,7 @@ func voiceInterrupt(cmd *cobra.Command, defaultReason string) error {
 
 func voiceStatus(cmd *cobra.Command, _ []string) error {
 	sessionID := strings.TrimSpace(cmd.Flag("session").Value.String())
-	return withClientTimeout(cmd, constants.Duration5Seconds, func(ctx context.Context, gc *grpcclient.Client, out *OutputFormatter) (any, error) {
+	return withClientTimeout(cmd, constants.Duration5Seconds, func(ctx context.Context, gc *grpcclient.Client) (any, error) {
 		caps, err := gc.AudioCapabilities(ctx, &apiv1.GetAudioCapabilitiesRequest{
 			SessionId: sessionID,
 		})

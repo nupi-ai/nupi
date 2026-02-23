@@ -31,9 +31,7 @@ const (
 
 type ClientHandler func(client *grpcclient.Client, out *OutputFormatter) error
 
-type TimedClientHandler func(ctx context.Context, client *grpcclient.Client, out *OutputFormatter) (any, error)
-
-type OutputTimedClientHandler func(ctx context.Context, client *grpcclient.Client) (any, error)
+type TimedClientHandler func(ctx context.Context, client *grpcclient.Client) (any, error)
 
 type ClientSuccessResult struct {
 	Message string
@@ -126,12 +124,8 @@ func withClientTimeoutMessage(
 	connectErrorMessage string,
 	fn TimedClientHandler,
 ) error {
-	return withClient(cmd, connectErrorMessage, func(client *grpcclient.Client, out *OutputFormatter) error {
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
-		defer cancel()
-		result, err := fn(ctx, client, out)
-		return finalizeClientResult(out, result, err)
-	})
+	out := newOutputFormatter(cmd)
+	return withOutputClientTimeout(out, timeout, connectErrorMessage, fn)
 }
 
 func withOutputClient(out *OutputFormatter, connectErrorMessage string, fn func(client *grpcclient.Client) error) error {
@@ -147,7 +141,7 @@ func withOutputClientTimeout(
 	out *OutputFormatter,
 	timeout time.Duration,
 	connectErrorMessage string,
-	fn OutputTimedClientHandler,
+	fn TimedClientHandler,
 ) error {
 	return withOutputClient(out, connectErrorMessage, func(client *grpcclient.Client) error {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)

@@ -118,7 +118,7 @@ func newDaemonCommand() *cobra.Command {
 
 // daemonStatus gets the daemon status via gRPC
 func daemonStatus(cmd *cobra.Command, args []string) error {
-	return withClientTimeout(cmd, constants.Duration5Seconds, func(ctx context.Context, gc *grpcclient.Client, out *OutputFormatter) (any, error) {
+	return withClientTimeout(cmd, constants.Duration5Seconds, func(ctx context.Context, gc *grpcclient.Client) (any, error) {
 		gc.DisableVersionCheck() // this command displays version itself; avoid duplicate RPC
 
 		resp, err := gc.DaemonStatus(ctx)
@@ -224,7 +224,7 @@ func daemonStop(cmd *cobra.Command, args []string) error {
 }
 
 func tokensList(cmd *cobra.Command, args []string) error {
-	return withClientTimeout(cmd, constants.Duration5Seconds, func(ctx context.Context, gc *grpcclient.Client, out *OutputFormatter) (any, error) {
+	return withClientTimeout(cmd, constants.Duration5Seconds, func(ctx context.Context, gc *grpcclient.Client) (any, error) {
 		resp, err := gc.ListTokens(ctx)
 		if err != nil {
 			return nil, clientCallFailed("Failed to list tokens", err)
@@ -405,7 +405,7 @@ func daemonPairCreate(cmd *cobra.Command, args []string) error {
 }
 
 func daemonPairList(cmd *cobra.Command, args []string) error {
-	return withClientTimeout(cmd, constants.Duration5Seconds, func(ctx context.Context, gc *grpcclient.Client, out *OutputFormatter) (any, error) {
+	return withClientTimeout(cmd, constants.Duration5Seconds, func(ctx context.Context, gc *grpcclient.Client) (any, error) {
 		resp, err := gc.ListPairings(ctx)
 		if err != nil {
 			return nil, clientCallFailed("Failed to list pairings", err)
