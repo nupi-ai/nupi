@@ -1,6 +1,7 @@
 import { ConnectError, Code } from "@connectrpc/connect";
 
 import { createNupiClient } from "./connect";
+import type { MappedError } from "./errorMessages";
 import type { StoredConnectionConfig } from "./storage";
 
 /**
@@ -78,21 +79,45 @@ export async function claimPairing(params: {
 /**
  * Maps ClaimPairing errors to user-facing messages.
  */
-export function mapPairingError(err: unknown): string {
+export function mapPairingError(err: unknown): MappedError {
   if (err instanceof ConnectError) {
     switch (err.code) {
       case Code.FailedPrecondition:
-        return "Pairing code expired. Generate a new one on your desktop.";
+        return {
+          message: "Pairing code expired. Generate a new one on your desktop.",
+          action: "re-pair",
+          canRetry: false,
+        };
       case Code.NotFound:
-        return "Invalid pairing code.";
+        return {
+          message: "Invalid pairing code.",
+          action: "re-pair",
+          canRetry: false,
+        };
       case Code.Unavailable:
-        return "Cannot reach nupid. Check your network connection.";
+        return {
+          message: "Cannot reach nupid. Check your network connection.",
+          action: "retry",
+          canRetry: true,
+        };
       default:
-        return `Pairing failed: ${err.message}`;
+        return {
+          message: `Pairing failed: ${err.message}`,
+          action: "retry",
+          canRetry: true,
+        };
     }
   }
   if (err instanceof Error) {
-    return `Connection error: ${err.message}`;
+    return {
+      message: `Connection error: ${err.message}`,
+      action: "retry",
+      canRetry: true,
+    };
   }
-  return "An unexpected error occurred.";
+  return {
+    message: "An unexpected error occurred.",
+    action: "retry",
+    canRetry: true,
+  };
 }

@@ -35,6 +35,7 @@ export function useClientLifecycle({
   const {
     setClient,
     setError,
+    setErrorAction,
     setErrorCanRetry,
     setHostInfo,
     setReconnecting,
@@ -57,6 +58,7 @@ export function useClientLifecycle({
       manualDisconnectRef.current = false;
       updateStatus("connecting");
       setError(null);
+      setErrorAction("none");
       setErrorCanRetry(true);
 
       try {
@@ -72,11 +74,13 @@ export function useClientLifecycle({
         setClient(nupiClient);
         setHostInfo(`${config.host}:${config.port}`);
         updateStatus("connected");
+        setErrorAction("none");
       } catch (err) {
         // Keep stored credentials so reconnect can retry one-time pairing flow.
         const mapped = mapConnectionError(err);
         updateStatus("disconnected");
         setError(mapped.message);
+        setErrorAction(mapped.action);
         setErrorCanRetry(mapped.canRetry);
         throw err;
       } finally {
@@ -88,6 +92,7 @@ export function useClientLifecycle({
       manualDisconnectRef,
       setClient,
       setError,
+      setErrorAction,
       setErrorCanRetry,
       setHostInfo,
       updateStatus,
@@ -109,6 +114,7 @@ export function useClientLifecycle({
     setHostInfo(null);
     updateStatus("disconnected");
     setError(null);
+    setErrorAction("none");
     setErrorCanRetry(true);
     setReconnecting(false);
     setReconnectAttempts(0);
@@ -121,6 +127,7 @@ export function useClientLifecycle({
     reconnectTimerRef,
     setClient,
     setError,
+    setErrorAction,
     setErrorCanRetry,
     setHostInfo,
     setReconnectAttempts,
@@ -147,6 +154,7 @@ export function useClientLifecycle({
           setClient(nupiClient);
           setHostInfo(`${config.host}:${config.port}`);
           updateStatus("connected");
+          setErrorAction("none");
         }
       } catch (err) {
         if (mountedRef.current && !manualConnectRef.current) {
@@ -156,6 +164,7 @@ export function useClientLifecycle({
           const mapped = mapConnectionError(err);
           updateStatus("disconnected");
           setError(mapped.message);
+          setErrorAction(mapped.action);
           setErrorCanRetry(mapped.canRetry);
         }
       }
@@ -169,6 +178,7 @@ export function useClientLifecycle({
     mountedRef,
     setClient,
     setError,
+    setErrorAction,
     setErrorCanRetry,
     setHostInfo,
     updateStatus,

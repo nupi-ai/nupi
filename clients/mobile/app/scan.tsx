@@ -9,10 +9,12 @@ import {
 } from "react-native";
 
 import { Button } from "@/components/Button";
+import { ErrorView } from "@/components/ErrorView";
 import Colors from "@/constants/Colors";
 import { useColorScheme } from "@/components/useColorScheme";
 import { Text, View } from "@/components/Themed";
 import { useConnection } from "@/lib/ConnectionContext";
+import type { MappedError } from "@/lib/errorMessages";
 import { claimPairing, mapPairingError, parseNupiPairUrl } from "@/lib/pairing";
 
 export default function ScanScreen() {
@@ -25,7 +27,7 @@ export default function ScanScreen() {
   const [permission, requestPermission] = useCameraPermissions();
   const [scanned, setScanned] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<MappedError | null>(null);
   const scanningRef = useRef(false);
   const mountedRef = useRef(true);
 
@@ -46,7 +48,11 @@ export default function ScanScreen() {
       const parsed = parseNupiPairUrl(result.data);
       if (!parsed) {
         if (mountedRef.current) {
-          setError("Not a valid Nupi QR code");
+          setError({
+            message: "Not a valid Nupi QR code",
+            action: "retry",
+            canRetry: true,
+          });
           setLoading(false);
         }
         scanningRef.current = false;
@@ -148,20 +154,21 @@ export default function ScanScreen() {
           {loading ? (
             <ActivityIndicator size="large" color="#fff" accessibilityLabel="Pairing in progress" />
           ) : error ? (
-            <>
-              <Text style={[styles.errorText, { color: colors.danger }]}>
-                {error}
-              </Text>
-              <Button
-                style={styles.button}
-                variant="primary"
-                color={colors.tint}
-                onPress={handleRetry}
-                accessibilityLabel="Try Again"
-              >
-                <Text style={styles.buttonText}>Try Again</Text>
-              </Button>
-            </>
+            <ErrorView
+              error={error}
+              onRetry={handleRetry}
+              onRePair={handleRetry}
+              onGoBack={handleRetry}
+              actionLabels={{
+                retry: "Try Again",
+                "re-pair": "Try Again",
+                "go-back": "Try Again",
+              }}
+              accessibilityLabel="Try Again"
+              messageStyle={[styles.errorText, { color: colors.danger }]}
+              buttonStyle={styles.button}
+              buttonTextStyle={styles.buttonText}
+            />
           ) : (
             <Text style={styles.instructionText}>
               Scan the QR code shown on your desktop

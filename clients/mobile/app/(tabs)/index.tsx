@@ -2,6 +2,7 @@ import { StyleSheet, View as RNView } from "react-native";
 import { router } from "expo-router";
 
 import { Button } from "@/components/Button";
+import { ErrorView } from "@/components/ErrorView";
 import Colors from "@/constants/Colors";
 import { useColorScheme } from "@/components/useColorScheme";
 import { Text, View } from "@/components/Themed";
@@ -39,11 +40,18 @@ export default function HomeScreen() {
     (connection.error || connection.status === "disconnected") &&
     connection.status !== "connected";
 
-  const showRetryButton =
-    !isReconnecting &&
-    connection.error &&
-    connection.errorCanRetry &&
-    connection.status === "disconnected";
+  const homeError =
+    connection.error && connection.status === "disconnected"
+      ? {
+          message: connection.error,
+          action: connection.errorAction,
+          canRetry: connection.errorCanRetry,
+        }
+      : null;
+
+  const showSecondaryScanButton =
+    showScanButton &&
+    (!homeError || homeError.action === "retry" || homeError.action === "none");
 
   return (
     <View style={styles.container}>
@@ -62,30 +70,40 @@ export default function HomeScreen() {
         <Text style={styles.statusText}>{statusLabel}</Text>
       </View>
 
-      {connection.error && !isReconnecting && (
-        <Text style={[styles.errorText, { color: colors.danger }]}>
-          {connection.error}
-        </Text>
+      {homeError && !isReconnecting && (
+        <ErrorView
+          error={homeError}
+          onRetry={connection.retryConnection}
+          onRePair={() => router.push("/scan")}
+          onGoBack={() => router.push("/scan")}
+          actionLabels={{
+            retry: "Retry",
+            "re-pair": "Re-scan QR Code",
+            "go-back": "Re-scan QR Code",
+          }}
+          accessibilityLabel={
+            homeError.action === "retry" ? "Retry connection" : "Re-scan QR Code"
+          }
+          accessibilityHint={
+            homeError.action === "retry"
+              ? "Attempts to reconnect to nupid"
+              : "Opens camera to scan a QR code for pairing with nupid"
+          }
+          buttonTestID={
+            homeError.action === "retry"
+              ? "retry-connection-button"
+              : "scan-qr-button"
+          }
+          messageStyle={[styles.errorText, { color: colors.danger }]}
+          buttonStyle={styles.retryButton}
+          buttonTextStyle={[styles.buttonText, { color: colors.background }]}
+        />
       )}
 
-      {showRetryButton && (
+      {showSecondaryScanButton && (
         <Button
-          style={styles.retryButton}
-          variant="primary"
-          color={colors.tint}
-          onPress={connection.retryConnection}
-          accessibilityLabel="Retry connection"
-          accessibilityHint="Attempts to reconnect to nupid"
-          testID="retry-connection-button"
-        >
-          <Text style={[styles.buttonText, { color: colors.background }]}>Retry</Text>
-        </Button>
-      )}
-
-      {showScanButton && (
-        <Button
-          style={showRetryButton ? styles.scanButtonOutline : styles.scanButton}
-          variant={showRetryButton ? "outline" : "primary"}
+          style={homeError?.action === "retry" ? styles.scanButtonOutline : styles.scanButton}
+          variant={homeError?.action === "retry" ? "outline" : "primary"}
           color={colors.tint}
           onPress={() => router.push("/scan")}
           accessibilityLabel={connection.error ? "Re-scan QR Code" : "Scan QR to Connect"}
@@ -95,7 +113,7 @@ export default function HomeScreen() {
           <Text
             style={[
               styles.buttonText,
-              { color: showRetryButton ? colors.tint : colors.background },
+              { color: homeError?.action === "retry" ? colors.tint : colors.background },
             ]}
           >
             {connection.error ? "Re-scan QR Code" : "Scan QR to Connect"}
