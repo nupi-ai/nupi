@@ -11,10 +11,38 @@ export const LANGUAGE_KEY = "nupi_language_preference";
 // polling (500ms intervals → 4 reads/sec without cache).
 // Version counters prevent stale SecureStore reads from overwriting newer cache
 // values when a save races with an in-flight get.
-let cachedToken: string | null | undefined;
-let cachedLanguage: string | null | undefined;
-let tokenVersion = 0;
-let languageVersion = 0;
+function createVersionedCache<T>(initialValue: T | undefined = undefined) {
+  let cache = initialValue;
+  let version = 0;
+
+  return {
+    async getOrRead(read: () => Promise<T>, onError: () => T): Promise<T> {
+      if (cache !== undefined) return cache;
+      const vBefore = version;
+      try {
+        const value = await read();
+        // Only update cache if no save/clear occurred while reading.
+        if (version === vBefore) cache = value;
+        // Use !== undefined (not ??) so explicit null cache values from clear
+        // are not bypassed by stale reads when operations race.
+        return cache !== undefined ? cache : value;
+      } catch {
+        return onError();
+      }
+    },
+    set(value: T): void {
+      version++;
+      cache = value;
+    },
+    clear(value: T | undefined): void {
+      version++;
+      cache = value;
+    },
+  };
+}
+
+const tokenCache = createVersionedCache<string | null>();
+const languageCache = createVersionedCache<string | null>();
 
 export type StoredConnectionConfig = Pick<
   ConnectionConfig,
@@ -22,29 +50,16 @@ export type StoredConnectionConfig = Pick<
 >;
 
 export async function saveToken(token: string): Promise<void> {
-  tokenVersion++;
-  cachedToken = token;
+  tokenCache.set(token);
   await SecureStore.setItemAsync(TOKEN_KEY, token);
 }
 
 export async function getToken(): Promise<string | null> {
-  if (cachedToken !== undefined) return cachedToken;
-  const vBefore = tokenVersion;
-  try {
-    const val = await SecureStore.getItemAsync(TOKEN_KEY);
-    // Only update cache if no save occurred while we were reading.
-    if (tokenVersion === vBefore) cachedToken = val;
-    // Use !== undefined (not ??) so that null from clearToken() isn't
-    // bypassed by a stale disk read when the two race.
-    return cachedToken !== undefined ? cachedToken : val;
-  } catch {
-    return null;
-  }
+  return tokenCache.getOrRead(() => SecureStore.getItemAsync(TOKEN_KEY), () => null);
 }
 
 export async function clearToken(): Promise<void> {
-  tokenVersion++;
-  cachedToken = null;
+  tokenCache.clear(null);
   try {
     await SecureStore.deleteItemAsync(TOKEN_KEY);
   } catch {
@@ -88,29 +103,16 @@ export async function saveLanguage(lang: string): Promise<void> {
   if (!lang || lang.length > 35) {
     throw new Error("Invalid language code");
   }
-  languageVersion++;
-  cachedLanguage = lang;
+  languageCache.set(lang);
   await SecureStore.setItemAsync(LANGUAGE_KEY, lang);
 }
 
 export async function getLanguage(): Promise<string | null> {
-  if (cachedLanguage !== undefined) return cachedLanguage;
-  const vBefore = languageVersion;
-  try {
-    const val = await SecureStore.getItemAsync(LANGUAGE_KEY);
-    // Only update cache if no save occurred while we were reading.
-    if (languageVersion === vBefore) cachedLanguage = val;
-    // Use !== undefined (not ??) so that null from clearLanguage() isn't
-    // bypassed by a stale disk read when the two race.
-    return cachedLanguage !== undefined ? cachedLanguage : val;
-  } catch {
-    return null;
-  }
+  return languageCache.getOrRead(() => SecureStore.getItemAsync(LANGUAGE_KEY), () => null);
 }
 
 export async function clearLanguage(): Promise<void> {
-  languageVersion++;
-  cachedLanguage = null;
+  languageCache.clear(null);
   try {
     await SecureStore.deleteItemAsync(LANGUAGE_KEY);
   } catch {
@@ -118,6 +120,89 @@ export async function clearLanguage(): Promise<void> {
   }
 }
 
+// Track whether notification permission was prompted during first voice command.
+const NOTIF_PROMPTED_KEY = "nupi_notif_prompted";
+
+export async function wasNotificationPermissionPrompted(): Promise<boolean> {
+  try {
+    return (await SecureStore.getItemAsync(NOTIF_PROMPTED_KEY)) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export async function markNotificationPermissionPrompted(): Promise<void> {
+  try {
+    await SecureStore.setItemAsync(NOTIF_PROMPTED_KEY, "1");
+  } catch {
+    // Best-effort persist.
+  }
+}
+
+// Notification preference keys — default: all enabled.
+const NOTIF_COMPLETION_KEY = "nupi_notif_completion";
+const NOTIF_INPUT_NEEDED_KEY = "nupi_notif_input_needed";
+const NOTIF_ERROR_KEY = "nupi_notif_error";
+
+export interface NotificationPreferences {
+  completion: boolean;
+  inputNeeded: boolean;
+  error: boolean;
+}
+
+const DEFAULT_NOTIFICATION_PREFS: NotificationPreferences = {
+  completion: true,
+  inputNeeded: true,
+  error: true,
+};
+
+const notifPrefsCache = createVersionedCache<NotificationPreferences>();
+
+export async function saveNotificationPreferences(
+  prefs: NotificationPreferences
+): Promise<void> {
+  notifPrefsCache.set(prefs);
+  await Promise.all([
+    SecureStore.setItemAsync(NOTIF_COMPLETION_KEY, prefs.completion ? "1" : "0"),
+    SecureStore.setItemAsync(NOTIF_INPUT_NEEDED_KEY, prefs.inputNeeded ? "1" : "0"),
+    SecureStore.setItemAsync(NOTIF_ERROR_KEY, prefs.error ? "1" : "0"),
+  ]);
+}
+
+export async function getNotificationPreferences(): Promise<NotificationPreferences> {
+  return notifPrefsCache.getOrRead(async () => {
+    const [comp, input, err] = await Promise.all([
+      SecureStore.getItemAsync(NOTIF_COMPLETION_KEY),
+      SecureStore.getItemAsync(NOTIF_INPUT_NEEDED_KEY),
+      SecureStore.getItemAsync(NOTIF_ERROR_KEY),
+    ]);
+    return {
+      completion: comp !== "0",
+      inputNeeded: input !== "0",
+      error: err !== "0",
+    };
+  }, () => DEFAULT_NOTIFICATION_PREFS);
+}
+
+export async function clearNotificationPreferences(): Promise<void> {
+  notifPrefsCache.clear(undefined);
+  try {
+    await Promise.all([
+      SecureStore.deleteItemAsync(NOTIF_COMPLETION_KEY),
+      SecureStore.deleteItemAsync(NOTIF_INPUT_NEEDED_KEY),
+      SecureStore.deleteItemAsync(NOTIF_ERROR_KEY),
+    ]);
+  } catch {
+    // May not exist — ignore
+  }
+}
+
 export async function clearAll(): Promise<void> {
-  await Promise.all([clearToken(), clearConnectionConfig(), clearLanguage()]);
+  await Promise.all([
+    clearToken(),
+    clearConnectionConfig(),
+    clearLanguage(),
+    clearNotificationPreferences(),
+    SecureStore.deleteItemAsync(NOTIF_PROMPTED_KEY).catch(() => {}),
+  ]);
 }
