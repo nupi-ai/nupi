@@ -1,4 +1,5 @@
 import { isJsonRecord, parseStringRecordStrict } from "@nupi/shared/json";
+import { createEventParser, parseSessionId } from "@nupi/shared/events";
 
 const WS_EVENT_MESSAGE_TYPE = "event" as const;
 
@@ -13,7 +14,7 @@ export const SESSION_STREAM_EVENT_TYPES = [
 
 export type SessionStreamEventType = (typeof SESSION_STREAM_EVENT_TYPES)[number];
 
-const SESSION_STREAM_EVENT_TYPE_SET: ReadonlySet<string> = new Set(SESSION_STREAM_EVENT_TYPES);
+const parseSessionStreamEventType = createEventParser(SESSION_STREAM_EVENT_TYPES);
 
 interface SessionStreamEventBase {
   type: typeof WS_EVENT_MESSAGE_TYPE;
@@ -61,10 +62,11 @@ function parseStringRecord(value: unknown): Record<string, string> | undefined {
 }
 
 function parseEventType(value: unknown): SessionStreamEventType {
-  if (typeof value !== "string" || !SESSION_STREAM_EVENT_TYPE_SET.has(value)) {
+  const parsed = parseSessionStreamEventType(value);
+  if (parsed === null) {
     throw new Error("unknown event_type");
   }
-  return value as SessionStreamEventType;
+  return parsed;
 }
 
 export function parseSessionStreamEvent(raw: string): SessionStreamEvent {
@@ -81,7 +83,8 @@ export function parseSessionStreamEvent(raw: string): SessionStreamEvent {
   if (parsed.type !== WS_EVENT_MESSAGE_TYPE) {
     throw new Error("unknown message type");
   }
-  if (typeof parsed.session_id !== "string" || parsed.session_id.length === 0) {
+  const session_id = parseSessionId(parsed.session_id);
+  if (session_id === null) {
     throw new Error("missing session_id");
   }
 
@@ -90,7 +93,7 @@ export function parseSessionStreamEvent(raw: string): SessionStreamEvent {
   return {
     type: WS_EVENT_MESSAGE_TYPE,
     event_type,
-    session_id: parsed.session_id,
+    session_id,
     data,
   } as SessionStreamEvent;
 }
