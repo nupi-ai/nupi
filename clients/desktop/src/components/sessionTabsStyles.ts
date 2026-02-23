@@ -1,9 +1,12 @@
 import type { CSSProperties } from 'react';
+import { theme } from '../designTokens';
+
+const borderDefault = `1px solid ${theme.border.default}`;
 
 export const tabsContainer: CSSProperties = {
   display: 'flex',
-  borderBottom: '1px solid #333',
-  backgroundColor: '#2d2d2d',
+  borderBottom: borderDefault,
+  backgroundColor: theme.bg.tabs,
   minHeight: '48px',
   overflowX: 'auto',
   overflowY: 'hidden',
@@ -14,7 +17,7 @@ export const tabsContainer: CSSProperties = {
 
 export const emptyStateText: CSSProperties = {
   padding: '0 16px',
-  color: '#666',
+  color: theme.text.subdued,
   fontSize: '13px',
   display: 'flex',
   alignItems: 'center',
@@ -24,8 +27,8 @@ export const emptyStateText: CSSProperties = {
 const tabBase: CSSProperties = {
   padding: '8px 16px',
   boxSizing: 'border-box',
-  borderLeft: '1px solid #333',
-  borderRight: '1px solid #333',
+  borderLeft: borderDefault,
+  borderRight: borderDefault,
   cursor: 'pointer',
   fontFamily: 'system-ui, -apple-system, sans-serif',
   minWidth: '120px',
@@ -44,10 +47,14 @@ const tabBase: CSSProperties = {
 export function sessionTab(active: boolean, isSelected: boolean): CSSProperties {
   return {
     ...tabBase,
-    borderTop: active ? '3px solid #4ade80' : '3px solid #ef4444',
-    borderBottom: isSelected ? '1px solid #262626' : '1px solid #333',
-    backgroundColor: isSelected ? '#262626' : '#1a1a1a',
-    color: isSelected && active ? '#fff' : '#999',
+    borderTop: active
+      ? `3px solid ${theme.border.active}`
+      : `3px solid ${theme.border.inactive}`,
+    borderBottom: isSelected
+      ? `1px solid ${theme.border.selected}`
+      : borderDefault,
+    backgroundColor: isSelected ? theme.bg.tabSelected : theme.bg.nav,
+    color: isSelected && active ? theme.text.primary : theme.text.muted,
     opacity: active ? 1 : 0.6,
   };
 }
@@ -70,9 +77,9 @@ export const tabLabel: CSSProperties = {
 };
 
 export const tabActionButton: CSSProperties = {
-  background: 'transparent',
+  background: theme.bg.transparent,
   border: 'none',
-  color: '#999',
+  color: theme.text.muted,
   cursor: 'pointer',
   padding: '2px 4px',
   fontSize: '14px',
@@ -90,18 +97,18 @@ interface ActionButtonState {
 }
 
 const actionButtonDefaultState: ActionButtonState = {
-  background: 'transparent',
-  color: '#999',
+  background: theme.bg.transparent,
+  color: theme.text.muted,
 };
 
 const killButtonHoverState: ActionButtonState = {
-  background: 'rgba(239, 68, 68, 0.2)',
-  color: '#ef4444',
+  background: theme.bg.dangerHover,
+  color: theme.text.dangerStrong,
 };
 
 const playButtonHoverState: ActionButtonState = {
-  background: 'rgba(74, 222, 128, 0.2)',
-  color: '#4ade80',
+  background: theme.bg.successHover,
+  color: theme.text.success,
 };
 
 function applyButtonState(button: HTMLElement, state: ActionButtonState): void {

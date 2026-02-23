@@ -1,4 +1,7 @@
 import type { CSSProperties } from "react";
+import { theme } from "./designTokens";
+
+const borderDefault = `1px solid ${theme.border.default}`;
 
 export const root: CSSProperties = {
   display: "flex",
@@ -19,8 +22,8 @@ export const main: CSSProperties = {
 
 export const navTabs: CSSProperties = {
   display: "flex",
-  backgroundColor: "#1a1a1a",
-  borderBottom: "1px solid #333",
+  backgroundColor: theme.bg.nav,
+  borderBottom: borderDefault,
   padding: "8px 16px",
   gap: "8px",
 };
@@ -36,14 +39,14 @@ const navButtonBase: CSSProperties = {
 
 const navButtonActive: CSSProperties = {
   ...navButtonBase,
-  backgroundColor: "#333",
-  color: "#fff",
+  backgroundColor: theme.bg.neutral,
+  color: theme.text.primary,
 };
 
 const navButtonInactive: CSSProperties = {
   ...navButtonBase,
-  backgroundColor: "transparent",
-  color: "#999",
+  backgroundColor: theme.bg.transparent,
+  color: theme.text.muted,
 };
 
 export function navButton(isActive: boolean): CSSProperties {
@@ -61,14 +64,14 @@ export const waitingTitle: CSSProperties = {
 
 export const waitingDescription: CSSProperties = {
   fontSize: "0.9rem",
-  color: "#666",
+  color: theme.text.subdued,
   marginTop: "1rem",
 };
 
 export const statusBar: CSSProperties = {
   height: "32px",
-  backgroundColor: "#1a1a1a",
-  borderTop: "1px solid #333",
+  backgroundColor: theme.bg.nav,
+  borderTop: borderDefault,
   display: "flex",
   alignItems: "center",
   paddingLeft: "12px",
@@ -81,16 +84,16 @@ export const statusLabelGroup: CSSProperties = {
   display: "flex",
   alignItems: "center",
   gap: "6px",
-  color: "#999",
+  color: theme.text.muted,
 };
 
 export const statusIcon: CSSProperties = {
   fontSize: "16px",
 };
 
-const statusTextError: CSSProperties = { color: "#f87171" };
-const statusTextRunning: CSSProperties = { color: "#4ade80" };
-const statusTextStarting: CSSProperties = { color: "#fbbf24" };
+const statusTextError: CSSProperties = { color: theme.text.danger };
+const statusTextRunning: CSSProperties = { color: theme.text.success };
+const statusTextStarting: CSSProperties = { color: theme.text.warning };
 
 export function statusText(hasError: boolean, isRunning: boolean): CSSProperties {
   if (hasError) return statusTextError;
@@ -101,14 +104,14 @@ export const versionToast: CSSProperties = {
   position: "fixed",
   top: "16px",
   right: "16px",
-  backgroundColor: "#78350f",
-  color: "#fef3c7",
+  backgroundColor: theme.bg.toast,
+  color: theme.text.toast,
   padding: "12px 16px",
   borderRadius: "8px",
   fontSize: "13px",
   zIndex: 2000,
   maxWidth: "400px",
-  boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
+  boxShadow: `0 4px 12px ${theme.shadow.toast}`,
   display: "flex",
   alignItems: "center",
   gap: "8px",
@@ -125,7 +128,7 @@ export const versionToastMessage: CSSProperties = {
 export const versionToastClose: CSSProperties = {
   background: "none",
   border: "none",
-  color: "#fef3c7",
+  color: theme.text.toast,
   cursor: "pointer",
   fontSize: "16px",
   padding: "0 4px",
@@ -138,7 +141,7 @@ export const recordingOverlay: CSSProperties = {
   left: 0,
   right: 0,
   bottom: 0,
-  backgroundColor: "rgba(0, 0, 0, 0.9)",
+  backgroundColor: theme.bg.overlay,
   display: "flex",
   alignItems: "center",
   justifyContent: "center",
@@ -151,7 +154,7 @@ export const recordingModal: CSSProperties = {
   height: "90%",
   maxWidth: "1200px",
   maxHeight: "800px",
-  backgroundColor: "#0d1117",
+  backgroundColor: theme.bg.modal,
   borderRadius: "8px",
   display: "flex",
   flexDirection: "column",
@@ -159,11 +162,11 @@ export const recordingModal: CSSProperties = {
 
 export const recordingHeader: CSSProperties = {
   padding: "12px 16px",
-  borderBottom: "1px solid #333",
+  borderBottom: borderDefault,
   display: "flex",
   alignItems: "center",
   justifyContent: "space-between",
-  backgroundColor: "#1a1a1a",
+  backgroundColor: theme.bg.nav,
 };
 
 export const recordingTitle: CSSProperties = {
@@ -173,10 +176,10 @@ export const recordingTitle: CSSProperties = {
 
 export const recordingCloseButton: CSSProperties = {
   padding: "4px 12px",
-  backgroundColor: "#333",
+  backgroundColor: theme.bg.neutral,
   border: "none",
   borderRadius: "4px",
-  color: "#fff",
+  color: theme.text.primary,
   cursor: "pointer",
   fontSize: "14px",
 };
@@ -184,7 +187,7 @@ export const recordingCloseButton: CSSProperties = {
 export const recordingContent: CSSProperties = {
   flex: 1,
   padding: "16px",
-  backgroundColor: "#0d1117",
+  backgroundColor: theme.bg.modal,
   position: "relative",
   minHeight: 0,
   display: "flex",
@@ -193,5 +196,5 @@ export const recordingContent: CSSProperties = {
 };
 
 export const recordingLoadingText: CSSProperties = {
-  color: "#999",
+  color: theme.text.muted,
 };
