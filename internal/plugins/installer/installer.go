@@ -375,7 +375,7 @@ func (inst *Installer) downloadToTemp(ctx context.Context, rawURL string) (strin
 		return "", fmt.Errorf("HTTP %d from %s", resp.StatusCode, rawURL)
 	}
 
-	tmpFile, err := os.CreateTemp("", "nupi-plugin-*.download")
+	tmpFile, err := os.CreateTemp("", constants.PluginInstallerTempFilePattern)
 	if err != nil {
 		return "", err
 	}

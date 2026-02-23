@@ -478,6 +478,8 @@ func New(opts Options) (*Daemon, error) {
 
 // Start starts the daemon services.
 func (d *Daemon) Start() error {
+	cleanupInstallerTempFiles()
+
 	if err := daemonruntime.WritePIDFile(d.instancePaths.Lock, os.Getpid()); err != nil {
 		return fmt.Errorf("daemon: write pid file: %w", err)
 	}
@@ -533,6 +535,41 @@ func (d *Daemon) Start() error {
 	}
 
 	return d.getRunError()
+}
+
+// cleanupInstallerTempFiles removes stale installer download files left in
+// the system temp dir when previous processes terminated abruptly.
+func cleanupInstallerTempFiles() {
+	pattern := filepath.Join(os.TempDir(), constants.PluginInstallerTempFilePattern)
+	paths, err := filepath.Glob(pattern)
+	if err != nil {
+		log.Printf("[Daemon] failed to list installer temp files (%s): %v", pattern, err)
+		return
+	}
+
+	removed := 0
+	for _, p := range paths {
+		info, statErr := os.Lstat(p)
+		if statErr != nil {
+			if !os.IsNotExist(statErr) {
+				log.Printf("[Daemon] failed to stat temp file %s: %v", p, statErr)
+			}
+			continue
+		}
+		if info.IsDir() {
+			log.Printf("[Daemon] skipping temp cleanup for directory %s", p)
+			continue
+		}
+		if rmErr := os.Remove(p); rmErr != nil && !os.IsNotExist(rmErr) {
+			log.Printf("[Daemon] failed to remove stale installer temp file %s: %v", p, rmErr)
+			continue
+		}
+		removed++
+	}
+
+	if removed > 0 {
+		log.Printf("[Daemon] removed %d stale installer temp file(s)", removed)
+	}
 }
 
 // Shutdown signals the daemon to stop.
