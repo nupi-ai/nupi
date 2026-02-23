@@ -4,6 +4,8 @@ import { timestampDate } from "@bufbuild/protobuf/wkt";
 import type { NupiClient } from "./connect";
 import type { ConversationTurn as ProtoTurn } from "./gen/nupi_pb";
 import { raceTimeout } from "./raceTimeout";
+import { useAbortController } from "./useAbortController";
+import { useTimeout } from "./useTimeout";
 
 export interface ConversationTurn {
   origin: "user" | "ai" | "system" | "tool";
@@ -69,13 +71,13 @@ export function useConversation(
 
   const mountedRef = useRef(true);
   const pollingRef = useRef(false);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pollTimer = useTimeout();
   const pollStartRef = useRef(0);
   const fetchingRef = useRef(false);
   // M3 fix: AbortController for cancelling in-flight requests on cleanup.
-  const abortRef = useRef<AbortController | null>(null);
+  const pollAbort = useAbortController();
   // L3 fix: AbortController for cancelling in-flight refresh requests.
-  const refreshAbortRef = useRef<AbortController | null>(null);
+  const refreshAbort = useAbortController();
   // Tracks server's total turn count — used as offset for delta fetching.
   // Set from GetConversation response.total on every successful fetch.
   const serverTotalRef = useRef(0);
@@ -120,7 +122,7 @@ export function useConversation(
       // H1 fix (Review 11): per-request timeout prevents a stuck RPC from
       // blocking all subsequent polls (fetchingRef stays true indefinitely).
       const controller = new AbortController();
-      abortRef.current = controller;
+      pollAbort.set(controller);
       const offset = serverTotalRef.current;
       let result: Awaited<ReturnType<typeof fetchTurns>> = null;
       try {
@@ -133,7 +135,7 @@ export function useConversation(
         controller.abort();
         result = null;
       } finally {
-        abortRef.current = null;
+        pollAbort.clearIfCurrent(controller);
         fetchingRef.current = false;
       }
 
@@ -186,9 +188,9 @@ export function useConversation(
       let interval = elapsed < FAST_PHASE_MS ? FAST_INTERVAL : SLOW_INTERVAL;
       // M1 fix (Review 9): after 3+ consecutive errors, backoff to slow interval.
       if (consecutiveErrorsRef.current >= 3) interval = SLOW_INTERVAL;
-      timerRef.current = setTimeout(() => pollTickRef.current(), interval);
+      pollTimer.schedule(() => pollTickRef.current(), interval);
     };
-  }, [client, fetchTurns]);
+  }, [client, fetchTurns, pollAbort, pollTimer]);
 
   // Initial fetch on mount / when client or sessionId changes.
   // Two-step: first get total count, then fetch the most recent turns.
@@ -234,52 +236,44 @@ export function useConversation(
     pollStartRef.current = Date.now();
     if (pollingRef.current) {
       // Cancel current (potentially slow-phase) timer and reschedule at fast interval.
-      if (timerRef.current) {
-        clearTimeout(timerRef.current);
-        timerRef.current = setTimeout(() => pollTickRef.current(), FAST_INTERVAL);
-      }
+      pollTimer.schedule(() => pollTickRef.current(), FAST_INTERVAL);
       return;
     }
     pollingRef.current = true;
     setIsPolling(true);
-    timerRef.current = setTimeout(() => pollTickRef.current(), FAST_INTERVAL);
-  }, []);
+    pollTimer.schedule(() => pollTickRef.current(), FAST_INTERVAL);
+  }, [pollTimer]);
 
   const stopPolling = useCallback(() => {
     pollingRef.current = false;
-    if (timerRef.current) {
-      clearTimeout(timerRef.current);
-      timerRef.current = null;
-    }
+    pollTimer.clear();
     setIsPolling(false);
-  }, []);
+  }, [pollTimer]);
 
   const refresh = useCallback(async () => {
     if (!client) return;
     // L3 fix: abort any previous in-flight refresh and use AbortController.
-    refreshAbortRef.current?.abort();
-    const controller = new AbortController();
-    refreshAbortRef.current = controller;
+    const controller = refreshAbort.abortAndCreate();
     setIsLoading(true);
     // Probe total, then fetch most recent turns.
     const probe = await fetchTurns(0, 0, controller.signal);
     if (!probe || !mountedRef.current) {
       // Only clear ref if still ours — a concurrent refresh may have superseded.
-      if (refreshAbortRef.current === controller) refreshAbortRef.current = null;
+      refreshAbort.clearIfCurrent(controller);
       setIsLoading(false);
       return;
     }
     const recentOffset = Math.max(0, probe.total - INITIAL_LIMIT);
     const result = await fetchTurns(recentOffset, INITIAL_LIMIT, controller.signal);
     // Only clear ref if still ours — a concurrent refresh may have superseded.
-    if (refreshAbortRef.current === controller) refreshAbortRef.current = null;
+    refreshAbort.clearIfCurrent(controller);
     if (!mountedRef.current) return;
     if (result) {
       serverTotalRef.current = result.total;
       setTurns(result.turns);
     }
     setIsLoading(false);
-  }, [client, fetchTurns]);
+  }, [client, fetchTurns, refreshAbort]);
 
   const addOptimistic = useCallback((text: string) => {
     setTurns(prev => [
@@ -307,18 +301,12 @@ export function useConversation(
     return () => {
       mountedRef.current = false;
       pollingRef.current = false;
-      if (timerRef.current) {
-        clearTimeout(timerRef.current);
-        timerRef.current = null;
-      }
       // M3 fix: abort any in-flight request on unmount.
-      abortRef.current?.abort();
-      abortRef.current = null;
+      pollAbort.abort();
       // L3 fix: abort any in-flight refresh on unmount.
-      refreshAbortRef.current?.abort();
-      refreshAbortRef.current = null;
+      refreshAbort.abort();
     };
-  }, []);
+  }, [pollAbort, refreshAbort]);
 
   return { turns, isLoading, isPolling, error, startPolling, stopPolling, refresh, addOptimistic, removeLastOptimistic };
 }

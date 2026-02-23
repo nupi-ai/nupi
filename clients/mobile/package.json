@@ -7,6 +7,7 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
+    "test:unit": "vitest run",
     "generate": "buf generate",
     "bundle-xterm": "node scripts/bundle-xterm.mjs"
   },
@@ -23,9 +24,12 @@
     "expo": "~54.0.33",
     "expo-camera": "~17.0.10",
     "expo-constants": "~18.0.13",
+    "expo-crypto": "~15.0.8",
+    "expo-device": "~8.0.10",
     "expo-file-system": "~19.0.21",
     "expo-font": "~14.0.11",
     "expo-linking": "~8.0.11",
+    "expo-notifications": "~0.32.16",
     "expo-router": "~6.0.23",
     "expo-secure-store": "~15.0.8",
     "expo-splash-screen": "~31.0.13",
@@ -45,8 +49,11 @@
   "devDependencies": {
     "@bufbuild/buf": "^1.65.0",
     "@bufbuild/protoc-gen-es": "^2.11.0",
+    "@testing-library/react": "^16.3.2",
     "@types/react": "~19.1.0",
-    "typescript": "~5.9.2"
+    "jsdom": "^28.1.0",
+    "typescript": "~5.9.2",
+    "vitest": "^4.0.18"
   },
   "private": true
 }
