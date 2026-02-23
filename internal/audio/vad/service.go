@@ -25,12 +25,9 @@ var (
 
 const (
 	defaultSegmentBuffer = serviceutil.DefaultWorkerBuffer
-	defaultRetryInitial  = serviceutil.DefaultRetryInitial
-	defaultRetryMax      = serviceutil.DefaultRetryMax
 	maxPendingSegments   = serviceutil.DefaultMaxPending
 	maxRetryFailures     = 10
 	maxRetryDuration     = constants.Duration2Minutes
-	defaultLatencyP99    = constants.Duration100Milliseconds
 	latencyDegradeFrames = 10
 )
 
@@ -115,10 +112,10 @@ func New(bus *eventbus.Bus, opts ...Option) *Service {
 	svc := &Service{
 		bus:              bus,
 		logger:           log.Default(),
-		retryInitial:     defaultRetryInitial,
-		retryMax:         defaultRetryMax,
+		retryInitial:     serviceutil.DefaultRetryInitial,
+		retryMax:         serviceutil.DefaultRetryMax,
 		latencyHistogram: newLatencyHistogram(defaultLatencyBuckets()),
-		latencyThreshold: defaultLatencyP99,
+		latencyThreshold: constants.Duration100Milliseconds,
 		factory: FactoryFunc(func(context.Context, SessionParams) (Analyzer, error) {
 			return nil, ErrFactoryUnavailable
 		}),

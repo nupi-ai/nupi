@@ -2,7 +2,6 @@ package egress
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -14,8 +13,6 @@ import (
 	"github.com/nupi-ai/nupi/internal/napdial"
 	maputil "github.com/nupi-ai/nupi/internal/util/maps"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 type napSynthesizer struct {
@@ -68,7 +65,7 @@ func (s *napSynthesizer) Speak(ctx context.Context, req SpeakRequest) ([]Synthes
 			if err == io.EOF {
 				break
 			}
-			if isStreamCancelled(err) {
+			if napstream.IsCancellationError(err) {
 				if ctxErr := ctx.Err(); ctxErr != nil {
 					return chunks, ctxErr
 				}
@@ -150,20 +147,4 @@ func mergeSynthMeta(chunkMeta, respMeta map[string]string) map[string]string {
 		return maputil.Clone(respMeta)
 	}
 	return mapper.MergeStringMaps(respMeta, chunkMeta)
-}
-
-func isStreamCancelled(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return true
-	}
-	if s, ok := status.FromError(err); ok {
-		switch s.Code() {
-		case codes.Canceled, codes.DeadlineExceeded:
-			return true
-		}
-	}
-	return false
 }

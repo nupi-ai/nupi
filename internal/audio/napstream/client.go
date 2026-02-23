@@ -301,7 +301,7 @@ func DrainReceiveError(errCh <-chan error, prefix, op string, errAdapterUnavaila
 		if IsUnavailableError(err) {
 			return fmt.Errorf("%s: %s: %w: %w", prefix, op, err, errAdapterUnavailable)
 		}
-		if isIgnorableRecvError(err) {
+		if IsCancellationError(err) {
 			return nil
 		}
 		return fmt.Errorf("%s: %s: %w", prefix, op, err)
@@ -310,7 +310,8 @@ func DrainReceiveError(errCh <-chan error, prefix, op string, errAdapterUnavaila
 	}
 }
 
-func isIgnorableRecvError(err error) bool {
+// IsCancellationError reports whether err represents cancellation/deadline.
+func IsCancellationError(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}

@@ -28,8 +28,6 @@ var (
 
 const (
 	defaultRequestBuffer = serviceutil.DefaultWorkerBuffer
-	defaultRetryInitial  = serviceutil.DefaultRetryInitial
-	defaultRetryMax      = serviceutil.DefaultRetryMax
 	maxPendingRequests   = serviceutil.DefaultMaxPending
 
 	defaultStreamID = slots.TTS
@@ -142,8 +140,8 @@ func New(bus *eventbus.Bus, opts ...Option) *Service {
 			FrameDuration: 20 * time.Millisecond,
 		},
 		streamID:     defaultStreamID,
-		retryInitial: defaultRetryInitial,
-		retryMax:     defaultRetryMax,
+		retryInitial: serviceutil.DefaultRetryInitial,
+		retryMax:     serviceutil.DefaultRetryMax,
 		factory: FactoryFunc(func(context.Context, SessionParams) (Synthesizer, error) {
 			return nil, ErrFactoryUnavailable
 		}),
