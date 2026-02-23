@@ -10,7 +10,7 @@ import {
 
 import { Button } from "@/components/Button";
 import { ErrorView } from "@/components/ErrorView";
-import Colors from "@/constants/Colors";
+import Colors from "@/constants/designTokens";
 import { useColorScheme } from "@/components/useColorScheme";
 import { Text, View } from "@/components/Themed";
 import { useConnection } from "@/lib/ConnectionContext";
@@ -156,9 +156,11 @@ export default function ScanScreen() {
           ) : error ? (
             <ErrorView
               error={error}
-              onRetry={handleRetry}
-              onRePair={handleRetry}
-              onGoBack={handleRetry}
+              actionHandlers={{
+                retry: handleRetry,
+                "re-pair": handleRetry,
+                "go-back": handleRetry,
+              }}
               actionLabels={{
                 retry: "Try Again",
                 "re-pair": "Try Again",

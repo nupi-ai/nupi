@@ -2,8 +2,8 @@ import { StyleSheet, View as RNView } from "react-native";
 import { router } from "expo-router";
 
 import { Button } from "@/components/Button";
-import { ErrorView } from "@/components/ErrorView";
-import Colors from "@/constants/Colors";
+import { ConnectionErrorView } from "@/components/ConnectionErrorView";
+import Colors from "@/constants/designTokens";
 import { useColorScheme } from "@/components/useColorScheme";
 import { Text, View } from "@/components/Themed";
 import { useConnection } from "@/lib/ConnectionContext";
@@ -71,29 +71,9 @@ export default function HomeScreen() {
       </View>
 
       {homeError && !isReconnecting && (
-        <ErrorView
+        <ConnectionErrorView
           error={homeError}
-          onRetry={connection.retryConnection}
-          onRePair={() => router.push("/scan")}
-          onGoBack={() => router.push("/scan")}
-          actionLabels={{
-            retry: "Retry",
-            "re-pair": "Re-scan QR Code",
-            "go-back": "Re-scan QR Code",
-          }}
-          accessibilityLabel={
-            homeError.action === "retry" ? "Retry connection" : "Re-scan QR Code"
-          }
-          accessibilityHint={
-            homeError.action === "retry"
-              ? "Attempts to reconnect to nupid"
-              : "Opens camera to scan a QR code for pairing with nupid"
-          }
-          buttonTestID={
-            homeError.action === "retry"
-              ? "retry-connection-button"
-              : "scan-qr-button"
-          }
+          onRecover={() => router.push("/scan")}
           messageStyle={[styles.errorText, { color: colors.danger }]}
           buttonStyle={styles.retryButton}
           buttonTextStyle={[styles.buttonText, { color: colors.background }]}
