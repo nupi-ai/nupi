@@ -8,7 +8,58 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
+
+func TestGetTrimmedFlag(t *testing.T) {
+	cmd := &cobra.Command{}
+	cmd.Flags().String("name", "", "name")
+	if err := cmd.Flags().Set("name", "  demo  "); err != nil {
+		t.Fatalf("failed to set flag: %v", err)
+	}
+
+	got := getTrimmedFlag(cmd, "name")
+	if got != "demo" {
+		t.Fatalf("getTrimmedFlag() = %q, want %q", got, "demo")
+	}
+}
+
+func TestGetRequiredFlag(t *testing.T) {
+	t.Run("returns value when set", func(t *testing.T) {
+		cmd := &cobra.Command{}
+		cmd.Flags().String("id", "", "id")
+		if err := cmd.Flags().Set("id", "  adapter.local  "); err != nil {
+			t.Fatalf("failed to set flag: %v", err)
+		}
+
+		out := &OutputFormatter{}
+		got, err := getRequiredFlag(cmd, "id", out)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != "adapter.local" {
+			t.Fatalf("getRequiredFlag() = %q, want %q", got, "adapter.local")
+		}
+	})
+
+	t.Run("returns formatted error when empty", func(t *testing.T) {
+		cmd := &cobra.Command{}
+		cmd.Flags().String("id", "", "id")
+		out := &OutputFormatter{}
+
+		got, err := getRequiredFlag(cmd, "id", out)
+		if got != "" {
+			t.Fatalf("expected empty value, got %q", got)
+		}
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if !strings.Contains(err.Error(), "--id is required") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+}
 
 func TestAdapterTypeForSlot(t *testing.T) {
 	cases := map[string]string{

@@ -271,9 +271,8 @@ func tokensList(cmd *cobra.Command, args []string) error {
 func tokensCreate(cmd *cobra.Command, args []string) error {
 	out := newOutputFormatter(cmd)
 
-	name, _ := cmd.Flags().GetString("name")
-	role, _ := cmd.Flags().GetString("role")
-	role = strings.ToLower(strings.TrimSpace(role))
+	name := getTrimmedFlag(cmd, "name")
+	role := strings.ToLower(getTrimmedFlag(cmd, "role"))
 	if role == "" {
 		role = constants.TokenRoleAdmin
 	}
@@ -283,7 +282,7 @@ func tokensCreate(cmd *cobra.Command, args []string) error {
 
 	return withOutputClientTimeout(out, constants.Duration5Seconds, daemonConnectErrorMessage, func(ctx context.Context, gc *grpcclient.Client) (any, error) {
 		resp, err := gc.CreateToken(ctx, &apiv1.CreateTokenRequest{
-			Name: strings.TrimSpace(name),
+			Name: name,
 			Role: role,
 		})
 		if err != nil {
@@ -323,8 +322,7 @@ func tokensDelete(cmd *cobra.Command, args []string) error {
 	if len(args) > 0 {
 		token = strings.TrimSpace(args[0])
 	}
-	idFlag, _ := cmd.Flags().GetString("id")
-	idFlag = strings.TrimSpace(idFlag)
+	idFlag := getTrimmedFlag(cmd, "id")
 	out := newOutputFormatter(cmd)
 
 	if token == "" && idFlag == "" {
@@ -352,9 +350,8 @@ func tokensDelete(cmd *cobra.Command, args []string) error {
 func daemonPairCreate(cmd *cobra.Command, args []string) error {
 	out := newOutputFormatter(cmd)
 
-	name, _ := cmd.Flags().GetString("name")
-	role, _ := cmd.Flags().GetString("role")
-	role = strings.ToLower(strings.TrimSpace(role))
+	name := getTrimmedFlag(cmd, "name")
+	role := strings.ToLower(getTrimmedFlag(cmd, "role"))
 	if role == "" {
 		role = constants.TokenRoleReadOnly
 	}
@@ -368,7 +365,7 @@ func daemonPairCreate(cmd *cobra.Command, args []string) error {
 
 	return withOutputClientTimeout(out, constants.Duration5Seconds, daemonConnectErrorMessage, func(ctx context.Context, gc *grpcclient.Client) (any, error) {
 		resp, err := gc.CreatePairing(ctx, &apiv1.CreatePairingRequest{
-			Name:             strings.TrimSpace(name),
+			Name:             name,
 			Role:             role,
 			ExpiresInSeconds: int32(expiresIn),
 		})

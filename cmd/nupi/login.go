@@ -134,8 +134,7 @@ func bootstrapLogin(cmd *cobra.Command, args []string) error {
 		return out.Success("Bootstrap configuration cleared", info)
 	}
 
-	rawURL, _ := cmd.Flags().GetString("url")
-	baseURL := strings.TrimSpace(rawURL)
+	baseURL := getTrimmedFlag(cmd, "url")
 	if baseURL == "" {
 		return out.Error("Base URL (--url) is required unless --clear is used", nil)
 	}
@@ -149,16 +148,12 @@ func bootstrapLogin(cmd *cobra.Command, args []string) error {
 	}
 	baseURL = strings.TrimRight(parsed.String(), "/")
 
-	token, _ := cmd.Flags().GetString("token")
-	token = strings.TrimSpace(token)
+	token := getTrimmedFlag(cmd, "token")
 
 	insecure, _ := cmd.Flags().GetBool("insecure")
-	caCert, _ := cmd.Flags().GetString("ca-cert")
-	caCert = strings.TrimSpace(caCert)
-	serverName, _ := cmd.Flags().GetString("server-name")
-	serverName = strings.TrimSpace(serverName)
-	name, _ := cmd.Flags().GetString("name")
-	name = strings.TrimSpace(name)
+	caCert := getTrimmedFlag(cmd, "ca-cert")
+	serverName := getTrimmedFlag(cmd, "server-name")
+	name := getTrimmedFlag(cmd, "name")
 
 	if caCert != "" {
 		if _, err := os.Stat(caCert); err != nil {
@@ -216,17 +211,16 @@ func bootstrapLogin(cmd *cobra.Command, args []string) error {
 func pairClaim(cmd *cobra.Command, _ []string) error {
 	out := newOutputFormatter(cmd)
 
-	code, _ := cmd.Flags().GetString("code")
-	code = strings.TrimSpace(code)
+	code := getTrimmedFlag(cmd, "code")
 	if code == "" {
 		return out.Error("Pairing code is required", nil)
 	}
-	name, _ := cmd.Flags().GetString("name")
+	name := getTrimmedFlag(cmd, "name")
 
 	return withOutputClientTimeout(out, constants.Duration10Seconds, daemonConnectGRPCErrorMessage, func(ctx context.Context, gc *grpcclient.Client) (any, error) {
 		resp, err := gc.ClaimPairing(ctx, &apiv1.ClaimPairingRequest{
 			Code:       strings.ToUpper(code),
-			ClientName: strings.TrimSpace(name),
+			ClientName: name,
 		})
 		if err != nil {
 			return nil, clientCallFailed("Failed to claim pairing code", err)
