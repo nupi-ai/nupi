@@ -29,6 +29,36 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	adaptersRegisterOptionsKey     cmdOptionsContextKey = "adapters_register_options"
+	adaptersInstallLocalOptionsKey cmdOptionsContextKey = "adapters_install_local_options"
+	pluginsLogsOptionsKey          cmdOptionsContextKey = "plugins_logs_options"
+)
+
+type adaptersRegisterOptions struct {
+	request *apiv1.RegisterAdapterRequest
+}
+
+type adaptersInstallLocalOptions struct {
+	manifestPath      string
+	adapterID         string
+	binaryFlag        string
+	copyBinary        bool
+	buildFlag         bool
+	sourceDir         string
+	endpointAddress   string
+	endpointArgs      []string
+	endpointEnvValues []string
+	slot              string
+	configRaw         string
+	buildTimeout      string
+}
+
+type pluginsLogsOptions struct {
+	slot     string
+	pluginID string
+}
+
 func newAdaptersCommand() *cobra.Command {
 	adaptersCmd := &cobra.Command{
 		Use:           "adapters",
@@ -41,6 +71,7 @@ func newAdaptersCommand() *cobra.Command {
 		Short:         "Register or update an adapter",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		PreRunE:       adaptersRegisterPreRun,
 		RunE:          adaptersRegister,
 	}
 	adaptersRegisterCmd.Example = `  # Register gRPC-based STT adapter
@@ -77,6 +108,7 @@ func newAdaptersCommand() *cobra.Command {
 		Short:         "Register an adapter from local manifest and binary",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		PreRunE:       adaptersInstallLocalPreRun,
 		RunE:          adaptersInstallLocal,
 	}
 	adaptersInstallLocalCmd.Example = `  # Install a local Whisper STT adapter
@@ -154,6 +186,34 @@ func adaptersList(cmd *cobra.Command, _ []string) error {
 func adaptersRegister(cmd *cobra.Command, _ []string) error {
 	out := newOutputFormatter(cmd)
 
+	opts, ok := getCmdOptions[*adaptersRegisterOptions](cmd, adaptersRegisterOptionsKey)
+	if !ok || opts == nil || opts.request == nil {
+		return out.Error("Internal CLI error while preparing adapter registration", errors.New("missing adapters register options"))
+	}
+
+	resp, err := adaptersRegisterGRPCFunc(out, opts.request)
+	if err != nil {
+		return err
+	}
+
+	result := adapterRegistrationResultFromProto(resp)
+	stdout := cmd.OutOrStdout()
+	return out.Render(CommandResult{
+		Data: result,
+		HumanReadable: func() error {
+			fmt.Fprintf(stdout, "Registered adapter %s", resp.GetAdapterId())
+			if resp.GetType() != "" {
+				fmt.Fprintf(stdout, " (%s)", resp.GetType())
+			}
+			fmt.Fprintln(stdout)
+			return nil
+		},
+	})
+}
+
+func adaptersRegisterPreRun(cmd *cobra.Command, _ []string) error {
+	out := newOutputFormatter(cmd)
+
 	adapterID := getTrimmedFlag(cmd, "id")
 	if adapterID == "" {
 		return out.Error("--id is required", errors.New("missing adapter id"))
@@ -225,45 +285,33 @@ func adaptersRegister(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	req := &apiv1.RegisterAdapterRequest{
-		AdapterId:    adapterID,
-		Source:       source,
-		Version:      version,
-		Type:         adapterType,
-		Name:         name,
-		ManifestYaml: string(manifest),
-		Endpoint:     endpoint,
-	}
-
-	resp, err := adaptersRegisterGRPCFunc(out, req)
-	if err != nil {
-		return err
-	}
-
-	result := adapterRegistrationResultFromProto(resp)
-	stdout := cmd.OutOrStdout()
-	return out.Render(CommandResult{
-		Data: result,
-		HumanReadable: func() error {
-			fmt.Fprintf(stdout, "Registered adapter %s", resp.GetAdapterId())
-			if resp.GetType() != "" {
-				fmt.Fprintf(stdout, " (%s)", resp.GetType())
-			}
-			fmt.Fprintln(stdout)
-			return nil
+	setCmdOptions(cmd, adaptersRegisterOptionsKey, &adaptersRegisterOptions{
+		request: &apiv1.RegisterAdapterRequest{
+			AdapterId:    adapterID,
+			Source:       source,
+			Version:      version,
+			Type:         adapterType,
+			Name:         name,
+			ManifestYaml: string(manifest),
+			Endpoint:     endpoint,
 		},
 	})
+	return nil
 }
 
 func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 	out := newOutputFormatter(cmd)
+	opts, ok := getCmdOptions[*adaptersInstallLocalOptions](cmd, adaptersInstallLocalOptionsKey)
+	if !ok || opts == nil {
+		return out.Error("Internal CLI error while preparing local adapter install", errors.New("missing adapters install-local options"))
+	}
 
 	var cleanupWriter io.Writer = cmd.ErrOrStderr()
 	if out.jsonMode {
 		cleanupWriter = io.Discard
 	}
 
-	manifestPath := getTrimmedFlag(cmd, "manifest-file")
+	manifestPath := opts.manifestPath
 	if manifestPath == "" {
 		return out.Error("--manifest-file is required", errors.New("missing manifest file"))
 	}
@@ -283,7 +331,7 @@ func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 		return out.Error("Failed to parse manifest", err)
 	}
 
-	adapterID := getTrimmedFlag(cmd, "id")
+	adapterID := opts.adapterID
 	if adapterID == "" {
 		adapterID = formatAdapterID(manifest.Metadata.Namespace, manifest.Metadata.Slug)
 	}
@@ -302,9 +350,9 @@ func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 		return out.Error(fmt.Sprintf("unsupported adapter slot %q", slotType), errors.New("invalid adapter slot"))
 	}
 	adapterName := strings.TrimSpace(manifest.Metadata.Name)
-	copyBinary, _ := cmd.Flags().GetBool("copy-binary")
-	buildFlag, _ := cmd.Flags().GetBool("build")
-	sourceDir := getTrimmedFlag(cmd, "adapter-dir")
+	copyBinary := opts.copyBinary
+	buildFlag := opts.buildFlag
+	sourceDir := opts.sourceDir
 	if sourceDir != "" {
 		sourceDir = config.ExpandPath(sourceDir)
 		absDir, err := filepath.Abs(sourceDir)
@@ -314,7 +362,7 @@ func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 		sourceDir = absDir
 	}
 
-	binaryFlag := getTrimmedFlag(cmd, "binary")
+	binaryFlag := opts.binaryFlag
 	if binaryFlag != "" {
 		binaryFlag = config.ExpandPath(binaryFlag)
 		if !filepath.IsAbs(binaryFlag) {
@@ -349,7 +397,7 @@ func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 
 	var command string
 	if buildFlag {
-		buildTimeoutStr, _ := cmd.Flags().GetString("build-timeout")
+		buildTimeoutStr := opts.buildTimeout
 		buildTimeout, err := time.ParseDuration(buildTimeoutStr)
 		if err != nil {
 			return out.Error("invalid --build-timeout: must be a Go duration like 30s, 2m, 5m", err)
@@ -420,12 +468,12 @@ func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 	if manifest.Adapter != nil {
 		args = append(args, manifest.Adapter.Entrypoint.Args...)
 	}
-	extraArgs, _ := cmd.Flags().GetStringArray("endpoint-arg")
+	extraArgs := append([]string(nil), opts.endpointArgs...)
 	if len(extraArgs) > 0 {
 		args = append(args, extraArgs...)
 	}
 
-	endpointEnvValues, _ := cmd.Flags().GetStringArray("endpoint-env")
+	endpointEnvValues := append([]string(nil), opts.endpointEnvValues...)
 	endpointEnv, err := parseKeyValuePairs(endpointEnvValues)
 	if err != nil {
 		return out.Error("Invalid --endpoint-env value", err)
@@ -442,7 +490,7 @@ func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 		return out.Error(fmt.Sprintf("manifest transport %q unsupported", transport), errors.New("invalid manifest transport"))
 	}
 
-	address := getTrimmedFlag(cmd, "endpoint-address")
+	address := opts.endpointAddress
 	switch transport {
 	case constants.AdapterTransportGRPC, constants.AdapterTransportHTTP:
 		if address == "" {
@@ -557,12 +605,12 @@ func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	slot := getTrimmedFlag(cmd, "slot")
+	slot := opts.slot
 	if slot == "" {
 		return nil
 	}
 
-	configRaw := getTrimmedFlag(cmd, "config")
+	configRaw := opts.configRaw
 	if configRaw != "" && !json.Valid([]byte(configRaw)) {
 		return out.Error("Config must be valid JSON", errors.New("invalid config payload"))
 	}
@@ -579,9 +627,13 @@ func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 
 func pluginsLogs(cmd *cobra.Command, _ []string) error {
 	out := newOutputFormatter(cmd)
+	opts, ok := getCmdOptions[*pluginsLogsOptions](cmd, pluginsLogsOptionsKey)
+	if !ok || opts == nil {
+		return out.Error("Internal CLI error while preparing plugin logs options", errors.New("missing plugins logs options"))
+	}
 
-	slot := getTrimmedFlag(cmd, "slot")
-	pluginID := getTrimmedFlag(cmd, "plugin")
+	slot := opts.slot
+	pluginID := opts.pluginID
 
 	return withOutputClient(out, daemonConnectGRPCErrorMessage, func(gc *grpcclient.Client) error {
 		ctx, cancel := context.WithCancel(context.Background())
@@ -623,6 +675,38 @@ func pluginsLogs(cmd *cobra.Command, _ []string) error {
 			printPluginLogEntry(out.w, entry)
 		}
 	})
+}
+
+func adaptersInstallLocalPreRun(cmd *cobra.Command, _ []string) error {
+	copyBinary, _ := cmd.Flags().GetBool("copy-binary")
+	buildFlag, _ := cmd.Flags().GetBool("build")
+	endpointArgs, _ := cmd.Flags().GetStringArray("endpoint-arg")
+	endpointEnvValues, _ := cmd.Flags().GetStringArray("endpoint-env")
+	buildTimeout, _ := cmd.Flags().GetString("build-timeout")
+
+	setCmdOptions(cmd, adaptersInstallLocalOptionsKey, &adaptersInstallLocalOptions{
+		manifestPath:      getTrimmedFlag(cmd, "manifest-file"),
+		adapterID:         getTrimmedFlag(cmd, "id"),
+		binaryFlag:        getTrimmedFlag(cmd, "binary"),
+		copyBinary:        copyBinary,
+		buildFlag:         buildFlag,
+		sourceDir:         getTrimmedFlag(cmd, "adapter-dir"),
+		endpointAddress:   getTrimmedFlag(cmd, "endpoint-address"),
+		endpointArgs:      append([]string(nil), endpointArgs...),
+		endpointEnvValues: append([]string(nil), endpointEnvValues...),
+		slot:              getTrimmedFlag(cmd, "slot"),
+		configRaw:         getTrimmedFlag(cmd, "config"),
+		buildTimeout:      buildTimeout,
+	})
+	return nil
+}
+
+func pluginsLogsPreRun(cmd *cobra.Command, _ []string) error {
+	setCmdOptions(cmd, pluginsLogsOptionsKey, &pluginsLogsOptions{
+		slot:     getTrimmedFlag(cmd, "slot"),
+		pluginID: getTrimmedFlag(cmd, "plugin"),
+	})
+	return nil
 }
 
 func printPluginLogEntry(w io.Writer, entry *apiv1.AdapterLogStreamEntry) {

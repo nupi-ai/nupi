@@ -21,6 +21,28 @@ import (
 
 var allowedTokenRoles = constants.StringSet(constants.AllowedTokenRoles)
 
+const (
+	tokensCreateOptionsKey     cmdOptionsContextKey = "daemon_tokens_create_options"
+	tokensDeleteOptionsKey     cmdOptionsContextKey = "daemon_tokens_delete_options"
+	daemonPairCreateOptionsKey cmdOptionsContextKey = "daemon_pair_create_options"
+)
+
+type tokensCreateOptions struct {
+	name string
+	role string
+}
+
+type tokensDeleteOptions struct {
+	token string
+	id    string
+}
+
+type daemonPairCreateOptions struct {
+	name      string
+	role      string
+	expiresIn int
+}
+
 func newDaemonCommand() *cobra.Command {
 	daemonCmd := &cobra.Command{
 		Use:           "daemon",
@@ -66,6 +88,7 @@ func newDaemonCommand() *cobra.Command {
 		Short:         "Create a new API token",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		PreRunE:       tokensCreatePreRun,
 		RunE:          tokensCreate,
 	}
 	tokensCreateCmd.Flags().String("name", "", "Optional display name for the token")
@@ -77,6 +100,7 @@ func newDaemonCommand() *cobra.Command {
 		Args:          cobra.MaximumNArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		PreRunE:       tokensDeletePreRun,
 		RunE:          tokensDelete,
 	}
 	tokensDeleteCmd.Flags().String("id", "", "Token ID to delete")
@@ -96,6 +120,7 @@ func newDaemonCommand() *cobra.Command {
 		Short:         "Create a new pairing code",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		PreRunE:       daemonPairCreatePreRun,
 		RunE:          daemonPairCreate,
 	}
 	pairCreateCmd.Flags().String("name", "", "Label for the device that will claim the code")
@@ -271,14 +296,12 @@ func tokensList(cmd *cobra.Command, args []string) error {
 func tokensCreate(cmd *cobra.Command, args []string) error {
 	out := newOutputFormatter(cmd)
 
-	name := getTrimmedFlag(cmd, "name")
-	role := strings.ToLower(getTrimmedFlag(cmd, "role"))
-	if role == "" {
-		role = constants.TokenRoleAdmin
+	opts, ok := getCmdOptions[*tokensCreateOptions](cmd, tokensCreateOptionsKey)
+	if !ok || opts == nil {
+		return out.Error("Internal CLI error while preparing token creation", nil)
 	}
-	if _, ok := allowedTokenRoles[role]; !ok {
-		return out.Error("Role must be 'admin' or 'read-only'", nil)
-	}
+	name := opts.name
+	role := opts.role
 
 	return withOutputClientTimeout(out, constants.Duration5Seconds, daemonConnectErrorMessage, func(ctx context.Context, gc *grpcclient.Client) (any, error) {
 		resp, err := gc.CreateToken(ctx, &apiv1.CreateTokenRequest{
@@ -318,21 +341,17 @@ func tokensCreate(cmd *cobra.Command, args []string) error {
 }
 
 func tokensDelete(cmd *cobra.Command, args []string) error {
-	var token string
-	if len(args) > 0 {
-		token = strings.TrimSpace(args[0])
-	}
-	idFlag := getTrimmedFlag(cmd, "id")
 	out := newOutputFormatter(cmd)
 
-	if token == "" && idFlag == "" {
-		return out.Error("Provide a token or --id", nil)
+	opts, ok := getCmdOptions[*tokensDeleteOptions](cmd, tokensDeleteOptionsKey)
+	if !ok || opts == nil {
+		return out.Error("Internal CLI error while preparing token deletion", nil)
 	}
 
 	return withOutputClientTimeout(out, constants.Duration5Seconds, daemonConnectErrorMessage, func(ctx context.Context, gc *grpcclient.Client) (any, error) {
 		if err := gc.DeleteToken(ctx, &apiv1.DeleteTokenRequest{
-			Id:    idFlag,
-			Token: token,
+			Id:    opts.id,
+			Token: opts.token,
 		}); err != nil {
 			return nil, clientCallFailed("Failed to delete token", err)
 		}
@@ -350,18 +369,13 @@ func tokensDelete(cmd *cobra.Command, args []string) error {
 func daemonPairCreate(cmd *cobra.Command, args []string) error {
 	out := newOutputFormatter(cmd)
 
-	name := getTrimmedFlag(cmd, "name")
-	role := strings.ToLower(getTrimmedFlag(cmd, "role"))
-	if role == "" {
-		role = constants.TokenRoleReadOnly
+	opts, ok := getCmdOptions[*daemonPairCreateOptions](cmd, daemonPairCreateOptionsKey)
+	if !ok || opts == nil {
+		return out.Error("Internal CLI error while preparing pairing creation", nil)
 	}
-	if _, ok := allowedTokenRoles[role]; !ok {
-		return out.Error("Role must be 'admin' or 'read-only'", nil)
-	}
-	expiresIn, _ := cmd.Flags().GetInt("expires-in")
-	if expiresIn <= 0 {
-		return out.Error("Pairing code validity (--expires-in) must be a positive number of seconds", nil)
-	}
+	name := opts.name
+	role := opts.role
+	expiresIn := opts.expiresIn
 
 	return withOutputClientTimeout(out, constants.Duration5Seconds, daemonConnectErrorMessage, func(ctx context.Context, gc *grpcclient.Client) (any, error) {
 		resp, err := gc.CreatePairing(ctx, &apiv1.CreatePairingRequest{
@@ -399,6 +413,56 @@ func daemonPairCreate(cmd *cobra.Command, args []string) error {
 			},
 		}, nil
 	})
+}
+
+func tokensCreatePreRun(cmd *cobra.Command, _ []string) error {
+	out := newOutputFormatter(cmd)
+	name := getTrimmedFlag(cmd, "name")
+	role := strings.ToLower(getTrimmedFlag(cmd, "role"))
+	if role == "" {
+		role = constants.TokenRoleAdmin
+	}
+	if _, ok := allowedTokenRoles[role]; !ok {
+		return out.Error("Role must be 'admin' or 'read-only'", nil)
+	}
+	setCmdOptions(cmd, tokensCreateOptionsKey, &tokensCreateOptions{name: name, role: role})
+	return nil
+}
+
+func tokensDeletePreRun(cmd *cobra.Command, args []string) error {
+	out := newOutputFormatter(cmd)
+	token := ""
+	if len(args) > 0 {
+		token = strings.TrimSpace(args[0])
+	}
+	id := getTrimmedFlag(cmd, "id")
+	if token == "" && id == "" {
+		return out.Error("Provide a token or --id", nil)
+	}
+	setCmdOptions(cmd, tokensDeleteOptionsKey, &tokensDeleteOptions{token: token, id: id})
+	return nil
+}
+
+func daemonPairCreatePreRun(cmd *cobra.Command, _ []string) error {
+	out := newOutputFormatter(cmd)
+	name := getTrimmedFlag(cmd, "name")
+	role := strings.ToLower(getTrimmedFlag(cmd, "role"))
+	if role == "" {
+		role = constants.TokenRoleReadOnly
+	}
+	if _, ok := allowedTokenRoles[role]; !ok {
+		return out.Error("Role must be 'admin' or 'read-only'", nil)
+	}
+	expiresIn, _ := cmd.Flags().GetInt("expires-in")
+	if expiresIn <= 0 {
+		return out.Error("Pairing code validity (--expires-in) must be a positive number of seconds", nil)
+	}
+	setCmdOptions(cmd, daemonPairCreateOptionsKey, &daemonPairCreateOptions{
+		name:      name,
+		role:      role,
+		expiresIn: expiresIn,
+	})
+	return nil
 }
 
 func daemonPairList(cmd *cobra.Command, args []string) error {

@@ -34,6 +34,14 @@ type pluginRow struct {
 	Health    string
 }
 
+const pluginsSearchOptionsKey cmdOptionsContextKey = "plugins_search_options"
+
+type pluginsSearchOptions struct {
+	query     string
+	category  string
+	namespace string
+}
+
 // Adapter slot categories where only one plugin can be active at a time.
 var adapterSlotCategories = map[string]bool{
 	constants.AdapterSlotSTT:    true,
@@ -111,6 +119,7 @@ var pluginsLogsCmd = &cobra.Command{
 	Short:         "Stream plugin logs and transcripts",
 	SilenceUsage:  true,
 	SilenceErrors: true,
+	PreRunE:       pluginsLogsPreRun,
 	RunE:          pluginsLogs,
 }
 
@@ -445,16 +454,13 @@ Examples:
 	Args:          cobra.MaximumNArgs(1),
 	SilenceUsage:  true,
 	SilenceErrors: true,
+	PreRunE:       pluginsSearchPreRun,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		out := newOutputFormatter(cmd)
-
-		query := ""
-		if len(args) > 0 {
-			query = args[0]
+		opts, ok := getCmdOptions[*pluginsSearchOptions](cmd, pluginsSearchOptionsKey)
+		if !ok || opts == nil {
+			return out.Error("Internal CLI error while preparing plugins search options", nil)
 		}
-
-		category, _ := cmd.Flags().GetString("category")
-		namespace, _ := cmd.Flags().GetString("namespace")
 
 		// Open read-write: Search may need to refresh and cache marketplace indices
 		store, err := configstore.Open(configstore.Options{})
@@ -468,7 +474,7 @@ Examples:
 		ctx, cancel := context.WithTimeout(context.Background(), constants.Duration30Seconds)
 		defer cancel()
 
-		results, err := mClient.Search(ctx, query, category, namespace)
+		results, err := mClient.Search(ctx, opts.query, opts.category, opts.namespace)
 		if err != nil {
 			return out.Error("Failed to search plugins", err)
 		}
@@ -510,6 +516,21 @@ Examples:
 			},
 		})
 	},
+}
+
+func pluginsSearchPreRun(cmd *cobra.Command, args []string) error {
+	query := ""
+	if len(args) > 0 {
+		query = args[0]
+	}
+	category, _ := cmd.Flags().GetString("category")
+	namespace, _ := cmd.Flags().GetString("namespace")
+	setCmdOptions(cmd, pluginsSearchOptionsKey, &pluginsSearchOptions{
+		query:     strings.TrimSpace(query),
+		category:  strings.TrimSpace(category),
+		namespace: strings.TrimSpace(namespace),
+	})
+	return nil
 }
 
 // --- Helper functions ---
