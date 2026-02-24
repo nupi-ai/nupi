@@ -88,16 +88,15 @@ type Service struct {
 	sub *eventbus.TypedSubscription[eventbus.AudioIngressSegmentEvent]
 
 	manager *streammanager.Manager[eventbus.AudioIngressSegmentEvent]
-
 }
 
 // New constructs a VAD bridge service bound to the provided event bus.
 func New(bus *eventbus.Bus, opts ...Option) *Service {
 	svc := &Service{
-		bus:              bus,
-		logger:           log.Default(),
-		retryInitial:     serviceutil.DefaultRetryInitial,
-		retryMax:         serviceutil.DefaultRetryMax,
+		bus:          bus,
+		logger:       log.Default(),
+		retryInitial: serviceutil.DefaultRetryInitial,
+		retryMax:     serviceutil.DefaultRetryMax,
 		factory: FactoryFunc(func(context.Context, SessionParams) (Analyzer, error) {
 			return nil, ErrFactoryUnavailable
 		}),
@@ -247,7 +246,9 @@ type stream struct {
 	key       string
 	sessionID string
 	streamID  string
-	analyzer  Analyzer
+	format    eventbus.AudioFormat
+	metadata  map[string]string
+	adapter   *streammanager.RetryableAdapter[Analyzer, Detection]
 
 	worker *streammanager.Worker[eventbus.AudioIngressSegmentEvent]
 }
@@ -258,9 +259,44 @@ func newStream(key string, svc *Service, params SessionParams, analyzer Analyzer
 		key:       key,
 		sessionID: params.SessionID,
 		streamID:  params.StreamID,
-		analyzer:  analyzer,
+		format:    params.Format,
+		metadata:  maputil.Clone(params.Metadata),
 		worker:    streammanager.NewWorker[eventbus.AudioIngressSegmentEvent](svc.lifecycle.Context(), defaultSegmentBuffer),
 	}
+	st.adapter = streammanager.NewRetryableAdapter(streammanager.RetryableAdapterConfig[Analyzer, Detection]{
+		Create: func(ctx context.Context) (Analyzer, error) {
+			reconnected, err := st.service.factory.Create(ctx, SessionParams{
+				SessionID: st.sessionID,
+				StreamID:  st.streamID,
+				Format:    st.format,
+				Metadata:  maputil.Clone(st.metadata),
+			})
+			return reconnected, err
+		},
+		Close: func(ctx context.Context, adapter Analyzer) ([]Detection, error) {
+			return adapter.Close(ctx)
+		},
+		IsAdapterUnavailable: func(err error) bool {
+			return errors.Is(err, ErrAdapterUnavailable)
+		},
+		OnCreateError: func(err error) {
+			st.service.logger.Printf("[VAD] reconnect analyzer session=%s stream=%s: %v", st.sessionID, st.streamID, err)
+		},
+		OnReconnected: func() {
+			st.service.logger.Printf("[VAD] analyzer reconnected session=%s stream=%s", st.sessionID, st.streamID)
+		},
+		OnAdapterUnavailable: func(err error) {
+			st.service.logger.Printf("[VAD] analyzer unavailable session=%s stream=%s, will retry: %v", st.sessionID, st.streamID, err)
+		},
+		OnProcessError: func(err error) {
+			st.service.logger.Printf("[VAD] analyze segment session=%s stream=%s failed: %v", st.sessionID, st.streamID, err)
+		},
+		OnCloseError: func(reason string, err error) {
+			st.service.logger.Printf("[VAD] close analyzer session=%s stream=%s (%s): %v", st.sessionID, st.streamID, reason, err)
+		},
+		RecoveryCloseTimeout: constants.Duration2Seconds,
+	})
+	st.adapter.SetActive(analyzer)
 	st.worker.Start(st.processSegment, func() {
 		st.closeAnalyzer("context cancelled")
 	}, func() {
@@ -295,77 +331,27 @@ func (st *stream) processSegment(segment eventbus.AudioIngressSegmentEvent) bool
 }
 
 func (st *stream) handleSegment(segment eventbus.AudioIngressSegmentEvent) {
-	if st.analyzer == nil {
-		params := SessionParams{
-			SessionID: st.sessionID,
-			StreamID:  st.streamID,
-			Format:    segment.Format,
-			Metadata:  maputil.Clone(segment.Metadata),
-		}
-		analyzer, err := st.service.factory.Create(st.worker.Context(), params)
-		if err != nil {
-			if !errors.Is(err, ErrAdapterUnavailable) {
-				st.service.logger.Printf("[VAD] reconnect analyzer session=%s stream=%s: %v", st.sessionID, st.streamID, err)
-			}
-			return
-		}
-		st.analyzer = analyzer
-		st.service.logger.Printf("[VAD] analyzer reconnected session=%s stream=%s", st.sessionID, st.streamID)
-	}
+	st.format = segment.Format
+	st.metadata = maputil.Clone(segment.Metadata)
 
-	detections, err := st.analyzer.OnSegment(st.worker.Context(), segment)
-
-	// Publish any detections returned alongside the error — the NAP
-	// contract allows partial results + error (see nap_analyzer.go:162).
-	for _, det := range detections {
+	st.adapter.Process(st.worker.Context(), func(ctx context.Context, analyzer Analyzer) ([]Detection, error) {
+		return analyzer.OnSegment(ctx, segment)
+	}, func(det Detection) {
+		// Publish any detections returned alongside the error — the NAP
+		// contract allows partial results + error (see nap_analyzer.go:162).
 		st.service.publishDetection(st.sessionID, st.streamID, segment, det)
-	}
-
-	if err != nil {
-		if errors.Is(err, ErrAdapterUnavailable) {
-			st.service.logger.Printf("[VAD] analyzer unavailable session=%s stream=%s, will retry: %v", st.sessionID, st.streamID, err)
-			st.closeAnalyzerForRecovery("adapter unavailable")
-			return
-		}
-		st.service.logger.Printf("[VAD] analyze segment session=%s stream=%s failed: %v", st.sessionID, st.streamID, err)
-	}
-}
-
-func (st *stream) closeAnalyzerForRecovery(reason string) {
-	if st.analyzer == nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), constants.Duration2Seconds)
-	defer cancel()
-	_, err := st.analyzer.Close(ctx)
-	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-		st.service.logger.Printf("[VAD] close broken analyzer session=%s stream=%s (%s): %v", st.sessionID, st.streamID, reason, err)
-	}
-	st.analyzer = nil
+	})
 }
 
 func (st *stream) closeAnalyzer(reason string) {
-	if st.analyzer == nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), constants.Duration2Seconds)
-	defer cancel()
-
-	detections, err := st.analyzer.Close(ctx)
-	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-		st.service.logger.Printf("[VAD] close analyzer session=%s stream=%s (%s): %v", st.sessionID, st.streamID, reason, err)
-	}
-	if len(detections) == 0 {
-		return
-	}
 	lastSegment := eventbus.AudioIngressSegmentEvent{
 		SessionID: st.sessionID,
 		StreamID:  st.streamID,
 		EndedAt:   time.Now().UTC(),
 	}
-	for _, det := range detections {
+	st.adapter.Close(reason, constants.Duration2Seconds, func(det Detection) {
 		st.service.publishDetection(st.sessionID, st.streamID, lastSegment, det)
-	}
+	})
 }
 
 func mergeMetadata(base map[string]string, override map[string]string) map[string]string {

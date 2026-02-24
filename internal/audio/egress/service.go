@@ -521,11 +521,7 @@ func (st *stream) processRequest(req speakRequest) bool {
 	if st.handleRequest(req) {
 		// Close synthesizer quietly — don't publish final events
 		// since the request is being rebuffered for retry.
-		if st.synthesizer != nil {
-			closeCtx, closeCancel := context.WithTimeout(context.Background(), constants.Duration2Seconds)
-			st.synthesizer.Close(closeCtx)
-			closeCancel()
-		}
+		st.closeSynthesizerInternal("adapter unavailable", false, false)
 		st.rebufferPending(req)
 		return true
 	}
@@ -631,14 +627,31 @@ func (st *stream) rebufferPending(failedReq speakRequest) {
 }
 
 func (st *stream) closeSynthesizer(reason string) {
-	if st.synthesizer == nil {
-		return
+	chunkCount := st.closeSynthesizerInternal(reason, true, true)
+	st.mu.RLock()
+	stopped := st.stopped
+	interrupted := st.interrupted
+	st.mu.RUnlock()
+	if chunkCount == 0 && (!stopped || interrupted) {
+		st.publishFinal()
 	}
+}
+
+func (st *stream) closeSynthesizerInternal(reason string, publish bool, logErrors bool) int {
+	if st.synthesizer == nil {
+		return 0
+	}
+	synth := st.synthesizer
+	st.synthesizer = nil
+
 	ctx, cancel := context.WithTimeout(context.Background(), constants.Duration2Seconds)
 	defer cancel()
-	chunks, err := st.synthesizer.Close(ctx)
-	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+	chunks, err := synth.Close(ctx)
+	if logErrors && err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 		st.service.logger.Printf("[TTS] close synthesizer session=%s stream=%s (%s): %v", st.sessionID, st.streamID, reason, err)
+	}
+	if !publish {
+		return len(chunks)
 	}
 	for _, chunk := range chunks {
 		st.seq++
@@ -660,13 +673,7 @@ func (st *stream) closeSynthesizer(reason string) {
 		}
 		st.service.publishPlayback(evt)
 	}
-	st.mu.RLock()
-	stopped := st.stopped
-	interrupted := st.interrupted
-	st.mu.RUnlock()
-	if len(chunks) == 0 && (!stopped || interrupted) {
-		st.publishFinal()
-	}
+	return len(chunks)
 }
 
 func (s *Service) publishPlayback(evt eventbus.AudioEgressPlaybackEvent) {
