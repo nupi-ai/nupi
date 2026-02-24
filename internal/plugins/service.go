@@ -14,6 +14,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/plugins/manifest"
 	pipelinecleaners "github.com/nupi-ai/nupi/internal/plugins/pipeline_cleaners"
 	toolhandlers "github.com/nupi-ai/nupi/internal/plugins/tool_handlers"
+	"github.com/nupi-ai/nupi/internal/sanitize"
 )
 
 // EnabledChecker returns whether a plugin identified by namespace/slug should be loaded.
@@ -43,6 +44,8 @@ type Service struct {
 	supervisedRTMu sync.RWMutex
 	jsStdout       *os.File
 	jsStderr       *os.File
+	jsPluginLogsMu sync.Mutex
+	jsPluginLogs   map[string]*os.File
 }
 
 // NewService constructs a plugin service rooted in the given instance directory.
@@ -54,6 +57,7 @@ func NewService(instanceDir string) *Service {
 		runDir:         runDir,
 		pipelineIdx:    make(map[string]*pipelinecleaners.PipelinePlugin),
 		toolHandlerIdx: make(map[string]*toolhandlers.JSPlugin),
+		jsPluginLogs:   make(map[string]*os.File),
 	}
 }
 
@@ -472,6 +476,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		_ = s.jsStderr.Close()
 		s.jsStderr = nil
 	}
+	s.closeJSPluginLogs()
 	return nil
 }
 
@@ -515,6 +520,68 @@ func (s *Service) openPluginLogFiles() {
 	}
 }
 
+func (s *Service) closeJSPluginLogs() {
+	s.jsPluginLogsMu.Lock()
+	defer s.jsPluginLogsMu.Unlock()
+	for _, f := range s.jsPluginLogs {
+		_ = f.Close()
+	}
+	s.jsPluginLogs = make(map[string]*os.File)
+}
+
+func (s *Service) jsPluginLogFile(slug, stream string) (*os.File, error) {
+	dir, err := s.pluginLogDir()
+	if err != nil {
+		return nil, err
+	}
+	safeSlug := sanitize.SafeSlug(slug)
+	if safeSlug == "" {
+		safeSlug = "unknown"
+	}
+	safeStream := sanitize.SafeSlug(stream)
+	if safeStream == "" {
+		safeStream = "stdout"
+	}
+	filename := fmt.Sprintf("plugin.%s.runtime.%s.log", safeSlug, safeStream)
+	return os.OpenFile(filepath.Join(dir, filename), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+}
+
+func (s *Service) handleJSRuntimeLog(entry jsruntime.LogEntry) {
+	slug := strings.TrimSpace(entry.Plugin)
+	if slug == "" {
+		slug = "unknown"
+	}
+	stream := strings.TrimSpace(entry.Stream)
+	if stream == "" {
+		level := strings.ToLower(strings.TrimSpace(entry.Level))
+		if level == "warn" || level == "error" {
+			stream = "stderr"
+		} else {
+			stream = "stdout"
+		}
+	}
+	key := slug + "|" + stream
+
+	s.jsPluginLogsMu.Lock()
+	f := s.jsPluginLogs[key]
+	if f == nil {
+		var err error
+		f, err = s.jsPluginLogFile(slug, stream)
+		if err == nil {
+			s.jsPluginLogs[key] = f
+		}
+	}
+	s.jsPluginLogsMu.Unlock()
+
+	if f == nil {
+		return
+	}
+
+	if msg := strings.TrimRight(entry.Message, "\n"); msg != "" {
+		_, _ = f.WriteString(msg + "\n")
+	}
+}
+
 // startJSRuntime initializes the supervised persistent Bun subprocess.
 // Uses embedded host.js script - no external file needed.
 // The supervised runtime will automatically restart if the process crashes.
@@ -529,6 +596,7 @@ func (s *Service) startJSRuntime(ctx context.Context) error {
 		jsruntime.WithRunDir(s.runDir),
 		jsruntime.WithStdoutWriter(s.jsStdout),
 		jsruntime.WithStderrWriter(s.jsStderr),
+		jsruntime.WithLogHandler(s.handleJSRuntimeLog),
 	)
 	if err != nil {
 		return err

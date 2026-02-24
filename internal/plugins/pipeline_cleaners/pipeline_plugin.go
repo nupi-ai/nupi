@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/jsruntime"
@@ -51,6 +52,7 @@ func LoadPipelinePluginWithRuntime(ctx context.Context, rt *jsruntime.Runtime, p
 
 	meta, err := rt.LoadPluginWithOptions(loadCtx, path, jsruntime.LoadPluginOptions{
 		RequireFunctions: []string{"transform"},
+		Slug:             pluginSlugFromPath(path),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("pipeline plugin: load %s: %w", path, err)
@@ -74,6 +76,11 @@ func LoadPipelinePluginWithRuntime(ctx context.Context, rt *jsruntime.Runtime, p
 	}
 
 	return plugin, nil
+}
+
+func pluginSlugFromPath(path string) string {
+	parent := filepath.Base(filepath.Dir(path))
+	return strings.TrimSpace(parent)
 }
 
 // TransformInput is the input structure passed to transform function.

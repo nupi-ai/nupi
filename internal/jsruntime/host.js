@@ -7,25 +7,59 @@
 const { createConnection } = require('node:net');
 const { readFileSync } = require('node:fs');
 
-// Redirect console.log/warn/error to stderr for observability.
-// Plugin log output is prefixed and written to stderr so it appears
-// in daemon logs via the readStderr() goroutine on the Go side.
+const plugins = new Map();
+
+// Structured logging over IPC so the daemon can route logs per plugin.
 const originalConsole = { ...console };
-console.log = (...args) => {
-  process.stderr.write('[plugin:log] ' + args.map(a =>
-    typeof a === 'object' ? JSON.stringify(a) : String(a)
-  ).join(' ') + '\n');
-};
-console.warn = (...args) => {
-  process.stderr.write('[plugin:warn] ' + args.map(a =>
-    typeof a === 'object' ? JSON.stringify(a) : String(a)
-  ).join(' ') + '\n');
-};
-console.error = (...args) => {
-  process.stderr.write('[plugin:error] ' + args.map(a =>
-    typeof a === 'object' ? JSON.stringify(a) : String(a)
-  ).join(' ') + '\n');
-};
+let ipcSocket = null;
+let currentPluginPath = null;
+let asyncLocal = null;
+try {
+  const { AsyncLocalStorage } = require('node:async_hooks');
+  asyncLocal = new AsyncLocalStorage();
+} catch {
+  asyncLocal = null;
+}
+
+function formatArgs(args) {
+  return args.map(a => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ');
+}
+
+function inferSlugFromPath(path) {
+  if (!path || typeof path !== 'string') return '';
+  const parts = path.split('/').filter(Boolean);
+  if (parts.length < 2) return '';
+  return parts[parts.length - 2];
+}
+
+function currentPluginSlug() {
+  if (asyncLocal) {
+    const store = asyncLocal.getStore();
+    if (store && store.pluginPath) {
+      return store.pluginPath;
+    }
+  }
+  return currentPluginPath;
+}
+
+function sendLog(level, stream, args) {
+  const message = formatArgs(args);
+  const pluginPath = currentPluginSlug();
+  const plugin = pluginPath ? (plugins.get(pluginPath)?.slug || inferSlugFromPath(pluginPath)) : 'jsruntime';
+  const payload = JSON.stringify({
+    id: 0,
+    log: { plugin, level, message, stream }
+  });
+  if (ipcSocket) {
+    writeFrame(ipcSocket, payload);
+    return;
+  }
+  process.stderr.write(`[plugin:${level}] ${message}\n`);
+}
+
+console.log = (...args) => sendLog('info', 'stdout', args);
+console.warn = (...args) => sendLog('warn', 'stderr', args);
+console.error = (...args) => sendLog('error', 'stderr', args);
 
 // Frame header size: 4 bytes (uint32 big-endian payload length)
 const HEADER_SIZE = 4;
@@ -63,7 +97,6 @@ function withTimeout(promise, ms, message = 'Operation timed out') {
 // Default timeout for plugin calls (10 seconds)
 const DEFAULT_CALL_TIMEOUT_MS = 10000;
 
-const plugins = new Map();
 
 async function loadPlugin(path, options = {}) {
   try {
@@ -103,9 +136,11 @@ async function loadPlugin(path, options = {}) {
     }
 
     // Store the plugin
+    const slug = options.slug || inferSlugFromPath(path);
     plugins.set(path, {
       source,
       exports: pluginExports,
+      slug,
     });
 
     // Return metadata with validation info
@@ -134,8 +169,19 @@ async function callFunction(pluginPath, fnName, args, timeoutMs) {
   // Call the function with provided arguments and timeout
   // Bind `this` to plugin.exports so methods can call other methods (e.g., this.clean())
   const timeout = timeoutMs || DEFAULT_CALL_TIMEOUT_MS;
+  const invoke = () => fn.call(plugin.exports, ...(args || []));
+  const withContext = asyncLocal
+    ? () => asyncLocal.run({ pluginPath }, invoke)
+    : () => {
+        currentPluginPath = pluginPath;
+        try {
+          return invoke();
+        } finally {
+          currentPluginPath = null;
+        }
+      };
   const result = await withTimeout(
-    fn.call(plugin.exports, ...(args || [])),
+    withContext(),
     timeout,
     `Plugin ${pluginPath}.${fnName} timed out`
   );
@@ -155,6 +201,7 @@ async function handleRequest(req) {
         }
         result = await loadPlugin(params.path, {
           requireFunctions: params.requireFunctions || [],
+          slug: params.slug || '',
         });
         break;
       }
@@ -240,6 +287,7 @@ function main() {
   const socket = createConnection(connectOpts, () => {
     // Connected - ready to receive frames
   });
+  ipcSocket = socket;
 
   // Queue to serialise request handling (one at a time).
   let processing = Promise.resolve();
