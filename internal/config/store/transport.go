@@ -2,7 +2,7 @@ package store
 
 import (
 	"context"
-	"encoding/json"
+	"database/sql"
 	"fmt"
 	"strconv"
 	"strings"
@@ -44,8 +44,8 @@ func (s *Store) GetTransportConfig(ctx context.Context) (TransportConfig, error)
 	cfg.TLSKeyPath = settings["transport.tls_key_path"]
 
 	if originsJSON, ok := settings["transport.allowed_origins"]; ok && originsJSON != "" {
-		var origins []string
-		if err := json.Unmarshal([]byte(originsJSON), &origins); err != nil {
+		origins, err := DecodeJSON[[]string](sql.NullString{String: originsJSON, Valid: true})
+		if err != nil {
 			return TransportConfig{}, fmt.Errorf("config: parse transport.allowed_origins: %w", err)
 		}
 		cfg.AllowedOrigins = origins
@@ -71,7 +71,7 @@ func (s *Store) GetTransportConfig(ctx context.Context) (TransportConfig, error)
 
 // SaveTransportConfig persists the provided transport configuration.
 func (s *Store) SaveTransportConfig(ctx context.Context, cfg TransportConfig) error {
-	originsJSON, err := json.Marshal(cfg.AllowedOrigins)
+	originsJSON, _, err := encodeJSONString(cfg.AllowedOrigins, nil)
 	if err != nil {
 		return fmt.Errorf("config: marshal transport.allowed_origins: %w", err)
 	}
@@ -81,7 +81,7 @@ func (s *Store) SaveTransportConfig(ctx context.Context, cfg TransportConfig) er
 		"transport.binding":         cfg.Binding,
 		"transport.tls_cert_path":   cfg.TLSCertPath,
 		"transport.tls_key_path":    cfg.TLSKeyPath,
-		"transport.allowed_origins": string(originsJSON),
+		"transport.allowed_origins": originsJSON,
 		"transport.grpc_port":       strconv.Itoa(cfg.GRPCPort),
 		"transport.grpc_binding":    cfg.GRPCBinding,
 	}

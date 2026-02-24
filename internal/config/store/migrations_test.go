@@ -124,7 +124,7 @@ func TestEnsureRequiredAdapterSlotsReconcilesStatus(t *testing.T) {
 		var adapter sql.NullString
 		var cfg sql.NullString
 		if err := store.DB().QueryRowContext(ctx, `
-			SELECT status, adapter_id, config FROM adapter_bindings
+			SELECT `+adapterBindingStatusConfigColumns+` FROM adapter_bindings
 			WHERE instance_name = ? AND profile_name = ? AND slot = ?
 		`, store.InstanceName(), store.ProfileName(), slot).Scan(&status, &adapter, &cfg); err != nil {
 			t.Fatalf("query slot %s: %v", slot, err)

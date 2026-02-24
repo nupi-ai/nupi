@@ -9,6 +9,9 @@ import (
 	"github.com/nupi-ai/nupi/internal/constants"
 )
 
+const audioSettingsSnapshotColumns = "capture_device, playback_device, preferred_format, vad_threshold, IFNULL(metadata, ''), IFNULL(updated_at, '')"
+const maxUpdatedAtExpr = "IFNULL(MAX(updated_at), '')"
+
 // ChangeSnapshot captures update markers for configuration tables.
 type ChangeSnapshot struct {
 	Settings         string
@@ -87,7 +90,7 @@ func (s *Store) Watch(ctx context.Context, interval time.Duration) (<-chan Chang
 func (s *Store) snapshot(ctx context.Context) (ChangeSnapshot, error) {
 	var snap ChangeSnapshot
 	if err := s.db.QueryRowContext(ctx, `
-        SELECT IFNULL(MAX(updated_at), '')
+        SELECT `+maxUpdatedAtExpr+`
         FROM settings
         WHERE instance_name = ? AND profile_name = ?
     `, s.instanceName, s.profileName).Scan(&snap.Settings); err != nil {
@@ -104,7 +107,7 @@ func (s *Store) snapshot(ctx context.Context) (ChangeSnapshot, error) {
 	)
 
 	err := s.db.QueryRowContext(ctx, `
-        SELECT capture_device, playback_device, preferred_format, vad_threshold, IFNULL(metadata, ''), IFNULL(updated_at, '')
+        SELECT `+audioSettingsSnapshotColumns+`
         FROM audio_settings
         WHERE instance_name = ? AND profile_name = ?
     `, s.instanceName, s.profileName).Scan(&captureDevice, &playbackDevice, &preferredFormat, &vad, &metadata, &audioUpdated)
@@ -118,14 +121,14 @@ func (s *Store) snapshot(ctx context.Context) (ChangeSnapshot, error) {
 	}
 
 	if err := s.db.QueryRowContext(ctx, `
-        SELECT IFNULL(MAX(updated_at), '')
+        SELECT `+maxUpdatedAtExpr+`
         FROM adapters
     `).Scan(&snap.Adapters); err != nil {
 		return ChangeSnapshot{}, err
 	}
 
 	if err := s.db.QueryRowContext(ctx, `
-        SELECT IFNULL(MAX(updated_at), '')
+        SELECT `+maxUpdatedAtExpr+`
         FROM adapter_bindings
         WHERE instance_name = ? AND profile_name = ?
     `, s.instanceName, s.profileName).Scan(&snap.AdapterBindings); err != nil {
@@ -133,7 +136,7 @@ func (s *Store) snapshot(ctx context.Context) (ChangeSnapshot, error) {
 	}
 
 	if err := s.db.QueryRowContext(ctx, `
-        SELECT IFNULL(MAX(updated_at), '')
+        SELECT `+maxUpdatedAtExpr+`
         FROM adapter_endpoints
     `).Scan(&snap.AdapterEndpoints); err != nil {
 		return ChangeSnapshot{}, err

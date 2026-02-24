@@ -27,7 +27,9 @@
       },
       "edgeToEdgeEnabled": true,
       "package": "com.nupi.mobile",
-      "permissions": ["android.permission.RECORD_AUDIO"]
+      "permissions": [
+        "android.permission.RECORD_AUDIO"
+      ]
     },
     "web": {
       "bundler": "metro",
@@ -50,7 +52,8 @@
           "color": "#1a1a2e",
           "mode": "production"
         }
-      ]
+      ],
+      "react-native-audio-api"
     ],
     "extra": {
       "eas": {

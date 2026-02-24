@@ -8,6 +8,14 @@ import (
 	"strings"
 )
 
+const marketplaceColumns = "id, instance_name, namespace, url, is_builtin, cached_index, last_refreshed, created_at"
+const marketplaceInstanceColumn = "instance_name"
+const marketplaceIDColumn = "id"
+const installedPluginColumns = "ip.id, ip.marketplace_id, ip.slug, ip.source_url, ip.installed_at, ip.enabled"
+const installedPluginWithNamespaceColumns = installedPluginColumns + ", m.namespace"
+const installedPluginSlugColumn = "slug"
+const installedPluginCountExpr = "COUNT(*)"
+
 // isSQLiteUniqueViolation checks whether a database error is a UNIQUE constraint failure.
 // Both major Go SQLite drivers (mattn/go-sqlite3 and modernc.org/sqlite) produce this
 // substring. Neither exposes a typed error for constraint violations.
@@ -47,7 +55,7 @@ type InstalledPluginWithNamespace struct {
 // ListMarketplaces returns all registered marketplaces for the current instance.
 func (s *Store) ListMarketplaces(ctx context.Context) ([]Marketplace, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, instance_name, namespace, url, is_builtin, cached_index, last_refreshed, created_at
+		SELECT `+marketplaceColumns+`
 		FROM marketplaces
 		WHERE instance_name = ?
 		ORDER BY namespace
@@ -66,7 +74,7 @@ func (s *Store) GetMarketplaceByNamespace(ctx context.Context, namespace string)
 	}
 
 	m, err := scanMarketplace(s.db.QueryRowContext(ctx, `
-		SELECT id, instance_name, namespace, url, is_builtin, cached_index, last_refreshed, created_at
+		SELECT `+marketplaceColumns+`
 		FROM marketplaces
 		WHERE instance_name = ? AND namespace = ?
 	`, s.instanceName, namespace))
@@ -82,7 +90,7 @@ func (s *Store) GetMarketplaceByNamespace(ctx context.Context, namespace string)
 // GetMarketplaceByID retrieves a marketplace by its database ID.
 func (s *Store) GetMarketplaceByID(ctx context.Context, id int64) (Marketplace, error) {
 	m, err := scanMarketplace(s.db.QueryRowContext(ctx, `
-		SELECT id, instance_name, namespace, url, is_builtin, cached_index, last_refreshed, created_at
+		SELECT `+marketplaceColumns+`
 		FROM marketplaces
 		WHERE id = ? AND instance_name = ?
 	`, id, s.instanceName))
@@ -144,7 +152,7 @@ func (s *Store) RemoveMarketplace(ctx context.Context, namespace string) error {
 
 	// Check for installed plugins (single query instead of COUNT + SELECT)
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT slug FROM installed_plugins WHERE marketplace_id = ?
+		SELECT `+installedPluginSlugColumn+` FROM installed_plugins WHERE marketplace_id = ?
 	`, m.ID)
 	if err != nil {
 		return fmt.Errorf("config: check installed plugins: %w", err)
@@ -197,7 +205,7 @@ func (s *Store) UpdateMarketplaceCache(ctx context.Context, namespace, cachedInd
 // ListInstalledPlugins returns all installed plugins for the current instance.
 func (s *Store) ListInstalledPlugins(ctx context.Context) ([]InstalledPluginWithNamespace, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT ip.id, ip.marketplace_id, ip.slug, ip.source_url, ip.installed_at, ip.enabled, m.namespace
+		SELECT `+installedPluginWithNamespaceColumns+`
 		FROM installed_plugins ip
 		JOIN marketplaces m ON ip.marketplace_id = m.id
 		WHERE m.instance_name = ?
@@ -215,7 +223,7 @@ func (s *Store) GetInstalledPlugin(ctx context.Context, namespace, slug string) 
 		return InstalledPluginWithNamespace{}, NotFoundError{Entity: "installed plugin", Key: namespace + "/" + slug}
 	}
 	p, err := scanInstalledPluginWithNamespace(s.db.QueryRowContext(ctx, `
-		SELECT ip.id, ip.marketplace_id, ip.slug, ip.source_url, ip.installed_at, ip.enabled, m.namespace
+		SELECT `+installedPluginWithNamespaceColumns+`
 		FROM installed_plugins ip
 		JOIN marketplaces m ON ip.marketplace_id = m.id
 		WHERE m.instance_name = ? AND m.namespace = ? AND ip.slug = ?
@@ -244,7 +252,7 @@ func (s *Store) InsertInstalledPlugin(ctx context.Context, marketplaceID int64, 
 
 	// Verify the marketplace belongs to this instance
 	var instanceOwner string
-	err := s.db.QueryRowContext(ctx, `SELECT instance_name FROM marketplaces WHERE id = ?`, marketplaceID).Scan(&instanceOwner)
+	err := s.db.QueryRowContext(ctx, `SELECT `+marketplaceInstanceColumn+` FROM marketplaces WHERE id = ?`, marketplaceID).Scan(&instanceOwner)
 	if err != nil {
 		return 0, fmt.Errorf("config: marketplace ID %d not found", marketplaceID)
 	}
@@ -284,7 +292,7 @@ func (s *Store) DeleteInstalledPlugin(ctx context.Context, namespace, slug strin
 	result, err := s.db.ExecContext(ctx, `
 		DELETE FROM installed_plugins
 		WHERE marketplace_id IN (
-			SELECT id FROM marketplaces WHERE instance_name = ? AND namespace = ?
+			SELECT `+marketplaceIDColumn+` FROM marketplaces WHERE instance_name = ? AND namespace = ?
 		) AND slug = ?
 	`, s.instanceName, namespace, slug)
 	if err != nil {
@@ -315,7 +323,7 @@ func (s *Store) SetPluginEnabled(ctx context.Context, namespace, slug string, en
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE installed_plugins SET enabled = ?
 		WHERE marketplace_id IN (
-			SELECT id FROM marketplaces WHERE instance_name = ? AND namespace = ?
+			SELECT `+marketplaceIDColumn+` FROM marketplaces WHERE instance_name = ? AND namespace = ?
 		) AND slug = ?
 	`, val, s.instanceName, namespace, slug)
 	if err != nil {
@@ -335,7 +343,7 @@ func (s *Store) SetPluginEnabled(ctx context.Context, namespace, slug string, en
 func (s *Store) CountInstalledPluginsByMarketplace(ctx context.Context, marketplaceID int64) (int, error) {
 	var count int
 	err := s.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM installed_plugins ip
+		SELECT `+installedPluginCountExpr+` FROM installed_plugins ip
 		JOIN marketplaces m ON ip.marketplace_id = m.id
 		WHERE ip.marketplace_id = ? AND m.instance_name = ?
 	`, marketplaceID, s.instanceName).Scan(&count)

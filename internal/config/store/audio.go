@@ -9,28 +9,35 @@ import (
 )
 
 const (
-	defaultAudioFormat     = "pcm_s16le"
-	defaultVADThreshold    = float32(0.5)
-	updateAudioSettingsSQL = `
-INSERT INTO audio_settings (
-    instance_name,
-    profile_name,
-    capture_device,
-    playback_device,
-    preferred_format,
-    vad_threshold,
-    metadata,
-    updated_at
+	defaultAudioFormat   = "pcm_s16le"
+	defaultVADThreshold  = float32(0.5)
+	audioSettingsColumns = "capture_device, playback_device, preferred_format, vad_threshold, metadata, updated_at"
 )
-VALUES (?, ?, ?, ?, ?, ?, ?, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'))
-ON CONFLICT(instance_name, profile_name) DO UPDATE SET
-    capture_device = excluded.capture_device,
-    playback_device = excluded.playback_device,
-    preferred_format = excluded.preferred_format,
-    vad_threshold = excluded.vad_threshold,
-    metadata = excluded.metadata,
-    updated_at = STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')
-`
+
+var updateAudioSettingsSQL = buildUpsertSQL(
+	"audio_settings",
+	[]string{
+		"instance_name",
+		"profile_name",
+		"capture_device",
+		"playback_device",
+		"preferred_format",
+		"vad_threshold",
+		"metadata",
+	},
+	[]string{"instance_name", "profile_name"},
+	[]string{
+		"capture_device",
+		"playback_device",
+		"preferred_format",
+		"vad_threshold",
+		"metadata",
+	},
+	upsertOptions{
+		InsertUpdatedAt: true,
+		UpdateUpdatedAt: true,
+		UpdatedAtExpr:   "STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')",
+	},
 )
 
 // AudioSettings captures per-profile audio configuration values.
@@ -113,7 +120,7 @@ func (s *Store) LoadAudioSettings(ctx context.Context) (AudioSettings, error) {
 	)
 
 	err := s.db.QueryRowContext(ctx, `
-        SELECT capture_device, playback_device, preferred_format, vad_threshold, metadata, updated_at
+        SELECT `+audioSettingsColumns+`
         FROM audio_settings
         WHERE instance_name = ? AND profile_name = ?
     `, s.instanceName, s.profileName).Scan(

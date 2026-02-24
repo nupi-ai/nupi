@@ -9,6 +9,7 @@ import (
 )
 
 const requiredSlotConfigJSON = `{"required":true}`
+const audioSettingsCountExpr = "COUNT(1)"
 
 // MigrationResult captures changes applied while reconciling configuration defaults.
 type MigrationResult struct {
@@ -33,7 +34,7 @@ func (s *Store) EnsureRequiredAdapterSlots(ctx context.Context) (MigrationResult
 				config    sql.NullString
 			)
 			err := tx.QueryRowContext(ctx, `
-				SELECT adapter_id, status, config
+				SELECT `+adapterBindingColumnsNoSlot+`
 				FROM adapter_bindings
 				WHERE instance_name = ? AND profile_name = ? AND slot = ?
 			`, s.instanceName, s.profileName, slot).Scan(&adapterID, &status, &config)
@@ -99,7 +100,7 @@ func (s *Store) EnsureAudioSettings(ctx context.Context) (bool, error) {
 
 	var count int
 	if err := s.db.QueryRowContext(ctx, `
-        SELECT COUNT(1)
+        SELECT `+audioSettingsCountExpr+`
         FROM audio_settings
         WHERE instance_name = ? AND profile_name = ?
     `, s.instanceName, s.profileName).Scan(&count); err != nil {

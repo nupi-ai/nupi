@@ -22,7 +22,10 @@ const (
 	KeyFileName = ".secrets.key"
 	// EncPrefix marks encrypted values in the database.
 	// Plaintext values (pre-encryption migration) lack this prefix.
-	EncPrefix = "enc:v1:"
+	EncPrefix                        = "enc:v1:"
+	securitySettingsValueColumn      = "value"
+	securitySettingsRowIDValueColumn = "rowid, value"
+	securitySettingsCountExpr        = "COUNT(*)"
 )
 
 // LoadKey reads an existing encryption key from keyPath.
@@ -131,7 +134,7 @@ func KeyPath(dbPath string) string {
 func HasEncryptedValues(ctx context.Context, db *sql.DB) (bool, error) {
 	var count int
 	err := db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM security_settings WHERE value LIKE ?`,
+		`SELECT `+securitySettingsCountExpr+` FROM security_settings WHERE `+securitySettingsValueColumn+` LIKE ?`,
 		EncPrefix+"%",
 	).Scan(&count)
 	if err != nil {
@@ -153,7 +156,7 @@ func HasEncryptedValues(ctx context.Context, db *sql.DB) (bool, error) {
 // Returns the number of rows migrated.
 func MigratePlaintext(ctx context.Context, db *sql.DB, key []byte) (int, error) {
 	rows, err := db.QueryContext(ctx,
-		`SELECT rowid, value FROM security_settings`,
+		`SELECT `+securitySettingsRowIDValueColumn+` FROM security_settings`,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("config: query secrets for migration: %w", err)

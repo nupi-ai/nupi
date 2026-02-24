@@ -6,10 +6,13 @@ import (
 	"fmt"
 )
 
+const profileColumns = "name, is_default, created_at, updated_at"
+const profileExistsSelect = "SELECT 1 FROM profiles WHERE instance_name = ? AND name = ?"
+
 // Profiles returns all profiles configured for the current instance.
 func (s *Store) Profiles(ctx context.Context) ([]Profile, error) {
 	rows, err := s.db.QueryContext(ctx, `
-        SELECT name, is_default, created_at, updated_at
+        SELECT `+profileColumns+`
         FROM profiles
         WHERE instance_name = ?
         ORDER BY name
@@ -25,10 +28,7 @@ func (s *Store) ActivateProfile(ctx context.Context, profileName string) error {
 	return s.withWriteTx(ctx, "activate profile", func(tx *sql.Tx) error {
 		var exists bool
 		if err := tx.QueryRowContext(ctx, `
-			SELECT EXISTS(
-				SELECT 1 FROM profiles
-				WHERE instance_name = ? AND name = ?
-			)
+			SELECT EXISTS(`+profileExistsSelect+`)
 		`, s.instanceName, profileName).Scan(&exists); err != nil {
 			return fmt.Errorf("config: check profile %q: %w", profileName, err)
 		}

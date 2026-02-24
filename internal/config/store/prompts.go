@@ -6,10 +6,12 @@ import (
 	"fmt"
 )
 
+const promptTemplateColumns = "event_type, content, is_custom, updated_at"
+
 // GetPromptTemplate returns a prompt template for the given event type.
 func (s *Store) GetPromptTemplate(ctx context.Context, eventType string) (*PromptTemplate, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT event_type, content, is_custom, updated_at
+		SELECT `+promptTemplateColumns+`
 		FROM prompt_templates
 		WHERE instance_name = ? AND profile_name = ? AND event_type = ?
 	`, s.instanceName, s.profileName, eventType)
@@ -32,13 +34,17 @@ func (s *Store) SetPromptTemplate(ctx context.Context, eventType, content string
 	}
 
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO prompt_templates (instance_name, profile_name, event_type, content, is_custom, updated_at)
-		VALUES (?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
-		ON CONFLICT(instance_name, profile_name, event_type) DO UPDATE SET
-			content = excluded.content,
-			is_custom = 1,
-			updated_at = CURRENT_TIMESTAMP
-	`, s.instanceName, s.profileName, eventType, content)
+		`+buildUpsertSQL(
+		"prompt_templates",
+		[]string{"instance_name", "profile_name", "event_type", "content", "is_custom"},
+		[]string{"instance_name", "profile_name", "event_type"},
+		[]string{"content", "is_custom"},
+		upsertOptions{
+			InsertUpdatedAt: true,
+			UpdateUpdatedAt: true,
+		},
+	),
+		s.instanceName, s.profileName, eventType, content, 1)
 	if err != nil {
 		return fmt.Errorf("config: set prompt template %s: %w", eventType, err)
 	}
@@ -49,7 +55,7 @@ func (s *Store) SetPromptTemplate(ctx context.Context, eventType, content string
 // ListPromptTemplates returns all prompt templates for the profile.
 func (s *Store) ListPromptTemplates(ctx context.Context) ([]PromptTemplate, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT event_type, content, is_custom, updated_at
+		SELECT `+promptTemplateColumns+`
 		FROM prompt_templates
 		WHERE instance_name = ? AND profile_name = ?
 		ORDER BY event_type
@@ -84,10 +90,15 @@ func (s *Store) SeedPromptTemplate(ctx context.Context, eventType, content strin
 	}
 
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO prompt_templates (instance_name, profile_name, event_type, content, is_custom, updated_at)
-		VALUES (?, ?, ?, ?, 0, CURRENT_TIMESTAMP)
-		ON CONFLICT(instance_name, profile_name, event_type) DO NOTHING
-	`, s.instanceName, s.profileName, eventType, content)
+		`+buildInsertDoNothingSQL(
+		"prompt_templates",
+		[]string{"instance_name", "profile_name", "event_type", "content", "is_custom"},
+		[]string{"instance_name", "profile_name", "event_type"},
+		insertOptions{
+			InsertUpdatedAt: true,
+		},
+	),
+		s.instanceName, s.profileName, eventType, content, 0)
 	if err != nil {
 		return fmt.Errorf("config: seed prompt template %s: %w", eventType, err)
 	}

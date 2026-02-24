@@ -18,6 +18,10 @@ type PluginChecksum struct {
 	CreatedAt string
 }
 
+const pluginChecksumColumns = "plugin_id, file_path, sha256, created_at"
+const pluginChecksumColumnsWithAlias = "pc.plugin_id, pc.file_path, pc.sha256, pc.created_at"
+const installedPluginIDColumn = "id"
+
 // SetPluginChecksums replaces all checksums for a plugin in a single transaction.
 func (s *Store) SetPluginChecksums(ctx context.Context, pluginID int64, checksums map[string]string) error {
 	if err := s.ensureWritable("set plugin checksums"); err != nil {
@@ -50,7 +54,7 @@ func (s *Store) SetPluginChecksums(ctx context.Context, pluginID int64, checksum
 	// error instead of the clean "plugin ID X not found" message.
 	return s.withTx(ctx, func(tx *sql.Tx) error {
 		var pluginExists int64
-		if err := tx.QueryRowContext(ctx, `SELECT id FROM installed_plugins WHERE id = ?`, pluginID).Scan(&pluginExists); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT `+installedPluginIDColumn+` FROM installed_plugins WHERE id = ?`, pluginID).Scan(&pluginExists); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return fmt.Errorf("config: set plugin checksums: plugin ID %d not found", pluginID)
 			}
@@ -84,7 +88,7 @@ func (s *Store) GetPluginChecksumsByPlugin(ctx context.Context, namespace, slug 
 		return nil, fmt.Errorf("config: get plugin checksums by plugin: namespace and slug required")
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT pc.plugin_id, pc.file_path, pc.sha256, pc.created_at
+		SELECT `+pluginChecksumColumnsWithAlias+`
 		FROM plugin_checksums pc
 		JOIN installed_plugins ip ON pc.plugin_id = ip.id
 		JOIN marketplaces m ON ip.marketplace_id = m.id
@@ -111,7 +115,7 @@ func (s *Store) GetPluginChecksumsByID(ctx context.Context, pluginID int64) ([]P
 		return nil, fmt.Errorf("config: get plugin checksums by id: invalid plugin ID %d", pluginID)
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT plugin_id, file_path, sha256, created_at
+		SELECT `+pluginChecksumColumns+`
 		FROM plugin_checksums
 		WHERE plugin_id = ?
 		ORDER BY file_path

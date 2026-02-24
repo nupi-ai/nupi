@@ -163,7 +163,7 @@ func TestAESBackendSetBatchEncryptionFailureRollsBack(t *testing.T) {
 	}
 
 	var count int
-	if qErr := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM security_settings`).Scan(&count); qErr != nil {
+	if qErr := db.QueryRowContext(ctx, `SELECT `+securitySettingsCountExpr+` FROM security_settings`).Scan(&count); qErr != nil {
 		t.Fatalf("count query: %v", qErr)
 	}
 	if count != 0 {
@@ -234,7 +234,7 @@ func TestAESBackendSetBatchMidBatchSQLErrorRollsBack(t *testing.T) {
 	// Verify ALL rows were rolled back — including any that were
 	// successfully inserted before the trigger fired.
 	var count int
-	if qErr := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM security_settings`).Scan(&count); qErr != nil {
+	if qErr := db.QueryRowContext(ctx, `SELECT `+securitySettingsCountExpr+` FROM security_settings`).Scan(&count); qErr != nil {
 		t.Fatalf("count query: %v", qErr)
 	}
 	if count != 0 {
