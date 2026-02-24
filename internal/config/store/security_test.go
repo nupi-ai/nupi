@@ -139,7 +139,7 @@ func TestSecuritySettingsEncryptedAtRest(t *testing.T) {
 	defer db.Close()
 
 	var rawValue string
-	err = db.QueryRow(`SELECT value FROM security_settings WHERE key = 'test_key'`).Scan(&rawValue)
+	err = db.QueryRow(`SELECT ` + securityValueColumn + ` FROM security_settings WHERE key = 'test_key'`).Scan(&rawValue)
 	if err != nil {
 		t.Fatalf("raw query: %v", err)
 	}
@@ -274,7 +274,7 @@ func TestOpenRWMigratesPlaintextToEncrypted(t *testing.T) {
 
 	var rawValue string
 	err = rawDB.QueryRow(
-		`SELECT value FROM security_settings WHERE key = 'legacy_key' AND instance_name = 'default' AND profile_name = 'default'`,
+		`SELECT ` + securityValueColumn + ` FROM security_settings WHERE key = 'legacy_key' AND instance_name = 'default' AND profile_name = 'default'`,
 	).Scan(&rawValue)
 	if err != nil {
 		t.Fatalf("raw query: %v", err)
@@ -343,7 +343,7 @@ func TestOpenRWMigratesPrefixCollisionCorrectly(t *testing.T) {
 
 	var rawValue string
 	err = rawDB.QueryRow(
-		`SELECT value FROM security_settings WHERE key = 'collision_key' AND instance_name = 'default' AND profile_name = 'default'`,
+		`SELECT ` + securityValueColumn + ` FROM security_settings WHERE key = 'collision_key' AND instance_name = 'default' AND profile_name = 'default'`,
 	).Scan(&rawValue)
 	if err != nil {
 		t.Fatalf("raw query: %v", err)
@@ -612,7 +612,7 @@ func TestOpenWithMockKeychainDualWrites(t *testing.T) {
 	for k, plaintext := range secrets {
 		var rawValue string
 		err = s.db.QueryRowContext(ctx,
-			`SELECT value FROM security_settings WHERE key = ? AND instance_name = ? AND profile_name = ?`,
+			`SELECT `+securityValueColumn+` FROM security_settings WHERE key = ? AND instance_name = ? AND profile_name = ?`,
 			k, s.instanceName, s.profileName,
 		).Scan(&rawValue)
 		if err != nil {

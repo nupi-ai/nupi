@@ -11,6 +11,7 @@ const adapterColumns = "id, source, version, type, name, manifest, created_at, u
 const adapterBindingColumns = "slot, adapter_id, config, status, updated_at"
 const adapterBindingColumnsNoSlot = "adapter_id, config, status, updated_at"
 const adapterBindingStatusConfigColumns = "status, adapter_id, config"
+const adapterBindingIDStatusConfigColumns = "adapter_id, status, config"
 const adapterCountExpr = "COUNT(1)"
 
 // Adapter management --------------------------------------------------------
