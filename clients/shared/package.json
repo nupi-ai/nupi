@@ -19,6 +19,14 @@
     "./time": {
       "types": "./dist/time.d.ts",
       "import": "./dist/time.js"
+    },
+    "./utils": {
+      "types": "./utils.d.ts",
+      "import": "./utils.js"
+    },
+    "./errors": {
+      "types": "./errors.d.ts",
+      "import": "./errors.js"
     }
   }
 }

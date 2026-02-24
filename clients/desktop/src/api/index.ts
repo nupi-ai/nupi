@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import type { ErrorCodeValue } from '@nupi/shared/errors';
 import type { Session } from '../types/session';
 import type { LanguageInfo, Recording } from '../types/protoDtos';
 
@@ -8,7 +9,7 @@ export type JsonValue = unknown;
 export type { LanguageInfo, Recording } from '../types/protoDtos';
 
 export interface CommandErrorPayload {
-  code: string;
+  code: ErrorCodeValue | string;
   message: string;
   details?: unknown;
 }
