@@ -91,6 +91,8 @@ export default function SettingsScreen() {
   });
   const [notifSyncError, setNotifSyncError] = useState<string | null>(null);
   const [ttsEnabled, setTtsEnabled] = useState(true);
+  const ttsEnabledRef = useRef(ttsEnabled);
+  ttsEnabledRef.current = ttsEnabled;
 
   // Load notification preferences and TTS setting on mount.
   useEffect(() => {
@@ -132,7 +134,7 @@ export default function SettingsScreen() {
   );
 
   const handleTtsToggle = useCallback(async (value: boolean) => {
-    const prev = ttsEnabled;
+    const prev = ttsEnabledRef.current;
     setTtsEnabled(value);
     try {
       await saveTtsEnabled(value);
@@ -140,7 +142,7 @@ export default function SettingsScreen() {
       console.warn("[Settings] Failed to save TTS preference:", err);
       setTtsEnabled(prev);
     }
-  }, [ttsEnabled]);
+  }, []);
 
   const isConnected = connection.status === "connected";
   const isReconnecting = connection.reconnecting;

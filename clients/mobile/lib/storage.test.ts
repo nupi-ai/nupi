@@ -119,4 +119,50 @@ describe("storage cache", () => {
     await expect(inFlightGet).resolves.toBeNull();
     await expect(storage.getLanguage()).resolves.toBeNull();
   });
+
+  it("returns true (default) for getTtsEnabled when no value stored", async () => {
+    const storage = await import("./storage");
+    await expect(storage.getTtsEnabled()).resolves.toBe(true);
+  });
+
+  it("caches TTS preference after saveTtsEnabled", async () => {
+    const storage = await import("./storage");
+    await storage.saveTtsEnabled(false);
+    await expect(storage.getTtsEnabled()).resolves.toBe(false);
+    // Second read should come from cache, not SecureStore.
+    await expect(storage.getTtsEnabled()).resolves.toBe(false);
+    // One write + one read (first getTtsEnabled hits cache set by save).
+    expect(secureStoreMock.setItemAsync).toHaveBeenCalledTimes(1);
+  });
+
+  it("notifies TTS change listeners on saveTtsEnabled", async () => {
+    const storage = await import("./storage");
+    const listener = vi.fn();
+    const unsubscribe = storage.addTtsChangeListener(listener);
+
+    await storage.saveTtsEnabled(false);
+    expect(listener).toHaveBeenCalledWith(false);
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    await storage.saveTtsEnabled(true);
+    expect(listener).toHaveBeenCalledWith(true);
+    expect(listener).toHaveBeenCalledTimes(2);
+
+    unsubscribe();
+    await storage.saveTtsEnabled(false);
+    // Listener should not fire after unsubscribe.
+    expect(listener).toHaveBeenCalledTimes(2);
+  });
+
+  it("clearAll resets TTS cache so next read goes to SecureStore", async () => {
+    const storage = await import("./storage");
+    // Prime the cache.
+    await storage.saveTtsEnabled(false);
+    await expect(storage.getTtsEnabled()).resolves.toBe(false);
+
+    await storage.clearAll();
+    // After clearAll, getTtsEnabled should read from SecureStore (which was
+    // cleared) and return default true.
+    await expect(storage.getTtsEnabled()).resolves.toBe(true);
+  });
 });
