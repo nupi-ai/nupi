@@ -25,12 +25,13 @@ import Colors from "@/constants/designTokens";
 import { arrayBufferToBase64 } from "@/lib/base64";
 import { useConnection } from "@/lib/ConnectionContext";
 import { getTerminalHtml } from "@/lib/terminal-html";
-import { useConversation } from "@/lib/useConversation";
+import { useConversationQuery } from "@/lib/useConversationQuery";
 import {
   useSessionStream,
   type WsEvent,
 } from "@/lib/useSessionStream";
 import { useVoice } from "@/lib/VoiceContext";
+import { AudioPlaybackProvider, useAudioPlaybackContext } from "@/lib/AudioPlaybackContext";
 import { useNotifications } from "@/lib/NotificationContext";
 import { wasNotificationPermissionPrompted, markNotificationPermissionPrompted } from "@/lib/storage";
 import { raceTimeout } from "@/lib/raceTimeout";
@@ -43,7 +44,16 @@ function encodeToBuffer(data: string): ArrayBuffer {
   return textEncoder.encode(data).buffer as ArrayBuffer;
 }
 
-export default function SessionTerminalScreen() {
+export default function SessionTerminalScreenWrapper() {
+  const { id } = useLocalSearchParams<{ id: string }>();
+  return (
+    <AudioPlaybackProvider sessionId={id ?? null}>
+      <SessionTerminalScreen />
+    </AudioPlaybackProvider>
+  );
+}
+
+function SessionTerminalScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const colorScheme = useColorScheme() ?? "dark";
   const headerHeight = useHeaderHeight();
@@ -74,6 +84,12 @@ export default function SessionTerminalScreen() {
     clearTranscription,
     clearVoiceError,
   } = useVoice();
+  const {
+    playbackState: ttsPlaybackState,
+    isPlaying: ttsIsPlaying,
+    stopPlayback: ttsStopPlayback,
+    sendInterrupt: ttsSendInterrupt,
+  } = useAudioPlaybackContext();
   const modelStatusRef = useRef(modelStatus);
   modelStatusRef.current = modelStatus;
   const { client } = useConnection();
@@ -190,7 +206,7 @@ export default function SessionTerminalScreen() {
     refresh,
     addOptimistic,
     removeLastOptimistic,
-  } = useConversation(id ?? "", client, streamStatus === "connected");
+  } = useConversationQuery(id ?? "", client, streamStatus === "connected");
   const prevTurnsLenRef = useRef(turns.length);
 
   // H1 fix: refresh conversation after WebSocket reconnection so that AI
@@ -327,6 +343,15 @@ export default function SessionTerminalScreen() {
     }
   }, []);
 
+  // Barge-in: stop TTS playback before starting voice recording.
+  const handleVoiceStartRecording = useCallback(() => {
+    if (ttsIsPlaying) {
+      ttsStopPlayback();
+      ttsSendInterrupt("user_barge_in");
+    }
+    voiceStartRecording();
+  }, [ttsIsPlaying, ttsStopPlayback, ttsSendInterrupt, voiceStartRecording]);
+
   const handleDownloadSheetCancel = useCallback(() => {
     setShowDownloadSheet(false);
   }, []);
@@ -350,6 +375,7 @@ export default function SessionTerminalScreen() {
       voiceStopRecording();
       clearTranscription();
       clearVoiceError();
+      ttsStopPlayback();
       stopPolling();
       pendingCommandsRef.current = 0;
       // L2 fix: clear error recovery timer on unmount.
@@ -504,11 +530,12 @@ export default function SessionTerminalScreen() {
       voiceStopRecording();
       clearTranscription();
       clearVoiceError();
+      ttsStopPlayback();
       stopPolling();
       setVoiceCommandStatus("idle");
       pendingCommandsRef.current = 0;
     }
-  }, [sessionStopped, voiceStopRecording, clearTranscription, clearVoiceError, stopPolling]);
+  }, [sessionStopped, voiceStopRecording, clearTranscription, clearVoiceError, ttsStopPlayback, stopPolling]);
 
   // Dismiss keyboard, stop recording and polling when stream disconnects.
   // Without this, a disconnect while recording leaves the native audio stream
@@ -526,6 +553,7 @@ export default function SessionTerminalScreen() {
       // and becomes non-interactive due to overlay's pointerEvents="box-only".
       clearTranscription();
       clearVoiceError();
+      ttsStopPlayback();
       stopPolling();
       setVoiceCommandStatus("idle");
       isSendingRef.current = false; // M2 fix: unblock sends after reconnect
@@ -718,6 +746,19 @@ export default function SessionTerminalScreen() {
 
       {!sessionStopped && streamStatus === "connected" && (
         <RNView style={styles.voiceRow}>
+          {ttsIsPlaying && (
+            <Pressable
+              onPress={ttsStopPlayback}
+              style={styles.ttsIndicator}
+              accessibilityRole="button"
+              accessibilityLabel="TTS playing, tap to stop"
+              testID="tts-indicator"
+            >
+              <Text style={[styles.ttsIndicatorText, { color: Colors[colorScheme].tint }]}>
+                {"\uD83D\uDD0A"}
+              </Text>
+            </Pressable>
+          )}
           {voiceError && !showDownloadSheet && (
             <Text
               style={[styles.voiceErrorText, { color: Colors[colorScheme].danger }]}
@@ -732,7 +773,7 @@ export default function SessionTerminalScreen() {
           <VoiceButton
             modelStatus={modelStatus}
             recordingStatus={recordingStatus}
-            onPressIn={voiceStartRecording}
+            onPressIn={handleVoiceStartRecording}
             onPressOut={voiceStopRecording}
             onPress={handleVoicePress}
           />
@@ -938,5 +979,13 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginRight: 8,
     flexShrink: 1,
+  },
+  ttsIndicator: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    marginRight: 4,
+  },
+  ttsIndicatorText: {
+    fontSize: 20,
   },
 });
