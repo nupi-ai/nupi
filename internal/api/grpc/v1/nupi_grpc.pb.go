@@ -20,11 +20,10 @@ import (
 const _ = grpc.SupportPackageIsVersion7
 
 const (
-	DaemonService_Status_FullMethodName            = "/nupi.api.v1.DaemonService/Status"
-	DaemonService_Shutdown_FullMethodName          = "/nupi.api.v1.DaemonService/Shutdown"
-	DaemonService_GetPluginWarnings_FullMethodName = "/nupi.api.v1.DaemonService/GetPluginWarnings"
-	DaemonService_ListLanguages_FullMethodName     = "/nupi.api.v1.DaemonService/ListLanguages"
-	DaemonService_ReloadPlugins_FullMethodName     = "/nupi.api.v1.DaemonService/ReloadPlugins"
+	DaemonService_Status_FullMethodName        = "/nupi.api.v1.DaemonService/Status"
+	DaemonService_Shutdown_FullMethodName      = "/nupi.api.v1.DaemonService/Shutdown"
+	DaemonService_ListLanguages_FullMethodName = "/nupi.api.v1.DaemonService/ListLanguages"
+	DaemonService_ReloadPlugins_FullMethodName = "/nupi.api.v1.DaemonService/ReloadPlugins"
 )
 
 // DaemonServiceClient is the client API for DaemonService service.
@@ -33,7 +32,6 @@ const (
 type DaemonServiceClient interface {
 	Status(ctx context.Context, in *DaemonStatusRequest, opts ...grpc.CallOption) (*DaemonStatusResponse, error)
 	Shutdown(ctx context.Context, in *ShutdownRequest, opts ...grpc.CallOption) (*ShutdownResponse, error)
-	GetPluginWarnings(ctx context.Context, in *GetPluginWarningsRequest, opts ...grpc.CallOption) (*GetPluginWarningsResponse, error)
 	ListLanguages(ctx context.Context, in *ListLanguagesRequest, opts ...grpc.CallOption) (*ListLanguagesResponse, error)
 	ReloadPlugins(ctx context.Context, in *ReloadPluginsRequest, opts ...grpc.CallOption) (*ReloadPluginsResponse, error)
 }
@@ -64,15 +62,6 @@ func (c *daemonServiceClient) Shutdown(ctx context.Context, in *ShutdownRequest,
 	return out, nil
 }
 
-func (c *daemonServiceClient) GetPluginWarnings(ctx context.Context, in *GetPluginWarningsRequest, opts ...grpc.CallOption) (*GetPluginWarningsResponse, error) {
-	out := new(GetPluginWarningsResponse)
-	err := c.cc.Invoke(ctx, DaemonService_GetPluginWarnings_FullMethodName, in, out, opts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 func (c *daemonServiceClient) ListLanguages(ctx context.Context, in *ListLanguagesRequest, opts ...grpc.CallOption) (*ListLanguagesResponse, error) {
 	out := new(ListLanguagesResponse)
 	err := c.cc.Invoke(ctx, DaemonService_ListLanguages_FullMethodName, in, out, opts...)
@@ -97,7 +86,6 @@ func (c *daemonServiceClient) ReloadPlugins(ctx context.Context, in *ReloadPlugi
 type DaemonServiceServer interface {
 	Status(context.Context, *DaemonStatusRequest) (*DaemonStatusResponse, error)
 	Shutdown(context.Context, *ShutdownRequest) (*ShutdownResponse, error)
-	GetPluginWarnings(context.Context, *GetPluginWarningsRequest) (*GetPluginWarningsResponse, error)
 	ListLanguages(context.Context, *ListLanguagesRequest) (*ListLanguagesResponse, error)
 	ReloadPlugins(context.Context, *ReloadPluginsRequest) (*ReloadPluginsResponse, error)
 	mustEmbedUnimplementedDaemonServiceServer()
@@ -112,9 +100,6 @@ func (UnimplementedDaemonServiceServer) Status(context.Context, *DaemonStatusReq
 }
 func (UnimplementedDaemonServiceServer) Shutdown(context.Context, *ShutdownRequest) (*ShutdownResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Shutdown not implemented")
-}
-func (UnimplementedDaemonServiceServer) GetPluginWarnings(context.Context, *GetPluginWarningsRequest) (*GetPluginWarningsResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method GetPluginWarnings not implemented")
 }
 func (UnimplementedDaemonServiceServer) ListLanguages(context.Context, *ListLanguagesRequest) (*ListLanguagesResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListLanguages not implemented")
@@ -171,24 +156,6 @@ func _DaemonService_Shutdown_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
-func _DaemonService_GetPluginWarnings_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(GetPluginWarningsRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(DaemonServiceServer).GetPluginWarnings(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: DaemonService_GetPluginWarnings_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(DaemonServiceServer).GetPluginWarnings(ctx, req.(*GetPluginWarningsRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 func _DaemonService_ListLanguages_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListLanguagesRequest)
 	if err := dec(in); err != nil {
@@ -239,10 +206,6 @@ var DaemonService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Shutdown",
 			Handler:    _DaemonService_Shutdown_Handler,
-		},
-		{
-			MethodName: "GetPluginWarnings",
-			Handler:    _DaemonService_GetPluginWarnings_Handler,
 		},
 		{
 			MethodName: "ListLanguages",

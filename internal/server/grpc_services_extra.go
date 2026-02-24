@@ -19,7 +19,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// ─── DaemonService: Shutdown, GetPluginWarnings ───
+// ─── DaemonService: Shutdown ───
 
 func (d *daemonService) Shutdown(ctx context.Context, _ *apiv1.ShutdownRequest) (*apiv1.ShutdownResponse, error) {
 	d.api.lifecycle.shutdownMu.RLock()
@@ -38,26 +38,6 @@ func (d *daemonService) Shutdown(ctx context.Context, _ *apiv1.ShutdownRequest) 
 	}()
 
 	return &apiv1.ShutdownResponse{Message: "daemon shutdown initiated"}, nil
-}
-
-func (d *daemonService) GetPluginWarnings(ctx context.Context, _ *apiv1.GetPluginWarningsRequest) (*apiv1.GetPluginWarningsResponse, error) {
-	resp := &apiv1.GetPluginWarningsResponse{
-		Warnings: make([]*apiv1.PluginWarning, 0),
-	}
-
-	if d.api.observability.pluginWarnings == nil {
-		return resp, nil
-	}
-
-	warnings := d.api.observability.pluginWarnings.GetDiscoveryWarnings()
-	for _, w := range warnings {
-		resp.Warnings = append(resp.Warnings, &apiv1.PluginWarning{
-			Dir:   w.Dir,
-			Error: w.Error,
-		})
-	}
-
-	return resp, nil
 }
 
 func (d *daemonService) ReloadPlugins(ctx context.Context, _ *apiv1.ReloadPluginsRequest) (*apiv1.ReloadPluginsResponse, error) {

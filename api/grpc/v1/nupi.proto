@@ -22,7 +22,6 @@ import "sessions.proto";
 service DaemonService {
   rpc Status(DaemonStatusRequest) returns (DaemonStatusResponse);
   rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
-  rpc GetPluginWarnings(GetPluginWarningsRequest) returns (GetPluginWarningsResponse);
   rpc ListLanguages(ListLanguagesRequest) returns (ListLanguagesResponse);
   rpc ReloadPlugins(ReloadPluginsRequest) returns (ReloadPluginsResponse);
 }

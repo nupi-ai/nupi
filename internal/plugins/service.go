@@ -41,9 +41,6 @@ type Service struct {
 
 	supervisedRT   *jsruntime.SupervisedRuntime
 	supervisedRTMu sync.RWMutex
-
-	lastWarnings   []manifest.DiscoveryWarning
-	lastWarningsMu sync.RWMutex
 }
 
 // NewService constructs a plugin service rooted in the given instance directory.
@@ -108,7 +105,6 @@ func (s *Service) filterByIntegrity(manifests []*manifest.Manifest) []*manifest.
 // LoadPipelinePlugins rebuilds the in-memory cleaner registry.
 func (s *Service) LoadPipelinePlugins() error {
 	manifests, warnings := manifest.DiscoverWithWarnings(s.pluginDir)
-	s.setWarnings(warnings)
 	if len(warnings) > 0 {
 		log.Printf("[Plugins] WARNING: %d plugin(s) skipped due to manifest errors:", len(warnings))
 		for _, w := range warnings {
@@ -220,7 +216,12 @@ func (s *Service) PipelinePluginFor(name string) (*pipelinecleaners.PipelinePlug
 // DetectIdleState, Clean, ExtractEvents, and Summarize.
 func (s *Service) LoadToolHandlerPlugins() error {
 	manifests, warnings := manifest.DiscoverWithWarnings(s.pluginDir)
-	s.setWarnings(warnings)
+	if len(warnings) > 0 {
+		log.Printf("[Plugins] WARNING: %d plugin(s) skipped due to manifest errors:", len(warnings))
+		for _, w := range warnings {
+			log.Printf("[Plugins]   - %s: %v", w.Dir, w.Err)
+		}
+	}
 	return s.loadToolHandlerPlugins(manifests)
 }
 
@@ -327,7 +328,6 @@ func (s *Service) GenerateIndex() error {
 	defer s.reloadMu.Unlock()
 
 	manifests, warnings := manifest.DiscoverWithWarnings(s.pluginDir)
-	s.setWarnings(warnings)
 	if len(warnings) > 0 {
 		log.Printf("[Plugins] WARNING: %d plugin(s) skipped due to manifest errors:", len(warnings))
 		for _, w := range warnings {
@@ -353,7 +353,6 @@ func (s *Service) Reload() error {
 	defer s.reloadMu.Unlock()
 
 	manifests, warnings := manifest.DiscoverWithWarnings(s.pluginDir)
-	s.setWarnings(warnings)
 	if len(warnings) > 0 {
 		log.Printf("[Plugins] WARNING: %d plugin(s) skipped during reload:", len(warnings))
 		for _, w := range warnings {
@@ -406,7 +405,6 @@ func (s *Service) Start(ctx context.Context) error {
 	}
 
 	manifests, warnings := manifest.DiscoverWithWarnings(s.pluginDir)
-	s.setWarnings(warnings)
 	if len(warnings) > 0 {
 		log.Printf("[Plugins] WARNING: %d plugin(s) skipped due to manifest errors:", len(warnings))
 		for _, w := range warnings {
@@ -514,33 +512,4 @@ func (s *Service) runtime() *jsruntime.Runtime {
 		return nil
 	}
 	return s.supervisedRT.Runtime()
-}
-
-// GetDiscoveryWarnings returns the most recent plugin discovery warnings.
-// These represent manifests that were skipped during the last discovery operation.
-func (s *Service) GetDiscoveryWarnings() []manifest.DiscoveryWarning {
-	s.lastWarningsMu.RLock()
-	defer s.lastWarningsMu.RUnlock()
-
-	if len(s.lastWarnings) == 0 {
-		return nil
-	}
-
-	// Return a copy to prevent external modification
-	warnings := make([]manifest.DiscoveryWarning, len(s.lastWarnings))
-	copy(warnings, s.lastWarnings)
-	return warnings
-}
-
-func (s *Service) setWarnings(warnings []manifest.DiscoveryWarning) {
-	s.lastWarningsMu.Lock()
-	defer s.lastWarningsMu.Unlock()
-	s.lastWarnings = warnings
-}
-
-// WarningsCount returns the count of current discovery warnings for metrics.
-func (s *Service) WarningsCount() int {
-	s.lastWarningsMu.RLock()
-	defer s.lastWarningsMu.RUnlock()
-	return len(s.lastWarnings)
 }

@@ -155,7 +155,6 @@ type lifecycleState struct {
 
 // observabilityState groups optional diagnostic providers.
 type observabilityState struct {
-	pluginWarnings PluginWarningsProvider
 	pluginReloader PluginReloader
 }
 
@@ -283,11 +282,6 @@ func (s *APIServer) SetAudioEgress(controller AudioPlaybackController) {
 // SetEventBus wires the event bus.
 func (s *APIServer) SetEventBus(bus *eventbus.Bus) {
 	s.eventBus = bus
-}
-
-// SetPluginWarningsProvider wires the plugin warnings provider. Must be called before Start.
-func (s *APIServer) SetPluginWarningsProvider(provider PluginWarningsProvider) {
-	s.observability.pluginWarnings = provider
 }
 
 // SetPluginReloader wires the plugin reloader. Must be called before Start.
