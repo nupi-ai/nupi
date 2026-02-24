@@ -82,6 +82,11 @@ type ProcessHandle interface {
 	PID() int
 }
 
+type storeIdentity interface {
+	InstanceName() string
+	ProfileName() string
+}
+
 // ManagerOptions configures the adapters manager.
 type ManagerOptions struct {
 	Store              BindingSource
@@ -115,8 +120,8 @@ type Manager struct {
 type adapterInstance struct {
 	binding         Binding
 	handle          ProcessHandle
-	stdout          *adapterLogWriter
-	stderr          *adapterLogWriter
+	stdout          *os.File
+	stderr          *os.File
 	fingerprint     string
 	shutdownTimeout time.Duration
 }
@@ -192,6 +197,35 @@ func NewManager(opts ManagerOptions) *Manager {
 		}
 	}
 	return manager
+}
+
+func (m *Manager) adapterLogDir() (string, error) {
+	instanceName := config.DefaultInstance
+	if ident, ok := m.store.(storeIdentity); ok {
+		if v := strings.TrimSpace(ident.InstanceName()); v != "" {
+			instanceName = v
+		}
+	}
+	paths, err := config.EnsureInstanceDirs(instanceName)
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(paths.Logs, "plugins")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+func openAdapterLogFile(dir, adapterID string, slot Slot, stream string) (*os.File, error) {
+	slug := sanitize.SafeSlug(adapterID)
+	slotName := sanitize.SafeSlug(strings.TrimSpace(string(slot)))
+	if slotName == "" {
+		slotName = "plugin"
+	}
+	filename := fmt.Sprintf("plugin.%s.%s.%s.log", slug, slotName, stream)
+	path := filepath.Join(dir, filename)
+	return os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 }
 
 // Ensure reconciles running adapters with the current bindings.
@@ -701,6 +735,13 @@ func (m *Manager) startAdapter(ctx context.Context, plan bindingPlan) (*adapterI
 		return out
 	}
 
+	logDir := ""
+	if dir, err := m.adapterLogDir(); err != nil {
+		log.Printf("[Adapters] failed to prepare plugin log dir: %v", err)
+	} else {
+		logDir = dir
+	}
+
 	launchAttempt := func(addr string) (*adapterInstance, error) {
 		if err := checkCtx(); err != nil {
 			return nil, err
@@ -708,30 +749,32 @@ func (m *Manager) startAdapter(ctx context.Context, plan bindingPlan) (*adapterI
 		runtimeExtra[RuntimeExtraAddress] = strings.TrimSpace(addr)
 		envAttempt := appendAddressEnv(baseEnv, addr)
 
+		var stdoutFile *os.File
+		var stderrFile *os.File
 		stdoutWriter := io.Writer(io.Discard)
 		stderrWriter := io.Writer(io.Discard)
-		var stdoutLogger, stderrLogger *adapterLogWriter
-
-		telemetryStdout := manifest == nil || manifest.Adapter == nil || manifest.Adapter.Telemetry.Stdout == nil || *manifest.Adapter.Telemetry.Stdout
-		telemetryStderr := manifest == nil || manifest.Adapter == nil || manifest.Adapter.Telemetry.Stderr == nil || *manifest.Adapter.Telemetry.Stderr
-		if m.bus != nil {
-			if telemetryStdout {
-				stdoutLogger = newAdapterLogWriter(m.bus, plan.binding.AdapterID, plan.binding.Slot, eventbus.LogLevelInfo)
-				stdoutWriter = stdoutLogger
+		if logDir != "" {
+			if f, err := openAdapterLogFile(logDir, plan.binding.AdapterID, plan.binding.Slot, "stdout"); err != nil {
+				log.Printf("[Adapters] failed to open stdout log for %s: %v", plan.binding.AdapterID, err)
+			} else {
+				stdoutFile = f
+				stdoutWriter = f
 			}
-			if telemetryStderr {
-				stderrLogger = newAdapterLogWriter(m.bus, plan.binding.AdapterID, plan.binding.Slot, eventbus.LogLevelError)
-				stderrWriter = stderrLogger
+			if f, err := openAdapterLogFile(logDir, plan.binding.AdapterID, plan.binding.Slot, "stderr"); err != nil {
+				log.Printf("[Adapters] failed to open stderr log for %s: %v", plan.binding.AdapterID, err)
+			} else {
+				stderrFile = f
+				stderrWriter = f
 			}
 		}
 
 		handle, err := m.launcher.Launch(ctx, binary, args, envAttempt, stdoutWriter, stderrWriter, workingDir)
 		if err != nil {
-			if stdoutLogger != nil {
-				stdoutLogger.Close()
+			if stdoutFile != nil {
+				_ = stdoutFile.Close()
 			}
-			if stderrLogger != nil {
-				stderrLogger.Close()
+			if stderrFile != nil {
+				_ = stderrFile.Close()
 			}
 			return nil, err
 		}
@@ -747,11 +790,11 @@ func (m *Manager) startAdapter(ctx context.Context, plan bindingPlan) (*adapterI
 			readyErr := getReadinessChecker()(readyCtx, addr, "process", nil)
 			cancel()
 			if readyErr != nil {
-				if stdoutLogger != nil {
-					stdoutLogger.Close()
+				if stdoutFile != nil {
+					_ = stdoutFile.Close()
 				}
-				if stderrLogger != nil {
-					stderrLogger.Close()
+				if stderrFile != nil {
+					_ = stderrFile.Close()
 				}
 				stopHandle()
 				return nil, readyErr
@@ -771,8 +814,8 @@ func (m *Manager) startAdapter(ctx context.Context, plan bindingPlan) (*adapterI
 		return &adapterInstance{
 			binding:         plan.binding,
 			handle:          handle,
-			stdout:          stdoutLogger,
-			stderr:          stderrLogger,
+			stdout:          stdoutFile,
+			stderr:          stderrFile,
 			fingerprint:     plan.fingerprint,
 			shutdownTimeout: shutdownTimeout,
 		}, nil
@@ -960,7 +1003,7 @@ func resolveAdapterConfig(options map[string]manifest.AdapterOption, current map
 // computePlanFingerprint generates a hash used to detect configuration changes
 // that require adapter restart. The fingerprint includes:
 // - Adapter binding (ID, config)
-// - Manifest runtime fields (slot/entrypoint including shutdownTimeout/options/telemetry)
+// - Manifest runtime fields (slot/entrypoint including shutdownTimeout/options)
 // - Endpoint settings (transport, command, args, env, TLS; address only for non-process transports)
 // Intentionally excluded: Binding.Slot (slot comes from manifest), Binding.Fingerprint,
 // Binding.Runtime (output fields), endpoint AdapterID/timestamps, AdapterOption.Required (validation-only).
@@ -999,16 +1042,6 @@ func computePlanFingerprint(binding Binding, manifest *manifest.Manifest, manife
 			for _, arg := range args {
 				write(arg)
 			}
-		}
-		if spec.Telemetry.Stdout != nil {
-			write(fmt.Sprintf("stdout:%t", *spec.Telemetry.Stdout))
-		} else {
-			write("stdout:nil")
-		}
-		if spec.Telemetry.Stderr != nil {
-			write(fmt.Sprintf("stderr:%t", *spec.Telemetry.Stderr))
-		} else {
-			write("stderr:nil")
 		}
 		if len(spec.Options) == 0 {
 			write("")

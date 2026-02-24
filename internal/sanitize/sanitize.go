@@ -2,6 +2,7 @@ package sanitize
 
 import (
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -48,6 +49,69 @@ func TruncateUTF8(s string, maxBytes int) string {
 		truncated = truncated[:len(truncated)-1]
 	}
 	return truncated
+}
+
+// StripControlChars removes ANSI escape sequences and non-printable control
+// characters (except newline and tab) from s. Useful for sanitising terminal
+// output before sending as push notification body text.
+func StripControlChars(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	i := 0
+	for i < len(s) {
+		// Strip ANSI escape sequences: ESC [ ... final byte (0x40-0x7E).
+		// L3 fix (Review 13): cap scan at 64 bytes to limit damage from crafted
+		// malformed CSI sequences that never terminate.
+		if i+1 < len(s) && s[i] == '\x1b' && s[i+1] == '[' {
+			j := i + 2
+			maxJ := j + 64
+			if maxJ > len(s) {
+				maxJ = len(s)
+			}
+			for j < maxJ && (s[j] < 0x40 || s[j] > 0x7E) {
+				j++
+			}
+			if j < len(s) && s[j] >= 0x40 && s[j] <= 0x7E {
+				j++ // skip final byte
+			}
+			i = j
+			continue
+		}
+		// Strip OSC sequences: ESC ] ... ST (ESC \ or BEL).
+		if i+1 < len(s) && s[i] == '\x1b' && s[i+1] == ']' {
+			j := i + 2
+			for j < len(s) {
+				if s[j] == '\x07' { // BEL terminator
+					j++
+					break
+				}
+				if j+1 < len(s) && s[j] == '\x1b' && s[j+1] == '\\' { // ST terminator
+					j += 2
+					break
+				}
+				j++
+			}
+			i = j
+			continue
+		}
+		// Strip other ESC-initiated sequences (2-byte).
+		if s[i] == '\x1b' {
+			i += 2
+			if i > len(s) {
+				i = len(s)
+			}
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		// L2 fix (Review 14): use unicode.IsControl to catch all control chars
+		// (form feed, vertical tab, etc.) instead of hardcoded range. Preserve
+		// only newline and tab which are meaningful in notification body text.
+		if r == '\n' || r == '\t' || (r >= ' ' && !unicode.IsControl(r)) {
+			b.WriteString(s[i : i+size])
+		}
+		i += size
+	}
+	return b.String()
 }
 
 // TrimToRunes trims surrounding whitespace and limits result to maxRunes.

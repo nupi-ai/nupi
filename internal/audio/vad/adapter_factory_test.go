@@ -683,9 +683,6 @@ func (s *mockVADServer) DetectSpeech(stream napv1.VoiceActivityDetectionService_
 		if err := stream.Send(&napv1.SpeechEvent{
 			Type:       napv1.SpeechEventType_SPEECH_EVENT_TYPE_START,
 			Confidence: 0.95,
-			Metadata: map[string]string{
-				"seq": fmt.Sprintf("%s:%s", req.GetSessionId(), req.GetStreamId()),
-			},
 		}); err != nil {
 			return err
 		}

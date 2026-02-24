@@ -98,33 +98,6 @@ func newAdaptersCommand() *cobra.Command {
 	adaptersInstallLocalCmd.Flags().String("config", "", "Optional JSON configuration payload for slot binding")
 	adaptersInstallLocalCmd.Flags().String("build-timeout", "5m", "Maximum duration for the build step (e.g. 30s, 2m, 5m)")
 
-	adaptersLogsCmd := &cobra.Command{
-		Use:           "logs",
-		Short:         "Stream adapter logs and transcripts",
-		SilenceUsage:  true,
-		SilenceErrors: true,
-		RunE:          adaptersLogs,
-	}
-	adaptersLogsCmd.Long = `Stream real-time adapter logs and speech transcripts.
-
-Filters:
-  --slot=SLOT       Filter logs by slot (e.g. stt)
-  --adapter=ID      Filter logs by adapter identifier
-
-Notes:
-  - When both --slot and --adapter are provided, transcript entries are omitted
-    because transcripts are not yet mapped to specific adapters.
-  - Use --json to consume newline-delimited JSON for tooling and pipelines.
-
-Examples:
-  nupi adapters logs
-  nupi adapters logs --slot=stt
-  nupi adapters logs --adapter=adapter.stt.mock
-  nupi adapters logs --json | jq .
-`
-	adaptersLogsCmd.Flags().String("slot", "", "Filter logs by slot (e.g. stt)")
-	adaptersLogsCmd.Flags().String("adapter", "", "Filter logs by adapter identifier")
-
 	adaptersListCmd := &cobra.Command{
 		Use:           "list",
 		Short:         "Show adapter slots, bindings and runtime status (see also: nupi plugins list)",
@@ -161,7 +134,7 @@ Examples:
 		RunE:          adaptersStop,
 	}
 
-	adaptersCmd.AddCommand(adaptersRegisterCmd, adaptersListCmd, adaptersBindCmd, adaptersStartCmd, adaptersStopCmd, adaptersLogsCmd)
+	adaptersCmd.AddCommand(adaptersRegisterCmd, adaptersListCmd, adaptersBindCmd, adaptersStartCmd, adaptersStopCmd)
 	adaptersCmd.AddCommand(adaptersInstallLocalCmd)
 	return adaptersCmd
 }
@@ -604,11 +577,11 @@ func adaptersInstallLocal(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-func adaptersLogs(cmd *cobra.Command, _ []string) error {
+func pluginsLogs(cmd *cobra.Command, _ []string) error {
 	out := newOutputFormatter(cmd)
 
 	slot := getTrimmedFlag(cmd, "slot")
-	adapter := getTrimmedFlag(cmd, "adapter")
+	pluginID := getTrimmedFlag(cmd, "plugin")
 
 	return withOutputClient(out, daemonConnectGRPCErrorMessage, func(gc *grpcclient.Client) error {
 		ctx, cancel := context.WithCancel(context.Background())
@@ -627,10 +600,10 @@ func adaptersLogs(cmd *cobra.Command, _ []string) error {
 
 		stream, err := gc.StreamAdapterLogs(ctx, &apiv1.StreamAdapterLogsRequest{
 			Slot:    slot,
-			Adapter: adapter,
+			Adapter: pluginID,
 		})
 		if err != nil {
-			return out.Error("Failed to stream adapter logs", err)
+			return out.Error("Failed to stream plugin logs", err)
 		}
 
 		for {
@@ -639,20 +612,20 @@ func adaptersLogs(cmd *cobra.Command, _ []string) error {
 				if errors.Is(err, io.EOF) {
 					return nil
 				}
-				return out.Error("Adapter log stream ended with error", err)
+				return out.Error("Plugin log stream ended with error", err)
 			}
 
 			if out.jsonMode {
-				printAdapterLogEntryJSON(out.w, entry)
+				printPluginLogEntryJSON(out.w, entry)
 				continue
 			}
 
-			printAdapterLogEntry(out.w, entry)
+			printPluginLogEntry(out.w, entry)
 		}
 	})
 }
 
-func printAdapterLogEntry(w io.Writer, entry *apiv1.AdapterLogStreamEntry) {
+func printPluginLogEntry(w io.Writer, entry *apiv1.AdapterLogStreamEntry) {
 	switch payload := entry.GetPayload().(type) {
 	case *apiv1.AdapterLogStreamEntry_Log:
 		log := payload.Log
@@ -666,16 +639,16 @@ func printAdapterLogEntry(w io.Writer, entry *apiv1.AdapterLogStreamEntry) {
 			level = "INFO"
 		}
 		slot := strings.TrimSpace(log.GetSlot())
-		adapterID := strings.TrimSpace(log.GetAdapterId())
+		pluginID := strings.TrimSpace(log.GetAdapterId())
 		if slot != "" {
-			if adapterID != "" {
-				fmt.Fprintf(w, "%s [%s] %s %s: %s\n", timestamp, slot, adapterID, level, log.GetMessage())
+			if pluginID != "" {
+				fmt.Fprintf(w, "%s [%s] %s %s: %s\n", timestamp, slot, pluginID, level, log.GetMessage())
 			} else {
 				fmt.Fprintf(w, "%s [%s] %s: %s\n", timestamp, slot, level, log.GetMessage())
 			}
 		} else {
-			if adapterID != "" {
-				fmt.Fprintf(w, "%s %s %s: %s\n", timestamp, adapterID, level, log.GetMessage())
+			if pluginID != "" {
+				fmt.Fprintf(w, "%s %s %s: %s\n", timestamp, pluginID, level, log.GetMessage())
 			} else {
 				fmt.Fprintf(w, "%s %s: %s\n", timestamp, level, log.GetMessage())
 			}
@@ -696,7 +669,7 @@ func printAdapterLogEntry(w io.Writer, entry *apiv1.AdapterLogStreamEntry) {
 	}
 }
 
-func printAdapterLogEntryJSON(w io.Writer, entry *apiv1.AdapterLogStreamEntry) {
+func printPluginLogEntryJSON(w io.Writer, entry *apiv1.AdapterLogStreamEntry) {
 	var m map[string]interface{}
 	switch payload := entry.GetPayload().(type) {
 	case *apiv1.AdapterLogStreamEntry_Log:
@@ -713,7 +686,7 @@ func printAdapterLogEntryJSON(w io.Writer, entry *apiv1.AdapterLogStreamEntry) {
 			m["slot"] = s
 		}
 		if id := log.GetAdapterId(); id != "" {
-			m["adapter_id"] = id
+			m["plugin_id"] = id
 		}
 	case *apiv1.AdapterLogStreamEntry_Transcript:
 		tr := payload.Transcript
@@ -1368,7 +1341,7 @@ func normalizeCommand(command string, w io.Writer) string {
 }
 
 // sanityCheckResult holds the outcome of a post-install binary sanity check.
-// BinaryPath is always populated (even on failure) for diagnostic purposes.
+// BinaryPath is always populated (even on failure) for troubleshooting.
 type sanityCheckResult struct {
 	Passed     bool               `json:"passed"`
 	BinaryPath string             `json:"binary_path"`

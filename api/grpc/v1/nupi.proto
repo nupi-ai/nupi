@@ -14,10 +14,6 @@ import "recordings.proto";
 import "sessions.proto";
 
 // ─── Services ───
-//
-// NOTE: The Prometheus /metrics endpoint (GET /metrics) is intentionally NOT
-// represented as a gRPC RPC. Prometheus scrapes HTTP endpoints by design and
-// this is a standard industry exception to AD-7 transport unification.
 
 service DaemonService {
   rpc Status(DaemonStatusRequest) returns (DaemonStatusResponse);

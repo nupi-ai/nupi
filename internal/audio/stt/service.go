@@ -52,7 +52,7 @@ type FactoryFunc = serviceutil.FactoryFunc[Transcriber]
 // Option configures the Service behaviour.
 type Option func(*Service)
 
-// WithLogger overrides the logger used for diagnostics.
+// WithLogger overrides the logger used for logging.
 func WithLogger(logger *log.Logger) Option {
 	return func(s *Service) {
 		if logger != nil {
@@ -404,4 +404,3 @@ func (st *stream) closeTranscriber(reason string) {
 		}
 	})
 }
-

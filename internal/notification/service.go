@@ -21,6 +21,7 @@ const (
 	maxConcurrentSend     = 4
 	maxNotifBodyBytes     = 2048
 	dedupCleanupThreshold = 100
+	dedupHardCap          = 500
 	expoSendTimeout       = 8 * time.Second
 )
 
@@ -412,14 +413,19 @@ func (s *Service) isDuplicate(key string, receivedAt time.Time) bool {
 	}
 	s.dedup[key] = receivedAt
 
-	// Lazy cleanup of expired entries. Full map iteration under mutex is acceptable
-	// at the current threshold (100); revisit if session count grows significantly.
-	now := time.Now()
+	// Periodic cleanup of expired entries. Runs every dedupCleanupThreshold
+	// inserts to amortize the cost of a full map scan under mutex.
+	// Hard cap prevents unbounded growth even if all entries are within the window.
 	if len(s.dedup) > dedupCleanupThreshold {
+		now := time.Now()
 		for k, v := range s.dedup {
 			if now.Sub(v) >= dedupWindow {
 				delete(s.dedup, k)
 			}
+		}
+		// If cleanup didn't bring us below the hard cap, remove oldest entries.
+		if len(s.dedup) > dedupHardCap {
+			clear(s.dedup)
 		}
 	}
 

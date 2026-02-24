@@ -30,6 +30,10 @@ type DeliveryPolicy struct {
 
 const defaultMaxOverflow = 512
 
+// Hard cap to prevent unbounded memory allocation if a
+// caller provides an excessively large MaxOverflow value.
+const maxAllowedOverflow = 4096
+
 // defaultPolicy is used for topics without an explicit entry in defaultPolicies.
 var defaultPolicy = DeliveryPolicy{
 	Strategy: StrategyDropOldest,
@@ -59,21 +63,36 @@ var defaultPolicies = map[Topic]DeliveryPolicy{
 	TopicAudioInterrupt:          {Strategy: StrategyDropOldest, Priority: PriorityNormal},
 	TopicSpeechBargeIn:           {Strategy: StrategyDropOldest, Priority: PriorityNormal},
 
+	// Normal — infrequent events that tolerate occasional drops.
+	TopicPairingCreated:       {Strategy: StrategyDropOldest, Priority: PriorityNormal},
+	TopicPairingClaimed:       {Strategy: StrategyDropOldest, Priority: PriorityNormal},
+	TopicMemoryFlushRequest:   {Strategy: StrategyOverflow, Priority: PriorityNormal, MaxOverflow: defaultMaxOverflow},
+	TopicMemoryFlushResponse:  {Strategy: StrategyOverflow, Priority: PriorityNormal, MaxOverflow: defaultMaxOverflow},
+	TopicAwarenessSync:        {Strategy: StrategyDropOldest, Priority: PriorityNormal},
+	TopicSessionExportRequest: {Strategy: StrategyOverflow, Priority: PriorityNormal, MaxOverflow: defaultMaxOverflow},
+
 	// Low — informational, already rate-limited or infrequent.
-	TopicAdaptersLog:             {Strategy: StrategyDropNewest, Priority: PriorityLow},
-	TopicAdaptersStatus:          {Strategy: StrategyDropNewest, Priority: PriorityLow},
-	TopicIntentRouterDiagnostics: {Strategy: StrategyDropNewest, Priority: PriorityLow},
+	TopicAdaptersLog:    {Strategy: StrategyDropNewest, Priority: PriorityLow},
+	TopicAdaptersStatus: {Strategy: StrategyDropNewest, Priority: PriorityLow},
 }
 
 // policyFor returns the delivery policy for a topic, falling back to defaultPolicy.
+// Clamps MaxOverflow to maxAllowedOverflow to prevent
+// unbounded memory allocation from user-provided or misconfigured overrides.
 func policyFor(topic Topic, overrides map[Topic]DeliveryPolicy) DeliveryPolicy {
+	var p DeliveryPolicy
+	var found bool
 	if overrides != nil {
-		if p, ok := overrides[topic]; ok {
-			return p
-		}
+		p, found = overrides[topic]
 	}
-	if p, ok := defaultPolicies[topic]; ok {
-		return p
+	if !found {
+		p, found = defaultPolicies[topic]
 	}
-	return defaultPolicy
+	if !found {
+		p = defaultPolicy
+	}
+	if p.MaxOverflow > maxAllowedOverflow {
+		p.MaxOverflow = maxAllowedOverflow
+	}
+	return p
 }

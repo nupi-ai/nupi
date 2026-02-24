@@ -31,27 +31,6 @@ func TestVoiceReadinessDefaults(t *testing.T) {
 	if readiness.PlaybackEnabled {
 		t.Fatalf("expected playback to be disabled by default")
 	}
-	if len(readiness.Issues) == 0 {
-		t.Fatalf("expected issues to be reported")
-	}
-
-	var seenSTT, seenTTS bool
-	for _, issue := range readiness.Issues {
-		switch issue.Slot {
-		case slots.STT:
-			seenSTT = true
-		case slots.TTS:
-			seenTTS = true
-		default:
-			t.Fatalf("unexpected slot in issues: %+v", issue)
-		}
-		if issue.Code == "" || issue.Message == "" {
-			t.Fatalf("issue missing details: %+v", issue)
-		}
-	}
-	if !seenSTT || !seenTTS {
-		t.Fatalf("expected issues for both stt and tts slots: %+v", readiness.Issues)
-	}
 }
 
 func TestVoiceReadinessActiveAdapters(t *testing.T) {
@@ -101,9 +80,6 @@ func TestVoiceReadinessActiveAdapters(t *testing.T) {
 	if !readiness.PlaybackEnabled {
 		t.Fatalf("expected playback to be enabled")
 	}
-	if len(readiness.Issues) != 0 {
-		t.Fatalf("expected no issues, got %+v", readiness.Issues)
-	}
 }
 
 // TestVoiceReadinessPartialConfig verifies VoiceReadiness when only STT is
@@ -145,19 +121,6 @@ func TestVoiceReadinessPartialConfig(t *testing.T) {
 	if readiness.PlaybackEnabled {
 		t.Fatalf("expected playback to be disabled (no TTS)")
 	}
-
-	// Issues should only reference TTS slot.
-	for _, issue := range readiness.Issues {
-		if issue.Slot == slots.STT {
-			t.Fatalf("unexpected STT issue when STT is active: %+v", issue)
-		}
-		if issue.Slot != slots.TTS {
-			t.Fatalf("unexpected slot in issues: %+v", issue)
-		}
-	}
-	if len(readiness.Issues) == 0 {
-		t.Fatalf("expected TTS issues to be reported")
-	}
 }
 
 func TestVoiceReadinessInactiveBinding(t *testing.T) {
@@ -195,15 +158,5 @@ func TestVoiceReadinessInactiveBinding(t *testing.T) {
 	}
 	if readiness.PlaybackEnabled {
 		t.Fatalf("expected playback disabled due to inactive adapter")
-	}
-
-	foundInactive := false
-	for _, issue := range readiness.Issues {
-		if issue.Slot == slots.TTS && issue.Code == voiceIssueAdapterInactive {
-			foundInactive = true
-		}
-	}
-	if !foundInactive {
-		t.Fatalf("expected inactive adapter issue in %+v", readiness.Issues)
 	}
 }

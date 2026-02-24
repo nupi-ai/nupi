@@ -54,8 +54,6 @@ const (
 const conversationMaxPageLimit = 500
 
 const defaultTTSStreamID = slots.TTS
-const voiceIssueCodeServiceUnavailable = "service_unavailable"
-
 const (
 	maxAdapterIDLength      = 128
 	maxAdapterNameLength    = 256
@@ -153,16 +151,9 @@ type lifecycleState struct {
 	shutdownFn     func(context.Context) error
 }
 
-// observabilityState groups optional diagnostic providers.
+// observabilityState groups optional operational providers.
 type observabilityState struct {
 	pluginReloader PluginReloader
-}
-
-// voiceDiagnostic describes a single voice-related issue.
-type voiceDiagnostic struct {
-	Slot    string `json:"slot"`
-	Code    string `json:"code"`
-	Message string `json:"message"`
 }
 
 // daemonStatusSnapshot captures runtime daemon status.
@@ -1115,13 +1106,6 @@ func (s *APIServer) voiceReadiness(ctx context.Context) (configstore.VoiceReadin
 		readiness := configstore.VoiceReadiness{
 			CaptureEnabled:  s.audioIngress != nil,
 			PlaybackEnabled: s.audioEgress != nil,
-			Issues:          nil,
-		}
-		if s.audioIngress == nil {
-			readiness.Issues = appendVoiceIssue(readiness.Issues, slots.STT, voiceIssueCodeServiceUnavailable, "audio ingress service unavailable")
-		}
-		if s.audioEgress == nil {
-			readiness.Issues = appendVoiceIssue(readiness.Issues, slots.TTS, voiceIssueCodeServiceUnavailable, "audio egress service unavailable")
 		}
 		return readiness, nil
 	}
@@ -1131,59 +1115,11 @@ func (s *APIServer) voiceReadiness(ctx context.Context) (configstore.VoiceReadin
 	}
 	if s.audioIngress == nil {
 		readiness.CaptureEnabled = false
-		readiness.Issues = appendVoiceIssue(readiness.Issues, slots.STT, voiceIssueCodeServiceUnavailable, "audio ingress service unavailable")
 	}
 	if s.audioEgress == nil {
 		readiness.PlaybackEnabled = false
-		readiness.Issues = appendVoiceIssue(readiness.Issues, slots.TTS, voiceIssueCodeServiceUnavailable, "audio egress service unavailable")
 	}
 	return readiness, nil
-}
-
-func appendVoiceIssue(issues []configstore.VoiceIssue, slot, code, message string) []configstore.VoiceIssue {
-	for _, issue := range issues {
-		if issue.Slot == slot && issue.Code == code {
-			return issues
-		}
-	}
-	return append(issues, configstore.VoiceIssue{Slot: slot, Code: code, Message: message})
-}
-
-func mapVoiceDiagnostics(issues []configstore.VoiceIssue) []voiceDiagnostic {
-	if len(issues) == 0 {
-		return nil
-	}
-	out := make([]voiceDiagnostic, 0, len(issues))
-	for _, issue := range issues {
-		out = append(out, voiceDiagnostic{
-			Slot:    issue.Slot,
-			Code:    issue.Code,
-			Message: issue.Message,
-		})
-	}
-	return out
-}
-
-func filterDiagnostics(diags []voiceDiagnostic, slot string) []voiceDiagnostic {
-	if len(diags) == 0 {
-		return nil
-	}
-	filtered := make([]voiceDiagnostic, 0, len(diags))
-	for _, diag := range diags {
-		if diag.Slot == slot {
-			filtered = append(filtered, diag)
-		}
-	}
-	return filtered
-}
-
-func voiceIssueSummary(diags []voiceDiagnostic, fallback string) string {
-	for _, diag := range diags {
-		if msg := strings.TrimSpace(diag.Message); msg != "" {
-			return msg
-		}
-	}
-	return fallback
 }
 
 // ---------------------------------------------------------------------------

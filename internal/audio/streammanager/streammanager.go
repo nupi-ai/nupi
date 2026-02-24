@@ -123,7 +123,7 @@ type Config[T any] struct {
 	// Callbacks hooks for service-specific behaviour.
 	Callbacks Callbacks[T]
 
-	// Logger for diagnostics. If nil, log.Default() is used.
+	// Logger for logging. If nil, log.Default() is used.
 	Logger *log.Logger
 
 	// Ctx is the parent context for the manager. When cancelled, pending

@@ -36,6 +36,9 @@ func TestDefaultPolicies(t *testing.T) {
 		TopicPipelineError,
 		TopicAudioInterrupt,
 		TopicSpeechBargeIn,
+		TopicPairingCreated,
+		TopicPairingClaimed,
+		TopicAwarenessSync,
 	}
 	for _, topic := range normal {
 		p, ok := defaultPolicies[topic]
@@ -53,7 +56,6 @@ func TestDefaultPolicies(t *testing.T) {
 	low := []Topic{
 		TopicAdaptersLog,
 		TopicAdaptersStatus,
-		TopicIntentRouterDiagnostics,
 	}
 	for _, topic := range low {
 		p, ok := defaultPolicies[topic]
@@ -67,6 +69,26 @@ func TestDefaultPolicies(t *testing.T) {
 			t.Fatalf("expected low priority for %s, got %d", topic, p.Priority)
 		}
 	}
+
+	// Normal-priority topics using overflow strategy (must not lose events).
+	normalOverflow := []Topic{
+		TopicMemoryFlushRequest,
+		TopicMemoryFlushResponse,
+		TopicSessionExportRequest,
+	}
+	for _, topic := range normalOverflow {
+		p, ok := defaultPolicies[topic]
+		if !ok {
+			t.Fatalf("expected defaultPolicies entry for %s", topic)
+		}
+		if p.Strategy != StrategyOverflow {
+			t.Fatalf("expected overflow strategy for %s, got %s", topic, p.Strategy)
+		}
+		if p.Priority != PriorityNormal {
+			t.Fatalf("expected normal priority for %s, got %d", topic, p.Priority)
+		}
+	}
+
 }
 
 func TestPolicyForFallback(t *testing.T) {

@@ -10,26 +10,11 @@ import (
 	"github.com/nupi-ai/nupi/internal/voice/slots"
 )
 
-// VoiceIssue describes a configuration problem preventing voice features from working.
-type VoiceIssue struct {
-	Slot    string
-	Code    string
-	Message string
-}
-
 // VoiceReadiness summarises whether voice capture and playback features can be used.
 type VoiceReadiness struct {
 	CaptureEnabled  bool
 	PlaybackEnabled bool
-	Issues          []VoiceIssue
 }
-
-const (
-	voiceIssueSlotMissing     = "slot_missing"
-	voiceIssueAdapterMissing  = "adapter_missing"
-	voiceIssueAdapterUnbound  = "adapter_unassigned"
-	voiceIssueAdapterInactive = "adapter_inactive"
-)
 
 // VoiceReadiness inspects adapter bindings required for voice features.
 func (s *Store) VoiceReadiness(ctx context.Context) (VoiceReadiness, error) {
@@ -37,48 +22,31 @@ func (s *Store) VoiceReadiness(ctx context.Context) (VoiceReadiness, error) {
 		return VoiceReadiness{}, sql.ErrConnDone
 	}
 
-	var (
-		issues []VoiceIssue
-	)
-
-	sttIssues, err := s.voiceSlotIssues(ctx, slots.STT)
+	sttReady, err := s.voiceSlotReady(ctx, slots.STT)
 	if err != nil {
 		return VoiceReadiness{}, err
 	}
-	issues = append(issues, sttIssues...)
-
-	ttsIssues, err := s.voiceSlotIssues(ctx, slots.TTS)
+	ttsReady, err := s.voiceSlotReady(ctx, slots.TTS)
 	if err != nil {
 		return VoiceReadiness{}, err
 	}
-	issues = append(issues, ttsIssues...)
-
 	readiness := VoiceReadiness{
-		CaptureEnabled:  len(sttIssues) == 0,
-		PlaybackEnabled: len(ttsIssues) == 0,
-		Issues:          issues,
+		CaptureEnabled:  sttReady,
+		PlaybackEnabled: ttsReady,
 	}
 	return readiness, nil
 }
 
-func (s *Store) voiceSlotIssues(ctx context.Context, slot string) ([]VoiceIssue, error) {
+func (s *Store) voiceSlotReady(ctx context.Context, slot string) (bool, error) {
 	binding, err := s.AdapterBinding(ctx, slot)
 	if err != nil {
-		var issues []VoiceIssue
 		switch {
 		case errorsAsNotFound(err):
-			issues = append(issues, VoiceIssue{
-				Slot:    slot,
-				Code:    voiceIssueSlotMissing,
-				Message: fmt.Sprintf("adapter slot %s is missing from configuration", slot),
-			})
-			return issues, nil
+			return false, nil
 		default:
-			return nil, err
+			return false, err
 		}
 	}
-
-	var issues []VoiceIssue
 
 	adapterID := ""
 	if binding.AdapterID != nil {
@@ -86,36 +54,23 @@ func (s *Store) voiceSlotIssues(ctx context.Context, slot string) ([]VoiceIssue,
 	}
 
 	if adapterID == "" {
-		issues = append(issues, VoiceIssue{
-			Slot:    slot,
-			Code:    voiceIssueAdapterUnbound,
-			Message: fmt.Sprintf("adapter slot %s has no adapter assigned", slot),
-		})
-		return issues, nil
+		return false, nil
 	}
 
 	exists, err := s.AdapterExists(ctx, adapterID)
 	if err != nil {
-		return nil, fmt.Errorf("config: adapter exist check for %s: %w", adapterID, err)
+		return false, fmt.Errorf("config: adapter exist check for %s: %w", adapterID, err)
 	}
 	if !exists {
-		issues = append(issues, VoiceIssue{
-			Slot:    slot,
-			Code:    voiceIssueAdapterMissing,
-			Message: fmt.Sprintf("adapter %s referenced by slot %s is not installed", adapterID, slot),
-		})
+		return false, nil
 	}
 
 	status := strings.TrimSpace(binding.Status)
 	if status != "" && status != BindingStatusActive {
-		issues = append(issues, VoiceIssue{
-			Slot:    slot,
-			Code:    voiceIssueAdapterInactive,
-			Message: fmt.Sprintf("adapter slot %s is %s (expected active)", slot, status),
-		})
+		return false, nil
 	}
 
-	return issues, nil
+	return true, nil
 }
 
 func errorsAsNotFound(err error) bool {

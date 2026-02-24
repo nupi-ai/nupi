@@ -1469,10 +1469,20 @@ func TestAuthorizeGRPCMethodRoleMatrix(t *testing.T) {
 		}
 	})
 
-	t.Run("no_role_mapping_means_token_only", func(t *testing.T) {
+	t.Run("token_only_method_allowed", func(t *testing.T) {
 		err := apiServer.AuthorizeGRPCMethod(readOnlyCtx, "/nupi.api.v1.DaemonService/Status")
 		if err != nil {
 			t.Fatalf("expected success, got %v", err)
+		}
+	})
+
+	t.Run("unknown_method_denied", func(t *testing.T) {
+		err := apiServer.AuthorizeGRPCMethod(readOnlyCtx, "/nupi.api.v1.FakeService/DoSomething")
+		if err == nil {
+			t.Fatal("expected PermissionDenied for unknown method, got nil")
+		}
+		if status.Code(err) != codes.PermissionDenied {
+			t.Fatalf("expected PermissionDenied, got %v", status.Code(err))
 		}
 	})
 }

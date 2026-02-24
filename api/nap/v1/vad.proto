@@ -32,8 +32,6 @@ message SpeechEvent {
   SpeechEventType type = 1;
   float confidence = 2;
   google.protobuf.Timestamp timestamp = 3;
-  // Adapter-specific diagnostics (e.g. "energy", "threshold", "model").
-  map<string, string> metadata = 4;
 }
 
 // VoiceActivityDetectionService exposes the NAP contract for VAD adapters.

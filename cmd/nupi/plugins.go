@@ -106,6 +106,14 @@ var pluginsListCmd = &cobra.Command{
 	},
 }
 
+var pluginsLogsCmd = &cobra.Command{
+	Use:           "logs",
+	Short:         "Stream plugin logs and transcripts",
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE:          pluginsLogs,
+}
+
 // pluginsInfoCmd shows detailed plugin info
 var pluginsInfoCmd = &cobra.Command{
 	Use:   "info <namespace/slug>",
@@ -707,6 +715,27 @@ func triggerPluginReload() {
 }
 
 func init() {
+	pluginsLogsCmd.Long = `Stream real-time plugin logs and speech transcripts.
+Includes adapter processes and the JS plugin runtime (tool handlers, pipeline cleaners).
+
+Filters:
+  --slot=SLOT       Filter logs by slot (e.g. stt)
+  --plugin=ID       Filter logs by plugin identifier
+
+Notes:
+  - When both --slot and --plugin are provided, transcript entries are omitted
+    because transcripts are not yet mapped to specific plugins.
+  - Use --json to consume newline-delimited JSON for tooling and pipelines.
+
+Examples:
+  nupi plugins logs
+  nupi plugins logs --slot=stt
+  nupi plugins logs --plugin=adapter.stt.mock
+  nupi plugins logs --json | jq .
+`
+	pluginsLogsCmd.Flags().String("slot", "", "Filter logs by slot (e.g. stt)")
+	pluginsLogsCmd.Flags().String("plugin", "", "Filter logs by plugin identifier")
+
 	// Search flags
 	pluginsSearchCmd.Flags().String("category", "", "Filter by category (stt, tts, ai, vad, tool-handler, cleaner)")
 	pluginsSearchCmd.Flags().String("namespace", "", "Search in specific marketplace namespace")
@@ -714,6 +743,7 @@ func init() {
 	// Add subcommands
 	pluginsCmd.AddCommand(pluginsRebuildCmd)
 	pluginsCmd.AddCommand(pluginsListCmd)
+	pluginsCmd.AddCommand(pluginsLogsCmd)
 	pluginsCmd.AddCommand(pluginsInfoCmd)
 	pluginsCmd.AddCommand(pluginsInstallCmd)
 	pluginsCmd.AddCommand(pluginsUninstallCmd)

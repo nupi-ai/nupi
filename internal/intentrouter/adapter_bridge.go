@@ -189,8 +189,6 @@ func (b *AdapterBridge) syncWithCurrentBindings(ctx context.Context) {
 		config, err := b.parseConfig(status.Config)
 		if err != nil {
 			log.Printf("[IntentRouter/Bridge] Initial sync: invalid config for %s: %v", adapterID, err)
-			// Publish error so UI/CLI knows about the configuration problem
-			b.publishBridgeDiagnostic(syncCtx, adapterID, fmt.Sprintf("invalid config: %v", err), eventbus.BridgeDiagnosticConfigInvalid)
 			// Don't proceed with invalid config - this is a configuration error
 			// that needs to be fixed by the user
 			return
@@ -203,8 +201,6 @@ func (b *AdapterBridge) syncWithCurrentBindings(ctx context.Context) {
 			b.mu.Unlock()
 			if ok {
 				log.Printf("[IntentRouter/Bridge] Initial sync: configured mock adapter %s", adapterID)
-			} else {
-				b.publishBridgeDiagnostic(syncCtx, adapterID, "failed to create mock adapter", eventbus.BridgeDiagnosticConnectionFailed)
 			}
 			return
 		}
@@ -216,8 +212,6 @@ func (b *AdapterBridge) syncWithCurrentBindings(ctx context.Context) {
 			b.mu.Unlock()
 			if ok {
 				log.Printf("[IntentRouter/Bridge] Initial sync: configured NAP adapter %s", adapterID)
-			} else {
-				b.publishBridgeDiagnostic(syncCtx, adapterID, "failed to create NAP adapter", eventbus.BridgeDiagnosticConnectionFailed)
 			}
 			return
 		}
@@ -304,14 +298,7 @@ func (b *AdapterBridge) handleAdapterReady(ctx context.Context, evt eventbus.Ada
 		// This is a config error (not connection error) since validation failed.
 		log.Printf("[IntentRouter/Bridge] Config error for adapter %s: %v", evt.AdapterID, err)
 
-		// Determine error type based on error content
-		diagnosticType := eventbus.BridgeDiagnosticLookupFailed
-		if errors.Is(err, ErrInvalidConfig) {
-			diagnosticType = eventbus.BridgeDiagnosticConfigInvalid
-		}
-
 		b.recordError(evt.AdapterID, newAddress, "")
-		b.publishBridgeDiagnostic(ctx, evt.AdapterID, fmt.Sprintf("config error: %v", err), diagnosticType)
 		return
 	}
 
@@ -367,9 +354,8 @@ func (b *AdapterBridge) handleAdapterReady(ctx context.Context, evt eventbus.Ada
 	}
 
 	if !b.configureAdapter(ctx, evt.AdapterID, evt.Extra, config) {
-		// Adapter creation failed - error already logged, publish diagnostic event
+		// Adapter creation failed - error already logged
 		b.recordError(evt.AdapterID, newAddress, configVersion)
-		b.publishBridgeDiagnostic(ctx, evt.AdapterID, "failed to create adapter", eventbus.BridgeDiagnosticConnectionFailed)
 		return
 	}
 
@@ -647,39 +633,6 @@ func (b *AdapterBridge) lookupAdapterConfig(ctx context.Context, adapterID strin
 	}
 
 	return &adapterConfigInfo{version: computeConfigVersion("", "")}, nil
-}
-
-// publishBridgeDiagnostic publishes a diagnostic event to the dedicated bridge topic.
-// This allows UI/CLI to be notified when the bridge encounters configuration
-// or adapter creation errors that prevent the AI slot from working properly.
-//
-// Bridge events are published on TopicIntentRouterDiagnostics, separate from
-// adapter process lifecycle events (TopicAdaptersStatus). This ensures:
-// - Clear separation of concerns (bridge config vs adapter process)
-// - Consistent event format (BridgeDiagnosticEvent vs AdapterStatusEvent)
-// - Easier filtering/routing for UI/CLI
-//
-// The diagnosticType parameter indicates the nature of the event:
-//   - BridgeDiagnosticConfigInvalid: config validation failed (not recoverable)
-//   - BridgeDiagnosticConnectionFailed: connection to adapter failed (recoverable)
-//   - BridgeDiagnosticLookupFailed: controller/DB lookup failed (recoverable)
-//   - BridgeDiagnosticConfigured: adapter successfully configured (informational)
-//   - BridgeDiagnosticCleared: adapter cleared/disconnected (informational)
-func (b *AdapterBridge) publishBridgeDiagnostic(ctx context.Context, adapterID, message string, diagnosticType eventbus.BridgeDiagnosticType) {
-	if b.bus == nil {
-		return
-	}
-
-	// Determine if error is recoverable based on type
-	recoverable := diagnosticType != eventbus.BridgeDiagnosticConfigInvalid
-
-	eventbus.Publish(ctx, b.bus, eventbus.IntentRouter.Diagnostics, eventbus.SourceIntentRouterBridge, eventbus.BridgeDiagnosticEvent{
-		AdapterID:   adapterID,
-		Type:        diagnosticType,
-		Message:     message,
-		Recoverable: recoverable,
-		Timestamp:   time.Now(),
-	})
 }
 
 // recordError increments the consecutive error counter and records the time.

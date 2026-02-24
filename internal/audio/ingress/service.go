@@ -29,7 +29,7 @@ var ErrStreamExists = errors.New("audio ingress: stream already exists")
 // Option configures optional behaviour on the Service.
 type Option func(*Service)
 
-// WithLogger overrides the logger used for diagnostics.
+// WithLogger overrides the logger used for logging.
 func WithLogger(logger *log.Logger) Option {
 	return func(s *Service) {
 		if logger != nil {
@@ -343,4 +343,3 @@ func durationForBytes(b int, format eventbus.AudioFormat) time.Duration {
 	seconds := float64(b) / float64(bytesPerSecond)
 	return time.Duration(seconds * float64(time.Second))
 }
-
