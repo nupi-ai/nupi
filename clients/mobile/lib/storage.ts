@@ -197,6 +197,23 @@ export async function clearNotificationPreferences(): Promise<void> {
   }
 }
 
+// TTS audio playback preference — default: enabled.
+const TTS_ENABLED_KEY = "nupi_tts_enabled";
+
+const ttsEnabledCache = createVersionedCache<boolean>();
+
+export async function saveTtsEnabled(enabled: boolean): Promise<void> {
+  ttsEnabledCache.set(enabled);
+  await SecureStore.setItemAsync(TTS_ENABLED_KEY, enabled ? "1" : "0");
+}
+
+export async function getTtsEnabled(): Promise<boolean> {
+  return ttsEnabledCache.getOrRead(async () => {
+    const val = await SecureStore.getItemAsync(TTS_ENABLED_KEY);
+    return val !== "0"; // default: true
+  }, () => true);
+}
+
 export async function clearAll(): Promise<void> {
   await Promise.all([
     clearToken(),
@@ -204,5 +221,6 @@ export async function clearAll(): Promise<void> {
     clearLanguage(),
     clearNotificationPreferences(),
     SecureStore.deleteItemAsync(NOTIF_PROMPTED_KEY).catch(() => {}),
+    SecureStore.deleteItemAsync(TTS_ENABLED_KEY).catch(() => {}),
   ]);
 }

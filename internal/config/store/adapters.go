@@ -7,12 +7,18 @@ import (
 	"strings"
 )
 
+const adapterColumns = "id, source, version, type, name, manifest, created_at, updated_at"
+const adapterBindingColumns = "slot, adapter_id, config, status, updated_at"
+const adapterBindingColumnsNoSlot = "adapter_id, config, status, updated_at"
+const adapterBindingStatusConfigColumns = "status, adapter_id, config"
+const adapterCountExpr = "COUNT(1)"
+
 // Adapter management --------------------------------------------------------
 
 // ListAdapters returns all registered adapters.
 func (s *Store) ListAdapters(ctx context.Context) ([]Adapter, error) {
 	rows, err := s.db.QueryContext(ctx, `
-        SELECT id, source, version, type, name, manifest, created_at, updated_at
+        SELECT `+adapterColumns+`
         FROM adapters
         ORDER BY name
     `)
@@ -30,7 +36,7 @@ func (s *Store) GetAdapter(ctx context.Context, adapterID string) (Adapter, erro
 	}
 
 	row := s.db.QueryRowContext(ctx, `
-        SELECT id, source, version, type, name, manifest, created_at, updated_at
+        SELECT `+adapterColumns+`
         FROM adapters
         WHERE id = ?
     `, adapterID)
@@ -48,17 +54,17 @@ func (s *Store) GetAdapter(ctx context.Context, adapterID string) (Adapter, erro
 // UpsertAdapter inserts or updates metadata for the given adapter.
 func (s *Store) UpsertAdapter(ctx context.Context, adapter Adapter) error {
 	return s.withWriteTx(ctx, "upsert adapter", func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `
-            INSERT INTO adapters (id, source, version, type, name, manifest, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            ON CONFLICT(id) DO UPDATE SET
-                source = excluded.source,
-                version = excluded.version,
-                type = excluded.type,
-                name = excluded.name,
-                manifest = excluded.manifest,
-                updated_at = CURRENT_TIMESTAMP
-        `,
+		_, err := tx.ExecContext(ctx, buildUpsertSQL(
+			"adapters",
+			[]string{"id", "source", "version", "type", "name", "manifest"},
+			[]string{"id"},
+			[]string{"source", "version", "type", "name", "manifest"},
+			upsertOptions{
+				InsertCreatedAt: true,
+				InsertUpdatedAt: true,
+				UpdateUpdatedAt: true,
+			},
+		),
 			adapter.ID,
 			adapter.Source,
 			adapter.Version,
@@ -100,7 +106,7 @@ func (s *Store) AdapterExists(ctx context.Context, adapterID string) (bool, erro
 	}
 
 	var count int
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM adapters WHERE id = ?`, adapterID).Scan(&count); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT `+adapterCountExpr+` FROM adapters WHERE id = ?`, adapterID).Scan(&count); err != nil {
 		return false, fmt.Errorf("config: check adapter exists: %w", err)
 	}
 	return count > 0, nil
@@ -111,7 +117,7 @@ func (s *Store) AdapterExists(ctx context.Context, adapterID string) (bool, erro
 // ListAdapterBindings returns all slot bindings for the active profile.
 func (s *Store) ListAdapterBindings(ctx context.Context) ([]AdapterBinding, error) {
 	rows, err := s.db.QueryContext(ctx, `
-        SELECT slot, adapter_id, config, status, updated_at
+        SELECT `+adapterBindingColumns+`
         FROM adapter_bindings
         WHERE instance_name = ? AND profile_name = ?
         ORDER BY slot
@@ -140,7 +146,7 @@ func (s *Store) AdapterBinding(ctx context.Context, slot string) (*AdapterBindin
 	)
 
 	err := s.db.QueryRowContext(ctx, `
-        SELECT adapter_id, config, status, updated_at
+        SELECT `+adapterBindingColumnsNoSlot+`
         FROM adapter_bindings
         WHERE instance_name = ? AND profile_name = ? AND slot = ?
     `, s.instanceName, s.profileName, slot).Scan(&adapterID, &config, &status, &updatedAt)

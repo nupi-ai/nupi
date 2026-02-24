@@ -9,6 +9,8 @@ import (
 )
 
 const sqliteTimestampLayout = "2006-01-02 15:04:05"
+const quickstartStatusColumns = "completed, completed_at"
+const adapterBindingSlotColumn = "slot"
 
 // QuickstartStatus reports whether the initial setup has been completed.
 func (s *Store) QuickstartStatus(ctx context.Context) (bool, *time.Time, error) {
@@ -18,7 +20,7 @@ func (s *Store) QuickstartStatus(ctx context.Context) (bool, *time.Time, error) 
 	)
 
 	err := s.db.QueryRowContext(ctx, `
-        SELECT completed, completed_at
+        SELECT `+quickstartStatusColumns+`
         FROM quickstart_status
         WHERE instance_name = ? AND profile_name = ?
     `, s.instanceName, s.profileName).Scan(&completed, &completedAt)
@@ -77,7 +79,7 @@ func (s *Store) MarkQuickstartCompleted(ctx context.Context, complete bool) erro
 // PendingQuickstartSlots lists adapter slots that still require attention.
 func (s *Store) PendingQuickstartSlots(ctx context.Context) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, `
-        SELECT slot
+        SELECT `+adapterBindingSlotColumn+`
         FROM adapter_bindings
         WHERE instance_name = ? AND profile_name = ?
           AND (status = 'required' OR adapter_id IS NULL)

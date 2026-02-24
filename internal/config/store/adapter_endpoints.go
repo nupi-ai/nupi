@@ -12,6 +12,8 @@ import (
 
 var allowedAdapterTransports = constants.StringSet(constants.AllowedAdapterTransports)
 
+const adapterEndpointColumns = "adapter_id, transport, address, command, args, env, tls_cert_path, tls_key_path, tls_ca_cert_path, tls_insecure, created_at, updated_at"
+
 // NormalizeAdapterTransport trims whitespace, applies the default ("process" when empty)
 // and verifies the transport is one of the allowed values.
 func NormalizeAdapterTransport(value string) (string, error) {
@@ -32,9 +34,7 @@ func sanitizeTransport(value string) (string, error) {
 // ListAdapterEndpoints returns stored adapter endpoint definitions.
 func (s *Store) ListAdapterEndpoints(ctx context.Context) ([]AdapterEndpoint, error) {
 	rows, err := s.db.QueryContext(ctx, `
-        SELECT adapter_id, transport, address, command, args, env,
-               tls_cert_path, tls_key_path, tls_ca_cert_path, tls_insecure,
-               created_at, updated_at
+        SELECT `+adapterEndpointColumns+`
         FROM adapter_endpoints
         ORDER BY adapter_id
     `)
@@ -48,9 +48,7 @@ func (s *Store) ListAdapterEndpoints(ctx context.Context) ([]AdapterEndpoint, er
 func (s *Store) GetAdapterEndpoint(ctx context.Context, adapterID string) (AdapterEndpoint, error) {
 	adapterID = strings.TrimSpace(adapterID)
 	row := s.db.QueryRowContext(ctx, `
-        SELECT adapter_id, transport, address, command, args, env,
-               tls_cert_path, tls_key_path, tls_ca_cert_path, tls_insecure,
-               created_at, updated_at
+        SELECT `+adapterEndpointColumns+`
         FROM adapter_endpoints
         WHERE adapter_id = ?
     `, adapterID)
@@ -97,23 +95,38 @@ func (s *Store) UpsertAdapterEndpoint(ctx context.Context, endpoint AdapterEndpo
 	}
 
 	return s.withTx(ctx, func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(ctx, `
-            INSERT INTO adapter_endpoints (adapter_id, transport, address, command, args, env,
-                tls_cert_path, tls_key_path, tls_ca_cert_path, tls_insecure,
-                created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            ON CONFLICT(adapter_id) DO UPDATE SET
-                transport = excluded.transport,
-                address = excluded.address,
-                command = excluded.command,
-                args = excluded.args,
-                env = excluded.env,
-                tls_cert_path = excluded.tls_cert_path,
-                tls_key_path = excluded.tls_key_path,
-                tls_ca_cert_path = excluded.tls_ca_cert_path,
-                tls_insecure = excluded.tls_insecure,
-                updated_at = CURRENT_TIMESTAMP
-        `,
+		_, err := tx.ExecContext(ctx, buildUpsertSQL(
+			"adapter_endpoints",
+			[]string{
+				"adapter_id",
+				"transport",
+				"address",
+				"command",
+				"args",
+				"env",
+				"tls_cert_path",
+				"tls_key_path",
+				"tls_ca_cert_path",
+				"tls_insecure",
+			},
+			[]string{"adapter_id"},
+			[]string{
+				"transport",
+				"address",
+				"command",
+				"args",
+				"env",
+				"tls_cert_path",
+				"tls_key_path",
+				"tls_ca_cert_path",
+				"tls_insecure",
+			},
+			upsertOptions{
+				InsertCreatedAt: true,
+				InsertUpdatedAt: true,
+				UpdateUpdatedAt: true,
+			},
+		),
 			adapterID,
 			trans,
 			strings.TrimSpace(endpoint.Address),

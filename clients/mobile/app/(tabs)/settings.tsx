@@ -13,6 +13,8 @@ import { mapConnectionError } from "@/lib/errorMessages";
 import {
   getNotificationPreferences,
   saveNotificationPreferences,
+  getTtsEnabled,
+  saveTtsEnabled,
   type NotificationPreferences,
 } from "@/lib/storage";
 
@@ -88,12 +90,19 @@ export default function SettingsScreen() {
     error: true,
   });
   const [notifSyncError, setNotifSyncError] = useState<string | null>(null);
+  const [ttsEnabled, setTtsEnabled] = useState(true);
 
-  // Load notification preferences on mount.
+  // Load notification preferences and TTS setting on mount.
   useEffect(() => {
     (async () => {
-      const prefs = await getNotificationPreferences();
-      if (mountedRef.current) setNotifPrefs(prefs);
+      const [prefs, tts] = await Promise.all([
+        getNotificationPreferences(),
+        getTtsEnabled(),
+      ]);
+      if (mountedRef.current) {
+        setNotifPrefs(prefs);
+        setTtsEnabled(tts);
+      }
     })();
   }, []);
 
@@ -121,6 +130,17 @@ export default function SettingsScreen() {
     },
     [connection.status, invalidateRegistration]
   );
+
+  const handleTtsToggle = useCallback(async (value: boolean) => {
+    const prev = ttsEnabled;
+    setTtsEnabled(value);
+    try {
+      await saveTtsEnabled(value);
+    } catch (err) {
+      console.warn("[Settings] Failed to save TTS preference:", err);
+      setTtsEnabled(prev);
+    }
+  }, [ttsEnabled]);
 
   const isConnected = connection.status === "connected";
   const isReconnecting = connection.reconnecting;
@@ -392,6 +412,31 @@ export default function SettingsScreen() {
             {notifSyncError}
           </Text>
         )}
+
+        {/* AUDIO section */}
+        <Text
+          style={[styles.sectionHeader, { color: colors.text, opacity: 0.5 }]}
+          accessibilityRole="header"
+        >
+          AUDIO
+        </Text>
+        <RNView style={[styles.section, { backgroundColor: colors.surface }]}>
+          <RNView
+            style={[styles.toggleRow, { borderBottomWidth: 0 }]}
+          >
+            <Text style={[styles.infoLabel, { color: colors.text, opacity: 0.7 }]}>
+              TTS Audio Playback
+            </Text>
+            <Switch
+              value={ttsEnabled}
+              onValueChange={handleTtsToggle}
+              trackColor={{ true: colors.tint }}
+              accessibilityLabel="Enable TTS audio playback"
+              accessibilityHint="When disabled, AI responses are shown as text only"
+              testID="settings-tts-enabled"
+            />
+          </RNView>
+        </RNView>
 
         {/* ACTIONS section */}
         <Text

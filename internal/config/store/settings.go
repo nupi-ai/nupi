@@ -7,10 +7,12 @@ import (
 	"strings"
 )
 
+const settingsColumns = "key, value"
+
 // LoadSettings returns key/value settings for the active instance/profile.
 // Optional keys limit the selection to specific entries.
 func (s *Store) LoadSettings(ctx context.Context, keys ...string) (map[string]string, error) {
-	query := `SELECT key, value FROM settings WHERE instance_name = ? AND profile_name = ?`
+	query := `SELECT ` + settingsColumns + ` FROM settings WHERE instance_name = ? AND profile_name = ?`
 	args := []any{s.instanceName, s.profileName}
 
 	if len(keys) > 0 {
@@ -53,13 +55,16 @@ func (s *Store) SaveSettings(ctx context.Context, values map[string]string) erro
 	}
 
 	return s.withTx(ctx, func(tx *sql.Tx) error {
-		stmt, err := tx.PrepareContext(ctx, `
-            INSERT INTO settings (instance_name, profile_name, key, value, updated_at)
-            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(instance_name, profile_name, key) DO UPDATE SET
-                value = excluded.value,
-                updated_at = CURRENT_TIMESTAMP
-        `)
+		stmt, err := tx.PrepareContext(ctx, buildUpsertSQL(
+			"settings",
+			[]string{"instance_name", "profile_name", "key", "value"},
+			[]string{"instance_name", "profile_name", "key"},
+			[]string{"value"},
+			upsertOptions{
+				InsertUpdatedAt: true,
+				UpdateUpdatedAt: true,
+			},
+		))
 		if err != nil {
 			return fmt.Errorf("config: prepare save settings: %w", err)
 		}

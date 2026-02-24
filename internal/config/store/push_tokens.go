@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -18,6 +17,10 @@ type PushToken struct {
 	CreatedAt     string   `json:"created_at"`
 	UpdatedAt     string   `json:"updated_at"`
 }
+
+const pushTokenColumns = "device_id, token, enabled_events, auth_token_id, created_at, updated_at"
+const pushTokenColumnsWithAlias = "pt.device_id, pt.token, pt.enabled_events, pt.auth_token_id, pt.created_at, pt.updated_at"
+const existsOneExpr = "1"
 
 // validatePushTokenInput validates and normalises the common inputs for push
 // token save operations. Returns the trimmed deviceID, token, and marshalled
@@ -42,11 +45,11 @@ func validatePushTokenInput(deviceID, token string, enabledEvents []string) (str
 	if len(enabledEvents) == 0 {
 		return "", "", nil, fmt.Errorf("config: save push token: at least one enabled event required")
 	}
-	eventsJSON, err := json.Marshal(enabledEvents)
+	eventsJSON, _, err := encodeJSONString(enabledEvents, nil)
 	if err != nil {
 		return "", "", nil, fmt.Errorf("config: save push token: marshal enabled events: %w", err)
 	}
-	return deviceID, token, eventsJSON, nil
+	return deviceID, token, []byte(eventsJSON), nil
 }
 
 // Deprecated: SavePushToken upserts without an ownership check. Use
@@ -62,14 +65,17 @@ func (s *Store) SavePushToken(ctx context.Context, deviceID, token string, enabl
 	}
 
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO push_tokens (device_id, token, enabled_events, auth_token_id)
-		VALUES (?, ?, ?, ?)
-		ON CONFLICT(device_id) DO UPDATE SET
-			token = excluded.token,
-			enabled_events = excluded.enabled_events,
-			auth_token_id = excluded.auth_token_id,
-			updated_at = CURRENT_TIMESTAMP
-	`, deviceID, token, string(eventsJSON), authTokenID)
+		`+buildUpsertSQL(
+		"push_tokens",
+		[]string{"device_id", "token", "enabled_events", "auth_token_id"},
+		[]string{"device_id"},
+		[]string{"token", "enabled_events", "auth_token_id"},
+		upsertOptions{
+			InsertUpdatedAt: true,
+			UpdateUpdatedAt: true,
+		},
+	),
+		deviceID, token, string(eventsJSON), authTokenID)
 	if err != nil {
 		return fmt.Errorf("config: save push token: %w", err)
 	}
@@ -94,13 +100,16 @@ func (s *Store) SavePushTokenOwned(ctx context.Context, deviceID, token string, 
 	}
 
 	result, err := s.db.ExecContext(ctx, `
-		INSERT INTO push_tokens (device_id, token, enabled_events, auth_token_id)
-		VALUES (?, ?, ?, ?)
-		ON CONFLICT(device_id) DO UPDATE SET
-			token = excluded.token,
-			enabled_events = excluded.enabled_events,
-			auth_token_id = excluded.auth_token_id,
-			updated_at = CURRENT_TIMESTAMP
+		`+buildUpsertSQL(
+		"push_tokens",
+		[]string{"device_id", "token", "enabled_events", "auth_token_id"},
+		[]string{"device_id"},
+		[]string{"token", "enabled_events", "auth_token_id"},
+		upsertOptions{
+			InsertUpdatedAt: true,
+			UpdateUpdatedAt: true,
+		},
+	)+`
 		WHERE push_tokens.auth_token_id = '' OR push_tokens.auth_token_id = ?
 	`, deviceID, token, string(eventsJSON), authTokenID, authTokenID)
 	if err != nil {
@@ -121,7 +130,7 @@ func (s *Store) GetPushToken(ctx context.Context, deviceID string) (*PushToken, 
 	}
 
 	row := s.db.QueryRowContext(ctx, `
-		SELECT device_id, token, enabled_events, auth_token_id, created_at, updated_at
+		SELECT `+pushTokenColumns+`
 		FROM push_tokens WHERE device_id = ?
 	`, deviceID)
 
@@ -215,7 +224,7 @@ func (s *Store) DeletePushToken(ctx context.Context, deviceID string) error {
 // ListPushTokens returns all registered push tokens.
 func (s *Store) ListPushTokens(ctx context.Context) ([]PushToken, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT device_id, token, enabled_events, auth_token_id, created_at, updated_at
+		SELECT `+pushTokenColumns+`
 		FROM push_tokens
 		ORDER BY created_at
 	`)
@@ -236,10 +245,10 @@ func (s *Store) ListPushTokensForEvent(ctx context.Context, eventType string) ([
 
 	// SQLite JSON: use json_each to check if the event is in the enabled_events array.
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT pt.device_id, pt.token, pt.enabled_events, pt.auth_token_id, pt.created_at, pt.updated_at
+		SELECT `+pushTokenColumnsWithAlias+`
 		FROM push_tokens pt
 		WHERE EXISTS (
-			SELECT 1 FROM json_each(pt.enabled_events) je WHERE je.value = ?
+			SELECT `+existsOneExpr+` FROM json_each(pt.enabled_events) je WHERE je.value = ?
 		)
 		ORDER BY pt.created_at
 	`, eventType)
@@ -309,7 +318,7 @@ func scanPushToken(scanner interface {
 }) (PushToken, error) {
 	var (
 		token      PushToken
-		eventsJSON string
+		eventsJSON sql.NullString
 	)
 	if err := scanner.Scan(
 		&token.DeviceID,
@@ -321,8 +330,10 @@ func scanPushToken(scanner interface {
 	); err != nil {
 		return PushToken{}, err
 	}
-	if err := json.Unmarshal([]byte(eventsJSON), &token.EnabledEvents); err != nil {
+	enabled, err := DecodeJSON[[]string](eventsJSON)
+	if err != nil {
 		return PushToken{}, fmt.Errorf("config: unmarshal push token events: %w", err)
 	}
+	token.EnabledEvents = enabled
 	return token, nil
 }

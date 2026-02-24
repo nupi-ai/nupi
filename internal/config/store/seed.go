@@ -98,29 +98,45 @@ func seedDefaults(ctx context.Context, db *sql.DB, instanceName, profileName str
 	}
 
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO quickstart_status (instance_name, profile_name, completed, completed_at, updated_at)
-		VALUES (?, ?, 0, NULL, CURRENT_TIMESTAMP)
-		ON CONFLICT(instance_name, profile_name) DO NOTHING
-	`, instanceName, profileName); err != nil {
+		`+buildInsertDoNothingSQL(
+		"quickstart_status",
+		[]string{"instance_name", "profile_name", "completed", "completed_at"},
+		[]string{"instance_name", "profile_name"},
+		insertOptions{
+			InsertUpdatedAt: true,
+		},
+	),
+		instanceName, profileName, 0, nil); err != nil {
 		tx.Rollback()
 		return fmt.Errorf("config: seed quickstart status: %w", err)
 	}
 
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO audio_settings (instance_name, profile_name, capture_device, playback_device, preferred_format, vad_threshold, metadata, updated_at)
-		VALUES (?, ?, '', '', 'pcm_s16le', 0.5, NULL, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'))
-		ON CONFLICT(instance_name, profile_name) DO NOTHING
-	`, instanceName, profileName); err != nil {
+		`+buildInsertDoNothingSQL(
+		"audio_settings",
+		[]string{"instance_name", "profile_name", "capture_device", "playback_device", "preferred_format", "vad_threshold", "metadata"},
+		[]string{"instance_name", "profile_name"},
+		insertOptions{
+			InsertUpdatedAt: true,
+			UpdatedAtExpr:   "STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')",
+		},
+	),
+		instanceName, profileName, "", "", "pcm_s16le", 0.5, nil); err != nil {
 		tx.Rollback()
 		return fmt.Errorf("config: seed audio settings: %w", err)
 	}
 
 	for _, slot := range requiredAdapterSlots {
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO adapter_bindings (instance_name, profile_name, slot, adapter_id, config, status, updated_at)
-			VALUES (?, ?, ?, NULL, '{"required":true}', 'required', CURRENT_TIMESTAMP)
-			ON CONFLICT(instance_name, profile_name, slot) DO NOTHING
-		`, instanceName, profileName, slot); err != nil {
+			`+buildInsertDoNothingSQL(
+			"adapter_bindings",
+			[]string{"instance_name", "profile_name", "slot", "adapter_id", "config", "status"},
+			[]string{"instance_name", "profile_name", "slot"},
+			insertOptions{
+				InsertUpdatedAt: true,
+			},
+		),
+			instanceName, profileName, slot, nil, requiredSlotConfigJSON, BindingStatusRequired); err != nil {
 			tx.Rollback()
 			return fmt.Errorf("config: seed adapter slot %s: %w", slot, err)
 		}
@@ -129,10 +145,15 @@ func seedDefaults(ctx context.Context, db *sql.DB, instanceName, profileName str
 	// Seed default prompt templates
 	for eventType, content := range defaultPromptTemplates {
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO prompt_templates (instance_name, profile_name, event_type, content, is_custom, updated_at)
-			VALUES (?, ?, ?, ?, 0, CURRENT_TIMESTAMP)
-			ON CONFLICT(instance_name, profile_name, event_type) DO NOTHING
-		`, instanceName, profileName, eventType, content); err != nil {
+			`+buildInsertDoNothingSQL(
+			"prompt_templates",
+			[]string{"instance_name", "profile_name", "event_type", "content", "is_custom"},
+			[]string{"instance_name", "profile_name", "event_type"},
+			insertOptions{
+				InsertUpdatedAt: true,
+			},
+		),
+			instanceName, profileName, eventType, content, 0); err != nil {
 			tx.Rollback()
 			return fmt.Errorf("config: seed prompt template %s: %w", eventType, err)
 		}
@@ -141,10 +162,15 @@ func seedDefaults(ctx context.Context, db *sql.DB, instanceName, profileName str
 	// Seed builtin marketplaces: official Nupi marketplace + "others" for local/URL installs
 	for _, mp := range builtinMarketplaces {
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO marketplaces (instance_name, namespace, url, is_builtin, created_at)
-			VALUES (?, ?, ?, 1, CURRENT_TIMESTAMP)
-			ON CONFLICT(instance_name, namespace) DO NOTHING
-		`, instanceName, mp.Namespace, mp.URL); err != nil {
+			`+buildInsertDoNothingSQL(
+			"marketplaces",
+			[]string{"instance_name", "namespace", "url", "is_builtin"},
+			[]string{"instance_name", "namespace"},
+			insertOptions{
+				InsertCreatedAt: true,
+			},
+		),
+			instanceName, mp.Namespace, mp.URL, 1); err != nil {
 			tx.Rollback()
 			return fmt.Errorf("config: seed marketplace %s: %w", mp.Namespace, err)
 		}

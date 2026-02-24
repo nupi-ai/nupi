@@ -6,6 +6,9 @@ import (
 	"log"
 )
 
+const securityKeyColumns = "key"
+const securityValueColumn = "value"
+
 // SaveSecuritySettings upserts secret entries for the active profile.
 func (s *Store) SaveSecuritySettings(ctx context.Context, values map[string]string) error {
 	if err := s.ensureWritable("save security settings"); err != nil {
@@ -55,7 +58,7 @@ func (s *Store) LoadSecuritySettings(ctx context.Context, keys ...string) (map[s
 // avoiding the second DB round-trip when the keychain has all keys.
 func (s *Store) loadAllSecuritySettings(ctx context.Context) (map[string]string, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT key FROM security_settings WHERE instance_name = ? AND profile_name = ?`,
+		`SELECT `+securityKeyColumns+` FROM security_settings WHERE instance_name = ? AND profile_name = ?`,
 		s.instanceName, s.profileName,
 	)
 	if err != nil {

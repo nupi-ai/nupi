@@ -8,6 +8,8 @@ import (
 	"strings"
 )
 
+const securitySettingsKeyValueColumns = "key, value"
+
 // upsertSecuritySQL is the SQL statement for inserting or updating a secret
 // in security_settings. Shared by Set and SetBatch to prevent drift.
 const upsertSecuritySQL = `
@@ -98,7 +100,7 @@ func (ab *AESBackend) GetBatch(ctx context.Context, keys []string) (map[string]s
 	}
 
 	query := fmt.Sprintf(
-		`SELECT key, value FROM security_settings WHERE instance_name = ? AND profile_name = ? AND key IN (%s)`,
+		`SELECT `+securitySettingsKeyValueColumns+` FROM security_settings WHERE instance_name = ? AND profile_name = ? AND key IN (%s)`,
 		strings.Join(placeholders, ","),
 	)
 
@@ -130,7 +132,7 @@ func (ab *AESBackend) GetBatch(ctx context.Context, keys []string) (map[string]s
 func (ab *AESBackend) Get(ctx context.Context, key string) (string, error) {
 	var raw string
 	err := ab.db.QueryRowContext(ctx,
-		`SELECT value FROM security_settings WHERE instance_name = ? AND profile_name = ? AND key = ?`,
+		`SELECT `+securitySettingsValueColumn+` FROM security_settings WHERE instance_name = ? AND profile_name = ? AND key = ?`,
 		ab.instance, ab.profile, key,
 	).Scan(&raw)
 	if err != nil {
