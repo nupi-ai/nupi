@@ -1,6 +1,7 @@
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 
-import { Code, ConnectError } from "@connectrpc/connect";
+import { ConnectError } from "@connectrpc/connect";
+import { connectCodeToErrorCode, isAuthErrorCode } from "@nupi/shared/errors";
 
 import type { NupiClient } from "./connect";
 import type { ErrorAction } from "./errorMessages";
@@ -44,8 +45,5 @@ export async function readStoredCredentials(): Promise<StoredCredentials> {
 }
 
 export function isAuthError(err: unknown): err is ConnectError {
-  return (
-    err instanceof ConnectError &&
-    (err.code === Code.Unauthenticated || err.code === Code.PermissionDenied)
-  );
+  return err instanceof ConnectError && isAuthErrorCode(connectCodeToErrorCode(err.code));
 }

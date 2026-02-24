@@ -16,12 +16,8 @@ import {
   isModelDownloaded,
   isCoreMLDownloaded,
 } from "@/lib/whisper";
+import { formatSizeMB } from "@nupi/shared/utils";
 import type { DownloadStage } from "@/lib/VoiceContext";
-
-/** Format MB as human-readable size — shows GB for values ≥ 1024. */
-function formatSize(mb: number): string {
-  return mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb} MB`;
-}
 
 interface ModelDownloadSheetProps {
   isDownloading: boolean;
@@ -38,9 +34,9 @@ function getDownloadingLabel(stage: DownloadStage): string {
     return "Extracting CoreML model";
   }
   if (stage === "coreml") {
-    return `Downloading CoreML acceleration (${formatSize(COREML_SIZE_MB)})`;
+    return `Downloading CoreML acceleration (${formatSizeMB(COREML_SIZE_MB)})`;
   }
-  return `Downloading voice model (${formatSize(GGML_MODEL_SIZE_MB)})`;
+  return `Downloading voice model (${formatSizeMB(GGML_MODEL_SIZE_MB)})`;
 }
 
 /** Compute the actual remaining download size based on what's already on disk. */
@@ -102,8 +98,8 @@ export function ModelDownloadSheet({
             : <>
                 Download voice model for offline speech recognition.{" "}
                 {Platform.OS === "ios"
-                  ? `~${formatSize(remainingMB)} total (voice model + CoreML acceleration).`
-                  : `~${formatSize(remainingMB)}.`}{" "}
+                  ? `~${formatSizeMB(remainingMB)} total (voice model + CoreML acceleration).`
+                  : `~${formatSizeMB(remainingMB)}.`}{" "}
                 The model is stored locally and only needs to be downloaded once.
               </>
           }
@@ -162,7 +158,7 @@ export function ModelDownloadSheet({
                 },
               ]}
               accessibilityRole="button"
-              accessibilityLabel={`Download voice model, approximately ${formatSize(remainingMB)}`}
+              accessibilityLabel={`Download voice model, approximately ${formatSizeMB(remainingMB)}`}
               accessibilityHint="Starts downloading the voice recognition model"
               testID="model-download-button"
             >
@@ -172,7 +168,7 @@ export function ModelDownloadSheet({
                   { color: colors.background },
                 ]}
               >
-                Download (~{formatSize(remainingMB)})
+                Download (~{formatSizeMB(remainingMB)})
               </Text>
             </Pressable>
           )}

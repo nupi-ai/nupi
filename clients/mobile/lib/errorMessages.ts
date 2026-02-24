@@ -1,4 +1,5 @@
-import { ConnectError, Code } from "@connectrpc/connect";
+import { ConnectError } from "@connectrpc/connect";
+import { connectCodeToErrorCode, ErrorCode } from "@nupi/shared/errors";
 
 export type ErrorAction = "retry" | "re-pair" | "go-back" | "none";
 
@@ -37,38 +38,38 @@ export function resolveMappedErrorAction(mapped: MappedError): ErrorAction {
  */
 export function mapConnectionError(err: unknown): MappedError {
   if (err instanceof ConnectError) {
-    switch (err.code) {
-      case Code.Unauthenticated:
+    switch (connectCodeToErrorCode(err.code)) {
+      case ErrorCode.Unauthenticated:
         return {
           message: "Session expired \u2014 please re-pair.",
           action: "re-pair",
           canRetry: false,
         };
-      case Code.PermissionDenied:
+      case ErrorCode.PermissionDenied:
         return {
           message: "Permission denied \u2014 please re-pair.",
           action: "re-pair",
           canRetry: false,
         };
-      case Code.Unavailable:
+      case ErrorCode.Unavailable:
         return {
           message: "Cannot reach nupid \u2014 check your network.",
           action: "retry",
           canRetry: true,
         };
-      case Code.NotFound:
+      case ErrorCode.NotFound:
         return {
           message: "Session not found \u2014 it may have ended.",
           action: "go-back",
           canRetry: false,
         };
-      case Code.FailedPrecondition:
+      case ErrorCode.FailedPrecondition:
         return {
           message: "Pairing code expired. Generate a new one.",
           action: "re-pair",
           canRetry: false,
         };
-      case Code.DeadlineExceeded:
+      case ErrorCode.DeadlineExceeded:
         return {
           message: "Request timed out \u2014 please try again.",
           action: "retry",

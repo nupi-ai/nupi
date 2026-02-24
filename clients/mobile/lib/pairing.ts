@@ -1,4 +1,5 @@
-import { ConnectError, Code } from "@connectrpc/connect";
+import { ConnectError } from "@connectrpc/connect";
+import { connectCodeToErrorCode, ErrorCode } from "@nupi/shared/errors";
 
 import { createNupiClient } from "./connect";
 import type { MappedError } from "./errorMessages";
@@ -81,20 +82,20 @@ export async function claimPairing(params: {
  */
 export function mapPairingError(err: unknown): MappedError {
   if (err instanceof ConnectError) {
-    switch (err.code) {
-      case Code.FailedPrecondition:
+    switch (connectCodeToErrorCode(err.code)) {
+      case ErrorCode.FailedPrecondition:
         return {
           message: "Pairing code expired. Generate a new one on your desktop.",
           action: "re-pair",
           canRetry: false,
         };
-      case Code.NotFound:
+      case ErrorCode.NotFound:
         return {
           message: "Invalid pairing code.",
           action: "re-pair",
           canRetry: false,
         };
-      case Code.Unavailable:
+      case ErrorCode.Unavailable:
         return {
           message: "Cannot reach nupid. Check your network connection.",
           action: "retry",
