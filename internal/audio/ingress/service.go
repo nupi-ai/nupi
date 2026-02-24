@@ -5,10 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"math"
 	"sync"
 	"time"
 
+	"github.com/nupi-ai/nupi/internal/audio/audiofmt"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	maputil "github.com/nupi-ai/nupi/internal/util/maps"
 )
@@ -224,7 +224,7 @@ func (st *Stream) publishRaw(data []byte, received time.Time) {
 }
 
 func (st *Stream) flushSegmentsLocked(closing bool) {
-	segSize := segmentSizeBytes(st.format, st.segmentDur)
+	segSize := audiofmt.SegmentSizeBytes(st.format, st.segmentDur)
 	for segSize > 0 && len(st.buffer) >= segSize {
 		finalSegment := closing && len(st.buffer) == segSize && !st.lastSent
 		segment := st.buffer[:segSize]
@@ -236,7 +236,7 @@ func (st *Stream) flushSegmentsLocked(closing bool) {
 		}
 	}
 	if closing && len(st.buffer) > 0 {
-		duration := durationForBytes(len(st.buffer), st.format)
+		duration := audiofmt.DurationFromBytes(len(st.buffer), st.format)
 		segment := st.buffer
 		st.emitSegment(segment, duration, true)
 		st.buffer = nil
@@ -317,29 +317,4 @@ func validateFormat(format eventbus.AudioFormat) error {
 		return errors.New("audio ingress: bit depth must be positive and divisible by 8")
 	}
 	return nil
-}
-
-func segmentSizeBytes(format eventbus.AudioFormat, segmentDuration time.Duration) int {
-	if segmentDuration <= 0 {
-		return 0
-	}
-	bytesPerSample := format.BitDepth / 8
-	if bytesPerSample == 0 {
-		return 0
-	}
-	samples := float64(format.SampleRate) * segmentDuration.Seconds()
-	return int(math.Round(samples)) * format.Channels * bytesPerSample
-}
-
-func durationForBytes(b int, format eventbus.AudioFormat) time.Duration {
-	bytesPerSample := format.BitDepth / 8
-	if bytesPerSample == 0 {
-		return 0
-	}
-	bytesPerSecond := format.SampleRate * format.Channels * bytesPerSample
-	if bytesPerSecond == 0 {
-		return 0
-	}
-	seconds := float64(b) / float64(bytesPerSecond)
-	return time.Duration(seconds * float64(time.Second))
 }
