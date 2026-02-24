@@ -34,7 +34,7 @@ func (s *Store) EnsureRequiredAdapterSlots(ctx context.Context) (MigrationResult
 				config    sql.NullString
 			)
 			err := tx.QueryRowContext(ctx, `
-				SELECT `+adapterBindingColumnsNoSlot+`
+				SELECT `+adapterBindingIDStatusConfigColumns+`
 				FROM adapter_bindings
 				WHERE instance_name = ? AND profile_name = ? AND slot = ?
 			`, s.instanceName, s.profileName, slot).Scan(&adapterID, &status, &config)

@@ -84,7 +84,7 @@ func TestIntegrationFallbackKeychainUnavailableUsesAES(t *testing.T) {
 
 	var rawValue string
 	err := db.QueryRow(
-		`SELECT value FROM security_settings WHERE key = 'api_key'`,
+		`SELECT ` + securitySettingsValueColumn + ` FROM security_settings WHERE key = 'api_key'`,
 	).Scan(&rawValue)
 	if err != nil {
 		t.Fatalf("raw query: %v", err)
@@ -136,7 +136,7 @@ func TestIntegrationFallbackKeychainAvailableStoresInKeychain(t *testing.T) {
 	// Verify value is ALSO in SQLite (dual-write for enumeration).
 	var rawValue string
 	err = db.QueryRow(
-		`SELECT value FROM security_settings WHERE key = 'api_key'`,
+		`SELECT ` + securitySettingsValueColumn + ` FROM security_settings WHERE key = 'api_key'`,
 	).Scan(&rawValue)
 	if err != nil {
 		t.Fatalf("raw query: %v", err)

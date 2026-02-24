@@ -68,21 +68,31 @@ func seedDefaults(ctx context.Context, db *sql.DB, instanceName, profileName str
 	}
 
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO instances (name)
-		VALUES (?)
-		ON CONFLICT(name) DO UPDATE SET updated_at = CURRENT_TIMESTAMP
-	`, instanceName); err != nil {
+		`+buildUpsertSQL(
+		"instances",
+		[]string{"name"},
+		[]string{"name"},
+		nil,
+		upsertOptions{
+			UpdateUpdatedAt: true,
+		},
+	),
+		instanceName); err != nil {
 		tx.Rollback()
 		return fmt.Errorf("config: seed instance: %w", err)
 	}
 
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO profiles (instance_name, name, is_default)
-		VALUES (?, ?, 1)
-		ON CONFLICT(instance_name, name) DO UPDATE SET
-			is_default = excluded.is_default,
-			updated_at = CURRENT_TIMESTAMP
-	`, instanceName, profileName); err != nil {
+		`+buildUpsertSQL(
+		"profiles",
+		[]string{"instance_name", "name", "is_default"},
+		[]string{"instance_name", "name"},
+		[]string{"is_default"},
+		upsertOptions{
+			UpdateUpdatedAt: true,
+		},
+	),
+		instanceName, profileName, 1); err != nil {
 		tx.Rollback()
 		return fmt.Errorf("config: seed profile: %w", err)
 	}
