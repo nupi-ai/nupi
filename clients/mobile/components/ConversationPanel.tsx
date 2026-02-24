@@ -19,7 +19,7 @@ import Animated, {
 
 import { Text } from "@/components/Themed";
 import { useThemeColors } from "@/components/useColorScheme";
-import type { ConversationTurn } from "@/lib/useConversation";
+import type { ConversationTurn } from "@/lib/conversationTypes";
 
 interface ConversationPanelProps {
   turns: ConversationTurn[];

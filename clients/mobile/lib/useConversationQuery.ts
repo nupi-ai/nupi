@@ -3,15 +3,8 @@ import { timestampDate } from "@bufbuild/protobuf/wkt";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import type { NupiClient } from "./connect";
+import type { ConversationTurn } from "./conversationTypes";
 import type { ConversationTurn as ProtoTurn } from "./gen/sessions_pb";
-
-export interface ConversationTurn {
-  origin: "user" | "ai" | "system" | "tool";
-  text: string;
-  at: Date;
-  metadata: Record<string, string>;
-  isOptimistic?: boolean;
-}
 
 const KNOWN_ORIGINS = new Set<ConversationTurn["origin"]>(["user", "ai", "system", "tool"]);
 const FAST_INTERVAL = 500;
@@ -51,6 +44,10 @@ export function conversationQueryKey(sessionId: string) {
   return ["conversation", sessionId || "global"] as const;
 }
 
+export function conversationOptimisticQueryKey(sessionId: string) {
+  return ["conversation-optimistic", sessionId || "global"] as const;
+}
+
 export function useConversationQuery(
   sessionId: string,
   client: NupiClient | null,
@@ -60,8 +57,8 @@ export function useConversationQuery(
   const [isPolling, setIsPolling] = useState(false);
   const [pollStartedAt, setPollStartedAt] = useState<number | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [optimisticTurns, setOptimisticTurns] = useState<ConversationTurn[]>([]);
   const consecutiveErrorsRef = useRef(0);
+  const optimisticQueryKey = conversationOptimisticQueryKey(sessionId);
 
   const query = useQuery({
     queryKey: conversationQueryKey(sessionId),
@@ -77,6 +74,13 @@ export function useConversationQuery(
       if (consecutiveErrorsRef.current >= 3) return SLOW_INTERVAL;
       return elapsed < FAST_PHASE_MS ? FAST_INTERVAL : SLOW_INTERVAL;
     },
+  });
+  const optimisticQuery = useQuery({
+    queryKey: optimisticQueryKey,
+    queryFn: async () => [] as ConversationTurn[],
+    staleTime: Number.POSITIVE_INFINITY,
+    retry: false,
+    initialData: [] as ConversationTurn[],
   });
 
   useEffect(() => {
@@ -122,7 +126,7 @@ export function useConversationQuery(
   }, [query]);
 
   const addOptimistic = useCallback((text: string) => {
-    setOptimisticTurns(prev => [
+    queryClient.setQueryData<ConversationTurn[]>(optimisticQueryKey, (prev = []) => [
       ...prev,
       {
         origin: "user",
@@ -132,27 +136,29 @@ export function useConversationQuery(
         isOptimistic: true,
       },
     ]);
-  }, []);
+  }, [optimisticQueryKey, queryClient]);
 
   const removeLastOptimistic = useCallback(() => {
-    setOptimisticTurns(prev => {
+    queryClient.setQueryData<ConversationTurn[]>(optimisticQueryKey, (prev = []) => {
       const idx = prev.findLastIndex(t => t.isOptimistic);
       if (idx === -1) return prev;
       return [...prev.slice(0, idx), ...prev.slice(idx + 1)];
     });
-  }, []);
+  }, [optimisticQueryKey, queryClient]);
 
   const turns = useMemo(() => {
     const base = query.data ?? [];
+    const optimisticTurns = optimisticQuery.data ?? [];
     if (!optimisticTurns.length) return base;
     return [...base, ...optimisticTurns];
-  }, [query.data, optimisticTurns]);
+  }, [optimisticQuery.data, query.data]);
 
   // Reconcile optimistic entries with server-confirmed turns one-for-one.
   useEffect(() => {
+    const optimisticTurns = optimisticQuery.data ?? [];
     if (!query.data?.length || !optimisticTurns.length) return;
     const normalize = (s: string) => s.trim().toLowerCase();
-    setOptimisticTurns(prev => {
+    queryClient.setQueryData<ConversationTurn[]>(optimisticQueryKey, (prev = []) => {
       if (!prev.length) return prev;
       const remaining = [...prev];
       for (const turn of query.data) {
@@ -163,7 +169,7 @@ export function useConversationQuery(
       }
       return remaining;
     });
-  }, [query.data, optimisticTurns.length]);
+  }, [optimisticQuery.data, optimisticQueryKey, query.data, queryClient]);
 
   const error = query.error instanceof Error ? query.error.message : null;
 
@@ -177,6 +183,9 @@ export function useConversationQuery(
     refresh,
     addOptimistic,
     removeLastOptimistic,
-    resetCache: () => queryClient.removeQueries({ queryKey: conversationQueryKey(sessionId) }),
+    resetCache: () => {
+      queryClient.removeQueries({ queryKey: conversationQueryKey(sessionId) });
+      queryClient.removeQueries({ queryKey: optimisticQueryKey });
+    },
   };
 }
