@@ -231,7 +231,7 @@ func (e *Engine) ResetAllTemplates(ctx context.Context) error {
 func (e *Engine) buildTemplateData(req BuildRequest) map[string]any {
 	data := map[string]any{
 		constants.MetadataKeyEventType:     string(req.EventType),
-		"session_id":                       req.SessionID,
+		constants.MetadataKeySessionID:     req.SessionID,
 		"transcript":                       req.Transcript,
 		constants.MetadataKeyCurrentTool:   req.CurrentTool,
 		constants.MetadataKeySessionOutput: req.SessionOutput,

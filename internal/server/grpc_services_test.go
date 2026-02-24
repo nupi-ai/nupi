@@ -15,6 +15,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/audio/egress"
 	"github.com/nupi-ai/nupi/internal/audio/ingress"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/language"
 	adapters "github.com/nupi-ai/nupi/internal/plugins/adapters"
@@ -771,14 +772,14 @@ func TestAudioServiceStreamAudioOut(t *testing.T) {
 		Format:    format,
 		Data:      []byte{},
 		Final:     true,
-		Metadata:  map[string]string{"barge_in": "true"},
+		Metadata:  map[string]string{constants.MetadataKeyBargeIn: constants.MetadataValueTrue},
 	})
 
 	second := srv.waitForResponses(t, 2, time.Second)[1]
 	if !second.GetChunk().GetLast() {
 		t.Fatalf("expected final chunk, got %+v", second.GetChunk())
 	}
-	if second.GetChunk().GetMetadata()["barge_in"] != "true" {
+	if second.GetChunk().GetMetadata()[constants.MetadataKeyBargeIn] != "true" {
 		t.Fatalf("expected barge metadata on final chunk, got %+v", second.GetChunk().GetMetadata())
 	}
 	if second.GetChunk().GetDurationMs() != 0 {
@@ -995,7 +996,7 @@ func TestSessionsServiceSendVoiceCommand(t *testing.T) {
 	resp, err := service.SendVoiceCommand(context.Background(), &apiv1.SendVoiceCommandRequest{
 		SessionId: "test-session",
 		Text:      "check status",
-		Metadata:  map[string]string{"source": "whisper", "client_type": "mobile"},
+		Metadata:  map[string]string{constants.MetadataKeySource: "whisper", constants.MetadataKeyClientType: "mobile"},
 	})
 	if err != nil {
 		t.Fatalf("SendVoiceCommand returned error: %v", err)
@@ -1018,14 +1019,14 @@ func TestSessionsServiceSendVoiceCommand(t *testing.T) {
 	if evt.Text != "check status" {
 		t.Fatalf("expected text 'check status', got %q", evt.Text)
 	}
-	if evt.Annotations["input_source"] != "voice" {
-		t.Fatalf("expected input_source=voice, got %q", evt.Annotations["input_source"])
+	if evt.Annotations[constants.MetadataKeyInputSource] != "voice" {
+		t.Fatalf("expected input_source=voice, got %q", evt.Annotations[constants.MetadataKeyInputSource])
 	}
-	if evt.Annotations["client_type"] != "mobile" {
-		t.Fatalf("expected client_type=mobile from caller metadata, got %q", evt.Annotations["client_type"])
+	if evt.Annotations[constants.MetadataKeyClientType] != "mobile" {
+		t.Fatalf("expected client_type=mobile from caller metadata, got %q", evt.Annotations[constants.MetadataKeyClientType])
 	}
-	if evt.Annotations["source"] != "whisper" {
-		t.Fatalf("expected source=whisper from caller metadata, got %q", evt.Annotations["source"])
+	if evt.Annotations[constants.MetadataKeySource] != "whisper" {
+		t.Fatalf("expected source=whisper from caller metadata, got %q", evt.Annotations[constants.MetadataKeySource])
 	}
 }
 
@@ -1139,10 +1140,10 @@ func TestSessionsServiceSendVoiceCommandReservedAnnotationKeys(t *testing.T) {
 	resp, err := service.SendVoiceCommand(context.Background(), &apiv1.SendVoiceCommandRequest{
 		Text: "test",
 		Metadata: map[string]string{
-			"input_source": "hacked",
-			"client_type":  "desktop",
-			"confidence":   "0.95",
-			"custom_key":   "allowed",
+			constants.MetadataKeyInputSource: "hacked",
+			constants.MetadataKeyClientType:  "desktop",
+			constants.MetadataKeyConfidence:  "0.95",
+			"custom_key":                     "allowed",
 		},
 	})
 	if err != nil {
@@ -1156,15 +1157,15 @@ func TestSessionsServiceSendVoiceCommandReservedAnnotationKeys(t *testing.T) {
 	annotations := env.Payload.Annotations
 
 	// input_source is reserved — must retain "voice".
-	if annotations["input_source"] != "voice" {
-		t.Fatalf("reserved input_source overridden: got %q, want %q", annotations["input_source"], "voice")
+	if annotations[constants.MetadataKeyInputSource] != "voice" {
+		t.Fatalf("reserved input_source overridden: got %q, want %q", annotations[constants.MetadataKeyInputSource], "voice")
 	}
 	// client_type and confidence are caller-provided — should pass through.
-	if annotations["client_type"] != "desktop" {
-		t.Fatalf("expected client_type=desktop from caller, got %q", annotations["client_type"])
+	if annotations[constants.MetadataKeyClientType] != "desktop" {
+		t.Fatalf("expected client_type=desktop from caller, got %q", annotations[constants.MetadataKeyClientType])
 	}
-	if annotations["confidence"] != "0.95" {
-		t.Fatalf("expected confidence=0.95 from caller, got %q", annotations["confidence"])
+	if annotations[constants.MetadataKeyConfidence] != "0.95" {
+		t.Fatalf("expected confidence=0.95 from caller, got %q", annotations[constants.MetadataKeyConfidence])
 	}
 	// Other non-reserved keys must pass through.
 	if annotations["custom_key"] != "allowed" {
@@ -1318,8 +1319,8 @@ func TestSessionsServiceSendVoiceCommandNilMetadata(t *testing.T) {
 	}
 
 	env := recvEnvelope(t, sub)
-	if env.Payload.Annotations["input_source"] != "voice" {
-		t.Fatalf("expected input_source=voice, got %q", env.Payload.Annotations["input_source"])
+	if env.Payload.Annotations[constants.MetadataKeyInputSource] != "voice" {
+		t.Fatalf("expected input_source=voice, got %q", env.Payload.Annotations[constants.MetadataKeyInputSource])
 	}
 }
 

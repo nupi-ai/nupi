@@ -205,11 +205,11 @@ func TestServiceNoAdapterPublishesError(t *testing.T) {
 	select {
 	case env := <-replySub.C():
 		reply := env.Payload
-		if reply.Metadata["error"] != "true" {
+		if reply.Metadata[constants.MetadataKeyError] != "true" {
 			t.Errorf("Expected error metadata")
 		}
-		if reply.Metadata["error_type"] != "no_adapter" {
-			t.Errorf("Expected error_type=no_adapter, got %s", reply.Metadata["error_type"])
+		if reply.Metadata[constants.MetadataKeyErrorType] != "no_adapter" {
+			t.Errorf("Expected error_type=no_adapter, got %s", reply.Metadata[constants.MetadataKeyErrorType])
 		}
 	case <-time.After(1 * time.Second):
 		t.Fatal("Timeout waiting for error reply")
@@ -258,7 +258,7 @@ func TestServiceAdapterNotReady(t *testing.T) {
 	select {
 	case env := <-replySub.C():
 		reply := env.Payload
-		if reply.Metadata["recoverable"] != "true" {
+		if reply.Metadata[constants.MetadataKeyRecoverable] != "true" {
 			t.Errorf("Expected recoverable=true for adapter not ready")
 		}
 	case <-time.After(1 * time.Second):
@@ -330,8 +330,8 @@ func TestServiceCommandAction(t *testing.T) {
 	select {
 	case env := <-replySub.C():
 		reply := env.Payload
-		if reply.Metadata["status"] != "command_queued" {
-			t.Errorf("Expected status=command_queued, got %s", reply.Metadata["status"])
+		if reply.Metadata[constants.MetadataKeyStatus] != "command_queued" {
+			t.Errorf("Expected status=command_queued, got %s", reply.Metadata[constants.MetadataKeyStatus])
 		}
 		if len(reply.Actions) != 1 || reply.Actions[0].Type != "command" {
 			t.Errorf("Expected command action in reply")
@@ -419,8 +419,8 @@ func TestServiceSpeakAction(t *testing.T) {
 	select {
 	case env := <-replySub.C():
 		reply := env.Payload
-		if reply.Metadata["status"] != "speak" {
-			t.Errorf("Expected status=speak, got %s", reply.Metadata["status"])
+		if reply.Metadata[constants.MetadataKeyStatus] != "speak" {
+			t.Errorf("Expected status=speak, got %s", reply.Metadata[constants.MetadataKeyStatus])
 		}
 	case <-time.After(1 * time.Second):
 		t.Fatal("Timeout waiting for reply event")
@@ -517,7 +517,7 @@ func TestServiceAdapterError(t *testing.T) {
 	select {
 	case env := <-replySub.C():
 		reply := env.Payload
-		if reply.Metadata["error"] != "true" {
+		if reply.Metadata[constants.MetadataKeyError] != "true" {
 			t.Errorf("Expected error metadata")
 		}
 	case <-time.After(1 * time.Second):
@@ -581,11 +581,11 @@ func TestServiceNoCommandExecutorPublishesError(t *testing.T) {
 	select {
 	case env := <-replySub.C():
 		reply := env.Payload
-		if reply.Metadata["error"] != "true" {
+		if reply.Metadata[constants.MetadataKeyError] != "true" {
 			t.Errorf("Expected error metadata")
 		}
-		if reply.Metadata["error_type"] != "no_executor" {
-			t.Errorf("Expected error_type=no_executor, got %s", reply.Metadata["error_type"])
+		if reply.Metadata[constants.MetadataKeyErrorType] != "no_executor" {
+			t.Errorf("Expected error_type=no_executor, got %s", reply.Metadata[constants.MetadataKeyErrorType])
 		}
 	case <-time.After(1 * time.Second):
 		t.Fatal("Timeout waiting for error reply")
@@ -650,7 +650,7 @@ func TestServiceInvalidSession(t *testing.T) {
 	select {
 	case env := <-replySub.C():
 		reply := env.Payload
-		if reply.Metadata["error"] != "true" {
+		if reply.Metadata[constants.MetadataKeyError] != "true" {
 			t.Errorf("Expected error metadata for invalid session")
 		}
 	case <-time.After(1 * time.Second):
@@ -969,8 +969,8 @@ func TestE2ECommandFlowWithMockAdapter(t *testing.T) {
 	select {
 	case env := <-replySub.C():
 		reply := env.Payload
-		if reply.Metadata["status"] != "command_queued" {
-			t.Errorf("Expected status=command_queued, got %s", reply.Metadata["status"])
+		if reply.Metadata[constants.MetadataKeyStatus] != "command_queued" {
+			t.Errorf("Expected status=command_queued, got %s", reply.Metadata[constants.MetadataKeyStatus])
 		}
 		if len(reply.Actions) != 1 || reply.Actions[0].Type != "command" {
 			t.Errorf("Expected command action in reply")
@@ -1051,8 +1051,8 @@ func TestE2ESpeakFlowWithEchoAdapter(t *testing.T) {
 	select {
 	case env := <-replySub.C():
 		reply := env.Payload
-		if reply.Metadata["status"] != "speak" {
-			t.Errorf("Expected status=speak, got %s", reply.Metadata["status"])
+		if reply.Metadata[constants.MetadataKeyStatus] != "speak" {
+			t.Errorf("Expected status=speak, got %s", reply.Metadata[constants.MetadataKeyStatus])
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Timeout waiting for reply")
@@ -1113,8 +1113,8 @@ func TestE2EClarifyFlowWithMockAdapter(t *testing.T) {
 	select {
 	case env := <-replySub.C():
 		reply := env.Payload
-		if reply.Metadata["status"] != constants.PromptEventClarification {
-			t.Errorf("Expected status=clarification, got %s", reply.Metadata["status"])
+		if reply.Metadata[constants.MetadataKeyStatus] != constants.PromptEventClarification {
+			t.Errorf("Expected status=clarification, got %s", reply.Metadata[constants.MetadataKeyStatus])
 		}
 		if len(reply.Actions) != 1 || reply.Actions[0].Type != "clarify" {
 			t.Errorf("Expected clarify action in reply")
@@ -1194,8 +1194,8 @@ func TestE2EMultipleSessionsCommandRouting(t *testing.T) {
 	select {
 	case env := <-replySub.C():
 		reply := env.Payload
-		if reply.Metadata["session_id"] != "session-2" {
-			t.Errorf("Expected session-2, got %s", reply.Metadata["session_id"])
+		if reply.Metadata[constants.MetadataKeySessionID] != "session-2" {
+			t.Errorf("Expected session-2, got %s", reply.Metadata[constants.MetadataKeySessionID])
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Timeout waiting for reply")
@@ -1619,10 +1619,10 @@ func TestServiceExtendedMetadataPropagation(t *testing.T) {
 			Text: "hello",
 		},
 		Metadata: map[string]string{
-			constants.MetadataKeyEventType: constants.PromptEventUserIntent,
-			"input_source":                 "voice",
-			"sessionless":                  "true",
-			"confidence":                   "0.95",
+			constants.MetadataKeyEventType:   constants.PromptEventUserIntent,
+			constants.MetadataKeyInputSource: "voice",
+			constants.MetadataKeySessionless: constants.MetadataValueTrue,
+			constants.MetadataKeyConfidence:  "0.95",
 		},
 	})
 
@@ -1639,14 +1639,14 @@ func TestServiceExtendedMetadataPropagation(t *testing.T) {
 	if capturedMetadata[constants.MetadataKeyEventType] != constants.PromptEventUserIntent {
 		t.Errorf("Expected event_type=user_intent, got %q", capturedMetadata[constants.MetadataKeyEventType])
 	}
-	if capturedMetadata["input_source"] != "voice" {
-		t.Errorf("Expected input_source=voice, got %q", capturedMetadata["input_source"])
+	if capturedMetadata[constants.MetadataKeyInputSource] != "voice" {
+		t.Errorf("Expected input_source=voice, got %q", capturedMetadata[constants.MetadataKeyInputSource])
 	}
-	if capturedMetadata["sessionless"] != "true" {
-		t.Errorf("Expected sessionless=true, got %q", capturedMetadata["sessionless"])
+	if capturedMetadata[constants.MetadataKeySessionless] != "true" {
+		t.Errorf("Expected sessionless=true, got %q", capturedMetadata[constants.MetadataKeySessionless])
 	}
-	if capturedMetadata["confidence"] != "0.95" {
-		t.Errorf("Expected confidence=0.95, got %q", capturedMetadata["confidence"])
+	if capturedMetadata[constants.MetadataKeyConfidence] != "0.95" {
+		t.Errorf("Expected confidence=0.95, got %q", capturedMetadata[constants.MetadataKeyConfidence])
 	}
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -2152,11 +2152,11 @@ func TestToolLoopMaxIterationsCap(t *testing.T) {
 	select {
 	case env := <-replySub.C():
 		reply := env.Payload
-		if reply.Metadata["error"] != "true" {
+		if reply.Metadata[constants.MetadataKeyError] != "true" {
 			t.Fatalf("Expected error metadata")
 		}
-		if reply.Metadata["error_type"] != "max_tool_iterations" {
-			t.Fatalf("Expected error_type=max_tool_iterations, got %s", reply.Metadata["error_type"])
+		if reply.Metadata[constants.MetadataKeyErrorType] != "max_tool_iterations" {
+			t.Fatalf("Expected error_type=max_tool_iterations, got %s", reply.Metadata[constants.MetadataKeyErrorType])
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("Timeout — possible hang in tool loop")
@@ -2265,7 +2265,7 @@ func TestToolLoopToolExecutionError(t *testing.T) {
 	if err := json.Unmarshal([]byte(capturedHistory[0].Result.ResultJSON), &errJSON); err != nil {
 		t.Fatalf("Expected valid JSON in error ResultJSON, got parse error: %v", err)
 	}
-	if errMsg, ok := errJSON["error"]; !ok || errMsg != "database connection lost" {
+	if errMsg, ok := errJSON[constants.MetadataKeyError]; !ok || errMsg != "database connection lost" {
 		t.Fatalf("Expected error message 'database connection lost' in ResultJSON, got %v", errJSON)
 	}
 
@@ -2314,14 +2314,14 @@ func TestToolLoopNoRegistryWithToolUseResponse(t *testing.T) {
 	select {
 	case env := <-replySub.C():
 		reply := env.Payload
-		if reply.Metadata["error"] != "true" {
+		if reply.Metadata[constants.MetadataKeyError] != "true" {
 			t.Fatalf("Expected error metadata for tool_use without registry")
 		}
-		if reply.Metadata["error_type"] != "no_tool_registry" {
-			t.Fatalf("Expected error_type=no_tool_registry, got %s", reply.Metadata["error_type"])
+		if reply.Metadata[constants.MetadataKeyErrorType] != "no_tool_registry" {
+			t.Fatalf("Expected error_type=no_tool_registry, got %s", reply.Metadata[constants.MetadataKeyErrorType])
 		}
-		if reply.Metadata["recoverable"] != "true" {
-			t.Fatalf("Expected recoverable=true, got %s", reply.Metadata["recoverable"])
+		if reply.Metadata[constants.MetadataKeyRecoverable] != "true" {
+			t.Fatalf("Expected recoverable=true, got %s", reply.Metadata[constants.MetadataKeyRecoverable])
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Timeout waiting for error reply")
@@ -2373,11 +2373,11 @@ func TestToolLoopDefensiveToolUseInExecuteActions(t *testing.T) {
 	select {
 	case env := <-replySub.C():
 		reply := env.Payload
-		if reply.Metadata["error"] != "true" {
+		if reply.Metadata[constants.MetadataKeyError] != "true" {
 			t.Fatalf("Expected error metadata from defensive tool_use case")
 		}
-		if reply.Metadata["error_type"] != "unexpected_tool_use" {
-			t.Fatalf("Expected error_type=unexpected_tool_use, got %s", reply.Metadata["error_type"])
+		if reply.Metadata[constants.MetadataKeyErrorType] != "unexpected_tool_use" {
+			t.Fatalf("Expected error_type=unexpected_tool_use, got %s", reply.Metadata[constants.MetadataKeyErrorType])
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Timeout waiting for error reply")

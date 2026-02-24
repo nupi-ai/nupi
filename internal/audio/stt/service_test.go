@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 )
 
@@ -23,7 +24,7 @@ func TestServicePublishesTranscripts(t *testing.T) {
 					StartedAt:  time.Unix(1, 0).UTC(),
 					EndedAt:    time.Unix(1, int64(200*time.Millisecond)).UTC(),
 					Metadata: map[string]string{
-						"locale": "en-US",
+						constants.MetadataKeyLocale: "en-US",
 					},
 				},
 			},
@@ -100,7 +101,7 @@ func TestServicePublishesTranscripts(t *testing.T) {
 	if first.Text != "hello" || first.Final {
 		t.Fatalf("unexpected transcript contents: %+v", first)
 	}
-	if first.Metadata["locale"] != "en-US" {
+	if first.Metadata[constants.MetadataKeyLocale] != "en-US" {
 		t.Fatalf("metadata not propagated: %+v", first.Metadata)
 	}
 

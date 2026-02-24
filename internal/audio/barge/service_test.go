@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/voice/slots"
 )
@@ -65,10 +66,10 @@ func TestCoordinatorPublishesBargeInOnVAD(t *testing.T) {
 		if event.Reason != "vad_detected" {
 			t.Fatalf("unexpected reason %q", event.Reason)
 		}
-		if event.Metadata["trigger"] != "vad_detected" {
+		if event.Metadata[constants.MetadataKeyTrigger] != "vad_detected" {
 			t.Fatalf("missing trigger metadata: %+v", event.Metadata)
 		}
-		if event.Metadata["vad_stream_id"] != vadStream {
+		if event.Metadata[constants.MetadataKeyVADStreamID] != vadStream {
 			t.Fatalf("missing vad stream metadata: %+v", event.Metadata)
 		}
 	case <-time.After(time.Second):
@@ -165,7 +166,7 @@ func TestCoordinatorPublishesBargeInOnClientInterrupt(t *testing.T) {
 		Final: false,
 	})
 
-	meta := map[string]string{"device": "mobile", "note": "urgent"}
+	meta := map[string]string{constants.MetadataKeyDevice: "mobile", "note": "urgent"}
 	eventbus.Publish(context.Background(), bus, eventbus.Audio.Interrupt, "", eventbus.AudioInterruptEvent{
 		SessionID: sessionID,
 		StreamID:  ttsStream,
@@ -186,13 +187,13 @@ func TestCoordinatorPublishesBargeInOnClientInterrupt(t *testing.T) {
 		if event.Reason != "manual" {
 			t.Fatalf("unexpected reason %q", event.Reason)
 		}
-		if event.Metadata["trigger"] != "manual" {
+		if event.Metadata[constants.MetadataKeyTrigger] != "manual" {
 			t.Fatalf("expected metadata trigger to mirror reason, got %+v", event.Metadata)
 		}
-		if event.Metadata["confidence"] != "1" {
-			t.Fatalf("unexpected confidence metadata: %v", event.Metadata["confidence"])
+		if event.Metadata[constants.MetadataKeyConfidence] != "1" {
+			t.Fatalf("unexpected confidence metadata: %v", event.Metadata[constants.MetadataKeyConfidence])
 		}
-		if event.Metadata["device"] != "mobile" {
+		if event.Metadata[constants.MetadataKeyDevice] != "mobile" {
 			t.Fatalf("metadata not propagated: %+v", event.Metadata)
 		}
 	case <-time.After(time.Second):
@@ -280,4 +281,3 @@ func TestCoordinatorQuietPeriodBlocksVAD(t *testing.T) {
 	case <-time.After(150 * time.Millisecond):
 	}
 }
-

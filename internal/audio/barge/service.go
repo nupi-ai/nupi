@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	maputil "github.com/nupi-ai/nupi/internal/util/maps"
 )
@@ -173,9 +174,9 @@ func (s *Service) handleVADEvent(event eventbus.SpeechVADEvent) {
 	meta := maputil.Clone(event.Metadata)
 	if event.StreamID != "" {
 		if meta == nil {
-			meta = map[string]string{"vad_stream_id": event.StreamID}
+			meta = map[string]string{constants.MetadataKeyVADStreamID: event.StreamID}
 		} else {
-			meta["vad_stream_id"] = event.StreamID
+			meta[constants.MetadataKeyVADStreamID] = event.StreamID
 		}
 	}
 
@@ -285,15 +286,13 @@ func (s *Service) publishBargeIn(sessionID, streamID string, ts time.Time, reaso
 		return
 	}
 
-
-
 	if s.logger != nil {
 		s.logger.Printf("[Barge] publishing barge-in session=%s stream=%s reason=%s confidence=%.2f", sessionID, streamID, reason, confidence)
 	}
 
 	metadata := sanitizeMetadata(meta)
-	metadata["trigger"] = reason
-	metadata["confidence"] = formatFloat(confidence)
+	metadata[constants.MetadataKeyTrigger] = reason
+	metadata[constants.MetadataKeyConfidence] = formatFloat(confidence)
 
 	payload := eventbus.SpeechBargeInEvent{
 		SessionID: sessionID,

@@ -48,8 +48,8 @@ const (
 	metadataKeyCurrentTool           = constants.MetadataKeyCurrentTool
 	metadataKeySessionOutput         = constants.MetadataKeySessionOutput
 	metadataKeyClarificationQuestion = constants.MetadataKeyClarificationQuestion
-	metadataKeySuggestedSession      = "suggested_session"
-	metadataKeyRoutingHint           = "routing_hint"
+	metadataKeySuggestedSession      = constants.MetadataKeySuggestedSession
+	metadataKeyRoutingHint           = constants.MetadataKeyRoutingHint
 	metadataRoutingHintConversation  = "conversation_context"
 )
 
@@ -544,7 +544,7 @@ func (s *Service) executeActions(ctx context.Context, prompt eventbus.Conversati
 		log.Printf("[IntentRouter] No actions from adapter for prompt %s", prompt.PromptID)
 		// Publish acknowledgment so UI knows the prompt was processed
 		replyMeta := s.buildReplyMetadata(prompt, map[string]string{
-			"status": "no_action",
+			constants.MetadataKeyStatus: "no_action",
 		})
 		s.publishReply(prompt.SessionID, prompt.PromptID, "", nil, replyMeta)
 		return
@@ -564,7 +564,7 @@ func (s *Service) executeActions(ctx context.Context, prompt eventbus.Conversati
 		case ActionNoop:
 			log.Printf("[IntentRouter] Noop action for prompt %s", prompt.PromptID)
 			replyMeta := s.buildReplyMetadata(prompt, map[string]string{
-				"status": "noop",
+				constants.MetadataKeyStatus: "noop",
 			})
 			s.publishReply(prompt.SessionID, prompt.PromptID, "", nil, replyMeta)
 
@@ -630,8 +630,8 @@ func (s *Service) executeCommand(ctx context.Context, prompt eventbus.Conversati
 
 	// Publish confirmation with command metadata
 	replyMeta := s.buildReplyMetadata(prompt, map[string]string{
-		"status":     "command_queued",
-		"session_id": sessionRef,
+		constants.MetadataKeyStatus:    "command_queued",
+		constants.MetadataKeySessionID: sessionRef,
 	})
 	s.publishReply(prompt.SessionID, prompt.PromptID, "", []eventbus.ConversationAction{
 		{
@@ -665,7 +665,7 @@ func (s *Service) executeSpeak(ctx context.Context, prompt eventbus.Conversation
 	// language keys that may already exist in action.Metadata.
 	speakMeta := maputil.Clone(action.Metadata)
 	for k, v := range prompt.Metadata {
-		if strings.HasPrefix(k, "nupi.lang.") {
+		if strings.HasPrefix(k, constants.MetadataKeyLanguagePrefix) {
 			if speakMeta == nil {
 				speakMeta = make(map[string]string)
 			}
@@ -681,7 +681,7 @@ func (s *Service) executeSpeak(ctx context.Context, prompt eventbus.Conversation
 
 	// Also publish as conversation reply for history tracking
 	replyMeta := s.buildReplyMetadata(prompt, map[string]string{
-		"status": "speak",
+		constants.MetadataKeyStatus: "speak",
 	})
 	s.publishReply(sessionID, prompt.PromptID, action.Text, nil, replyMeta)
 
@@ -702,7 +702,7 @@ func (s *Service) executeClarify(ctx context.Context, prompt eventbus.Conversati
 	// Publish speak event with clarification — include language for TTS
 	clarifyMeta := map[string]string{constants.SpeakMetadataTypeKey: constants.SpeakTypeClarification}
 	for k, v := range prompt.Metadata {
-		if strings.HasPrefix(k, "nupi.lang.") {
+		if strings.HasPrefix(k, constants.MetadataKeyLanguagePrefix) {
 			clarifyMeta[k] = v
 		}
 	}
@@ -723,7 +723,7 @@ func (s *Service) executeClarify(ctx context.Context, prompt eventbus.Conversati
 		},
 	}
 	replyMeta := s.buildReplyMetadata(prompt, map[string]string{
-		"status": "clarification",
+		constants.MetadataKeyStatus: "clarification",
 	})
 	s.publishReply(sessionID, prompt.PromptID, action.Text, actions, replyMeta)
 
@@ -746,9 +746,9 @@ func (s *Service) publishError(sessionID, promptID string, err error) {
 		PromptID:  promptID,
 		Text:      fmt.Sprintf("Error: %v", err),
 		Metadata: map[string]string{
-			"error":       "true",
-			"error_type":  errorType(err),
-			"recoverable": recoverableError(err),
+			constants.MetadataKeyError:       constants.MetadataValueTrue,
+			constants.MetadataKeyErrorType:   errorType(err),
+			constants.MetadataKeyRecoverable: recoverableError(err),
 		},
 	})
 
@@ -759,7 +759,7 @@ func (s *Service) publishError(sessionID, promptID string, err error) {
 		Text:      userFriendlyError(err),
 		Metadata: map[string]string{
 			constants.SpeakMetadataTypeKey: constants.SpeakTypeError,
-			"error":                        err.Error(),
+			constants.MetadataKeyError:     err.Error(),
 		},
 	})
 }
