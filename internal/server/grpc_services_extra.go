@@ -336,11 +336,11 @@ func (d *daemonService) Shutdown(ctx context.Context, _ *apiv1.ShutdownRequest) 
 }
 
 func (d *daemonService) ReloadPlugins(ctx context.Context, _ *apiv1.ReloadPluginsRequest) (*apiv1.ReloadPluginsResponse, error) {
-	if d.api.observability.pluginReloader == nil {
+	if d.api.pluginReloader == nil {
 		return nil, status.Error(codes.Unavailable, "plugin reloader unavailable")
 	}
 
-	if err := d.api.observability.pluginReloader.Reload(); err != nil {
+	if err := d.api.pluginReloader.Reload(); err != nil {
 		return nil, status.Errorf(codes.Internal, "reload plugins: %v", err)
 	}
 

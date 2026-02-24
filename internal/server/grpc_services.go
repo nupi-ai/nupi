@@ -21,7 +21,6 @@ import (
 	"github.com/nupi-ai/nupi/internal/protocol"
 	"github.com/nupi-ai/nupi/internal/sanitize"
 	maputil "github.com/nupi-ai/nupi/internal/util/maps"
-	"github.com/nupi-ai/nupi/internal/voice/slots"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"

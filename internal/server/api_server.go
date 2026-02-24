@@ -151,11 +151,6 @@ type lifecycleState struct {
 	shutdownFn     func(context.Context) error
 }
 
-// observabilityState groups optional operational providers.
-type observabilityState struct {
-	pluginReloader PluginReloader
-}
-
 // daemonStatusSnapshot captures runtime daemon status.
 type daemonStatusSnapshot struct {
 	Version       string
@@ -201,8 +196,8 @@ type APIServer struct {
 	// Lifecycle & shutdown coordination
 	lifecycle lifecycleState
 
-	// Observability (optional providers, immutable after Start)
-	observability observabilityState
+	// Optional providers (immutable after Start)
+	pluginReloader PluginReloader
 }
 
 // NewAPIServer creates a new API server.
@@ -277,7 +272,7 @@ func (s *APIServer) SetEventBus(bus *eventbus.Bus) {
 
 // SetPluginReloader wires the plugin reloader. Must be called before Start.
 func (s *APIServer) SetPluginReloader(reloader PluginReloader) {
-	s.observability.pluginReloader = reloader
+	s.pluginReloader = reloader
 }
 
 // ResizeManager exposes the resize manager for components outside the server package.
