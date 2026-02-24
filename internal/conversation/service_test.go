@@ -123,13 +123,13 @@ func TestConversationMarksBargeInOnLastAITurn(t *testing.T) {
 	if aiTurn.Origin != eventbus.OriginAI {
 		t.Fatalf("expected AI origin for last turn, got %s", aiTurn.Origin)
 	}
-	if aiTurn.Meta["barge_in"] != "true" {
+	if aiTurn.Meta[constants.MetadataKeyBargeIn] != "true" {
 		t.Fatalf("expected barge_in metadata, got %+v", aiTurn.Meta)
 	}
-	if aiTurn.Meta["barge_in_reason"] != "client_interrupt" {
-		t.Fatalf("unexpected barge_in_reason: %s", aiTurn.Meta["barge_in_reason"])
+	if aiTurn.Meta[constants.MetadataKeyBargeInReason] != "client_interrupt" {
+		t.Fatalf("unexpected barge_in_reason: %s", aiTurn.Meta[constants.MetadataKeyBargeInReason])
 	}
-	if aiTurn.Meta["barge_origin"] != "test" {
+	if aiTurn.Meta[constants.MetadataKeyBargePrefix+constants.MetadataKeyOrigin] != "test" {
 		t.Fatalf("expected barge metadata to include origin, got %+v", aiTurn.Meta)
 	}
 }
@@ -310,7 +310,7 @@ func TestConversationMetadataLimits(t *testing.T) {
 	}
 
 	reply := turns[len(turns)-1]
-	if reply.Meta["prompt_id"] == "" {
+	if reply.Meta[constants.MetadataKeyPromptID] == "" {
 		t.Fatalf("expected prompt_id to be present")
 	}
 	if len(reply.Meta) > maxMetadataEntries {
@@ -551,7 +551,7 @@ func TestConversation_SessionOutputRateLimiting(t *testing.T) {
 		SessionID:   "rate-limit-test",
 		Origin:      eventbus.OriginTool,
 		Text:        "first notable output",
-		Annotations: map[string]string{"notable": "true"},
+		Annotations: map[string]string{constants.MetadataKeyNotable: constants.MetadataValueTrue},
 	})
 
 	select {
@@ -569,7 +569,7 @@ func TestConversation_SessionOutputRateLimiting(t *testing.T) {
 		SessionID:   "rate-limit-test",
 		Origin:      eventbus.OriginTool,
 		Text:        "second notable output",
-		Annotations: map[string]string{"notable": "true"},
+		Annotations: map[string]string{constants.MetadataKeyNotable: constants.MetadataValueTrue},
 	})
 
 	select {
@@ -587,7 +587,7 @@ func TestConversation_SessionOutputRateLimiting(t *testing.T) {
 		SessionID:   "rate-limit-test",
 		Origin:      eventbus.OriginTool,
 		Text:        "third notable output",
-		Annotations: map[string]string{"notable": "true"},
+		Annotations: map[string]string{constants.MetadataKeyNotable: constants.MetadataValueTrue},
 	})
 
 	select {
@@ -635,7 +635,7 @@ func TestConversation_NotableTriggersAI(t *testing.T) {
 		SessionID:   "notable-test",
 		Origin:      eventbus.OriginTool,
 		Text:        "error: compilation failed",
-		Annotations: map[string]string{"notable": "true", "severity": "error"},
+		Annotations: map[string]string{constants.MetadataKeyNotable: constants.MetadataValueTrue, constants.MetadataKeySeverity: "error"},
 	})
 
 	select {
@@ -644,10 +644,10 @@ func TestConversation_NotableTriggersAI(t *testing.T) {
 		if prompt.Metadata[constants.MetadataKeyEventType] != constants.PromptEventSessionOutput {
 			t.Fatalf("expected event_type=session_output, got %q", prompt.Metadata[constants.MetadataKeyEventType])
 		}
-		if prompt.Metadata["notable"] != "true" {
+		if prompt.Metadata[constants.MetadataKeyNotable] != "true" {
 			t.Fatalf("expected notable=true in metadata")
 		}
-		if prompt.Metadata["severity"] != "error" {
+		if prompt.Metadata[constants.MetadataKeySeverity] != "error" {
 			t.Fatalf("expected severity=error in metadata")
 		}
 	case <-time.After(500 * time.Millisecond):
@@ -676,12 +676,12 @@ func TestConversation_SessionOutputMetadataPropagation(t *testing.T) {
 		Origin:    eventbus.OriginTool,
 		Text:      "tool output text",
 		Annotations: map[string]string{
-			"notable":                       "true",
-			"tool":                          "TestTool",
-			"tool_id":                       "test-tool",
-			"tool_changed":                  "true",
-			"idle_state":                    "prompt",
-			constants.MetadataKeyWaitingFor: constants.PipelineWaitingForUserInput,
+			constants.MetadataKeyNotable:     constants.MetadataValueTrue,
+			constants.MetadataKeyTool:        "TestTool",
+			constants.MetadataKeyToolID:      "test-tool",
+			constants.MetadataKeyToolChanged: constants.MetadataValueTrue,
+			constants.MetadataKeyIdleState:   "prompt",
+			constants.MetadataKeyWaitingFor:  constants.PipelineWaitingForUserInput,
 		},
 	})
 
@@ -700,19 +700,19 @@ func TestConversation_SessionOutputMetadataPropagation(t *testing.T) {
 		}
 
 		// Verify tool_changed propagation
-		if prompt.Metadata["tool_changed"] != "true" {
-			t.Errorf("expected tool_changed=true, got %q", prompt.Metadata["tool_changed"])
+		if prompt.Metadata[constants.MetadataKeyToolChanged] != "true" {
+			t.Errorf("expected tool_changed=true, got %q", prompt.Metadata[constants.MetadataKeyToolChanged])
 		}
 
 		// Verify other metadata propagation
-		if prompt.Metadata["tool"] != "TestTool" {
-			t.Errorf("expected tool=TestTool, got %q", prompt.Metadata["tool"])
+		if prompt.Metadata[constants.MetadataKeyTool] != "TestTool" {
+			t.Errorf("expected tool=TestTool, got %q", prompt.Metadata[constants.MetadataKeyTool])
 		}
-		if prompt.Metadata["tool_id"] != "test-tool" {
-			t.Errorf("expected tool_id=test-tool, got %q", prompt.Metadata["tool_id"])
+		if prompt.Metadata[constants.MetadataKeyToolID] != "test-tool" {
+			t.Errorf("expected tool_id=test-tool, got %q", prompt.Metadata[constants.MetadataKeyToolID])
 		}
-		if prompt.Metadata["idle_state"] != "prompt" {
-			t.Errorf("expected idle_state=prompt, got %q", prompt.Metadata["idle_state"])
+		if prompt.Metadata[constants.MetadataKeyIdleState] != "prompt" {
+			t.Errorf("expected idle_state=prompt, got %q", prompt.Metadata[constants.MetadataKeyIdleState])
 		}
 		if prompt.Metadata[constants.MetadataKeyWaitingFor] != constants.PipelineWaitingForUserInput {
 			t.Errorf("expected waiting_for=user_input, got %q", prompt.Metadata[constants.MetadataKeyWaitingFor])
@@ -898,11 +898,11 @@ func TestSummaryReplyReplacesTurns(t *testing.T) {
 	if history[0].Text != "Summary: user discussed turns 0-2" {
 		t.Fatalf("unexpected summary text: %s", history[0].Text)
 	}
-	if history[0].Meta["summarized"] != "true" {
+	if history[0].Meta[constants.MetadataKeySummarized] != "true" {
 		t.Fatalf("expected summarized=true, got %+v", history[0].Meta)
 	}
-	if history[0].Meta["original_length"] != "3" {
-		t.Fatalf("expected original_length=3, got %s", history[0].Meta["original_length"])
+	if history[0].Meta[constants.MetadataKeyOriginalLength] != "3" {
+		t.Fatalf("expected original_length=3, got %s", history[0].Meta[constants.MetadataKeyOriginalLength])
 	}
 
 	// Summary turn should preserve the timestamp of the first summarized turn
@@ -1635,7 +1635,7 @@ func TestFlushThenSummaryEndToEnd(t *testing.T) {
 	if history[0].Origin != eventbus.OriginSystem {
 		t.Fatalf("expected system origin for summary turn, got %s", history[0].Origin)
 	}
-	if history[0].Meta["summarized"] != "true" {
+	if history[0].Meta[constants.MetadataKeySummarized] != "true" {
 		t.Fatal("expected summarized=true on first turn")
 	}
 
@@ -1875,7 +1875,7 @@ func TestClearSessionNoAITurnsNoExport(t *testing.T) {
 		SessionID:   "no-ai-session",
 		Origin:      eventbus.OriginTool,
 		Text:        "tool output",
-		Annotations: map[string]string{"notable": "true"},
+		Annotations: map[string]string{constants.MetadataKeyNotable: constants.MetadataValueTrue},
 	})
 
 	// Subscribe to export request topic

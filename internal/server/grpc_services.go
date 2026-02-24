@@ -15,6 +15,7 @@ import (
 	apiv1 "github.com/nupi-ai/nupi/internal/api/grpc/v1"
 	"github.com/nupi-ai/nupi/internal/audio/audiofmt"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/language"
 	"github.com/nupi-ai/nupi/internal/mapper"
@@ -636,7 +637,7 @@ func (s *sessionsService) SendVoiceCommand(ctx context.Context, req *apiv1.SendV
 	}
 
 	annotations := map[string]string{
-		"input_source": "voice",
+		constants.MetadataKeyInputSource: "voice",
 	}
 	for k, v := range req.GetMetadata() {
 		kLen, vLen := utf8.RuneCountInString(k), utf8.RuneCountInString(v)
@@ -646,7 +647,7 @@ func (s *sessionsService) SendVoiceCommand(ctx context.Context, req *apiv1.SendV
 				k, kLen, maxVoiceCommandMetadataKeyLen, vLen, maxVoiceCommandMetadataValueLen)
 		}
 		switch k {
-		case "input_source":
+		case constants.MetadataKeyInputSource:
 			// Reserved — always "voice" for this RPC.
 		default:
 			annotations[k] = v

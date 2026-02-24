@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/contentpipeline"
 	"github.com/nupi-ai/nupi/internal/conversation"
 	"github.com/nupi-ai/nupi/internal/eventbus"
@@ -98,7 +99,7 @@ func TestPipelineToConversationIntegration(t *testing.T) {
 			if turn.Origin != eventbus.OriginUser {
 				t.Fatalf("unexpected origin: %s", turn.Origin)
 			}
-			if turn.Meta["cleaned"] != "true" {
+			if turn.Meta[constants.MetadataKeyCleaned] != "true" {
 				t.Fatalf("expected cleaned annotation, got %+v", turn.Meta)
 			}
 			break

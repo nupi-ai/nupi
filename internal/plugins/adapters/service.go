@@ -651,7 +651,7 @@ func (s *Service) buildHeartbeatEvent(slot Slot, binding Binding, health eventbu
 		Slot:      string(slot),
 		Status:    health,
 		Message:   message,
-		Extra:     map[string]string{"source": "heartbeat"},
+		Extra:     map[string]string{constants.MetadataKeySource: "heartbeat"},
 	}
 	s.statusMu.RLock()
 	if existing, ok := s.statuses[slot]; ok {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/nupi-ai/nupi/internal/audio/adapterutil"
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 )
 
@@ -51,8 +52,8 @@ func (m *mockTranscriber) OnSegment(_ context.Context, segment eventbus.AudioIng
 		StartedAt:  segment.StartedAt,
 		EndedAt:    segment.EndedAt,
 		Metadata: map[string]string{
-			"adapter": "mock",
-			"mode":    m.mode(),
+			constants.MetadataKeyAdapter: "mock",
+			constants.MetadataKeyMode:    m.mode(),
 		},
 	}
 	return []Transcription{transcript}, nil
@@ -74,7 +75,7 @@ func (m *mockTranscriber) selectText(segment eventbus.AudioIngressSegmentEvent) 
 		}
 	}
 
-	if text := segment.Metadata["mock_text"]; text != "" {
+	if text := segment.Metadata[constants.MetadataKeyMockText]; text != "" {
 		return text
 	}
 	if m.text != "" {

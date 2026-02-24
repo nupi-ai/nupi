@@ -477,12 +477,12 @@ func (st *stream) decorateMetadata(meta map[string]string) map[string]string {
 	if meta == nil {
 		meta = make(map[string]string)
 	}
-	meta["barge_in"] = "true"
+	meta[constants.MetadataKeyBargeIn] = constants.MetadataValueTrue
 	if reason != "" {
-		meta["barge_in_reason"] = reason
+		meta[constants.MetadataKeyBargeInReason] = reason
 	}
 	if !ts.IsZero() {
-		meta["barge_in_timestamp"] = ts.Format(time.RFC3339Nano)
+		meta[constants.MetadataKeyBargeInTimestamp] = ts.Format(time.RFC3339Nano)
 	}
 	for k, v := range extras {
 		if _, exists := meta[k]; !exists {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/nupi-ai/nupi/internal/audio/streammanager"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/plugins/adapters"
 	"github.com/nupi-ai/nupi/internal/voice/slots"
@@ -145,23 +146,23 @@ func TestServiceInterruptStopsPlayback(t *testing.T) {
 	if first.Final {
 		t.Fatalf("expected non-final chunk before interrupt")
 	}
-	if first.Metadata["barge_in"] == "true" {
+	if first.Metadata[constants.MetadataKeyBargeIn] == "true" {
 		t.Fatalf("unexpected barge metadata on initial chunk: %+v", first.Metadata)
 	}
 
-	svc.Interrupt(sessionID, "", "test_barge", map[string]string{"origin": "test"})
+	svc.Interrupt(sessionID, "", "test_barge", map[string]string{constants.MetadataKeyOrigin: "test"})
 
 	final := receivePlayback(t, playbackSub)
 	if !final.Final {
 		t.Fatalf("expected final chunk after interrupt")
 	}
-	if final.Metadata["barge_in"] != "true" {
+	if final.Metadata[constants.MetadataKeyBargeIn] != "true" {
 		t.Fatalf("expected barge_in metadata on final chunk: %+v", final.Metadata)
 	}
-	if final.Metadata["barge_in_reason"] != "test_barge" {
-		t.Fatalf("unexpected barge_in_reason: %s", final.Metadata["barge_in_reason"])
+	if final.Metadata[constants.MetadataKeyBargeInReason] != "test_barge" {
+		t.Fatalf("unexpected barge_in_reason: %s", final.Metadata[constants.MetadataKeyBargeInReason])
 	}
-	if final.Metadata["origin"] != "test" {
+	if final.Metadata[constants.MetadataKeyOrigin] != "test" {
 		t.Fatalf("expected interrupt metadata to propagate, got %+v", final.Metadata)
 	}
 

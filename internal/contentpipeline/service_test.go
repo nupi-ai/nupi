@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/jsrunner"
 	"github.com/nupi-ai/nupi/internal/plugins"
@@ -151,10 +152,10 @@ func TestContentPipelineTransformsOutput(t *testing.T) {
 		if msg.Text != "HELLO\n" {
 			t.Fatalf("expected transformed text, got %q", msg.Text)
 		}
-		if msg.Annotations["cleaned"] != "yes" {
+		if msg.Annotations[constants.MetadataKeyCleaned] != "yes" {
 			t.Fatalf("expected cleaned annotation, got %v", msg.Annotations)
 		}
-		if msg.Annotations["tool_id"] != "tool-x" {
+		if msg.Annotations[constants.MetadataKeyToolID] != "tool-x" {
 			t.Fatalf("expected tool_id annotation, got %v", msg.Annotations)
 		}
 	case <-time.After(2 * time.Second):
@@ -250,7 +251,7 @@ func TestContentPipelineHandlesTranscripts(t *testing.T) {
 		Confidence: 0.87,
 		Final:      true,
 		Metadata: map[string]string{
-			"locale": "en-US",
+			constants.MetadataKeyLocale: "en-US",
 		},
 	})
 
@@ -269,16 +270,16 @@ func TestContentPipelineHandlesTranscripts(t *testing.T) {
 		if msg.Sequence != 7 {
 			t.Fatalf("unexpected sequence: %d", msg.Sequence)
 		}
-		if msg.Annotations["input_source"] != "voice" {
+		if msg.Annotations[constants.MetadataKeyInputSource] != "voice" {
 			t.Fatalf("missing input_source annotation: %+v", msg.Annotations)
 		}
-		if msg.Annotations["stream_id"] != "mic" {
+		if msg.Annotations[constants.MetadataKeyStreamID] != "mic" {
 			t.Fatalf("missing stream_id annotation: %+v", msg.Annotations)
 		}
-		if msg.Annotations["locale"] != "en-US" {
+		if msg.Annotations[constants.MetadataKeyLocale] != "en-US" {
 			t.Fatalf("metadata not propagated: %+v", msg.Annotations)
 		}
-		if _, ok := msg.Annotations["confidence"]; !ok {
+		if _, ok := msg.Annotations[constants.MetadataKeyConfidence]; !ok {
 			t.Fatalf("expected confidence annotation")
 		}
 	case <-time.After(2 * time.Second):
@@ -321,12 +322,12 @@ func TestBufferOverflowAnnotation(t *testing.T) {
 	select {
 	case env := <-cleanedSub.C():
 		msg := env.Payload
-		if msg.Annotations["buffer_truncated"] != "true" {
-			t.Errorf("expected buffer_truncated=true, got %v", msg.Annotations["buffer_truncated"])
+		if msg.Annotations[constants.MetadataKeyBufferTruncated] != "true" {
+			t.Errorf("expected buffer_truncated=true, got %v", msg.Annotations[constants.MetadataKeyBufferTruncated])
 		}
 		// buffer_max_size should reflect the actual buffer's configured maxSize
-		if msg.Annotations["buffer_max_size"] != "100" {
-			t.Errorf("expected buffer_max_size=100, got %v", msg.Annotations["buffer_max_size"])
+		if msg.Annotations[constants.MetadataKeyBufferMaxSize] != "100" {
+			t.Errorf("expected buffer_max_size=100, got %v", msg.Annotations[constants.MetadataKeyBufferMaxSize])
 		}
 		// Content should be truncated to last 100 bytes
 		if len(msg.Text) != 100 {
@@ -397,17 +398,17 @@ func TestToolChangeFlushesBuffer(t *testing.T) {
 		if msg.Origin != eventbus.OriginTool {
 			t.Errorf("expected Origin=OriginTool, got %q", msg.Origin)
 		}
-		if msg.Annotations["tool_changed"] != "true" {
-			t.Errorf("expected tool_changed=true, got %v", msg.Annotations["tool_changed"])
+		if msg.Annotations[constants.MetadataKeyToolChanged] != "true" {
+			t.Errorf("expected tool_changed=true, got %v", msg.Annotations[constants.MetadataKeyToolChanged])
 		}
-		if msg.Annotations["idle_state"] != "tool_change" {
-			t.Errorf("expected idle_state=tool_change, got %v", msg.Annotations["idle_state"])
+		if msg.Annotations[constants.MetadataKeyIdleState] != "tool_change" {
+			t.Errorf("expected idle_state=tool_change, got %v", msg.Annotations[constants.MetadataKeyIdleState])
 		}
-		if msg.Annotations["tool_id"] != "tool-a" {
-			t.Errorf("expected tool_id=tool-a, got %v", msg.Annotations["tool_id"])
+		if msg.Annotations[constants.MetadataKeyToolID] != "tool-a" {
+			t.Errorf("expected tool_id=tool-a, got %v", msg.Annotations[constants.MetadataKeyToolID])
 		}
-		if msg.Annotations["tool"] != "Tool A" {
-			t.Errorf("expected tool=Tool A, got %v", msg.Annotations["tool"])
+		if msg.Annotations[constants.MetadataKeyTool] != "Tool A" {
+			t.Errorf("expected tool=Tool A, got %v", msg.Annotations[constants.MetadataKeyTool])
 		}
 		if msg.Text != "output from tool A" {
 			t.Errorf("expected 'output from tool A', got %q", msg.Text)
@@ -417,8 +418,8 @@ func TestToolChangeFlushesBuffer(t *testing.T) {
 			t.Errorf("expected Sequence=42 (from last SessionOutputEvent), got %d", msg.Sequence)
 		}
 		// Verify Mode propagation from last SessionOutputEvent (stored in annotations)
-		if msg.Annotations["mode"] != "test-mode" {
-			t.Errorf("expected mode=test-mode in annotations, got %q", msg.Annotations["mode"])
+		if msg.Annotations[constants.MetadataKeyMode] != "test-mode" {
+			t.Errorf("expected mode=test-mode in annotations, got %q", msg.Annotations[constants.MetadataKeyMode])
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for tool change flush event")
@@ -464,8 +465,8 @@ func TestIdleTimeoutAnnotation(t *testing.T) {
 	select {
 	case env := <-cleanedSub.C():
 		msg := env.Payload
-		if msg.Annotations["idle_state"] != "timeout" {
-			t.Errorf("expected idle_state=timeout, got %v", msg.Annotations["idle_state"])
+		if msg.Annotations[constants.MetadataKeyIdleState] != "timeout" {
+			t.Errorf("expected idle_state=timeout, got %v", msg.Annotations[constants.MetadataKeyIdleState])
 		}
 		if msg.Text != "some output" {
 			t.Errorf("expected 'some output', got %q", msg.Text)

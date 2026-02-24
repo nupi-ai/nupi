@@ -22,6 +22,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/audio/stt"
 	"github.com/nupi-ai/nupi/internal/audio/vad"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/contentpipeline"
 	"github.com/nupi-ai/nupi/internal/conversation"
 	"github.com/nupi-ai/nupi/internal/eventbus"
@@ -153,7 +154,7 @@ func TestVoicePipelineEndToEndWithBarge(t *testing.T) {
 					PromptID:  prompt.PromptID,
 					Text:      replyText,
 					Metadata: map[string]string{
-						"adapter": "mock.ai",
+						constants.MetadataKeyAdapter: "mock.ai",
 					},
 				})
 			}
@@ -169,7 +170,7 @@ func TestVoicePipelineEndToEndWithBarge(t *testing.T) {
 
 	const sessionID = "voice-session"
 	stream, err := ingressSvc.OpenStream(sessionID, "mic", format, map[string]string{
-		"locale": "en-US",
+		constants.MetadataKeyLocale: "en-US",
 	})
 	if err != nil {
 		t.Fatalf("open stream: %v", err)
@@ -220,15 +221,15 @@ func TestVoicePipelineEndToEndWithBarge(t *testing.T) {
 	finalPlayback := waitForPlayback(t, playbackSub, time.Second, func(evt eventbus.AudioEgressPlaybackEvent) bool {
 		return evt.Final
 	})
-	if finalPlayback.Metadata["barge_in"] != "true" {
+	if finalPlayback.Metadata[constants.MetadataKeyBargeIn] != "true" {
 		t.Fatalf("expected barge metadata on final playback, got %+v", finalPlayback.Metadata)
 	}
-	if finalPlayback.Metadata["barge_in_reason"] != "manual" {
-		t.Fatalf("unexpected barge_in_reason: %s", finalPlayback.Metadata["barge_in_reason"])
+	if finalPlayback.Metadata[constants.MetadataKeyBargeInReason] != "manual" {
+		t.Fatalf("unexpected barge_in_reason: %s", finalPlayback.Metadata[constants.MetadataKeyBargeInReason])
 	}
 
 	waitForConversationMeta(t, conversationSvc, sessionID, time.Second, func(meta map[string]string) bool {
-		return meta["barge_in"] == "true" && meta["barge_in_reason"] == "manual"
+		return meta[constants.MetadataKeyBargeIn] == "true" && meta[constants.MetadataKeyBargeInReason] == "manual"
 	})
 }
 
@@ -497,7 +498,7 @@ func TestAudioIngressToSTTGRPCPipeline(t *testing.T) {
 	}
 
 	stream, err := ingressSvc.OpenStream(sessionID, "mic", format, map[string]string{
-		"locale": "en-US",
+		constants.MetadataKeyLocale: "en-US",
 	})
 	if err != nil {
 		t.Fatalf("open ingress stream: %v", err)
@@ -788,7 +789,7 @@ func TestFullVoicePipelineEndToEnd(t *testing.T) {
 		FrameDuration: 20 * time.Millisecond,
 	}
 	stream, err := ingressSvc.OpenStream(sessionID, "mic", format, map[string]string{
-		"locale": "en-US",
+		constants.MetadataKeyLocale: "en-US",
 	})
 	if err != nil {
 		t.Fatalf("open ingress stream: %v", err)
@@ -1922,7 +1923,7 @@ func TestVoicePipelinePayloadIntegrity(t *testing.T) {
 		Channels:      1,
 		BitDepth:      16,
 		FrameDuration: 20 * time.Millisecond,
-	}, map[string]string{"locale": "en-US"})
+	}, map[string]string{constants.MetadataKeyLocale: "en-US"})
 	if err != nil {
 		t.Fatalf("open stream: %v", err)
 	}
@@ -2210,16 +2211,16 @@ func TestVoicePipelineBargeInDuringTTSStreaming(t *testing.T) {
 	// each tail chunk gets barge_in=true.
 	var bargeChunks int
 	finalPlayback := waitForPlayback(t, playbackSub, 3*time.Second, func(evt eventbus.AudioEgressPlaybackEvent) bool {
-		if evt.Metadata["barge_in"] == "true" {
+		if evt.Metadata[constants.MetadataKeyBargeIn] == "true" {
 			bargeChunks++
 		}
-		return evt.Final && evt.Metadata["barge_in"] == "true"
+		return evt.Final && evt.Metadata[constants.MetadataKeyBargeIn] == "true"
 	})
-	if finalPlayback.Metadata["barge_in"] != "true" {
+	if finalPlayback.Metadata[constants.MetadataKeyBargeIn] != "true" {
 		t.Errorf("expected barge_in=true on final playback, got metadata: %v", finalPlayback.Metadata)
 	}
-	if finalPlayback.Metadata["barge_in_reason"] != "vad_detected" {
-		t.Errorf("expected barge_in_reason=vad_detected, got: %q", finalPlayback.Metadata["barge_in_reason"])
+	if finalPlayback.Metadata[constants.MetadataKeyBargeInReason] != "vad_detected" {
+		t.Errorf("expected barge_in_reason=vad_detected, got: %q", finalPlayback.Metadata[constants.MetadataKeyBargeInReason])
 	}
 	if bargeChunks == 0 {
 		t.Errorf("expected at least one barge-decorated chunk from tail, got 0")
@@ -2342,7 +2343,7 @@ func TestVoicePipelineBargeInRecovery(t *testing.T) {
 
 	// Wait for final playback with barge metadata.
 	waitForPlayback(t, playbackSub, 3*time.Second, func(evt eventbus.AudioEgressPlaybackEvent) bool {
-		return evt.Final && evt.Metadata["barge_in"] == "true"
+		return evt.Final && evt.Metadata[constants.MetadataKeyBargeIn] == "true"
 	})
 
 	// --- Phase 2: Feed new audio — verify full pipeline processes it ---
@@ -2369,12 +2370,12 @@ func TestVoicePipelineBargeInRecovery(t *testing.T) {
 
 	// Wait for a new (non-barge) playback from the second input.
 	secondPlayback := waitForPlayback(t, playbackSub, 5*time.Second, func(evt eventbus.AudioEgressPlaybackEvent) bool {
-		return len(evt.Data) > 0 && evt.Metadata["barge_in"] != "true"
+		return len(evt.Data) > 0 && evt.Metadata[constants.MetadataKeyBargeIn] != "true"
 	})
 	if secondPlayback.SessionID != sessionID {
 		t.Errorf("second playback sessionID: got %q want %q", secondPlayback.SessionID, sessionID)
 	}
-	if secondPlayback.Metadata["barge_in"] == "true" {
+	if secondPlayback.Metadata[constants.MetadataKeyBargeIn] == "true" {
 		t.Errorf("second playback should NOT carry barge_in metadata, got: %v", secondPlayback.Metadata)
 	}
 	t.Log("barge-in recovery: second input processed successfully")
@@ -2840,7 +2841,7 @@ func TestVoiceFallbackEgressDropsWithoutTTS(t *testing.T) {
 		SessionID: sessionID,
 		PromptID:  "test-prompt-1",
 		Text:      replyText,
-		Metadata:  map[string]string{"adapter": "mock.ai"},
+		Metadata:  map[string]string{constants.MetadataKeyAdapter: "mock.ai"},
 	})
 
 	// Verify the reply text is available on the bus (proves text-mode works).
@@ -3008,7 +3009,7 @@ func TestVoiceFallbackBargeInertWithoutVAD(t *testing.T) {
 		SessionID: sessionID,
 		PromptID:  "test-prompt",
 		Text:      "Hello from the AI",
-		Metadata:  map[string]string{"adapter": "mock.ai"},
+		Metadata:  map[string]string{constants.MetadataKeyAdapter: "mock.ai"},
 	})
 
 	// Wait for first playback chunk.
@@ -3049,7 +3050,7 @@ func TestVoiceFallbackBargeInertWithoutVAD(t *testing.T) {
 
 	// Confirm final playback with barge metadata arrives.
 	waitForPlayback(t, playbackSub, 3*time.Second, func(evt eventbus.AudioEgressPlaybackEvent) bool {
-		return evt.Final && evt.Metadata["barge_in"] == "true"
+		return evt.Final && evt.Metadata[constants.MetadataKeyBargeIn] == "true"
 	})
 }
 
@@ -3114,7 +3115,7 @@ func TestVoiceFallbackEgressBuffersWithAdapterFactory(t *testing.T) {
 		SessionID: sessionID,
 		PromptID:  "test-prompt-af",
 		Text:      replyText,
-		Metadata:  map[string]string{"adapter": "mock.ai"},
+		Metadata:  map[string]string{constants.MetadataKeyAdapter: "mock.ai"},
 	})
 
 	// Reply text must be on the bus regardless of TTS availability.
@@ -3401,7 +3402,7 @@ func TestVADDrivenVoiceLoop(t *testing.T) {
 	}
 
 	stream, err := ingressSvc.OpenStream(sessionID, "mic", format, map[string]string{
-		"locale": "en-US",
+		constants.MetadataKeyLocale: "en-US",
 	})
 	if err != nil {
 		t.Fatalf("open stream: %v", err)
@@ -3693,10 +3694,10 @@ func TestVADBargeInDuringPlayback(t *testing.T) {
 
 	// Verify final playback carries barge_in metadata.
 	finalPlayback := waitForPlayback(t, playbackSub, 3*time.Second, func(evt eventbus.AudioEgressPlaybackEvent) bool {
-		return evt.Final && evt.Metadata["barge_in"] == "true"
+		return evt.Final && evt.Metadata[constants.MetadataKeyBargeIn] == "true"
 	})
-	if finalPlayback.Metadata["barge_in_reason"] != "vad_detected" {
-		t.Errorf("expected barge_in_reason=vad_detected, got: %q", finalPlayback.Metadata["barge_in_reason"])
+	if finalPlayback.Metadata[constants.MetadataKeyBargeInReason] != "vad_detected" {
+		t.Errorf("expected barge_in_reason=vad_detected, got: %q", finalPlayback.Metadata[constants.MetadataKeyBargeInReason])
 	}
 }
 

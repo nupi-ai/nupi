@@ -409,24 +409,24 @@ func (s *Service) publishPrompt(sessionID string, ctxTurns []eventbus.Conversati
 		// Propagate relevant annotations to prompt metadata
 		switch key {
 		// Core event metadata
-		case "tool", "tool_id", "confidence", "stream_id", constants.MetadataKeyEventType,
-			constants.MetadataKeySessionOutput, constants.MetadataKeyClarificationQuestion, "severity":
+		case constants.MetadataKeyTool, constants.MetadataKeyToolID, constants.MetadataKeyConfidence, constants.MetadataKeyStreamID, constants.MetadataKeyEventType,
+			constants.MetadataKeySessionOutput, constants.MetadataKeyClarificationQuestion, constants.MetadataKeySeverity:
 			metadata[key] = value
 		// Extended pipeline metadata (input source, mode, annotations)
-		case "input_source", "mode", "sessionless", "adapter", "language",
-			"model", "provider", "priority", "context_window":
+		case constants.MetadataKeyInputSource, constants.MetadataKeyMode, constants.MetadataKeySessionless, constants.MetadataKeyAdapter, constants.MetadataKeyLanguage,
+			constants.MetadataKeyModel, constants.MetadataKeyProvider, constants.MetadataKeyPriority, constants.MetadataKeyContextWindow:
 			metadata[key] = value
 		// SESSION_OUTPUT specific metadata (idle detection, events, buffer status)
 		case constants.MetadataKeyNotable, constants.MetadataKeyIdleState, constants.MetadataKeyWaitingFor, constants.MetadataKeyPromptText,
-			"event_count", "event_title", "event_details", "event_action",
-			"summarized", "original_length",
-			"buffer_truncated", "buffer_max_size",
-			"tool_changed":
+			constants.MetadataKeyEventCount, constants.MetadataKeyEventTitle, constants.MetadataKeyEventDetails, constants.MetadataKeyEventAction,
+			constants.MetadataKeySummarized, constants.MetadataKeyOriginalLength,
+			constants.MetadataKeyBufferTruncated, constants.MetadataKeyBufferMaxSize,
+			constants.MetadataKeyToolChanged:
 			metadata[key] = value
 		default:
 			// Language metadata (nupi.lang.*) is propagated unconditionally
 			// so that every adapter receives the client's language preference.
-			if strings.HasPrefix(key, "nupi.lang.") {
+			if strings.HasPrefix(key, constants.MetadataKeyLanguagePrefix) {
 				metadata[key] = value
 			}
 		}
@@ -439,8 +439,8 @@ func (s *Service) publishPrompt(sessionID string, ctxTurns []eventbus.Conversati
 			if _, exists := metadata[constants.MetadataKeyCurrentTool]; !exists {
 				metadata[constants.MetadataKeyCurrentTool] = tool
 			}
-			if _, exists := metadata["tool"]; !exists {
-				metadata["tool"] = tool
+			if _, exists := metadata[constants.MetadataKeyTool]; !exists {
+				metadata[constants.MetadataKeyTool] = tool
 			}
 		}
 		s.mu.RUnlock()
@@ -739,8 +739,8 @@ func (s *Service) handleSummaryReply(sessionID string, msg eventbus.Conversation
 			Text:   msg.Text,
 			At:     summaryAt,
 			Meta: map[string]string{
-				"summarized":      "true",
-				"original_length": strconv.Itoa(req.count),
+				constants.MetadataKeySummarized:     constants.MetadataValueTrue,
+				constants.MetadataKeyOriginalLength: strconv.Itoa(req.count),
 			},
 		}
 
@@ -887,7 +887,7 @@ func (s *Service) handleReplyMessage(ts time.Time, msg eventbus.ConversationRepl
 		}
 	}
 	if msg.PromptID != "" {
-		meta.Add("prompt_id", msg.PromptID)
+		meta.Add(constants.MetadataKeyPromptID, msg.PromptID)
 	}
 	turn.Meta = meta.Result()
 
@@ -929,13 +929,13 @@ func (s *Service) handleBargeEvent(event eventbus.SpeechBargeInEvent) {
 		for k, v := range turn.Meta {
 			meta[k] = v
 		}
-		meta["barge_in"] = "true"
-		meta["barge_in_reason"] = event.Reason
+		meta[constants.MetadataKeyBargeIn] = constants.MetadataValueTrue
+		meta[constants.MetadataKeyBargeInReason] = event.Reason
 		if !event.Timestamp.IsZero() {
-			meta["barge_in_timestamp"] = event.Timestamp.Format(time.RFC3339Nano)
+			meta[constants.MetadataKeyBargeInTimestamp] = event.Timestamp.Format(time.RFC3339Nano)
 		}
 		for k, v := range event.Metadata {
-			meta["barge_"+k] = v
+			meta[constants.MetadataKeyBargePrefix+k] = v
 		}
 		turn.Meta = meta
 		history[i] = turn

@@ -367,8 +367,8 @@ func publishPrompt(ctx context.Context, bus *eventbus.Bus, sessionID, promptID, 
 			Origin: eventbus.OriginUser,
 		},
 		Metadata: map[string]string{
-			constants.MetadataKeyEventType: constants.PromptEventUserIntent,
-			"input_source":                 "voice",
+			constants.MetadataKeyEventType:   constants.PromptEventUserIntent,
+			constants.MetadataKeyInputSource: "voice",
 		},
 	})
 }
@@ -382,9 +382,9 @@ func publishSessionlessPrompt(ctx context.Context, bus *eventbus.Bus, promptID, 
 			Origin: eventbus.OriginUser,
 		},
 		Metadata: map[string]string{
-			constants.MetadataKeyEventType: constants.PromptEventUserIntent,
-			"input_source":                 "voice",
-			"sessionless":                  "true",
+			constants.MetadataKeyEventType:   constants.PromptEventUserIntent,
+			constants.MetadataKeyInputSource: "voice",
+			constants.MetadataKeySessionless: constants.MetadataValueTrue,
 		},
 	})
 }
@@ -478,8 +478,8 @@ func TestVoiceSessionCreation(t *testing.T) {
 
 	// Verify reply is published
 	reply := waitForReply(t, setup.ReplySub, 2*time.Second)
-	if reply.Metadata["status"] != "speak" {
-		t.Errorf("expected reply status=speak, got %q", reply.Metadata["status"])
+	if reply.Metadata[constants.MetadataKeyStatus] != "speak" {
+		t.Errorf("expected reply status=speak, got %q", reply.Metadata[constants.MetadataKeyStatus])
 	}
 
 	// Subtask 1.2: Verify IntentRequest sent to AI adapter includes transcript,
@@ -601,8 +601,8 @@ func TestVoiceSessionKill(t *testing.T) {
 	// executeActions processes actions sequentially, so command_queued is
 	// always the first reply, followed by the speak reply.
 	reply := waitForReply(t, setup.ReplySub, 2*time.Second)
-	if reply.Metadata["status"] != "command_queued" {
-		t.Errorf("expected reply with status=command_queued, got %q", reply.Metadata["status"])
+	if reply.Metadata[constants.MetadataKeyStatus] != "command_queued" {
+		t.Errorf("expected reply with status=command_queued, got %q", reply.Metadata[constants.MetadataKeyStatus])
 	}
 	// Drain the second reply (speak) so it doesn't leak into other assertions.
 	waitForReply(t, setup.ReplySub, 2*time.Second)
@@ -983,17 +983,17 @@ func TestIntentRouterAdapterNotReady(t *testing.T) {
 
 	// Router should publish error reply
 	reply := waitForReply(t, setup.ReplySub, 2*time.Second)
-	if reply.Metadata["error"] != "true" {
-		t.Errorf("expected error=true in reply metadata, got %q", reply.Metadata["error"])
+	if reply.Metadata[constants.MetadataKeyError] != "true" {
+		t.Errorf("expected error=true in reply metadata, got %q", reply.Metadata[constants.MetadataKeyError])
 	}
-	if reply.Metadata["error_type"] != "adapter_not_ready" {
-		t.Errorf("expected error_type=adapter_not_ready, got %q", reply.Metadata["error_type"])
+	if reply.Metadata[constants.MetadataKeyErrorType] != "adapter_not_ready" {
+		t.Errorf("expected error_type=adapter_not_ready, got %q", reply.Metadata[constants.MetadataKeyErrorType])
 	}
 
 	// Router should also publish a user-friendly speak event for TTS
 	speak := waitForSpeak(t, setup.SpeakSub, 2*time.Second)
-	if speak.Metadata["type"] != "error" {
-		t.Errorf("expected speak metadata type=error, got %q", speak.Metadata["type"])
+	if speak.Metadata[constants.SpeakMetadataTypeKey] != "error" {
+		t.Errorf("expected speak metadata type=error, got %q", speak.Metadata[constants.SpeakMetadataTypeKey])
 	}
 
 }
@@ -1039,14 +1039,14 @@ func TestIntentRouterAdapterError(t *testing.T) {
 	publishPrompt(ctx, bus, "sess-001", "prompt-err-2", "start a new session")
 
 	reply := waitForReply(t, replySub, 2*time.Second)
-	if reply.Metadata["error"] != "true" {
-		t.Errorf("expected error=true in reply metadata, got %q", reply.Metadata["error"])
+	if reply.Metadata[constants.MetadataKeyError] != "true" {
+		t.Errorf("expected error=true in reply metadata, got %q", reply.Metadata[constants.MetadataKeyError])
 	}
 
 	// Router's publishError also sends a user-friendly TTS speak event
 	speak := waitForSpeak(t, speakSub, 2*time.Second)
-	if speak.Metadata["type"] != "error" {
-		t.Errorf("expected speak metadata type=error, got %q", speak.Metadata["type"])
+	if speak.Metadata[constants.SpeakMetadataTypeKey] != "error" {
+		t.Errorf("expected speak metadata type=error, got %q", speak.Metadata[constants.SpeakMetadataTypeKey])
 	}
 
 }
@@ -1073,9 +1073,9 @@ func TestIntentRouterKillNonExistentSession(t *testing.T) {
 	var errorType string
 	for i := 0; i < 2; i++ {
 		reply := waitForReply(t, setup.ReplySub, 2*time.Second)
-		if reply.Metadata["error"] == "true" {
+		if reply.Metadata[constants.MetadataKeyError] == "true" {
 			gotError = true
-			errorType = reply.Metadata["error_type"]
+			errorType = reply.Metadata[constants.MetadataKeyErrorType]
 		}
 	}
 	if !gotError {

@@ -379,21 +379,21 @@ func (s *Service) flushAndProcess(ctx context.Context, sessionID string, buf *Ou
 
 	// Mark if buffer was truncated due to overflow (AI sees incomplete context)
 	if wasOverflowed {
-		annotations["buffer_truncated"] = "true"
-		annotations["buffer_max_size"] = fmt.Sprintf("%d", buf.MaxSize())
+		annotations[constants.MetadataKeyBufferTruncated] = constants.MetadataValueTrue
+		annotations[constants.MetadataKeyBufferMaxSize] = fmt.Sprintf("%d", buf.MaxSize())
 	}
 
 	// Use frozen tool info passed from handleSessionOutput (avoids race condition)
 	if toolName != "" {
-		annotations["tool"] = toolName
+		annotations[constants.MetadataKeyTool] = toolName
 	}
 	if evt.Mode != "" {
-		annotations["mode"] = evt.Mode
+		annotations[constants.MetadataKeyMode] = evt.Mode
 	}
 
 	toolKey := toolName
 	if toolID != "" {
-		annotations["tool_id"] = toolID
+		annotations[constants.MetadataKeyToolID] = toolID
 		toolKey = toolID
 	}
 
@@ -421,15 +421,15 @@ func (s *Service) flushAndProcess(ctx context.Context, sessionID string, buf *Ou
 		} else if len(events) > 0 {
 			annotations[constants.MetadataKeyNotable] = constants.MetadataValueTrue
 			annotations[constants.MetadataKeyEventType] = constants.PromptEventSessionOutput
-			annotations["event_count"] = fmt.Sprintf("%d", len(events))
+			annotations[constants.MetadataKeyEventCount] = fmt.Sprintf("%d", len(events))
 
 			// Store first event details in flat fields (most important event)
 			first := events[0]
 			if first.Severity != "" {
-				annotations["severity"] = first.Severity
+				annotations[constants.MetadataKeySeverity] = first.Severity
 			}
 			if first.Title != "" {
-				annotations["event_title"] = first.Title
+				annotations[constants.MetadataKeyEventTitle] = first.Title
 			}
 			if first.Details != "" {
 				// Truncate details to avoid exceeding meta limits (use runes for UTF-8 safety)
@@ -438,10 +438,10 @@ func (s *Service) flushAndProcess(ctx context.Context, sessionID string, buf *Ou
 				if len(runes) > 200 {
 					details = string(runes[:200]) + "..."
 				}
-				annotations["event_details"] = details
+				annotations[constants.MetadataKeyEventDetails] = details
 			}
 			if first.ActionSuggestion != "" {
-				annotations["event_action"] = first.ActionSuggestion
+				annotations[constants.MetadataKeyEventAction] = first.ActionSuggestion
 			}
 		}
 	}
@@ -451,7 +451,7 @@ func (s *Service) flushAndProcess(ctx context.Context, sessionID string, buf *Ou
 		annotations[constants.MetadataKeyIdleState] = idleState.Reason
 		// Mark tool_changed for flush triggered by tool change
 		if idleState.Reason == "tool_change" {
-			annotations["tool_changed"] = "true"
+			annotations[constants.MetadataKeyToolChanged] = constants.MetadataValueTrue
 		}
 		if idleState.WaitingFor != "" {
 			annotations[constants.MetadataKeyWaitingFor] = idleState.WaitingFor
@@ -514,16 +514,16 @@ func (s *Service) handleTranscript(evt eventbus.SpeechTranscriptEvent) {
 	// sessions, general questions, or system commands.
 
 	annotations := map[string]string{
-		"input_source": "voice",
+		constants.MetadataKeyInputSource: "voice",
 	}
 	if evt.SessionID == "" {
-		annotations["sessionless"] = "true"
+		annotations[constants.MetadataKeySessionless] = constants.MetadataValueTrue
 	}
 	if evt.StreamID != "" {
-		annotations["stream_id"] = evt.StreamID
+		annotations[constants.MetadataKeyStreamID] = evt.StreamID
 	}
 	if evt.Confidence > 0 {
-		annotations["confidence"] = fmt.Sprintf("%.3f", evt.Confidence)
+		annotations[constants.MetadataKeyConfidence] = fmt.Sprintf("%.3f", evt.Confidence)
 	}
 	for k, v := range evt.Metadata {
 		if v == "" {

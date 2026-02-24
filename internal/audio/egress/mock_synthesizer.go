@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/nupi-ai/nupi/internal/audio/adapterutil"
+	"github.com/nupi-ai/nupi/internal/constants"
 )
 
 const (
@@ -59,12 +60,12 @@ func (m *mockSynthesizer) Speak(ctx context.Context, req SpeakRequest) ([]Synthe
 	}
 
 	meta := map[string]string{
-		"adapter": "mock",
+		constants.MetadataKeyAdapter: "mock",
 	}
 	for k, v := range m.metadata {
 		meta[k] = v
 	}
-	meta["text_length"] = intToString(len(req.Text))
+	meta[constants.MetadataKeyTextLength] = intToString(len(req.Text))
 
 	return []SynthesisChunk{{
 		Data:     buffer,

@@ -426,9 +426,9 @@ func TestProactiveIdleNotification(t *testing.T) {
 		Origin:    eventbus.OriginTool,
 		Text:      "Build completed successfully. 42 tests passed.",
 		Annotations: map[string]string{
-			"notable":     "true",
-			"idle_state":  "prompt",
-			"event_title": "Build completed",
+			constants.MetadataKeyNotable:   constants.MetadataValueTrue,
+			constants.MetadataKeyIdleState: "prompt",
+			"event_title":                  "Build completed",
 		},
 	})
 
@@ -499,9 +499,9 @@ func TestProactiveNotificationRateLimiting(t *testing.T) {
 			Origin:    eventbus.OriginTool,
 			Text:      fmt.Sprintf("Event %d happened", i+1),
 			Annotations: map[string]string{
-				"notable":     "true",
-				"idle_state":  "prompt",
-				"event_title": fmt.Sprintf("Event %d", i+1),
+				constants.MetadataKeyNotable:   constants.MetadataValueTrue,
+				constants.MetadataKeyIdleState: "prompt",
+				"event_title":                  fmt.Sprintf("Event %d", i+1),
 			},
 		})
 	}
@@ -613,9 +613,9 @@ func TestProactiveNotificationIncludesContext(t *testing.T) {
 		Origin:    eventbus.OriginTool,
 		Text:      "Error: compilation failed at main.go:42",
 		Annotations: map[string]string{
-			"notable":     "true",
-			"idle_state":  "prompt",
-			"event_title": "Compilation error",
+			constants.MetadataKeyNotable:   constants.MetadataValueTrue,
+			constants.MetadataKeyIdleState: "prompt",
+			"event_title":                  "Compilation error",
 		},
 	})
 
@@ -860,11 +860,11 @@ func TestIntentClarificationFlow(t *testing.T) {
 
 	// Verify reply does NOT have error=true (clarification is not an error)
 	reply := waitForReply(t, setup.ReplySub, 2*time.Second)
-	if reply.Metadata["error"] == "true" {
+	if reply.Metadata[constants.MetadataKeyError] == "true" {
 		t.Error("clarification reply should not have error=true")
 	}
-	if reply.Metadata["status"] != constants.PromptEventClarification {
-		t.Errorf("expected reply status=clarification, got %q", reply.Metadata["status"])
+	if reply.Metadata[constants.MetadataKeyStatus] != constants.PromptEventClarification {
+		t.Errorf("expected reply status=clarification, got %q", reply.Metadata[constants.MetadataKeyStatus])
 	}
 
 }
@@ -938,9 +938,9 @@ func TestCommandRoutingToNonExistentSession(t *testing.T) {
 	var errorType string
 	for i := 0; i < 2; i++ {
 		reply := waitForReply(t, setup.ReplySub, 2*time.Second)
-		if reply.Metadata["error"] == "true" {
+		if reply.Metadata[constants.MetadataKeyError] == "true" {
 			gotError = true
-			errorType = reply.Metadata["error_type"]
+			errorType = reply.Metadata[constants.MetadataKeyErrorType]
 		}
 	}
 	if !gotError {
@@ -1015,7 +1015,7 @@ func TestSessionOutputForNonNotableEventsIgnored(t *testing.T) {
 		SessionID: "sess-quiet",
 		Origin:    eventbus.OriginTool,
 		Text:      "Regular output: building project...",
-		// No "notable": "true" annotation
+		// No constants.MetadataKeyNotable: constants.MetadataValueTrue annotation
 	})
 
 	// Step 2: Publish a known-good notable event and wait for its speak.
@@ -1027,9 +1027,9 @@ func TestSessionOutputForNonNotableEventsIgnored(t *testing.T) {
 		Origin:    eventbus.OriginTool,
 		Text:      "Build completed, all tests passed.",
 		Annotations: map[string]string{
-			"notable":     "true",
-			"idle_state":  "prompt",
-			"event_title": "Build completed",
+			constants.MetadataKeyNotable:   constants.MetadataValueTrue,
+			constants.MetadataKeyIdleState: "prompt",
+			"event_title":                  "Build completed",
 		},
 	})
 

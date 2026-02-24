@@ -695,9 +695,9 @@ func (r *recordingsService) GetRecording(req *apiv1.GetRecordingRequest, srv api
 			}
 			if seq == 0 {
 				chunk.Metadata = map[string]string{
-					"filename":     metadata.Filename,
-					"session_id":   metadata.SessionID,
-					"content_type": "application/x-asciicast",
+					"filename":                     metadata.Filename,
+					constants.MetadataKeySessionID: metadata.SessionID,
+					"content_type":                 "application/x-asciicast",
 				}
 			}
 			if err := srv.Send(chunk); err != nil {

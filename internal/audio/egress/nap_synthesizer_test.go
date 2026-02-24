@@ -12,6 +12,7 @@ import (
 	napv1 "github.com/nupi-ai/nupi/api/nap/v1"
 	"github.com/nupi-ai/nupi/internal/audio/adapterutil"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/napdial"
 	"github.com/nupi-ai/nupi/internal/plugins/adapters"
@@ -71,7 +72,7 @@ func TestNAPSynthesizerSpeakStreamsChunks(t *testing.T) {
 					DurationMs: 100,
 					First:      true,
 					Last:       false,
-					Metadata:   map[string]string{"part": "1"},
+					Metadata:   map[string]string{constants.MetadataKeyPart: "1"},
 				},
 				Timestamp: timestamppb.Now(),
 			},
@@ -122,7 +123,7 @@ func TestNAPSynthesizerSpeakStreamsChunks(t *testing.T) {
 	if chunks[0].Duration != 100*time.Millisecond {
 		t.Fatalf("expected 100ms duration, got %v", chunks[0].Duration)
 	}
-	if chunks[0].Metadata["part"] != "1" {
+	if chunks[0].Metadata[constants.MetadataKeyPart] != "1" {
 		t.Fatalf("expected metadata part=1, got %+v", chunks[0].Metadata)
 	}
 	if !chunks[1].Final {
@@ -541,19 +542,19 @@ func TestNAPSynthesizerMergesResponseMetadata(t *testing.T) {
 		chunks: []*napv1.SynthesisResponse{
 			{
 				Status:   napv1.SynthesisStatus_SYNTHESIS_STATUS_PLAYING,
-				Metadata: map[string]string{"voice": "alloy", "model": "v2"},
+				Metadata: map[string]string{constants.MetadataKeyVoice: "alloy", constants.MetadataKeyModel: "v2"},
 				Chunk: &napv1.AudioChunk{
 					Data:       []byte{1, 2},
 					Sequence:   1,
 					DurationMs: 50,
 					First:      true,
 					Last:       false,
-					Metadata:   map[string]string{"model": "v3", "chunk_id": "c1"},
+					Metadata:   map[string]string{constants.MetadataKeyModel: "v3", constants.MetadataKeyChunkID: "c1"},
 				},
 			},
 			{
 				Status:   napv1.SynthesisStatus_SYNTHESIS_STATUS_FINISHED,
-				Metadata: map[string]string{"voice": "alloy"},
+				Metadata: map[string]string{constants.MetadataKeyVoice: "alloy"},
 				Chunk: &napv1.AudioChunk{
 					Data:       []byte{3, 4},
 					Sequence:   2,
@@ -590,20 +591,20 @@ func TestNAPSynthesizerMergesResponseMetadata(t *testing.T) {
 	}
 
 	// Chunk-level "model" should override response-level "model".
-	if chunks[0].Metadata["model"] != "v3" {
-		t.Fatalf("expected chunk-level model=v3 to win, got %s", chunks[0].Metadata["model"])
+	if chunks[0].Metadata[constants.MetadataKeyModel] != "v3" {
+		t.Fatalf("expected chunk-level model=v3 to win, got %s", chunks[0].Metadata[constants.MetadataKeyModel])
 	}
 	// Response-level "voice" should be present.
-	if chunks[0].Metadata["voice"] != "alloy" {
-		t.Fatalf("expected response-level voice=alloy, got %s", chunks[0].Metadata["voice"])
+	if chunks[0].Metadata[constants.MetadataKeyVoice] != "alloy" {
+		t.Fatalf("expected response-level voice=alloy, got %s", chunks[0].Metadata[constants.MetadataKeyVoice])
 	}
 	// Chunk-level "chunk_id" should be preserved.
-	if chunks[0].Metadata["chunk_id"] != "c1" {
-		t.Fatalf("expected chunk_id=c1, got %s", chunks[0].Metadata["chunk_id"])
+	if chunks[0].Metadata[constants.MetadataKeyChunkID] != "c1" {
+		t.Fatalf("expected chunk_id=c1, got %s", chunks[0].Metadata[constants.MetadataKeyChunkID])
 	}
 
 	// Second chunk: response metadata merged (no chunk metadata).
-	if chunks[1].Metadata["voice"] != "alloy" {
+	if chunks[1].Metadata[constants.MetadataKeyVoice] != "alloy" {
 		t.Fatalf("expected response-level voice on second chunk, got %+v", chunks[1].Metadata)
 	}
 }
@@ -624,7 +625,7 @@ func TestNAPSynthesizerStatusOnlyResponsePropagatesMetadata(t *testing.T) {
 			{
 				// Status-only response with metadata, no chunk.
 				Status:   napv1.SynthesisStatus_SYNTHESIS_STATUS_FINISHED,
-				Metadata: map[string]string{"synthesis_time_ms": "320"},
+				Metadata: map[string]string{constants.MetadataKeySynthesisTimeMS: "320"},
 			},
 		},
 	}
@@ -653,7 +654,7 @@ func TestNAPSynthesizerStatusOnlyResponsePropagatesMetadata(t *testing.T) {
 		t.Fatalf("expected 1 chunk, got %d", len(chunks))
 	}
 	// Status-only metadata should be merged into the last chunk.
-	if chunks[0].Metadata["synthesis_time_ms"] != "320" {
+	if chunks[0].Metadata[constants.MetadataKeySynthesisTimeMS] != "320" {
 		t.Fatalf("expected status-only metadata to be merged, got %+v", chunks[0].Metadata)
 	}
 }
@@ -664,7 +665,7 @@ func TestNAPSynthesizerStatusOnlyBeforeFirstChunkBuffersMetadata(t *testing.T) {
 			{
 				// Status-only before any chunk — metadata should be buffered.
 				Status:   napv1.SynthesisStatus_SYNTHESIS_STATUS_STARTED,
-				Metadata: map[string]string{"voice_id": "EXAVITQu4vr4xnSDxMaL", "latency": "fast"},
+				Metadata: map[string]string{constants.MetadataKeyVoiceID: "EXAVITQu4vr4xnSDxMaL", constants.MetadataKeyLatency: "fast"},
 			},
 			{
 				Status: napv1.SynthesisStatus_SYNTHESIS_STATUS_PLAYING,
@@ -674,7 +675,7 @@ func TestNAPSynthesizerStatusOnlyBeforeFirstChunkBuffersMetadata(t *testing.T) {
 					DurationMs: 50,
 					First:      true,
 					Last:       true,
-					Metadata:   map[string]string{"latency": "normal"},
+					Metadata:   map[string]string{constants.MetadataKeyLatency: "normal"},
 				},
 			},
 		},
@@ -704,12 +705,12 @@ func TestNAPSynthesizerStatusOnlyBeforeFirstChunkBuffersMetadata(t *testing.T) {
 		t.Fatalf("expected 1 chunk, got %d", len(chunks))
 	}
 	// Buffered metadata "voice_id" should be present on the first chunk.
-	if chunks[0].Metadata["voice_id"] != "EXAVITQu4vr4xnSDxMaL" {
+	if chunks[0].Metadata[constants.MetadataKeyVoiceID] != "EXAVITQu4vr4xnSDxMaL" {
 		t.Fatalf("expected buffered voice_id, got %+v", chunks[0].Metadata)
 	}
 	// Chunk-level "latency" should override buffered "latency".
-	if chunks[0].Metadata["latency"] != "normal" {
-		t.Fatalf("expected chunk-level latency=normal to win over buffered, got %s", chunks[0].Metadata["latency"])
+	if chunks[0].Metadata[constants.MetadataKeyLatency] != "normal" {
+		t.Fatalf("expected chunk-level latency=normal to win over buffered, got %s", chunks[0].Metadata[constants.MetadataKeyLatency])
 	}
 }
 
@@ -718,12 +719,12 @@ func TestNAPSynthesizerStatusOnlyUpdatesOverridePrevious(t *testing.T) {
 		chunks: []*napv1.SynthesisResponse{
 			{
 				Status:   napv1.SynthesisStatus_SYNTHESIS_STATUS_STARTED,
-				Metadata: map[string]string{"progress": "init", "voice": "v1"},
+				Metadata: map[string]string{constants.MetadataKeyProgress: "init", constants.MetadataKeyVoice: "v1"},
 			},
 			{
 				// Second status-only should override "progress" from first.
 				Status:   napv1.SynthesisStatus_SYNTHESIS_STATUS_STARTED,
-				Metadata: map[string]string{"progress": "ready"},
+				Metadata: map[string]string{constants.MetadataKeyProgress: "ready"},
 			},
 			{
 				Status: napv1.SynthesisStatus_SYNTHESIS_STATUS_PLAYING,
@@ -738,12 +739,12 @@ func TestNAPSynthesizerStatusOnlyUpdatesOverridePrevious(t *testing.T) {
 			{
 				// Status-only after chunk — should update metadata.
 				Status:   napv1.SynthesisStatus_SYNTHESIS_STATUS_PLAYING,
-				Metadata: map[string]string{"progress": "streaming"},
+				Metadata: map[string]string{constants.MetadataKeyProgress: "streaming"},
 			},
 			{
 				// Another status-only — "progress" should be overridden again.
 				Status:   napv1.SynthesisStatus_SYNTHESIS_STATUS_FINISHED,
-				Metadata: map[string]string{"progress": "done"},
+				Metadata: map[string]string{constants.MetadataKeyProgress: "done"},
 			},
 		},
 	}
@@ -774,13 +775,13 @@ func TestNAPSynthesizerStatusOnlyUpdatesOverridePrevious(t *testing.T) {
 
 	// Pre-chunk: second status-only "progress=ready" should override first "progress=init".
 	// Then chunk arrives → pendingMeta merged. voice=v1 should survive (no conflict from chunk).
-	if chunks[0].Metadata["voice"] != "v1" {
+	if chunks[0].Metadata[constants.MetadataKeyVoice] != "v1" {
 		t.Fatalf("expected buffered voice=v1, got %+v", chunks[0].Metadata)
 	}
 
 	// Post-chunk: two status-only updates. Last one wins: "progress=done".
-	if chunks[0].Metadata["progress"] != "done" {
-		t.Fatalf("expected latest status-only progress=done, got %s", chunks[0].Metadata["progress"])
+	if chunks[0].Metadata[constants.MetadataKeyProgress] != "done" {
+		t.Fatalf("expected latest status-only progress=done, got %s", chunks[0].Metadata[constants.MetadataKeyProgress])
 	}
 }
 
@@ -789,11 +790,11 @@ func TestNAPSynthesizerMetadataOnlyWhenNoAudioChunks(t *testing.T) {
 		chunks: []*napv1.SynthesisResponse{
 			{
 				Status:   napv1.SynthesisStatus_SYNTHESIS_STATUS_STARTED,
-				Metadata: map[string]string{"adapter": "elevenlabs", "model": "v2"},
+				Metadata: map[string]string{constants.MetadataKeyAdapter: "elevenlabs", constants.MetadataKeyModel: "v2"},
 			},
 			{
 				Status:   napv1.SynthesisStatus_SYNTHESIS_STATUS_FINISHED,
-				Metadata: map[string]string{"reason": "empty_text"},
+				Metadata: map[string]string{constants.MetadataKeyReason: "empty_text"},
 			},
 		},
 	}
@@ -827,10 +828,10 @@ func TestNAPSynthesizerMetadataOnlyWhenNoAudioChunks(t *testing.T) {
 	if len(chunks[0].Data) != 0 {
 		t.Fatalf("expected no audio data, got %d bytes", len(chunks[0].Data))
 	}
-	if chunks[0].Metadata["adapter"] != "elevenlabs" {
+	if chunks[0].Metadata[constants.MetadataKeyAdapter] != "elevenlabs" {
 		t.Fatalf("expected adapter metadata, got %+v", chunks[0].Metadata)
 	}
-	if chunks[0].Metadata["reason"] != "empty_text" {
+	if chunks[0].Metadata[constants.MetadataKeyReason] != "empty_text" {
 		t.Fatalf("expected reason=empty_text (later update), got %+v", chunks[0].Metadata)
 	}
 }
