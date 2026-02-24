@@ -710,11 +710,3 @@ func durationFromPCM(format eventbus.AudioFormat, bytes int) time.Duration {
 	seconds := float64(samples) / float64(format.SampleRate)
 	return time.Duration(seconds * float64(time.Second))
 }
-
-// ActiveStreamCount returns the number of active TTS streams.
-func (s *Service) ActiveStreamCount() int64 {
-	if s.manager != nil {
-		return s.manager.ActiveStreamCount()
-	}
-	return 0
-}
