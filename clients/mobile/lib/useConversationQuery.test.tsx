@@ -87,8 +87,10 @@ describe("useConversationQuery", () => {
     act(() => {
       result.current.addOptimistic("Hello");
     });
-    expect(result.current.turns).toHaveLength(1);
-    expect(result.current.turns[0]?.isOptimistic).toBe(true);
+    await waitFor(() => {
+      expect(result.current.turns).toHaveLength(1);
+      expect(result.current.turns[0]?.isOptimistic).toBe(true);
+    });
 
     serverTurns = [{ origin: "user", text: "hello", metadata: [] }];
     await act(async () => {

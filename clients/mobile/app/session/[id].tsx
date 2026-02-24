@@ -111,7 +111,7 @@ function SessionTerminalScreen() {
   // L2 fix: track error recovery timer so it can be cleared on unmount.
   const errorRecoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const screenMountedRef = useRef(true);
-  // NOTE: useConversation is called after useSessionStream (below) so that
+  // NOTE: useConversationQuery is called after useSessionStream (below) so that
   // streamStatus is available for the isConnected parameter.
   // Queue output received before the WebView is ready.
   const pendingOutputRef = useRef<string[]>([]);
@@ -196,7 +196,7 @@ function SessionTerminalScreen() {
   const streamStatusRef = useRef(streamStatus);
   streamStatusRef.current = streamStatus;
 
-  // M2 fix: pass isConnected so useConversation pauses polling when disconnected.
+  // M2 fix: pass isConnected so conversation polling pauses when disconnected.
   const {
     turns,
     isPolling,
@@ -504,7 +504,7 @@ function SessionTerminalScreen() {
   }, [turns, stopPolling]);
 
   // H1 fix: Reset voiceCommandStatus when polling auto-stops without AI response.
-  // useConversation stops polling after 60s; without this, the thinking spinner
+  // useConversationQuery stops polling after 60s; without this, the thinking spinner
   // would persist forever.
   useEffect(() => {
     if (!isPolling && voiceCommandStatusRef.current === "thinking") {
