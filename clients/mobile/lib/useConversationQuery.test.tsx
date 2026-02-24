@@ -6,7 +6,7 @@ import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { NupiClient } from "./connect";
-import { useConversationQuery } from "./useConversationQuery";
+import { getPollingInterval, useConversationQuery } from "./useConversationQuery";
 
 type MockTurn = {
   origin: string;
@@ -102,5 +102,62 @@ describe("useConversationQuery", () => {
       expect(result.current.turns[0]?.text).toBe("hello");
       expect(result.current.turns[0]?.isOptimistic).toBeUndefined();
     });
+  });
+
+  it("refetches immediately when connection returns during active polling", async () => {
+    const getConversation = vi.fn(async () => ({ turns: [], total: 0 }));
+    const wrapper = createWrapper();
+
+    const { result, rerender } = renderHook(
+      ({ connected }) => useConversationQuery("session-1", createClient(getConversation), connected),
+      { wrapper, initialProps: { connected: true } },
+    );
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    const beforeStart = getConversation.mock.calls.length;
+    act(() => {
+      result.current.startPolling();
+    });
+    await waitFor(() => expect(getConversation.mock.calls.length).toBeGreaterThan(beforeStart));
+
+    const beforeReconnect = getConversation.mock.calls.length;
+    rerender({ connected: false });
+    rerender({ connected: true });
+    await waitFor(() => expect(getConversation.mock.calls.length).toBeGreaterThan(beforeReconnect));
+  });
+});
+
+describe("getPollingInterval", () => {
+  it("uses fast interval in first phase", () => {
+    const interval = getPollingInterval({
+      isPolling: true,
+      pollStartedAt: 1_000,
+      isConnected: true,
+      consecutiveErrors: 0,
+      now: 1_500,
+    });
+    expect(interval).toBe(500);
+  });
+
+  it("uses slow interval after three consecutive errors", () => {
+    const interval = getPollingInterval({
+      isPolling: true,
+      pollStartedAt: 1_000,
+      isConnected: true,
+      consecutiveErrors: 3,
+      now: 2_000,
+    });
+    expect(interval).toBe(2000);
+  });
+
+  it("stops interval after timeout window", () => {
+    const interval = getPollingInterval({
+      isPolling: true,
+      pollStartedAt: 1_000,
+      isConnected: true,
+      consecutiveErrors: 0,
+      now: 61_000,
+    });
+    expect(interval).toBe(false);
   });
 });
