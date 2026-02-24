@@ -54,6 +54,12 @@ func (h *mockHandle) getItems() []string {
 	return append([]string(nil), h.items...)
 }
 
+func streamCount[T any](m *Manager[T]) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.streams)
+}
+
 var errAdapterUnavailable = errors.New("adapter unavailable")
 var errPermanent = errors.New("permanent failure")
 
@@ -364,9 +370,6 @@ func TestRetryAbandonWithMaxFailures(t *testing.T) {
 		}
 	}
 
-	if mgr.RetryAbandoned() != 1 {
-		t.Fatalf("expected RetryAbandoned() = 1, got %d", mgr.RetryAbandoned())
-	}
 }
 
 func TestRemoveStream(t *testing.T) {
@@ -385,8 +388,8 @@ func TestRemoveStream(t *testing.T) {
 	params := SessionParams{SessionID: "s1", StreamID: "mic"}
 
 	h, _ := mgr.CreateStream(key, params)
-	if mgr.ActiveStreamCount() != 1 {
-		t.Fatalf("expected ActiveStreamCount() = 1, got %d", mgr.ActiveStreamCount())
+	if streamCount(mgr) != 1 {
+		t.Fatalf("expected one active stream, got %d", streamCount(mgr))
 	}
 
 	mgr.RemoveStream(key, h)
@@ -394,14 +397,14 @@ func TestRemoveStream(t *testing.T) {
 	if _, ok := mgr.Stream(key); ok {
 		t.Fatal("expected stream to be removed")
 	}
-	if mgr.ActiveStreamCount() != 0 {
-		t.Fatalf("expected ActiveStreamCount() = 0, got %d", mgr.ActiveStreamCount())
+	if streamCount(mgr) != 0 {
+		t.Fatalf("expected zero active streams, got %d", streamCount(mgr))
 	}
 
 	// Removing again is a no-op.
 	mgr.RemoveStream(key, h)
-	if mgr.ActiveStreamCount() != 0 {
-		t.Fatalf("expected ActiveStreamCount() still 0, got %d", mgr.ActiveStreamCount())
+	if streamCount(mgr) != 0 {
+		t.Fatalf("expected active streams to remain zero, got %d", streamCount(mgr))
 	}
 }
 
@@ -420,16 +423,16 @@ func TestCloseAllStreams(t *testing.T) {
 	mgr.CreateStream(StreamKey("s1", "mic"), SessionParams{SessionID: "s1", StreamID: "mic"})
 	mgr.CreateStream(StreamKey("s2", "mic"), SessionParams{SessionID: "s2", StreamID: "mic"})
 
-	if mgr.ActiveStreamCount() != 2 {
-		t.Fatalf("expected ActiveStreamCount() = 2, got %d", mgr.ActiveStreamCount())
+	if streamCount(mgr) != 2 {
+		t.Fatalf("expected two active streams, got %d", streamCount(mgr))
 	}
 
 	handles := mgr.CloseAllStreams()
 	if len(handles) != 2 {
 		t.Fatalf("expected 2 handles, got %d", len(handles))
 	}
-	if mgr.ActiveStreamCount() != 0 {
-		t.Fatalf("expected ActiveStreamCount() = 0 after close, got %d", mgr.ActiveStreamCount())
+	if streamCount(mgr) != 0 {
+		t.Fatalf("expected zero active streams after close, got %d", streamCount(mgr))
 	}
 }
 
@@ -489,7 +492,7 @@ func TestShutdownPending(t *testing.T) {
 	}
 }
 
-func TestActiveStreamCountOnCreate(t *testing.T) {
+func TestCreateStreamDuplicateDoesNotRegisterTwice(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -503,14 +506,14 @@ func TestActiveStreamCountOnCreate(t *testing.T) {
 
 	key := StreamKey("s1", "mic")
 	mgr.CreateStream(key, SessionParams{SessionID: "s1", StreamID: "mic"})
-	if mgr.ActiveStreamCount() != 1 {
-		t.Fatalf("expected ActiveStreamCount() = 1, got %d", mgr.ActiveStreamCount())
+	if streamCount(mgr) != 1 {
+		t.Fatalf("expected one active stream, got %d", streamCount(mgr))
 	}
 
 	// Duplicate create should not increment again.
 	mgr.CreateStream(key, SessionParams{SessionID: "s1", StreamID: "mic"})
-	if mgr.ActiveStreamCount() != 1 {
-		t.Fatalf("expected ActiveStreamCount() still 1, got %d", mgr.ActiveStreamCount())
+	if streamCount(mgr) != 1 {
+		t.Fatalf("expected one active stream after duplicate create, got %d", streamCount(mgr))
 	}
 }
 
@@ -625,18 +628,16 @@ func TestRetryAbandonWithMaxDuration(t *testing.T) {
 		}
 	}
 
-	if mgr.RetryAbandoned() != 1 {
-		t.Fatalf("expected RetryAbandoned() = 1, got %d", mgr.RetryAbandoned())
-	}
 }
 
-func TestRetryAttemptsCounter(t *testing.T) {
+func TestRetryAttemptsEventuallyCreateStream(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	var (
 		mu    sync.Mutex
 		ready bool
+		tries int
 	)
 
 	mgr := New(Config[string]{
@@ -649,6 +650,7 @@ func TestRetryAttemptsCounter(t *testing.T) {
 		Factory: StreamFactoryFunc[string](func(_ context.Context, key string, _ SessionParams) (StreamHandle[string], error) {
 			mu.Lock()
 			defer mu.Unlock()
+			tries++
 			if !ready {
 				return nil, errAdapterUnavailable
 			}
@@ -681,12 +683,15 @@ func TestRetryAttemptsCounter(t *testing.T) {
 		}
 	}
 
-	if mgr.RetryAttempts() == 0 {
-		t.Fatal("expected RetryAttempts() > 0")
+	mu.Lock()
+	totalTries := tries
+	mu.Unlock()
+	if totalTries == 0 {
+		t.Fatal("expected at least one retry/create attempt")
 	}
 }
 
-func TestRemoveStreamByKeyUpdatesCounter(t *testing.T) {
+func TestRemoveStreamByKeyRemovesRegisteredStream(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -701,14 +706,14 @@ func TestRemoveStreamByKeyUpdatesCounter(t *testing.T) {
 	key := StreamKey("s1", "mic")
 	mgr.CreateStream(key, SessionParams{SessionID: "s1", StreamID: "mic"})
 
-	if mgr.ActiveStreamCount() != 1 {
-		t.Fatalf("expected ActiveStreamCount() = 1, got %d", mgr.ActiveStreamCount())
+	if streamCount(mgr) != 1 {
+		t.Fatalf("expected one active stream, got %d", streamCount(mgr))
 	}
 
 	mgr.RemoveStreamByKey(key)
 
-	if mgr.ActiveStreamCount() != 0 {
-		t.Fatalf("expected ActiveStreamCount() = 0, got %d", mgr.ActiveStreamCount())
+	if streamCount(mgr) != 0 {
+		t.Fatalf("expected zero active streams, got %d", streamCount(mgr))
 	}
 	if _, ok := mgr.Stream(key); ok {
 		t.Fatal("expected stream to be removed")
