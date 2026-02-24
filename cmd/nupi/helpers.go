@@ -121,10 +121,46 @@ func finalizeClientResult(out *OutputFormatter, result any, err error) error {
 	}
 }
 
+type clientCallOptions struct {
+	out                 *OutputFormatter
+	timeout             time.Duration
+	connectErrorMessage string
+	useOutputErrors     bool
+	finalizeResult      bool
+}
+
+func runClientCall(opts clientCallOptions, fn func(ctx context.Context, client *grpcclient.Client) (any, error)) error {
+	client, err := grpcclient.New()
+	if err != nil {
+		if opts.useOutputErrors && opts.out != nil {
+			return opts.out.Error(opts.connectErrorMessage, err)
+		}
+		return fmt.Errorf("%s: %w", opts.connectErrorMessage, err)
+	}
+	defer client.Close()
+
+	ctx := context.Background()
+	cancel := func() {}
+	if opts.timeout > 0 {
+		ctx, cancel = context.WithTimeout(context.Background(), opts.timeout)
+	}
+	defer cancel()
+
+	result, callErr := fn(ctx, client)
+	if !opts.finalizeResult {
+		return callErr
+	}
+	return finalizeClientResult(opts.out, result, callErr)
+}
+
 func withClient(cmd *cobra.Command, connectErrorMessage string, fn ClientHandler) error {
 	out := newOutputFormatter(cmd)
-	return withOutputClient(out, connectErrorMessage, func(client *grpcclient.Client) error {
-		return fn(client, out)
+	return runClientCall(clientCallOptions{
+		out:                 out,
+		connectErrorMessage: connectErrorMessage,
+		useOutputErrors:     true,
+	}, func(_ context.Context, client *grpcclient.Client) (any, error) {
+		return nil, fn(client, out)
 	})
 }
 
@@ -143,12 +179,13 @@ func withClientTimeoutMessage(
 }
 
 func withOutputClient(out *OutputFormatter, connectErrorMessage string, fn func(client *grpcclient.Client) error) error {
-	client, err := grpcclient.New()
-	if err != nil {
-		return out.Error(connectErrorMessage, err)
-	}
-	defer client.Close()
-	return fn(client)
+	return runClientCall(clientCallOptions{
+		out:                 out,
+		connectErrorMessage: connectErrorMessage,
+		useOutputErrors:     true,
+	}, func(_ context.Context, client *grpcclient.Client) (any, error) {
+		return nil, fn(client)
+	})
 }
 
 func withOutputClientTimeout(
@@ -157,21 +194,23 @@ func withOutputClientTimeout(
 	connectErrorMessage string,
 	fn TimedClientHandler,
 ) error {
-	return withOutputClient(out, connectErrorMessage, func(client *grpcclient.Client) error {
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
-		defer cancel()
-		result, err := fn(ctx, client)
-		return finalizeClientResult(out, result, err)
+	return runClientCall(clientCallOptions{
+		out:                 out,
+		timeout:             timeout,
+		connectErrorMessage: connectErrorMessage,
+		useOutputErrors:     true,
+		finalizeResult:      true,
+	}, func(ctx context.Context, client *grpcclient.Client) (any, error) {
+		return fn(ctx, client)
 	})
 }
 
 func withPlainClient(connectErrorMessage string, fn func(client *grpcclient.Client) error) error {
-	client, err := grpcclient.New()
-	if err != nil {
-		return fmt.Errorf("%s: %w", connectErrorMessage, err)
-	}
-	defer client.Close()
-	return fn(client)
+	return runClientCall(clientCallOptions{
+		connectErrorMessage: connectErrorMessage,
+	}, func(_ context.Context, client *grpcclient.Client) (any, error) {
+		return nil, fn(client)
+	})
 }
 
 func withPlainClientTimeout(
@@ -179,11 +218,39 @@ func withPlainClientTimeout(
 	connectErrorMessage string,
 	fn func(ctx context.Context, client *grpcclient.Client) error,
 ) error {
-	return withPlainClient(connectErrorMessage, func(client *grpcclient.Client) error {
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
-		defer cancel()
-		return fn(ctx, client)
+	return runClientCall(clientCallOptions{
+		timeout:             timeout,
+		connectErrorMessage: connectErrorMessage,
+	}, func(ctx context.Context, client *grpcclient.Client) (any, error) {
+		return nil, fn(ctx, client)
 	})
+}
+
+type cmdOptionsContextKey string
+
+func setCmdOptions(cmd *cobra.Command, key cmdOptionsContextKey, options any) {
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cmd.SetContext(context.WithValue(ctx, key, options))
+}
+
+func getCmdOptions[T any](cmd *cobra.Command, key cmdOptionsContextKey) (T, bool) {
+	var zero T
+	ctx := cmd.Context()
+	if ctx == nil {
+		return zero, false
+	}
+	raw := ctx.Value(key)
+	if raw == nil {
+		return zero, false
+	}
+	typed, ok := raw.(T)
+	if !ok {
+		return zero, false
+	}
+	return typed, true
 }
 
 func printMissingReferenceAdapters(w io.Writer, missing []string, showHelp bool) {

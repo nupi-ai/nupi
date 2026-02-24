@@ -13,6 +13,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const promptsResetOptionsKey cmdOptionsContextKey = "prompts_reset_options"
+
+type promptsResetOptions struct {
+	resetAll bool
+}
+
 // newPromptsCommand creates the prompts management command
 func newPromptsCommand() *cobra.Command {
 	promptsCmd := &cobra.Command{
@@ -69,6 +75,7 @@ system prompt from the user prompt.`,
 		Long:          "Reset one or all prompt templates to their default values. Without arguments, resets all templates.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		PreRunE:       promptsResetPreRun,
 		RunE:          promptsReset,
 	}
 	resetCmd.Flags().Bool("all", false, "Reset all templates")
@@ -276,7 +283,11 @@ func promptsEdit(cmd *cobra.Command, args []string) error {
 
 func promptsReset(cmd *cobra.Command, args []string) error {
 	formatter := newOutputFormatter(cmd)
-	resetAll, _ := cmd.Flags().GetBool("all")
+	opts, ok := getCmdOptions[*promptsResetOptions](cmd, promptsResetOptionsKey)
+	if !ok || opts == nil {
+		return formatter.Error("Internal CLI error while preparing prompts reset options", nil)
+	}
+	resetAll := opts.resetAll
 
 	store, err := openPromptsStore()
 	if err != nil {
@@ -321,4 +332,10 @@ func promptsReset(cmd *cobra.Command, args []string) error {
 			return nil
 		},
 	})
+}
+
+func promptsResetPreRun(cmd *cobra.Command, _ []string) error {
+	resetAll, _ := cmd.Flags().GetBool("all")
+	setCmdOptions(cmd, promptsResetOptionsKey, &promptsResetOptions{resetAll: resetAll})
+	return nil
 }

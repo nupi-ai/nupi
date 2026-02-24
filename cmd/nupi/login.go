@@ -16,12 +16,41 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const (
+	bootstrapLoginOptionsKey cmdOptionsContextKey = "bootstrap_login_options"
+	pairClaimOptionsKey      cmdOptionsContextKey = "pair_claim_options"
+)
+
+type bootstrapLoginMode string
+
+const (
+	bootstrapLoginModeShow      bootstrapLoginMode = "show"
+	bootstrapLoginModeClear     bootstrapLoginMode = "clear"
+	bootstrapLoginModeConfigure bootstrapLoginMode = "configure"
+)
+
+type bootstrapLoginOptions struct {
+	mode       bootstrapLoginMode
+	baseURL    string
+	token      string
+	insecure   bool
+	caCert     string
+	serverName string
+	name       string
+}
+
+type pairClaimOptions struct {
+	code string
+	name string
+}
+
 func newLoginCommand() *cobra.Command {
 	loginCmd := &cobra.Command{
 		Use:           "login",
 		Short:         "Configure remote daemon access for CLI and GUI clients",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		PreRunE:       bootstrapLoginPreRun,
 		RunE:          bootstrapLogin,
 	}
 	loginCmd.Flags().String("url", "", "Daemon base URL (e.g. https://host:port)")
@@ -48,6 +77,7 @@ func newPairRootCommand() *cobra.Command {
 		Short:         "Redeem a pairing code for an API token",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		PreRunE:       pairClaimPreRun,
 		RunE:          pairClaim,
 	}
 	pairClaimCmd.Flags().String("code", "", "Pairing code provided by the daemon")
@@ -59,11 +89,12 @@ func newPairRootCommand() *cobra.Command {
 
 func bootstrapLogin(cmd *cobra.Command, args []string) error {
 	out := newOutputFormatter(cmd)
+	opts, ok := getCmdOptions[*bootstrapLoginOptions](cmd, bootstrapLoginOptionsKey)
+	if !ok || opts == nil {
+		return out.Error("Internal CLI error while preparing login options", nil)
+	}
 
-	show, _ := cmd.Flags().GetBool("show")
-	clear, _ := cmd.Flags().GetBool("clear")
-
-	if show {
+	if opts.mode == bootstrapLoginModeShow {
 		flags := []string{"clear", "url", "token", "insecure", "ca-cert", "server-name", "name"}
 		for _, name := range flags {
 			if name == "show" {
@@ -123,7 +154,7 @@ func bootstrapLogin(cmd *cobra.Command, args []string) error {
 		return out.Print(info)
 	}
 
-	if clear {
+	if opts.mode == bootstrapLoginModeClear {
 		if err := bootstrap.Remove(); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return out.Error("Failed to clear bootstrap configuration", err)
 		}
@@ -134,47 +165,20 @@ func bootstrapLogin(cmd *cobra.Command, args []string) error {
 		return out.Success("Bootstrap configuration cleared", info)
 	}
 
-	baseURL := getTrimmedFlag(cmd, "url")
-	if baseURL == "" {
-		return out.Error("Base URL (--url) is required unless --clear is used", nil)
-	}
-	if !strings.Contains(baseURL, "://") {
-		baseURL = "https://" + baseURL
-	}
-
-	parsed, err := url.Parse(baseURL)
-	if err != nil || parsed.Host == "" {
-		return out.Error("Invalid daemon URL", err)
-	}
-	baseURL = strings.TrimRight(parsed.String(), "/")
-
-	token := getTrimmedFlag(cmd, "token")
-
-	insecure, _ := cmd.Flags().GetBool("insecure")
-	caCert := getTrimmedFlag(cmd, "ca-cert")
-	serverName := getTrimmedFlag(cmd, "server-name")
-	name := getTrimmedFlag(cmd, "name")
-
-	if caCert != "" {
-		if _, err := os.Stat(caCert); err != nil {
-			return out.Error("CA certificate not accessible", err)
-		}
-	}
-
 	cfg := &bootstrap.Config{
-		BaseURL: baseURL,
+		BaseURL: opts.baseURL,
 	}
-	if token != "" {
-		cfg.APIToken = token
+	if opts.token != "" {
+		cfg.APIToken = opts.token
 	}
-	if name != "" {
-		cfg.Metadata = &bootstrap.MetaSection{Name: name}
+	if opts.name != "" {
+		cfg.Metadata = &bootstrap.MetaSection{Name: opts.name}
 	}
-	if insecure || caCert != "" || serverName != "" {
+	if opts.insecure || opts.caCert != "" || opts.serverName != "" {
 		cfg.TLS = &bootstrap.TLSConfig{
-			Insecure:   insecure,
-			CACertPath: caCert,
-			ServerName: serverName,
+			Insecure:   opts.insecure,
+			CACertPath: opts.caCert,
+			ServerName: opts.serverName,
 		}
 		if cfg.TLS != nil && !cfg.TLS.Insecure && cfg.TLS.CACertPath == "" && cfg.TLS.ServerName == "" {
 			cfg.TLS = nil
@@ -186,7 +190,7 @@ func bootstrapLogin(cmd *cobra.Command, args []string) error {
 	}
 
 	info := map[string]any{
-		"base_url": baseURL,
+		"base_url": opts.baseURL,
 	}
 	if path, err := bootstrap.Path(); err == nil {
 		info["path"] = path
@@ -211,16 +215,15 @@ func bootstrapLogin(cmd *cobra.Command, args []string) error {
 func pairClaim(cmd *cobra.Command, _ []string) error {
 	out := newOutputFormatter(cmd)
 
-	code := getTrimmedFlag(cmd, "code")
-	if code == "" {
-		return out.Error("Pairing code is required", nil)
+	opts, ok := getCmdOptions[*pairClaimOptions](cmd, pairClaimOptionsKey)
+	if !ok || opts == nil {
+		return out.Error("Internal CLI error while preparing pairing claim", nil)
 	}
-	name := getTrimmedFlag(cmd, "name")
 
 	return withOutputClientTimeout(out, constants.Duration10Seconds, daemonConnectGRPCErrorMessage, func(ctx context.Context, gc *grpcclient.Client) (any, error) {
 		resp, err := gc.ClaimPairing(ctx, &apiv1.ClaimPairingRequest{
-			Code:       strings.ToUpper(code),
-			ClientName: name,
+			Code:       strings.ToUpper(opts.code),
+			ClientName: opts.name,
 		})
 		if err != nil {
 			return nil, clientCallFailed("Failed to claim pairing code", err)
@@ -248,4 +251,67 @@ func pairClaim(cmd *cobra.Command, _ []string) error {
 			},
 		}, nil
 	})
+}
+
+func bootstrapLoginPreRun(cmd *cobra.Command, _ []string) error {
+	out := newOutputFormatter(cmd)
+	show, _ := cmd.Flags().GetBool("show")
+	clear, _ := cmd.Flags().GetBool("clear")
+
+	if show {
+		setCmdOptions(cmd, bootstrapLoginOptionsKey, &bootstrapLoginOptions{mode: bootstrapLoginModeShow})
+		return nil
+	}
+	if clear {
+		setCmdOptions(cmd, bootstrapLoginOptionsKey, &bootstrapLoginOptions{mode: bootstrapLoginModeClear})
+		return nil
+	}
+
+	baseURL := getTrimmedFlag(cmd, "url")
+	if baseURL == "" {
+		return out.Error("Base URL (--url) is required unless --clear is used", nil)
+	}
+	if !strings.Contains(baseURL, "://") {
+		baseURL = "https://" + baseURL
+	}
+	parsed, err := url.Parse(baseURL)
+	if err != nil || parsed.Host == "" {
+		return out.Error("Invalid daemon URL", err)
+	}
+	baseURL = strings.TrimRight(parsed.String(), "/")
+
+	token := getTrimmedFlag(cmd, "token")
+	insecure, _ := cmd.Flags().GetBool("insecure")
+	caCert := getTrimmedFlag(cmd, "ca-cert")
+	serverName := getTrimmedFlag(cmd, "server-name")
+	name := getTrimmedFlag(cmd, "name")
+	if caCert != "" {
+		if _, err := os.Stat(caCert); err != nil {
+			return out.Error("CA certificate not accessible", err)
+		}
+	}
+
+	setCmdOptions(cmd, bootstrapLoginOptionsKey, &bootstrapLoginOptions{
+		mode:       bootstrapLoginModeConfigure,
+		baseURL:    baseURL,
+		token:      token,
+		insecure:   insecure,
+		caCert:     caCert,
+		serverName: serverName,
+		name:       name,
+	})
+	return nil
+}
+
+func pairClaimPreRun(cmd *cobra.Command, _ []string) error {
+	out := newOutputFormatter(cmd)
+	code := getTrimmedFlag(cmd, "code")
+	if code == "" {
+		return out.Error("Pairing code is required", nil)
+	}
+	setCmdOptions(cmd, pairClaimOptionsKey, &pairClaimOptions{
+		code: code,
+		name: getTrimmedFlag(cmd, "name"),
+	})
+	return nil
 }
