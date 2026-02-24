@@ -71,22 +71,6 @@ func ToDTOList(sessions []*session.Session) []SessionDTO {
 	return dtos
 }
 
-// DaemonStatusDTO represents the daemon status response
-type DaemonStatusDTO struct {
-	Version       string `json:"version"`
-	SessionsCount int    `json:"sessions_count"`
-	Port          int    `json:"port"`
-	Uptime        string `json:"uptime,omitempty"`
-}
-
-// HealthDTO represents the health check response
-type HealthDTO struct {
-	Status        string    `json:"status"`
-	SessionsCount int       `json:"sessions"`
-	ClientsCount  int       `json:"clients"`
-	Timestamp     time.Time `json:"timestamp"`
-}
-
 // loadIconAsBase64 reads an icon file and returns its base64 encoded content
 func loadIconAsBase64(filename string) string {
 	homeDir, _ := os.UserHomeDir()
