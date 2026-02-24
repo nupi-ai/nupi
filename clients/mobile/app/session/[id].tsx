@@ -94,7 +94,7 @@ function SessionTerminalScreen() {
   modelStatusRef.current = modelStatus;
   const { client } = useConnection();
   const { permissionGranted, requestPermission } = useNotifications();
-  // H2 fix (Review 13): Use refs for notification values inside the voice
+  // Use refs for notification values inside the voice
   // command effect to avoid re-running the effect (and potentially double-sending
   // commands) when permission state changes.
   const permissionGrantedRef = useRef(permissionGranted);
@@ -108,7 +108,7 @@ function SessionTerminalScreen() {
   voiceCommandStatusRef.current = voiceCommandStatus;
   const isSendingRef = useRef(false);
   const pendingCommandsRef = useRef(0);
-  // L2 fix: track error recovery timer so it can be cleared on unmount.
+  // Track error recovery timer so it can be cleared on unmount.
   const errorRecoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const screenMountedRef = useRef(true);
   // NOTE: useConversationQuery is called after useSessionStream (below) so that
@@ -196,7 +196,7 @@ function SessionTerminalScreen() {
   const streamStatusRef = useRef(streamStatus);
   streamStatusRef.current = streamStatus;
 
-  // M2 fix: pass isConnected so conversation polling pauses when disconnected.
+  // Pass isConnected so conversation polling pauses when disconnected.
   const {
     turns,
     isPolling,
@@ -209,7 +209,7 @@ function SessionTerminalScreen() {
   } = useConversationQuery(id ?? "", client, streamStatus === "connected");
   const prevTurnsLenRef = useRef(turns.length);
 
-  // H1 fix: refresh conversation after WebSocket reconnection so that AI
+  // Refresh conversation after WebSocket reconnection so that AI
   // responses that arrived during the outage become visible.
   const prevStreamStatusRef = useRef(streamStatus);
   useEffect(() => {
@@ -378,7 +378,7 @@ function SessionTerminalScreen() {
       ttsStopPlayback();
       stopPolling();
       pendingCommandsRef.current = 0;
-      // L2 fix: clear error recovery timer on unmount.
+      // Clear error recovery timer on unmount.
       if (errorRecoveryTimerRef.current) {
         clearTimeout(errorRecoveryTimerRef.current);
         errorRecoveryTimerRef.current = null;
@@ -396,8 +396,8 @@ function SessionTerminalScreen() {
 
     // Request notification permission on first voice command (Task 5.5).
     // Fire-and-forget: don't block voice command send on permission result.
-    // H2 fix (Review 13): Read from refs to avoid including in effect deps.
-    // M2 fix (Review 14): Check wasNotificationPermissionPrompted() BEFORE
+    // Read from refs to avoid including in effect deps.
+    // Check wasNotificationPermissionPrompted() BEFORE
     // checking permissionGranted so we don't re-prompt on every command after
     // the user denied permissions. Once prompted, never ask again (OS blocks
     // it anyway after first denial).
@@ -407,12 +407,12 @@ function SessionTerminalScreen() {
           requestPermissionRef.current().then(() =>
             markNotificationPermissionPrompted()
           ).catch((err) => {
-            // M5 fix (Review 14): log instead of silently swallowing.
+            // Log instead of silently swallowing.
             console.warn("[Notifications] requestPermission failed:", err);
           });
         }
       }).catch((err) => {
-        // M5 fix (Review 14): log instead of silently swallowing.
+        // Log instead of silently swallowing.
         console.warn("[Notifications] wasNotificationPermissionPrompted failed:", err);
       });
     }
@@ -423,7 +423,7 @@ function SessionTerminalScreen() {
 
     (async () => {
       try {
-        // H2 fix: timeout on Connect RPC send (10s per Story 11-1 intelligence).
+        // Timeout on Connect RPC send.
         const resp = await raceTimeout(
           client.sessions.sendVoiceCommand({
             sessionId: id ?? "",
@@ -442,7 +442,7 @@ function SessionTerminalScreen() {
         }
         startPolling();
       } catch (e) {
-        // H1 fix (Review 10): SendVoiceCommand is fire-and-forget — the server
+        // SendVoiceCommand is fire-and-forget — the server
         // likely received and processed the command even when the HTTP response
         // times out. Start polling so the AI response isn't silently lost.
         const isTimeout = e instanceof Error && e.message.includes("timed out");
@@ -452,13 +452,13 @@ function SessionTerminalScreen() {
           setVoiceCommandStatus("thinking");
           startPolling();
         } else {
-          // L2 fix (Review 10): log full error object for debugging.
+          // Log full error object for debugging.
           console.error("[voice-command] send failed:", e);
           setVoiceCommandStatus("error");
           removeLastOptimistic();
-          // M1 fix: Auto-reset from error after 3s so user can retry.
-          // L2 fix: store timer ref so it can be cleared on unmount.
-          // M1 fix (Review 6): clear any existing recovery timer before setting
+          // Auto-reset from error after 3s so user can retry.
+          // Store timer ref so it can be cleared on unmount.
+          // Clear any existing recovery timer before setting
           // a new one to prevent orphaned timers on rapid consecutive errors.
           if (errorRecoveryTimerRef.current) {
             clearTimeout(errorRecoveryTimerRef.current);
@@ -474,7 +474,7 @@ function SessionTerminalScreen() {
         isSendingRef.current = false;
       }
     })();
-  // H2 fix (Review 13): permissionGranted/requestPermission removed from deps
+  // permissionGranted/requestPermission removed from deps
   // (read via refs) to prevent re-running this effect when permission changes.
   }, [recordingStatus, confirmedText, client, id, addOptimistic, removeLastOptimistic, clearTranscription, startPolling]);
 
@@ -503,7 +503,7 @@ function SessionTerminalScreen() {
     }
   }, [turns, stopPolling]);
 
-  // H1 fix: Reset voiceCommandStatus when polling auto-stops without AI response.
+  // Reset voiceCommandStatus when polling auto-stops without AI response.
   // useConversationQuery stops polling after 60s; without this, the thinking spinner
   // would persist forever.
   useEffect(() => {
@@ -556,7 +556,7 @@ function SessionTerminalScreen() {
       ttsStopPlayback();
       stopPolling();
       setVoiceCommandStatus("idle");
-      isSendingRef.current = false; // M2 fix: unblock sends after reconnect
+      isSendingRef.current = false; // Unblock sends after reconnect
       pendingCommandsRef.current = 0;
     }
     if (streamStatus === "error" || streamStatus === "connecting") {
