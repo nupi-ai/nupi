@@ -44,11 +44,6 @@ type ConversationStore interface {
 	GlobalSlice(offset, limit int) (int, []eventbus.ConversationTurn)
 }
 
-// PrometheusExporter renders observability metrics in Prometheus exposition format.
-type PrometheusExporter interface {
-	Export() []byte
-}
-
 type tokenRole string
 
 const (
@@ -160,9 +155,8 @@ type lifecycleState struct {
 
 // observabilityState groups optional diagnostic providers.
 type observabilityState struct {
-	metricsExporter PrometheusExporter
-	pluginWarnings  PluginWarningsProvider
-	pluginReloader  PluginReloader
+	pluginWarnings PluginWarningsProvider
+	pluginReloader PluginReloader
 }
 
 // voiceDiagnostic describes a single voice-related issue.
@@ -289,11 +283,6 @@ func (s *APIServer) SetAudioEgress(controller AudioPlaybackController) {
 // SetEventBus wires the event bus.
 func (s *APIServer) SetEventBus(bus *eventbus.Bus) {
 	s.eventBus = bus
-}
-
-// SetMetricsExporter wires the metrics exporter. Must be called before Start.
-func (s *APIServer) SetMetricsExporter(exporter PrometheusExporter) {
-	s.observability.metricsExporter = exporter
 }
 
 // SetPluginWarningsProvider wires the plugin warnings provider. Must be called before Start.

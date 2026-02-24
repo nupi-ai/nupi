@@ -41,11 +41,6 @@ func TestBusPublishDeliver(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("timed out waiting for event")
 	}
-
-	metrics := bus.Metrics()
-	if metrics.PublishTotal != 1 {
-		t.Fatalf("expected PublishTotal 1, got %d", metrics.PublishTotal)
-	}
 }
 
 func TestBusDropOldest(t *testing.T) {
@@ -76,11 +71,6 @@ func TestBusDropOldest(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for event after drops")
-	}
-
-	metrics := bus.Metrics()
-	if metrics.DroppedTotal == 0 {
-		t.Fatal("expected dropped events to be recorded")
 	}
 }
 
@@ -142,15 +132,6 @@ func TestBusOverflowDelivery(t *testing.T) {
 	if len(received) != 2 || received[0] != "p1" || received[1] != "p2" {
 		t.Fatalf("expected [p1, p2], got %v", received)
 	}
-
-	metrics := bus.Metrics()
-	// With overflow strategy, all events route through the overflow buffer.
-	if metrics.OverflowTotal < 2 {
-		t.Fatalf("expected OverflowTotal >= 2, got %d", metrics.OverflowTotal)
-	}
-	if metrics.DroppedTotal != 0 {
-		t.Fatalf("expected no drops, got %d", metrics.DroppedTotal)
-	}
 }
 
 func TestBusDropNewest(t *testing.T) {
@@ -178,11 +159,6 @@ func TestBusDropNewest(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for event")
 	}
-
-	metrics := bus.Metrics()
-	if metrics.DroppedTotal == 0 {
-		t.Fatal("expected dropped events for drop-newest")
-	}
 }
 
 func TestBusOverflowFallback(t *testing.T) {
@@ -206,28 +182,6 @@ func TestBusOverflowFallback(t *testing.T) {
 	// we need at least 4 publishes. Publish extra to be sure at least one drops.
 	for i := 0; i < 10; i++ {
 		eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{PromptID: "p"})
-	}
-
-	metrics := bus.Metrics()
-	if metrics.DroppedTotal == 0 {
-		t.Fatal("expected a drop when overflow buffer is full")
-	}
-}
-
-func TestBusOverflowMetrics(t *testing.T) {
-	bus := eventbus.New(eventbus.WithTopicBuffer(eventbus.TopicSessionsLifecycle, 1))
-	sub := bus.Subscribe(eventbus.TopicSessionsLifecycle, eventbus.WithSubscriptionBuffer(1))
-	defer sub.Close()
-
-	ctx := context.Background()
-
-	// Both events route through the overflow buffer (critical topic uses StrategyOverflow).
-	eventbus.Publish(ctx, bus, eventbus.Sessions.Lifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{})
-	eventbus.Publish(ctx, bus, eventbus.Sessions.Lifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{})
-
-	metrics := bus.Metrics()
-	if metrics.OverflowTotal < 2 {
-		t.Fatalf("expected OverflowTotal >= 2, got %d", metrics.OverflowTotal)
 	}
 }
 

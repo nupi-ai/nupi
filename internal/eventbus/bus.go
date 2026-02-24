@@ -3,16 +3,12 @@ package eventbus
 import (
 	"context"
 	"log"
-	"math"
-	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
 // Bus orchestrates topic-based publish/subscribe messaging.
-const defaultLatencySampleSize = 512
-
 type Bus struct {
 	logger        *log.Logger
 	mu            sync.RWMutex
@@ -22,15 +18,6 @@ type Bus struct {
 	nextID        uint64
 	observerMu    sync.RWMutex
 	observers     []Observer
-
-	publishTotal  atomic.Uint64
-	droppedTotal  atomic.Uint64
-	overflowTotal atomic.Uint64
-
-	latencyMu      sync.Mutex
-	latencySamples []time.Duration
-	latencyIndex   int
-	latencyCount   int
 }
 
 // Observer receives notifications for every published envelope.
@@ -76,11 +63,10 @@ func New(opts ...BusOption) *Bus {
 	}
 
 	bus := &Bus{
-		logger:         log.Default(),
-		subscribers:    make(map[Topic]map[uint64]*Subscription),
-		topicBuffers:   defaults,
-		topicPolicies:  make(map[Topic]DeliveryPolicy),
-		latencySamples: make([]time.Duration, defaultLatencySampleSize),
+		logger:        log.Default(),
+		subscribers:   make(map[Topic]map[uint64]*Subscription),
+		topicBuffers:  defaults,
+		topicPolicies: make(map[Topic]DeliveryPolicy),
 	}
 
 	for _, opt := range opts {
@@ -146,9 +132,6 @@ func (b *Bus) publish(ctx context.Context, env Envelope) {
 		env.Source = SourceUnknown
 	}
 
-	start := time.Now()
-	b.publishTotal.Add(1)
-
 	b.mu.RLock()
 	subs := b.subscribers[env.Topic]
 	for _, sub := range subs {
@@ -157,7 +140,6 @@ func (b *Bus) publish(ctx context.Context, env Envelope) {
 	b.mu.RUnlock()
 
 	b.notifyObservers(env)
-	b.storeLatency(time.Since(start))
 }
 
 // Subscribe registers a subscriber for the given topic.
@@ -289,13 +271,13 @@ type Subscription struct {
 	ch    chan Envelope
 	done  chan struct{} // closed when the subscription is closed
 
-	bus      *Bus
-	closed   atomic.Bool
-	dropped  atomic.Uint64
-	policy   DeliveryPolicy
-	ovf      *overflowBuffer
+	bus       *Bus
+	closed    atomic.Bool
+	dropped   atomic.Uint64
+	policy    DeliveryPolicy
+	ovf       *overflowBuffer
 	ovfCancel context.CancelFunc
-	overflow atomic.Uint64
+	overflow  atomic.Uint64
 }
 
 // C exposes the event channel.
@@ -366,7 +348,6 @@ func (s *Subscription) deliver(ctx context.Context, env Envelope, logger *log.Lo
 	if s.policy.Strategy == StrategyOverflow && s.ovf != nil {
 		if s.ovf.push(env) {
 			s.overflow.Add(1)
-			s.bus.overflowTotal.Add(1)
 			return
 		}
 		// Overflow full — fall back to drop-oldest on the channel.
@@ -413,83 +394,6 @@ func (s *Subscription) recordDrop(logger *log.Logger, reason string) {
 		}
 		logger.Printf("[eventbus] dropped event #%d for %s on topic %s (%s)", count, name, s.topic, reason)
 	}
-	if s.bus != nil {
-		s.bus.recordDrop()
-	}
-}
-
-// Metrics exposes aggregated bus metrics.
-type Metrics struct {
-	PublishTotal  uint64
-	DroppedTotal  uint64
-	OverflowTotal uint64
-	LatencyP50    time.Duration
-	LatencyP99    time.Duration
-}
-
-// Metrics returns the current metrics snapshot.
-// If b is nil the call returns a zero-value Metrics.
-func (b *Bus) Metrics() Metrics {
-	if b == nil {
-		return Metrics{}
-	}
-	metrics := Metrics{
-		PublishTotal:  b.publishTotal.Load(),
-		DroppedTotal:  b.droppedTotal.Load(),
-		OverflowTotal: b.overflowTotal.Load(),
-	}
-
-	samples := b.collectLatencySamples()
-	if len(samples) == 0 {
-		return metrics
-	}
-
-	sort.Slice(samples, func(i, j int) bool { return samples[i] < samples[j] })
-	metrics.LatencyP50 = percentile(samples, 0.50)
-	metrics.LatencyP99 = percentile(samples, 0.99)
-	return metrics
-}
-
-func (b *Bus) collectLatencySamples() []time.Duration {
-	b.latencyMu.Lock()
-	defer b.latencyMu.Unlock()
-
-	count := b.latencyCount
-	if count == 0 || len(b.latencySamples) == 0 {
-		return nil
-	}
-
-	samples := make([]time.Duration, count)
-	size := len(b.latencySamples)
-	start := (b.latencyIndex - count + size) % size
-	for i := 0; i < count; i++ {
-		idx := (start + i) % size
-		samples[i] = b.latencySamples[idx]
-	}
-	return samples
-}
-
-func (b *Bus) storeLatency(d time.Duration) {
-	if d < 0 {
-		d = 0
-	}
-
-	b.latencyMu.Lock()
-	defer b.latencyMu.Unlock()
-
-	if len(b.latencySamples) == 0 {
-		b.latencySamples = make([]time.Duration, defaultLatencySampleSize)
-	}
-
-	b.latencySamples[b.latencyIndex] = d
-	if b.latencyCount < len(b.latencySamples) {
-		b.latencyCount++
-	}
-	b.latencyIndex = (b.latencyIndex + 1) % len(b.latencySamples)
-}
-
-func (b *Bus) recordDrop() {
-	b.droppedTotal.Add(1)
 }
 
 // AddObserver registers additional observers at runtime.
@@ -516,51 +420,3 @@ func (b *Bus) notifyObservers(env Envelope) {
 	}
 }
 
-func percentile(data []time.Duration, quantile float64) time.Duration {
-	if len(data) == 0 {
-		return 0
-	}
-
-	if quantile <= 0 {
-		return data[0]
-	}
-	if quantile >= 1 {
-		return data[len(data)-1]
-	}
-
-	pos := int(math.Ceil(quantile*float64(len(data)))) - 1
-	if pos < 0 {
-		pos = 0
-	}
-	if pos >= len(data) {
-		pos = len(data) - 1
-	}
-	return data[pos]
-}
-
-// StartMetricsReporter periodically logs bus metrics until the context is cancelled.
-// If b is nil the call is a no-op.
-func (b *Bus) StartMetricsReporter(ctx context.Context, interval time.Duration, logger *log.Logger) {
-	if b == nil || interval <= 0 {
-		return
-	}
-	if logger == nil {
-		logger = b.logger
-	}
-	if logger == nil {
-		logger = log.Default()
-	}
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				metrics := b.Metrics()
-				logger.Printf("[eventbus] metrics publish_total=%d dropped_total=%d overflow_total=%d latency_p50=%s latency_p99=%s", metrics.PublishTotal, metrics.DroppedTotal, metrics.OverflowTotal, metrics.LatencyP50, metrics.LatencyP99)
-			}
-		}
-	}()
-}

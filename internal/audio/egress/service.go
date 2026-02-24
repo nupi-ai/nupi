@@ -711,16 +711,10 @@ func durationFromPCM(format eventbus.AudioFormat, bytes int) time.Duration {
 	return time.Duration(seconds * float64(time.Second))
 }
 
-// Metrics reports aggregated statistics for the TTS service.
-type Metrics struct {
-	ActiveStreams int64
-}
-
-// Metrics returns the current TTS metrics snapshot.
-func (s *Service) Metrics() Metrics {
-	var m Metrics
+// ActiveStreamCount returns the number of active TTS streams.
+func (s *Service) ActiveStreamCount() int64 {
 	if s.manager != nil {
-		m.ActiveStreams = s.manager.ActiveStreamCount()
+		return s.manager.ActiveStreamCount()
 	}
-	return m
+	return 0
 }

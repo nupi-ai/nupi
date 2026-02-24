@@ -505,14 +505,6 @@ func TestVoiceSessionCreation(t *testing.T) {
 	// Subtask 1.3: Verify ActionSpeak response produces ConversationSpeakEvent on bus
 	// (already verified above via waitForSpeak)
 
-	// Verify metrics
-	metrics := setup.Router.Metrics()
-	if metrics.RequestsTotal != 1 {
-		t.Errorf("expected 1 request, got %d", metrics.RequestsTotal)
-	}
-	if metrics.SpeakEvents != 1 {
-		t.Errorf("expected 1 speak event, got %d", metrics.SpeakEvents)
-	}
 }
 
 // --- Task 2: Verify intent router handles session listing queries (AC: #2) ---
@@ -1004,11 +996,6 @@ func TestIntentRouterAdapterNotReady(t *testing.T) {
 		t.Errorf("expected speak metadata type=error, got %q", speak.Metadata["type"])
 	}
 
-	// Verify metrics
-	metrics := setup.Router.Metrics()
-	if metrics.RequestsFailed != 1 {
-		t.Errorf("expected 1 failed request, got %d", metrics.RequestsFailed)
-	}
 }
 
 func TestIntentRouterAdapterError(t *testing.T) {
@@ -1062,14 +1049,6 @@ func TestIntentRouterAdapterError(t *testing.T) {
 		t.Errorf("expected speak metadata type=error, got %q", speak.Metadata["type"])
 	}
 
-	// Verify metrics
-	metrics := router.Metrics()
-	if metrics.RequestsFailed != 1 {
-		t.Errorf("expected 1 failed request, got %d", metrics.RequestsFailed)
-	}
-	if metrics.SpeakEvents != 0 {
-		t.Errorf("expected 0 speak events (error path doesn't count), got %d", metrics.SpeakEvents)
-	}
 }
 
 func TestIntentRouterKillNonExistentSession(t *testing.T) {

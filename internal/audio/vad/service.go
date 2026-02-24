@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"log"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/nupi-ai/nupi/internal/audio/serviceutil"
@@ -28,7 +26,6 @@ const (
 	maxPendingSegments   = serviceutil.DefaultMaxPending
 	maxRetryFailures     = 10
 	maxRetryDuration     = constants.Duration2Minutes
-	latencyDegradeFrames = 10
 )
 
 type SessionParams = serviceutil.SessionParams
@@ -77,15 +74,6 @@ func WithRetryDelays(initial, max time.Duration) Option {
 	}
 }
 
-// WithLatencyThreshold configures the per-frame latency threshold for diagnostics.
-func WithLatencyThreshold(threshold time.Duration) Option {
-	return func(s *Service) {
-		if threshold > 0 {
-			s.latencyThreshold = threshold
-		}
-	}
-}
-
 // Service streams audio segments to VAD adapters and publishes detection events.
 type Service struct {
 	bus     *eventbus.Bus
@@ -101,10 +89,6 @@ type Service struct {
 
 	manager *streammanager.Manager[eventbus.AudioIngressSegmentEvent]
 
-	detectionsTotal  atomic.Uint64
-	framesTotal      atomic.Uint64
-	latencyHistogram *latencyHistogram
-	latencyThreshold time.Duration
 }
 
 // New constructs a VAD bridge service bound to the provided event bus.
@@ -114,8 +98,6 @@ func New(bus *eventbus.Bus, opts ...Option) *Service {
 		logger:           log.Default(),
 		retryInitial:     serviceutil.DefaultRetryInitial,
 		retryMax:         serviceutil.DefaultRetryMax,
-		latencyHistogram: newLatencyHistogram(defaultLatencyBuckets()),
-		latencyThreshold: constants.Duration100Milliseconds,
 		factory: FactoryFunc(func(context.Context, SessionParams) (Analyzer, error) {
 			return nil, ErrFactoryUnavailable
 		}),
@@ -255,16 +237,7 @@ func (s *Service) publishDetection(sessionID, streamID string, segment eventbus.
 		s.logger.Printf("[VAD] detection active session=%s stream=%s confidence=%.2f", sessionID, streamID, det.Confidence)
 	}
 
-	s.detectionsTotal.Add(1)
-
 	eventbus.Publish(context.Background(), s.bus, eventbus.Speech.VADDetected, eventbus.SourceSpeechVAD, event)
-}
-
-func (s *Service) recordLatency(latency time.Duration) {
-	s.framesTotal.Add(1)
-	if s.latencyHistogram != nil {
-		s.latencyHistogram.Observe(latency)
-	}
 }
 
 // stream is the internal per-key processing goroutine.
@@ -277,8 +250,6 @@ type stream struct {
 	analyzer  Analyzer
 
 	worker *streammanager.Worker[eventbus.AudioIngressSegmentEvent]
-
-	slowConsecutive int
 }
 
 func newStream(key string, svc *Service, params SessionParams, analyzer Analyzer) *stream {
@@ -342,11 +313,7 @@ func (st *stream) handleSegment(segment eventbus.AudioIngressSegmentEvent) {
 		st.service.logger.Printf("[VAD] analyzer reconnected session=%s stream=%s", st.sessionID, st.streamID)
 	}
 
-	startedAt := time.Now()
 	detections, err := st.analyzer.OnSegment(st.worker.Context(), segment)
-	latency := time.Since(startedAt)
-	st.service.recordLatency(latency)
-	st.handleLatencyDiagnostics(latency, segment)
 
 	// Publish any detections returned alongside the error — the NAP
 	// contract allows partial results + error (see nap_analyzer.go:162).
@@ -362,50 +329,6 @@ func (st *stream) handleSegment(segment eventbus.AudioIngressSegmentEvent) {
 		}
 		st.service.logger.Printf("[VAD] analyze segment session=%s stream=%s failed: %v", st.sessionID, st.streamID, err)
 	}
-}
-
-func (st *stream) handleLatencyDiagnostics(latency time.Duration, segment eventbus.AudioIngressSegmentEvent) {
-	threshold := st.service.latencyThreshold
-	if threshold <= 0 {
-		return
-	}
-
-	if latency > threshold {
-		st.slowConsecutive++
-	} else {
-		st.slowConsecutive = 0
-	}
-
-	if st.slowConsecutive < latencyDegradeFrames {
-		return
-	}
-
-	st.slowConsecutive = 0
-	message := "VAD latency degradation detected"
-	if st.service.logger != nil {
-		st.service.logger.Printf("[VAD] %s session=%s stream=%s latency_ms=%d threshold_ms=%d", message, st.sessionID, st.streamID, latency.Milliseconds(), threshold.Milliseconds())
-	}
-
-	if st.service.bus == nil {
-		return
-	}
-
-	evt := eventbus.VoiceDiagnosticsEvent{
-		SessionID:   st.sessionID,
-		StreamID:    st.streamID,
-		Type:        eventbus.VoiceDiagnosticTypeVADLatencyDegradation,
-		Message:     message,
-		ThresholdMs: threshold.Milliseconds(),
-		ObservedMs:  latency.Milliseconds(),
-		Consecutive: latencyDegradeFrames,
-		Timestamp:   segment.EndedAt,
-		Metadata:    maputil.Clone(segment.Metadata),
-	}
-	if evt.Timestamp.IsZero() {
-		evt.Timestamp = time.Now().UTC()
-	}
-
-	eventbus.Publish(context.Background(), st.service.bus, eventbus.Voice.Diagnostics, eventbus.SourceSpeechVAD, evt)
 }
 
 func (st *stream) closeAnalyzerForRecovery(reason string) {
@@ -447,107 +370,4 @@ func (st *stream) closeAnalyzer(reason string) {
 
 func mergeMetadata(base map[string]string, override map[string]string) map[string]string {
 	return mapper.MergeStringMaps(base, override)
-}
-
-type latencyHistogram struct {
-	mu       sync.Mutex
-	bounds   []time.Duration
-	buckets  []atomic.Uint64
-	sumNanos atomic.Uint64
-	count    atomic.Uint64
-}
-
-func defaultLatencyBuckets() []time.Duration {
-	return []time.Duration{
-		time.Millisecond,
-		constants.Duration5Milliseconds,
-		constants.Duration10Milliseconds,
-		constants.Duration25Milliseconds,
-		constants.Duration50Milliseconds,
-		constants.Duration100Milliseconds,
-		constants.Duration250Milliseconds,
-	}
-}
-
-func newLatencyHistogram(bounds []time.Duration) *latencyHistogram {
-	clone := make([]time.Duration, len(bounds))
-	copy(clone, bounds)
-	return &latencyHistogram{
-		bounds:  clone,
-		buckets: make([]atomic.Uint64, len(bounds)),
-	}
-}
-
-func (h *latencyHistogram) Observe(d time.Duration) {
-	if h == nil {
-		return
-	}
-	if d < 0 {
-		d = 0
-	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.count.Add(1)
-	h.sumNanos.Add(uint64(d.Nanoseconds()))
-	for i, bound := range h.bounds {
-		if d <= bound {
-			h.buckets[i].Add(1)
-			return
-		}
-	}
-}
-
-type LatencyHistogramSnapshot struct {
-	Bounds []time.Duration
-	Counts []uint64
-	Sum    time.Duration
-	Count  uint64
-}
-
-func (h *latencyHistogram) Snapshot() LatencyHistogramSnapshot {
-	if h == nil {
-		return LatencyHistogramSnapshot{}
-	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	count := h.count.Load()
-	sum := h.sumNanos.Load()
-	counts := make([]uint64, len(h.buckets))
-	for i := range h.buckets {
-		counts[i] = h.buckets[i].Load()
-	}
-	bounds := make([]time.Duration, len(h.bounds))
-	copy(bounds, h.bounds)
-	return LatencyHistogramSnapshot{
-		Bounds: bounds,
-		Counts: counts,
-		Sum:    time.Duration(sum),
-		Count:  count,
-	}
-}
-
-// Metrics aggregates counters for the VAD service.
-type Metrics struct {
-	DetectionsTotal     uint64
-	RetryAttemptsTotal  uint64
-	RetryAbandonedTotal uint64
-	FramesTotal         uint64
-	ProcessingLatency   LatencyHistogramSnapshot
-}
-
-// Metrics returns the current metrics snapshot for the VAD service.
-func (s *Service) Metrics() Metrics {
-	m := Metrics{
-		DetectionsTotal: s.detectionsTotal.Load(),
-		FramesTotal:     s.framesTotal.Load(),
-	}
-	if s.manager != nil {
-		m.RetryAttemptsTotal = s.manager.RetryAttempts()
-		m.RetryAbandonedTotal = s.manager.RetryAbandoned()
-	}
-	if s.latencyHistogram != nil {
-		m.ProcessingLatency = s.latencyHistogram.Snapshot()
-	}
-	return m
 }

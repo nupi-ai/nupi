@@ -43,10 +43,7 @@ type Service struct {
 	lifecycleSub  *eventbus.TypedSubscription[eventbus.SessionLifecycleEvent]
 	transcriptSub *eventbus.TypedSubscription[eventbus.SpeechTranscriptEvent]
 
-	logger          *log.Logger
-	metricsInterval time.Duration
-	processedTotal  atomic.Uint64
-	errorTotal      atomic.Uint64
+	logger *log.Logger
 }
 
 // lastSeenMeta stores metadata from the most recent output event for a session.
@@ -75,22 +72,13 @@ func WithLogger(logger *log.Logger) Option {
 	}
 }
 
-// WithMetricsInterval enables periodic metrics logging with the specified interval.
-// A non-positive value disables the reporter.
-func WithMetricsInterval(interval time.Duration) Option {
-	return func(s *Service) {
-		s.metricsInterval = interval
-	}
-}
-
 // NewService creates a content pipeline service bound to the provided bus and
 // plugins provider.
 func NewService(bus *eventbus.Bus, provider PipelineProvider, opts ...Option) *Service {
 	svc := &Service{
-		bus:             bus,
-		pluginsSvc:      provider,
-		logger:          log.Default(),
-		metricsInterval: 0,
+		bus:        bus,
+		pluginsSvc: provider,
+		logger:     log.Default(),
 	}
 	for _, opt := range opts {
 		opt(svc)
@@ -118,7 +106,6 @@ func (s *Service) Start(ctx context.Context) error {
 	s.lifecycle.Go(s.consumeOutputEvents)
 	s.lifecycle.Go(s.consumeLifecycleEvents)
 	s.lifecycle.Go(s.consumeTranscriptEvents)
-	s.startMetricsReporter()
 
 	return nil
 }
@@ -484,7 +471,6 @@ func (s *Service) flushAndProcess(ctx context.Context, sessionID string, buf *Ou
 	if plugin, ok := s.selectPlugin(toolKey); ok {
 		newText, extraAnn, err := s.runPlugin(ctx, plugin, text, annotations)
 		if err != nil {
-			s.errorTotal.Add(1)
 			log.Printf("[ContentPipeline] transform error for session %s: %v", sessionID, err)
 			eventbus.Publish(context.Background(), s.bus, eventbus.Pipeline.Error, eventbus.SourceContentPipeline, eventbus.PipelineErrorEvent{
 				SessionID:   sessionID,
@@ -506,7 +492,6 @@ func (s *Service) flushAndProcess(ctx context.Context, sessionID string, buf *Ou
 		}
 	}
 
-	s.processedTotal.Add(1)
 	cleaned := eventbus.PipelineMessageEvent{
 		SessionID:   sessionID,
 		Origin:      evt.Origin,
@@ -547,7 +532,6 @@ func (s *Service) handleTranscript(evt eventbus.SpeechTranscriptEvent) {
 		annotations[k] = v
 	}
 
-	s.processedTotal.Add(1)
 	cleaned := eventbus.PipelineMessageEvent{
 		SessionID:   evt.SessionID,
 		Origin:      eventbus.OriginUser,
@@ -561,43 +545,6 @@ func (s *Service) handleTranscript(evt eventbus.SpeechTranscriptEvent) {
 
 func (s *Service) publishPipelineMessage(evt eventbus.PipelineMessageEvent) {
 	eventbus.Publish(context.Background(), s.bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, evt)
-}
-
-// Metrics aggregates processed/error counters.
-type Metrics struct {
-	Processed uint64
-	Errors    uint64
-}
-
-// Metrics returns the current metrics snapshot.
-func (s *Service) Metrics() Metrics {
-	return Metrics{
-		Processed: s.processedTotal.Load(),
-		Errors:    s.errorTotal.Load(),
-	}
-}
-
-func (s *Service) startMetricsReporter() {
-	if s.metricsInterval <= 0 {
-		return
-	}
-	logger := s.logger
-	if logger == nil {
-		logger = log.Default()
-	}
-	s.lifecycle.Go(func(ctx context.Context) {
-		ticker := time.NewTicker(s.metricsInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				metrics := s.Metrics()
-				logger.Printf("[ContentPipeline] metrics processed_total=%d error_total=%d", metrics.Processed, metrics.Errors)
-			}
-		}
-	})
 }
 
 func (s *Service) toolName(sessionID string) (string, bool) {

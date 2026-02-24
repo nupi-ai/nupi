@@ -144,8 +144,8 @@ func TestAdapterBridgeSetsAdapterOnReady(t *testing.T) {
 
 	// Wait for adapter to be configured
 	waitForCondition(t, time.Second, func() bool {
-		metrics := service.Metrics()
-		return metrics.AdapterName == adapters.MockAIAdapterID && metrics.AdapterReady
+		status := service.AdapterStatus()
+		return status.AdapterName == adapters.MockAIAdapterID && status.AdapterReady
 	}, "adapter should be configured after ready event")
 
 	shutdownCtx, cancel := context.WithTimeout(ctx, time.Second)
@@ -177,7 +177,7 @@ func TestAdapterBridgeClearsAdapterOnStopped(t *testing.T) {
 
 	// Wait for adapter to be configured
 	waitForCondition(t, time.Second, func() bool {
-		return service.Metrics().AdapterName == adapters.MockAIAdapterID
+		return service.AdapterStatus().AdapterName == adapters.MockAIAdapterID
 	}, "adapter should be set after ready event")
 
 	// Now stop the adapter
@@ -190,7 +190,7 @@ func TestAdapterBridgeClearsAdapterOnStopped(t *testing.T) {
 
 	// Wait for adapter to be cleared
 	waitForCondition(t, time.Second, func() bool {
-		return service.Metrics().AdapterName == ""
+		return service.AdapterStatus().AdapterName == ""
 	}, "adapter should be cleared after stopped event")
 
 	shutdownCtx, cancel := context.WithTimeout(ctx, time.Second)
@@ -221,7 +221,7 @@ func TestAdapterBridgeClearsAdapterOnError(t *testing.T) {
 	})
 
 	waitForCondition(t, time.Second, func() bool {
-		return service.Metrics().AdapterName == adapters.MockAIAdapterID
+		return service.AdapterStatus().AdapterName == adapters.MockAIAdapterID
 	}, "adapter should be set")
 
 	// Now send error event
@@ -234,7 +234,7 @@ func TestAdapterBridgeClearsAdapterOnError(t *testing.T) {
 
 	// Adapter should be cleared on error
 	waitForCondition(t, time.Second, func() bool {
-		return service.Metrics().AdapterName == ""
+		return service.AdapterStatus().AdapterName == ""
 	}, "adapter should be cleared after error event")
 
 	shutdownCtx, cancel := context.WithTimeout(ctx, time.Second)
@@ -265,7 +265,7 @@ func TestAdapterBridgeClearsAdapterOnDegraded(t *testing.T) {
 	})
 
 	waitForCondition(t, time.Second, func() bool {
-		return service.Metrics().AdapterName == adapters.MockAIAdapterID
+		return service.AdapterStatus().AdapterName == adapters.MockAIAdapterID
 	}, "adapter should be set")
 
 	// Send degraded event
@@ -278,7 +278,7 @@ func TestAdapterBridgeClearsAdapterOnDegraded(t *testing.T) {
 
 	// Adapter should be cleared on degraded
 	waitForCondition(t, time.Second, func() bool {
-		return service.Metrics().AdapterName == ""
+		return service.AdapterStatus().AdapterName == ""
 	}, "adapter should be cleared after degraded event")
 
 	shutdownCtx, cancel := context.WithTimeout(ctx, time.Second)
@@ -312,9 +312,9 @@ func TestAdapterBridgeIgnoresNonAISlot(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Check that no adapter was set (STT slot should be ignored)
-	metrics := service.Metrics()
-	if metrics.AdapterName != "" {
-		t.Errorf("Expected empty adapter name for STT slot, got %s", metrics.AdapterName)
+	status := service.AdapterStatus()
+	if status.AdapterName != "" {
+		t.Errorf("Expected empty adapter name for STT slot, got %s", status.AdapterName)
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(ctx, time.Second)
@@ -351,11 +351,11 @@ func TestAdapterBridgeInitialSyncWithMockAdapter(t *testing.T) {
 
 	// Adapter should be configured immediately after start (initial sync)
 	// No need to wait - syncWithCurrentBindings runs synchronously in Start()
-	metrics := service.Metrics()
-	if metrics.AdapterName != adapters.MockAIAdapterID {
-		t.Errorf("Expected adapter %s after initial sync, got %s", adapters.MockAIAdapterID, metrics.AdapterName)
+	status := service.AdapterStatus()
+	if status.AdapterName != adapters.MockAIAdapterID {
+		t.Errorf("Expected adapter %s after initial sync, got %s", adapters.MockAIAdapterID, status.AdapterName)
 	}
-	if !metrics.AdapterReady {
+	if !status.AdapterReady {
 		t.Error("Expected adapter to be ready after initial sync")
 	}
 
@@ -398,9 +398,9 @@ func TestAdapterBridgeInitialSyncWithReadyNonMockAdapter(t *testing.T) {
 	// Non-mock adapter should NOT be configured (NAP not yet implemented).
 	// This is intentional - better to fail clearly with ErrNoAdapter
 	// than to pretend the adapter is ready.
-	metrics := service.Metrics()
-	if metrics.AdapterName != "" {
-		t.Errorf("Expected empty adapter name for non-mock adapter (NAP not implemented), got %s", metrics.AdapterName)
+	status := service.AdapterStatus()
+	if status.AdapterName != "" {
+		t.Errorf("Expected empty adapter name for non-mock adapter (NAP not implemented), got %s", status.AdapterName)
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(ctx, time.Second)
@@ -436,9 +436,9 @@ func TestAdapterBridgeInitialSyncInactiveBinding(t *testing.T) {
 	}
 
 	// Inactive binding should not configure adapter
-	metrics := service.Metrics()
-	if metrics.AdapterName != "" {
-		t.Errorf("Expected empty adapter name for inactive binding, got %s", metrics.AdapterName)
+	status := service.AdapterStatus()
+	if status.AdapterName != "" {
+		t.Errorf("Expected empty adapter name for inactive binding, got %s", status.AdapterName)
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(ctx, time.Second)
@@ -468,9 +468,9 @@ func TestAdapterBridgeInitialSyncWithControllerError(t *testing.T) {
 	}
 
 	// No adapter should be configured
-	metrics := service.Metrics()
-	if metrics.AdapterName != "" {
-		t.Errorf("Expected empty adapter name when controller fails, got %s", metrics.AdapterName)
+	status := service.AdapterStatus()
+	if status.AdapterName != "" {
+		t.Errorf("Expected empty adapter name when controller fails, got %s", status.AdapterName)
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(ctx, time.Second)
@@ -514,11 +514,11 @@ func TestAdapterBridgeIntegrationWithManagerService(t *testing.T) {
 	}
 
 	// Verify initial sync configured the adapter immediately
-	metrics := intentService.Metrics()
-	if metrics.AdapterName != adapters.MockAIAdapterID {
-		t.Errorf("Expected adapter %s after initial sync, got %s", adapters.MockAIAdapterID, metrics.AdapterName)
+	status := intentService.AdapterStatus()
+	if status.AdapterName != adapters.MockAIAdapterID {
+		t.Errorf("Expected adapter %s after initial sync, got %s", adapters.MockAIAdapterID, status.AdapterName)
 	}
-	if !metrics.AdapterReady {
+	if !status.AdapterReady {
 		t.Error("Expected adapter to be ready after initial sync")
 	}
 
@@ -532,7 +532,7 @@ func TestAdapterBridgeIntegrationWithManagerService(t *testing.T) {
 
 	// Wait for adapter to be cleared
 	waitForCondition(t, time.Second, func() bool {
-		return intentService.Metrics().AdapterName == ""
+		return intentService.AdapterStatus().AdapterName == ""
 	}, "adapter should be cleared after error event")
 
 	// Simulate adapter recovery
@@ -545,7 +545,7 @@ func TestAdapterBridgeIntegrationWithManagerService(t *testing.T) {
 
 	// Wait for adapter to be reconfigured
 	waitForCondition(t, time.Second, func() bool {
-		m := intentService.Metrics()
+		m := intentService.AdapterStatus()
 		return m.AdapterName == adapters.MockAIAdapterID && m.AdapterReady
 	}, "adapter should be reconfigured after ready event")
 
@@ -580,7 +580,7 @@ func TestAdapterBridgePreservesAdapterOnCreationFailure(t *testing.T) {
 	})
 
 	waitForCondition(t, time.Second, func() bool {
-		return service.Metrics().AdapterName == adapters.MockAIAdapterID
+		return service.AdapterStatus().AdapterName == adapters.MockAIAdapterID
 	}, "mock adapter should be configured")
 
 	// Now try to switch to a NAP adapter without address (will fail)
@@ -596,11 +596,11 @@ func TestAdapterBridgePreservesAdapterOnCreationFailure(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Previous mock adapter should still be active
-	metrics := service.Metrics()
-	if metrics.AdapterName != adapters.MockAIAdapterID {
-		t.Errorf("Expected mock adapter to be preserved, got %s", metrics.AdapterName)
+	status := service.AdapterStatus()
+	if status.AdapterName != adapters.MockAIAdapterID {
+		t.Errorf("Expected mock adapter to be preserved, got %s", status.AdapterName)
 	}
-	if !metrics.AdapterReady {
+	if !status.AdapterReady {
 		t.Error("Expected adapter to still be ready")
 	}
 
@@ -637,7 +637,7 @@ func TestAdapterBridgeReconnectsOnAddressChange(t *testing.T) {
 	})
 
 	waitForCondition(t, time.Second, func() bool {
-		return service.Metrics().AdapterName == adapters.MockAIAdapterID
+		return service.AdapterStatus().AdapterName == adapters.MockAIAdapterID
 	}, "adapter should be configured")
 
 	// Track that we've seen the first configuration
@@ -703,9 +703,9 @@ func TestAdapterBridgeInitialSyncWithConfig(t *testing.T) {
 	}
 
 	// Adapter should be configured (mock adapter ignores config, but parsing shouldn't fail)
-	metrics := service.Metrics()
-	if metrics.AdapterName != adapters.MockAIAdapterID {
-		t.Errorf("Expected adapter %s, got %s", adapters.MockAIAdapterID, metrics.AdapterName)
+	status := service.AdapterStatus()
+	if status.AdapterName != adapters.MockAIAdapterID {
+		t.Errorf("Expected adapter %s, got %s", adapters.MockAIAdapterID, status.AdapterName)
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(ctx, time.Second)
@@ -744,9 +744,9 @@ func TestAdapterBridgeInitialSyncWithInvalidConfig(t *testing.T) {
 	}
 
 	// Adapter should NOT be configured due to invalid config
-	metrics := service.Metrics()
-	if metrics.AdapterName != "" {
-		t.Errorf("Expected empty adapter name for invalid config, got %s", metrics.AdapterName)
+	status := service.AdapterStatus()
+	if status.AdapterName != "" {
+		t.Errorf("Expected empty adapter name for invalid config, got %s", status.AdapterName)
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(ctx, time.Second)
@@ -800,7 +800,7 @@ func TestAdapterBridgeReconfiguresOnEveryReady(t *testing.T) {
 	})
 
 	waitForCondition(t, time.Second, func() bool {
-		return service.Metrics().AdapterName == adapters.MockAIAdapterID
+		return service.AdapterStatus().AdapterName == adapters.MockAIAdapterID
 	}, "adapter should be configured")
 
 	// Get the first adapter reference
@@ -1115,7 +1115,7 @@ func TestAdapterBridgeCircuitBreakerReset(t *testing.T) {
 	})
 
 	waitForCondition(t, time.Second, func() bool {
-		return service.Metrics().AdapterName == adapters.MockAIAdapterID
+		return service.AdapterStatus().AdapterName == adapters.MockAIAdapterID
 	}, "adapter should be configured")
 
 	// Circuit breaker should be reset
@@ -1203,7 +1203,7 @@ func TestAdapterBridgeCircuitBreakerResetOnStopped(t *testing.T) {
 	})
 
 	waitForCondition(t, time.Second, func() bool {
-		return service.Metrics().AdapterName == adapters.MockAIAdapterID
+		return service.AdapterStatus().AdapterName == adapters.MockAIAdapterID
 	}, "adapter should be configured")
 
 	// Simulate accumulated errors
@@ -1264,7 +1264,7 @@ func TestAdapterBridgeCircuitBreakerResetOnError(t *testing.T) {
 	})
 
 	waitForCondition(t, time.Second, func() bool {
-		return service.Metrics().AdapterName == adapters.MockAIAdapterID
+		return service.AdapterStatus().AdapterName == adapters.MockAIAdapterID
 	}, "adapter should be configured")
 
 	// Simulate accumulated errors
@@ -1371,7 +1371,7 @@ func TestAdapterBridgeCircuitBreakerResetOnAdapterChange(t *testing.T) {
 
 	// Should configure immediately (no backoff for different adapter)
 	waitForCondition(t, time.Second, func() bool {
-		return service.Metrics().AdapterName == adapters.MockAIAdapterID
+		return service.AdapterStatus().AdapterName == adapters.MockAIAdapterID
 	}, "different adapter should be configured immediately")
 
 	// Circuit breaker should be reset
@@ -1415,7 +1415,7 @@ func TestAdapterBridgeCircuitBreakerResetOnAddressChange(t *testing.T) {
 	})
 
 	waitForCondition(t, time.Second, func() bool {
-		return service.Metrics().AdapterName == adapters.MockAIAdapterID
+		return service.AdapterStatus().AdapterName == adapters.MockAIAdapterID
 	}, "adapter should be configured")
 
 	// Simulate accumulated errors (e.g., from flapping)
@@ -1568,8 +1568,8 @@ func TestAdapterBridgeConfigValidationAgainstManifest(t *testing.T) {
 	}
 
 	// Adapter should NOT be configured
-	if service.Metrics().AdapterName != "" {
-		t.Errorf("Expected no adapter configured after validation failure, got %s", service.Metrics().AdapterName)
+	if service.AdapterStatus().AdapterName != "" {
+		t.Errorf("Expected no adapter configured after validation failure, got %s", service.AdapterStatus().AdapterName)
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(ctx, time.Second)
@@ -1619,7 +1619,7 @@ func TestAdapterBridgeCircuitBreakerResetOnConfigChange(t *testing.T) {
 	})
 
 	waitForCondition(t, time.Second, func() bool {
-		return service.Metrics().AdapterName == adapterID
+		return service.AdapterStatus().AdapterName == adapterID
 	}, "adapter should be configured")
 
 	// Simulate accumulated errors from previous failures
@@ -1703,7 +1703,7 @@ func TestAdapterBridgeConfigHashFallback(t *testing.T) {
 	})
 
 	waitForCondition(t, time.Second, func() bool {
-		return service.Metrics().AdapterName == adapterID
+		return service.AdapterStatus().AdapterName == adapterID
 	}, "adapter should be configured")
 
 	// Simulate errors with hash-based version

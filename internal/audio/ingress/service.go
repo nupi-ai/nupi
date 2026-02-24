@@ -7,7 +7,6 @@ import (
 	"log"
 	"math"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/nupi-ai/nupi/internal/eventbus"
@@ -22,8 +21,7 @@ type Service struct {
 	mu      sync.RWMutex
 	streams map[string]*Stream
 
-	bytesTotal atomic.Uint64
-	logger     *log.Logger
+	logger *log.Logger
 }
 
 var ErrStreamExists = errors.New("audio ingress: stream already exists")
@@ -182,7 +180,6 @@ func (st *Stream) Write(p []byte) error {
 	st.rawSeq++
 	rawCopy := make([]byte, len(p))
 	copy(rawCopy, p)
-	st.service.bytesTotal.Add(uint64(len(rawCopy)))
 	st.publishRaw(rawCopy, now)
 
 	if len(st.buffer) == 0 {
@@ -347,14 +344,3 @@ func durationForBytes(b int, format eventbus.AudioFormat) time.Duration {
 	return time.Duration(seconds * float64(time.Second))
 }
 
-// Metrics reports aggregated ingress statistics.
-type Metrics struct {
-	BytesTotal uint64
-}
-
-// Metrics returns the current ingress metrics snapshot.
-func (s *Service) Metrics() Metrics {
-	return Metrics{
-		BytesTotal: s.bytesTotal.Load(),
-	}
-}

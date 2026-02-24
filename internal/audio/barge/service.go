@@ -6,7 +6,6 @@ import (
 	"log"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/nupi-ai/nupi/internal/eventbus"
@@ -70,8 +69,6 @@ type Service struct {
 	lastEvent      map[string]time.Time
 	playback       map[string]playbackState
 	sessionStreams map[string]string
-
-	bargeInTotal atomic.Uint64
 }
 
 const (
@@ -288,7 +285,7 @@ func (s *Service) publishBargeIn(sessionID, streamID string, ts time.Time, reaso
 		return
 	}
 
-	s.bargeInTotal.Add(1)
+
 
 	if s.logger != nil {
 		s.logger.Printf("[Barge] publishing barge-in session=%s stream=%s reason=%s confidence=%.2f", sessionID, streamID, reason, confidence)
@@ -370,12 +367,3 @@ func splitStreamKey(key string) (string, string) {
 	return key, ""
 }
 
-// Metrics reports aggregated statistics for the barge-in service.
-type Metrics struct {
-	BargeInTotal uint64
-}
-
-// Metrics returns the current barge-in metrics snapshot.
-func (s *Service) Metrics() Metrics {
-	return Metrics{BargeInTotal: s.bargeInTotal.Load()}
-}
