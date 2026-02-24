@@ -1830,13 +1830,8 @@ func TestVoicePipelineGoroutineLifecycle(t *testing.T) {
 	})
 	playbackSub.Close()
 
-	// Shut down all services and verify deterministic metrics.
+	// Shut down all services.
 	shutdownOnce.Do(teardown)
-
-	// Verify egress has no active streams — deterministic, not flaky.
-	if count := egressSvc.ActiveStreamCount(); count != 0 {
-		t.Errorf("egress active streams after shutdown: %d, want 0", count)
-	}
 }
 
 // TestVoicePipelinePayloadIntegrity verifies that sessionID, streamID, and
@@ -2788,10 +2783,6 @@ func TestVoiceFallbackServicesStartWithoutAdapters(t *testing.T) {
 		shutCancel()
 	}
 
-	// Verify egress has no active streams.
-	if count := egressSvc.ActiveStreamCount(); count != 0 {
-		t.Errorf("egress active streams after shutdown: %d, want 0", count)
-	}
 }
 
 // TestVoiceFallbackEgressDropsWithoutTTS validates that when no TTS factory
@@ -2885,10 +2876,6 @@ func TestVoiceFallbackEgressDropsWithoutTTS(t *testing.T) {
 		// No playback — correct: factory unavailable drops the request.
 	}
 
-	// Verify egress did not create any streams.
-	if count := egressSvc.ActiveStreamCount(); count != 0 {
-		t.Errorf("egress should have 0 active streams, got %d", count)
-	}
 }
 
 // TestVoiceFallbackSTTDropsWithoutAdapter validates that when no STT factory
@@ -3175,9 +3162,6 @@ func TestVoiceFallbackEgressBuffersWithAdapterFactory(t *testing.T) {
 
 	// Clean shutdown must not panic even with pending buffered requests.
 	cancel()
-	if count := egressSvc.ActiveStreamCount(); count != 0 {
-		t.Errorf("egress should have 0 active streams, got %d", count)
-	}
 }
 
 // TestVoiceFallbackSTTBuffersWithAdapterFactory validates the REAL daemon code

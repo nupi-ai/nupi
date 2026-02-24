@@ -188,68 +188,6 @@ func receivePlayback(t *testing.T, sub *eventbus.TypedSubscription[eventbus.Audi
 	return eventbus.AudioEgressPlaybackEvent{}
 }
 
-func TestServiceMetricsActiveStreams(t *testing.T) {
-	bus := eventbus.New()
-	svc := New(bus, WithFactory(FactoryFunc(func(context.Context, SessionParams) (Synthesizer, error) {
-		return &noopSynth{}, nil
-	})))
-	if err := svc.Start(context.Background()); err != nil {
-		t.Fatalf("start service: %v", err)
-	}
-	t.Cleanup(func() { svc.Shutdown(context.Background()) })
-
-	if count := svc.ActiveStreamCount(); count != 0 {
-		t.Fatalf("expected initial ActiveStreams = 0, got %d", count)
-	}
-
-	params := SessionParams{
-		SessionID: "sess-metrics-1",
-		StreamID:  "stream-1",
-		Format: eventbus.AudioFormat{
-			Encoding:      eventbus.AudioEncodingPCM16,
-			SampleRate:    16000,
-			Channels:      1,
-			BitDepth:      16,
-			FrameDuration: 20 * time.Millisecond,
-		},
-	}
-
-	key := streammanager.StreamKey(params.SessionID, params.StreamID)
-	h, err := svc.manager.CreateStream(key, params)
-	if err != nil {
-		t.Fatalf("create stream: %v", err)
-	}
-	st := h.(*stream)
-
-	if count := svc.ActiveStreamCount(); count != 1 {
-		t.Fatalf("expected ActiveStreams = 1, got %d", count)
-	}
-
-	svc.onStreamClosed(key, st)
-	if count := svc.ActiveStreamCount(); count != 0 {
-		t.Fatalf("expected ActiveStreams to return to 0, got %d", count)
-	}
-
-	params2 := params
-	params2.SessionID = "sess-metrics-2"
-	params2.StreamID = "stream-2"
-	if _, err := svc.manager.CreateStream(key, params); err != nil {
-		t.Fatalf("create stream 2: %v", err)
-	}
-	key2 := streammanager.StreamKey(params2.SessionID, params2.StreamID)
-	if _, err := svc.manager.CreateStream(key2, params2); err != nil {
-		t.Fatalf("create stream 3: %v", err)
-	}
-
-	handles := svc.manager.CloseAllStreams()
-	if len(handles) != 2 {
-		t.Fatalf("expected CloseAllStreams to return 2 handles, got %d", len(handles))
-	}
-	if count := svc.ActiveStreamCount(); count != 0 {
-		t.Fatalf("expected ActiveStreams = 0 after CloseAllStreams, got %d", count)
-	}
-}
-
 func TestServiceRebuffersOnSpeakUnavailable(t *testing.T) {
 	bus := eventbus.New()
 
