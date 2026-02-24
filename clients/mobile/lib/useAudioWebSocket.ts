@@ -87,7 +87,16 @@ export function useAudioWebSocket(
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
 
+      // Connection timeout — if WS doesn't open within 5s, close and let
+      // onclose handle reconnection logic.
+      const connectTimeout = setTimeout(() => {
+        if (ws.readyState !== WebSocket.OPEN) {
+          ws.close();
+        }
+      }, 5000);
+
       ws.onopen = () => {
+        clearTimeout(connectTimeout);
         isOpeningWsRef.current = false;
         if (cancelledRef.current || !mountedRef.current) return;
         reconnectAttemptsRef.current = 0;
@@ -107,12 +116,9 @@ export function useAudioWebSocket(
         if (event.data instanceof ArrayBuffer) {
           onPcmDataRef.current?.(event.data);
         } else if (typeof event.data === "string") {
-          try {
-            const parsed = parseAudioMessage(event.data);
-            onControlMessageRef.current?.(parsed);
-          } catch {
-            // Ignore malformed JSON.
-          }
+          // parseAudioMessage handles invalid JSON internally (returns "unknown" type).
+          const parsed = parseAudioMessage(event.data);
+          onControlMessageRef.current?.(parsed);
         }
       };
 
@@ -121,6 +127,7 @@ export function useAudioWebSocket(
       };
 
       ws.onclose = (event: CloseEvent) => {
+        clearTimeout(connectTimeout);
         isOpeningWsRef.current = false;
         if (cancelledRef.current || !mountedRef.current) {
           wsRef.current = null;
@@ -144,7 +151,9 @@ export function useAudioWebSocket(
         if (reconnectAttemptsRef.current < MAX_WS_RECONNECT_ATTEMPTS) {
           reconnectAttemptsRef.current += 1;
           setStatus("reconnecting");
-          const delay = 1000 * Math.pow(2, reconnectAttemptsRef.current - 1);
+          const baseDelay = 1000 * Math.pow(2, reconnectAttemptsRef.current - 1);
+          // Add jitter (50–100% of base delay) to avoid synchronized reconnections.
+          const delay = baseDelay * (0.5 + Math.random() * 0.5);
           reconnectTimer.schedule(() => openWebSocket(), delay);
         } else {
           setStatus("error");

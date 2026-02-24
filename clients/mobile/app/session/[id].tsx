@@ -9,6 +9,16 @@ import {
   StyleSheet,
   View as RNView,
 } from "react-native";
+import Animated, {
+  cancelAnimation,
+  useSharedValue,
+  useAnimatedStyle,
+  withRepeat,
+  withSequence,
+  withTiming,
+  Easing,
+} from "react-native-reanimated";
+import { Ionicons } from "@expo/vector-icons";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
 import { useHeaderHeight } from "@react-navigation/elements";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -42,6 +52,40 @@ const textEncoder = new TextEncoder();
 /** Encode a string to an ArrayBuffer for binary WebSocket transmission. */
 function encodeToBuffer(data: string): ArrayBuffer {
   return textEncoder.encode(data).buffer as ArrayBuffer;
+}
+
+/** Animated speaker icon that pulses while TTS audio is playing. */
+function TtsIndicator({ color, onPress }: { color: string; onPress: () => void }) {
+  const opacity = useSharedValue(1);
+
+  useEffect(() => {
+    opacity.value = withRepeat(
+      withSequence(
+        withTiming(0.3, { duration: 600, easing: Easing.inOut(Easing.ease) }),
+        withTiming(1, { duration: 600, easing: Easing.inOut(Easing.ease) }),
+      ),
+      -1, // infinite
+    );
+    return () => { cancelAnimation(opacity); };
+  }, [opacity]);
+
+  const animatedStyle = useAnimatedStyle(() => ({
+    opacity: opacity.value,
+  }));
+
+  return (
+    <Pressable
+      onPress={onPress}
+      style={styles.ttsIndicator}
+      accessibilityRole="button"
+      accessibilityLabel="TTS playing, tap to stop"
+      testID="tts-indicator"
+    >
+      <Animated.View style={animatedStyle}>
+        <Ionicons name="volume-high" size={20} color={color} />
+      </Animated.View>
+    </Pressable>
+  );
 }
 
 export default function SessionTerminalScreenWrapper() {
@@ -85,11 +129,15 @@ function SessionTerminalScreen() {
     clearVoiceError,
   } = useVoice();
   const {
-    playbackState: ttsPlaybackState,
     isPlaying: ttsIsPlaying,
     stopPlayback: ttsStopPlayback,
     sendInterrupt: ttsSendInterrupt,
+    audioWsStatus: ttsWsStatus,
+    playbackError: ttsPlaybackError,
   } = useAudioPlaybackContext();
+  // Ref mirror for barge-in: avoids stale closure when playback starts between renders.
+  const ttsIsPlayingRef = useRef(ttsIsPlaying);
+  ttsIsPlayingRef.current = ttsIsPlaying;
   const modelStatusRef = useRef(modelStatus);
   modelStatusRef.current = modelStatus;
   const { client } = useConnection();
@@ -344,13 +392,20 @@ function SessionTerminalScreen() {
   }, []);
 
   // Barge-in: stop TTS playback before starting voice recording.
+  // Uses ref mirror to avoid stale closure if playback started between renders.
   const handleVoiceStartRecording = useCallback(() => {
-    if (ttsIsPlaying) {
+    if (ttsIsPlayingRef.current) {
       ttsStopPlayback();
       ttsSendInterrupt("user_barge_in");
     }
     voiceStartRecording();
-  }, [ttsIsPlaying, ttsStopPlayback, ttsSendInterrupt, voiceStartRecording]);
+  }, [ttsStopPlayback, ttsSendInterrupt, voiceStartRecording]);
+
+  // Stop TTS playback AND notify daemon (so it stops generating/sending chunks).
+  const handleTtsIndicatorStop = useCallback(() => {
+    ttsStopPlayback();
+    ttsSendInterrupt("user_stop");
+  }, [ttsStopPlayback, ttsSendInterrupt]);
 
   const handleDownloadSheetCancel = useCallback(() => {
     setShowDownloadSheet(false);
@@ -384,7 +439,7 @@ function SessionTerminalScreen() {
         errorRecoveryTimerRef.current = null;
       }
     };
-  }, [voiceStopRecording, clearTranscription, clearVoiceError, stopPolling]);
+  }, [voiceStopRecording, clearTranscription, clearVoiceError, ttsStopPlayback, stopPolling]);
 
   // Auto-send voice command when recording finishes with confirmed text.
   useEffect(() => {
@@ -562,7 +617,7 @@ function SessionTerminalScreen() {
     if (streamStatus === "error" || streamStatus === "connecting") {
       webViewReadyRef.current = false;
     }
-  }, [streamStatus, voiceStopRecording, clearTranscription, clearVoiceError, stopPolling]);
+  }, [streamStatus, voiceStopRecording, clearTranscription, clearVoiceError, ttsStopPlayback, stopPolling]);
 
   // Auto-dismiss recovery notice after 4 seconds.
   useEffect(() => {
@@ -746,18 +801,18 @@ function SessionTerminalScreen() {
 
       {!sessionStopped && streamStatus === "connected" && (
         <RNView style={styles.voiceRow}>
-          {ttsIsPlaying && (
-            <Pressable
-              onPress={ttsStopPlayback}
-              style={styles.ttsIndicator}
-              accessibilityRole="button"
-              accessibilityLabel="TTS playing, tap to stop"
-              testID="tts-indicator"
+          {(ttsWsStatus === "error" || ttsPlaybackError) && (
+            <Text
+              style={[styles.voiceErrorText, { color: Colors[colorScheme].danger }]}
+              numberOfLines={1}
+              accessibilityLiveRegion="polite"
+              testID="tts-error-text"
             >
-              <Text style={[styles.ttsIndicatorText, { color: Colors[colorScheme].tint }]}>
-                {"\uD83D\uDD0A"}
-              </Text>
-            </Pressable>
+              {ttsPlaybackError ?? "TTS unavailable"}
+            </Text>
+          )}
+          {ttsIsPlaying && (
+            <TtsIndicator color={Colors[colorScheme].tint} onPress={handleTtsIndicatorStop} />
           )}
           {voiceError && !showDownloadSheet && (
             <Text
@@ -984,8 +1039,5 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 4,
     marginRight: 4,
-  },
-  ttsIndicatorText: {
-    fontSize: 20,
   },
 });

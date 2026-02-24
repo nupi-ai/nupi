@@ -92,8 +92,84 @@ describe("parseAudioMessage", () => {
     expect(msg).toEqual({ type: "unknown", raw });
   });
 
-  it("throws on invalid JSON", () => {
-    expect(() => parseAudioMessage("not json")).toThrow();
+  it("returns unknown for invalid JSON", () => {
+    const msg = parseAudioMessage("not json");
+    expect(msg).toEqual({ type: "unknown", raw: "not json" });
+  });
+
+  it("falls back to defaults for wrong-type audio_meta top-level fields", () => {
+    const msg = parseAudioMessage(
+      JSON.stringify({
+        type: "audio_meta",
+        sequence: "not_a_number",
+        first: 123,
+        last: "yes",
+        duration_ms: null,
+        format: { encoding: "pcm_s16le", sample_rate: 16000, channels: 1, bit_depth: 16 },
+      })
+    );
+    expect(msg).toEqual({
+      type: "audio_meta",
+      sequence: 0,
+      first: false,
+      last: false,
+      duration_ms: 0,
+      format: {
+        encoding: "pcm_s16le",
+        sample_rate: 16000,
+        channels: 1,
+        bit_depth: 16,
+      },
+    });
+  });
+
+  it("filters invalid entries from capabilities_response arrays", () => {
+    const msg = parseAudioMessage(
+      JSON.stringify({
+        type: "capabilities_response",
+        capture: [
+          { stream_id: "mic", ready: true },
+          "not_an_object",
+          { no_stream_id: true },
+          null,
+        ],
+        playback: [
+          { stream_id: "tts", ready: false },
+          42,
+        ],
+      })
+    );
+    expect(msg).toEqual({
+      type: "capabilities_response",
+      capture: [{ stream_id: "mic", format: undefined, ready: true }],
+      playback: [{ stream_id: "tts", format: undefined, ready: false }],
+    });
+  });
+
+  it("falls back to defaults for malformed audio_meta format fields", () => {
+    const msg = parseAudioMessage(
+      JSON.stringify({
+        type: "audio_meta",
+        sequence: 1,
+        first: true,
+        last: false,
+        duration_ms: 20,
+        format: { encoding: 123, sample_rate: "abc", channels: null, bit_depth: -1 },
+      })
+    );
+    expect(msg).toEqual({
+      type: "audio_meta",
+      sequence: 1,
+      first: true,
+      last: false,
+      duration_ms: 20,
+      format: {
+        encoding: "pcm_s16le",
+        sample_rate: 16000,
+        channels: 1,
+        bit_depth: 16,
+      },
+    });
   });
 });
 

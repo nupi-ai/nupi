@@ -202,9 +202,24 @@ const TTS_ENABLED_KEY = "nupi_tts_enabled";
 
 const ttsEnabledCache = createVersionedCache<boolean>();
 
+// Cross-component listener for TTS preference changes.
+// AudioPlaybackContext subscribes so toggling TTS in Settings takes effect
+// on the active session without requiring re-mount.
+type TtsChangeListener = (enabled: boolean) => void;
+const ttsChangeListeners = new Set<TtsChangeListener>();
+
+/** Subscribe to TTS preference changes. Returns unsubscribe function. */
+export function addTtsChangeListener(listener: TtsChangeListener): () => void {
+  ttsChangeListeners.add(listener);
+  return () => { ttsChangeListeners.delete(listener); };
+}
+
 export async function saveTtsEnabled(enabled: boolean): Promise<void> {
-  ttsEnabledCache.set(enabled);
   await SecureStore.setItemAsync(TTS_ENABLED_KEY, enabled ? "1" : "0");
+  // Update cache and notify listeners AFTER successful write to prevent
+  // cache/storage divergence when SecureStore write fails.
+  ttsEnabledCache.set(enabled);
+  ttsChangeListeners.forEach(fn => fn(enabled));
 }
 
 export async function getTtsEnabled(): Promise<boolean> {
@@ -215,6 +230,7 @@ export async function getTtsEnabled(): Promise<boolean> {
 }
 
 export async function clearAll(): Promise<void> {
+  ttsEnabledCache.clear(undefined);
   await Promise.all([
     clearToken(),
     clearConnectionConfig(),
