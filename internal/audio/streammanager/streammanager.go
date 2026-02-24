@@ -8,7 +8,6 @@ import (
 	"context"
 	"log"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -147,10 +146,6 @@ type Manager[T any] struct {
 
 	pendingMu sync.Mutex
 	pending   map[string]*PendingQueue[T]
-
-	activeStreams  atomic.Int64
-	retryAttempts  atomic.Uint64
-	retryAbandoned atomic.Uint64
 }
 
 // New constructs a Manager from the provided Config.
@@ -227,8 +222,6 @@ func (m *Manager[T]) CreateStream(key string, params SessionParams) (StreamHandl
 	m.streams[key] = handle
 	m.mu.Unlock()
 
-	m.activeStreams.Add(1)
-
 	if m.logger != nil {
 		sid, strid := SplitStreamKey(key)
 		m.logger.Printf("[%s] stream opened session=%s stream=%s", m.tag, sid, strid)
@@ -248,10 +241,6 @@ func (m *Manager[T]) RemoveStream(key string, handle StreamHandle[T]) {
 		ok = false
 	}
 	m.mu.Unlock()
-
-	if ok {
-		m.activeStreams.Add(-1)
-	}
 }
 
 // RemoveStreamByKey removes whatever stream is registered for key and stops it.
@@ -265,7 +254,6 @@ func (m *Manager[T]) RemoveStreamByKey(key string) {
 	m.mu.Unlock()
 
 	if handle != nil {
-		m.activeStreams.Add(-1)
 		handle.Stop()
 	}
 }
@@ -288,7 +276,6 @@ func (m *Manager[T]) CloseAllStreams() []StreamHandle[T] {
 	handles := make([]StreamHandle[T], 0, len(entries))
 	for _, e := range entries {
 		handles = append(handles, e.handle)
-		m.activeStreams.Add(-1)
 		e.handle.Stop()
 	}
 	return handles
@@ -365,8 +352,6 @@ func (m *Manager[T]) retryPending(key string) {
 	params := pq.Params
 	m.pendingMu.Unlock()
 
-	m.retryAttempts.Add(1)
-
 	handle, err := m.CreateStream(key, params)
 	if err != nil {
 		adapterUnavail, _ := m.classifyError(err)
@@ -399,7 +384,6 @@ func (m *Manager[T]) retryPending(key string) {
 			}
 
 			if abandon {
-				m.retryAbandoned.Add(1)
 				if m.logger != nil {
 					sid, strid := SplitStreamKey(key)
 					m.logger.Printf("[%s] retry stream session=%s stream=%s permanent error, dropping pending: %v", m.tag, sid, strid, err)
@@ -454,22 +438,6 @@ func (m *Manager[T]) PendingCount() int {
 	m.pendingMu.Lock()
 	defer m.pendingMu.Unlock()
 	return len(m.pending)
-}
-
-// ActiveStreamCount returns the number of currently registered streams.
-func (m *Manager[T]) ActiveStreamCount() int64 {
-	return m.activeStreams.Load()
-}
-
-// RetryAttempts returns the cumulative number of retry attempts.
-func (m *Manager[T]) RetryAttempts() uint64 {
-	return m.retryAttempts.Load()
-}
-
-// RetryAbandoned returns the number of pending queues abandoned after
-// exhausting retry limits.
-func (m *Manager[T]) RetryAbandoned() uint64 {
-	return m.retryAbandoned.Load()
 }
 
 // ---------------------------------------------------------------------------
