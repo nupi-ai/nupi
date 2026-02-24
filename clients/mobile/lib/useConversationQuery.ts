@@ -59,6 +59,7 @@ export function useConversationQuery(
   const queryClient = useQueryClient();
   const [isPolling, setIsPolling] = useState(false);
   const [pollStartedAt, setPollStartedAt] = useState<number | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [optimisticTurns, setOptimisticTurns] = useState<ConversationTurn[]>([]);
   const consecutiveErrorsRef = useRef(0);
 
@@ -88,6 +89,17 @@ export function useConversationQuery(
     }
   }, [query.failureCount, query.isError, query.isSuccess]);
 
+  // Keep legacy behavior: polling auto-stops after 60 seconds.
+  useEffect(() => {
+    if (!isPolling || !pollStartedAt) return;
+    const remainingMs = Math.max(0, SLOW_PHASE_MS - (Date.now() - pollStartedAt));
+    const timer = setTimeout(() => {
+      setIsPolling(false);
+      setPollStartedAt(null);
+    }, remainingMs);
+    return () => clearTimeout(timer);
+  }, [isPolling, pollStartedAt]);
+
   const startPolling = useCallback(() => {
     consecutiveErrorsRef.current = 0;
     setPollStartedAt(Date.now());
@@ -101,7 +113,12 @@ export function useConversationQuery(
   }, []);
 
   const refresh = useCallback(async () => {
-    await query.refetch();
+    setIsRefreshing(true);
+    try {
+      await query.refetch();
+    } finally {
+      setIsRefreshing(false);
+    }
   }, [query]);
 
   const addOptimistic = useCallback((text: string) => {
@@ -131,11 +148,28 @@ export function useConversationQuery(
     return [...base, ...optimisticTurns];
   }, [query.data, optimisticTurns]);
 
+  // Reconcile optimistic entries with server-confirmed turns one-for-one.
+  useEffect(() => {
+    if (!query.data?.length || !optimisticTurns.length) return;
+    const normalize = (s: string) => s.trim().toLowerCase();
+    setOptimisticTurns(prev => {
+      if (!prev.length) return prev;
+      const remaining = [...prev];
+      for (const turn of query.data) {
+        const idx = remaining.findIndex(
+          opt => opt.origin === turn.origin && normalize(opt.text) === normalize(turn.text),
+        );
+        if (idx !== -1) remaining.splice(idx, 1);
+      }
+      return remaining;
+    });
+  }, [query.data, optimisticTurns.length]);
+
   const error = query.error instanceof Error ? query.error.message : null;
 
   return {
     turns,
-    isLoading: query.isLoading || query.isFetching,
+    isLoading: query.isLoading || isRefreshing,
     isPolling,
     error,
     startPolling,
