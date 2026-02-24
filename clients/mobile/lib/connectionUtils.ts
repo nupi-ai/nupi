@@ -30,6 +30,7 @@ export interface ConnectionRuntimeRefs {
   reconnectTimerRef: MutableRefObject<ReturnType<typeof setTimeout> | null>;
   statusRef: MutableRefObject<ConnectionStatus>;
   prevNetworkConnectedRef: MutableRefObject<boolean | null>;
+  clientRef: MutableRefObject<NupiClient | null>;
 }
 
 export interface StoredCredentials {

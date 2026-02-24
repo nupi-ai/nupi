@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { timestampDate } from "@bufbuild/protobuf/wkt";
 
 import type { NupiClient } from "./connect";
-import type { ConversationTurn as ProtoTurn } from "./gen/nupi_pb";
+import type { ConversationTurn as ProtoTurn } from "./gen/sessions_pb";
 import { raceTimeout } from "./raceTimeout";
 import { useAbortController } from "./useAbortController";
 import { useTimeout } from "./useTimeout";

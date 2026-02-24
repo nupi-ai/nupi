@@ -42,8 +42,21 @@
         {
           "cameraPermission": "Nupi needs camera access to scan QR codes for pairing."
         }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/icon.png",
+          "color": "#1a1a2e",
+          "mode": "production"
+        }
       ]
     ],
+    "extra": {
+      "eas": {
+        "projectId": "YOUR_EAS_PROJECT_ID"
+      }
+    },
     "experiments": {
       "typedRoutes": true,
       "tsconfigPaths": true

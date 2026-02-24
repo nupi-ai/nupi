@@ -31,7 +31,16 @@ interface ConnectionContextValue {
   connect: (config: StoredConnectionConfig, token: string) => Promise<void>;
   disconnect: () => Promise<void>;
   retryConnection: () => void;
+  /** Ref for NotificationProvider to register a pre-disconnect callback.
+   * Called synchronously before unregisterPushToken in disconnect(). */
+  onBeforeDisconnectRef: React.MutableRefObject<(() => void) | null>;
 }
+
+// Stable default ref for the context's default value. This is a plain object
+// matching MutableRefObject shape — only used when rendering outside
+// ConnectionProvider (shouldn't happen). The real ref is created via useRef
+// inside ConnectionProvider and overrides this default.
+const defaultBeforeDisconnectRef = { current: null } as React.MutableRefObject<(() => void) | null>;
 
 const ConnectionContext = createContext<ConnectionContextValue>({
   status: "disconnected",
@@ -45,6 +54,7 @@ const ConnectionContext = createContext<ConnectionContextValue>({
   connect: async () => {},
   disconnect: async () => {},
   retryConnection: () => {},
+  onBeforeDisconnectRef: defaultBeforeDisconnectRef,
 });
 
 export function useConnection() {
@@ -60,6 +70,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const statusRef = useRef<ConnectionStatus>("disconnected");
   const prevNetworkConnectedRef = useRef<boolean | null>(null);
+  const clientRef = useRef<NupiClient | null>(null);
 
   const [status, setStatus] = useSafeState<ConnectionStatus>("disconnected", mountedRef);
   const [client, setClient] = useSafeState<NupiClient | null>(null, mountedRef);
@@ -69,6 +80,9 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
   const [hostInfo, setHostInfo] = useSafeState<string | null>(null, mountedRef);
   const [reconnecting, setReconnecting] = useSafeState(false, mountedRef);
   const [reconnectAttempts, setReconnectAttempts] = useSafeState(0, mountedRef);
+
+  // Keep clientRef in sync so disconnect() can access it before nulling state.
+  clientRef.current = client;
 
   const { isConnected: networkConnected } = useNetworkStatus();
 
@@ -101,11 +115,18 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
       reconnectTimerRef,
       statusRef,
       prevNetworkConnectedRef,
+      clientRef,
     }),
     []
   );
 
-  const { connectWithConfig, disconnect } = useClientLifecycle({ actions, refs });
+  const onBeforeDisconnectRef = useRef<(() => void) | null>(null);
+
+  const { connectWithConfig, disconnect } = useClientLifecycle({
+    actions,
+    refs,
+    onBeforeDisconnectRef,
+  });
   const { retryConnection } = useAutoReconnect({
     networkConnected,
     actions,
@@ -125,6 +146,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
       connect: connectWithConfig,
       disconnect,
       retryConnection,
+      onBeforeDisconnectRef,
     }),
     [
       status,

@@ -307,7 +307,7 @@ func New(opts Options) (*Daemon, error) {
 	if expoToken := os.Getenv("NUPI_EXPO_ACCESS_TOKEN"); expoToken != "" {
 		notifOpts = append(notifOpts, notification.WithAccessToken(expoToken))
 	}
-	notificationService := notification.NewService(opts.Store, bus, notifOpts...)
+	notificationService := notification.NewService(opts.Store, bus, notifOpts)
 	if err := host.Register("notification", func(ctx context.Context) (daemonruntime.Service, error) {
 		return notificationService, nil
 	}); err != nil {

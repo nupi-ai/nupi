@@ -136,7 +136,7 @@ func TestService_LifecycleEvent_TaskCompleted(t *testing.T) {
 	var mu sync.Mutex
 	srv := newExpoTestServer(t, &received, &mu)
 
-	svc := NewService(store, bus, WithExpoURL(srv.URL))
+	svc := NewService(store, bus, []ExpoClientOption{WithExpoURL(srv.URL)})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -189,7 +189,7 @@ func TestService_LifecycleEvent_Error(t *testing.T) {
 	var mu sync.Mutex
 	srv := newExpoTestServer(t, &received, &mu)
 
-	svc := NewService(store, bus, WithExpoURL(srv.URL))
+	svc := NewService(store, bus, []ExpoClientOption{WithExpoURL(srv.URL)})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -239,7 +239,7 @@ func TestService_LifecycleEvent_NilExitCode(t *testing.T) {
 	var mu sync.Mutex
 	srv := newExpoTestServer(t, &received, &mu)
 
-	svc := NewService(store, bus, WithExpoURL(srv.URL))
+	svc := NewService(store, bus, []ExpoClientOption{WithExpoURL(srv.URL)})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -292,7 +292,7 @@ func TestService_LifecycleEvent_UserKill_Suppressed(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	svc := NewService(store, bus, WithExpoURL(srv.URL))
+	svc := NewService(store, bus, []ExpoClientOption{WithExpoURL(srv.URL)})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -329,7 +329,7 @@ func TestService_SpeakEvent_InputNeeded(t *testing.T) {
 	var mu sync.Mutex
 	srv := newExpoTestServer(t, &received, &mu)
 
-	svc := NewService(store, bus, WithExpoURL(srv.URL))
+	svc := NewService(store, bus, []ExpoClientOption{WithExpoURL(srv.URL)})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -369,7 +369,7 @@ func TestService_Deduplication(t *testing.T) {
 	var mu sync.Mutex
 	srv := newExpoTestServer(t, &received, &mu)
 
-	svc := NewService(store, bus, WithExpoURL(srv.URL))
+	svc := NewService(store, bus, []ExpoClientOption{WithExpoURL(srv.URL)})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -420,7 +420,7 @@ func TestService_NoTokens_NoSend(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	svc := NewService(store, bus, WithExpoURL(srv.URL))
+	svc := NewService(store, bus, []ExpoClientOption{WithExpoURL(srv.URL)})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -457,7 +457,7 @@ func TestService_IgnoresRunningState(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	svc := NewService(store, bus, WithExpoURL(srv.URL))
+	svc := NewService(store, bus, []ExpoClientOption{WithExpoURL(srv.URL)})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -496,7 +496,7 @@ func TestService_DeviceNotRegisteredCleanup(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	svc := NewService(store, bus, WithExpoURL(srv.URL))
+	svc := NewService(store, bus, []ExpoClientOption{WithExpoURL(srv.URL)})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -538,7 +538,7 @@ func TestService_SpeakEvent_IgnoresRegularSpeak(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	svc := NewService(store, bus, WithExpoURL(srv.URL))
+	svc := NewService(store, bus, []ExpoClientOption{WithExpoURL(srv.URL)})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -570,7 +570,7 @@ func TestService_SpeakEvent_Completion(t *testing.T) {
 	var mu sync.Mutex
 	srv := newExpoTestServer(t, &received, &mu)
 
-	svc := NewService(store, bus, WithExpoURL(srv.URL))
+	svc := NewService(store, bus, []ExpoClientOption{WithExpoURL(srv.URL)})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -617,7 +617,7 @@ func TestService_ShuttingDown_SuppressesNotifications(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	svc := NewService(store, bus, WithExpoURL(srv.URL))
+	svc := NewService(store, bus, []ExpoClientOption{WithExpoURL(srv.URL)})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -654,7 +654,7 @@ func TestService_SpeakEvent_ErrorMetadata(t *testing.T) {
 	var mu sync.Mutex
 	srv := newExpoTestServer(t, &received, &mu)
 
-	svc := NewService(store, bus, WithExpoURL(srv.URL))
+	svc := NewService(store, bus, []ExpoClientOption{WithExpoURL(srv.URL)})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -691,7 +691,7 @@ func TestService_DedupClearedWhenNoTokens(t *testing.T) {
 	var mu sync.Mutex
 	srv := newExpoTestServer(t, &received, &mu)
 
-	svc := NewService(store, bus, WithExpoURL(srv.URL))
+	svc := NewService(store, bus, []ExpoClientOption{WithExpoURL(srv.URL)})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -749,7 +749,7 @@ func TestService_DuplicateExpoTokens_SinglePush(t *testing.T) {
 	var mu sync.Mutex
 	srv := newExpoTestServer(t, &received, &mu)
 
-	svc := NewService(store, bus, WithExpoURL(srv.URL))
+	svc := NewService(store, bus, []ExpoClientOption{WithExpoURL(srv.URL)})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -800,7 +800,7 @@ func TestService_StaleCleanup_RemovesAllMatchingDevices(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	svc := NewService(store, bus, WithExpoURL(srv.URL))
+	svc := NewService(store, bus, []ExpoClientOption{WithExpoURL(srv.URL)})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -838,7 +838,7 @@ func TestService_PipelineEvent_IdleInputNeeded(t *testing.T) {
 	var mu sync.Mutex
 	srv := newExpoTestServer(t, &received, &mu)
 
-	svc := NewService(store, bus, WithExpoURL(srv.URL))
+	svc := NewService(store, bus, []ExpoClientOption{WithExpoURL(srv.URL)})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -894,7 +894,7 @@ func TestService_PipelineEvent_IgnoresNonNotable(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	svc := NewService(store, bus, WithExpoURL(srv.URL))
+	svc := NewService(store, bus, []ExpoClientOption{WithExpoURL(srv.URL)})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -932,7 +932,7 @@ func TestService_PipelineEvent_UnknownWaitingFor_Ignored(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	svc := NewService(store, bus, WithExpoURL(srv.URL))
+	svc := NewService(store, bus, []ExpoClientOption{WithExpoURL(srv.URL)})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -975,7 +975,7 @@ func TestService_PipelineEvent_EmptySessionID_Ignored(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	svc := NewService(store, bus, WithExpoURL(srv.URL))
+	svc := NewService(store, bus, []ExpoClientOption{WithExpoURL(srv.URL)})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -1013,7 +1013,7 @@ func TestService_PipelineEvent_FallbackBody(t *testing.T) {
 	var mu sync.Mutex
 	srv := newExpoTestServer(t, &received, &mu)
 
-	svc := NewService(store, bus, WithExpoURL(srv.URL))
+	svc := NewService(store, bus, []ExpoClientOption{WithExpoURL(srv.URL)})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -1057,7 +1057,7 @@ func TestService_PanicRecovery_DoesNotCrash(t *testing.T) {
 	// Use a server that will cause a panic inside the service's send path.
 	// We achieve this by creating a service with a nil expo client internally,
 	// but the simpler approach is to test that the dispatchAsync recover works.
-	svc := NewService(store, bus, WithExpoURL("http://127.0.0.1:1")) // unreachable
+	svc := NewService(store, bus, []ExpoClientOption{WithExpoURL("http://127.0.0.1:1")}) // unreachable
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -1084,7 +1084,7 @@ func TestService_PanicRecovery_DoesNotCrash(t *testing.T) {
 }
 
 // TestService_ConcurrentSemaphoreBound verifies that dispatchAsync limits
-// concurrent notification goroutines to maxConcurrentSend (4).
+// concurrent notification goroutines to defaultMaxConcurrentSend (4).
 func TestService_ConcurrentSemaphoreBound(t *testing.T) {
 	t.Parallel()
 	bus := eventbus.New()
@@ -1121,7 +1121,7 @@ func TestService_ConcurrentSemaphoreBound(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	svc := NewService(store, bus, WithExpoURL(srv.URL))
+	svc := NewService(store, bus, []ExpoClientOption{WithExpoURL(srv.URL)})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -1129,7 +1129,7 @@ func TestService_ConcurrentSemaphoreBound(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	// Publish 8 events (2x maxConcurrentSend) with unique session IDs to
+	// Publish 8 events (2x defaultMaxConcurrentSend) with unique session IDs to
 	// bypass dedup. Use different sessions so dedup doesn't collapse them.
 	for i := 0; i < 8; i++ {
 		exitCode := 1
@@ -1142,10 +1142,10 @@ func TestService_ConcurrentSemaphoreBound(t *testing.T) {
 
 	// Wait for semaphore to fill (all 4 slots busy).
 	deadline := time.After(2 * time.Second)
-	for current.Load() < int32(maxConcurrentSend) {
+	for current.Load() < int32(defaultMaxConcurrentSend) {
 		select {
 		case <-deadline:
-			t.Fatalf("timed out waiting for %d concurrent handlers, got %d", maxConcurrentSend, current.Load())
+			t.Fatalf("timed out waiting for %d concurrent handlers, got %d", defaultMaxConcurrentSend, current.Load())
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
@@ -1154,8 +1154,8 @@ func TestService_ConcurrentSemaphoreBound(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	peak := maxConcurrent.Load()
-	if peak > int32(maxConcurrentSend) {
-		t.Errorf("peak concurrent handlers = %d, want <= %d", peak, maxConcurrentSend)
+	if peak > int32(defaultMaxConcurrentSend) {
+		t.Errorf("peak concurrent handlers = %d, want <= %d", peak, defaultMaxConcurrentSend)
 	}
 
 	// Release all blocked handlers.
@@ -1178,7 +1178,7 @@ func TestService_SpeakEvent_BodyTruncation(t *testing.T) {
 	var mu sync.Mutex
 	srv := newExpoTestServer(t, &received, &mu)
 
-	svc := NewService(store, bus, WithExpoURL(srv.URL))
+	svc := NewService(store, bus, []ExpoClientOption{WithExpoURL(srv.URL)})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -1270,7 +1270,7 @@ func TestService_LifecycleEvent_EmptyLabel_FallbackToSessionID(t *testing.T) {
 	var mu sync.Mutex
 	srv := newExpoTestServer(t, &received, &mu)
 
-	svc := NewService(store, bus, WithExpoURL(srv.URL))
+	svc := NewService(store, bus, []ExpoClientOption{WithExpoURL(srv.URL)})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -1318,7 +1318,7 @@ func TestService_LifecycleEvent_EmptySessionID_Ignored(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	svc := NewService(store, bus, WithExpoURL(srv.URL))
+	svc := NewService(store, bus, []ExpoClientOption{WithExpoURL(srv.URL)})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -1352,7 +1352,7 @@ func TestService_PipelineEvent_BodyTruncation(t *testing.T) {
 	var mu sync.Mutex
 	srv := newExpoTestServer(t, &received, &mu)
 
-	svc := NewService(store, bus, WithExpoURL(srv.URL))
+	svc := NewService(store, bus, []ExpoClientOption{WithExpoURL(srv.URL)})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -1385,6 +1385,65 @@ func TestService_PipelineEvent_BodyTruncation(t *testing.T) {
 	}
 	if len(received[0].Body) == 0 {
 		t.Error("body should not be empty after truncation")
+	}
+}
+
+// TestService_ConcurrentDedup verifies that two identical lifecycle events
+// published simultaneously result in at most one push notification (the dedup
+// check-and-set under dedupMu is atomic).
+func TestService_ConcurrentDedup(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	var received []ExpoMessage
+	srv := newExpoTestServer(t, &received, &mu)
+
+	store := &mockTokenStore{}
+	store.addTokens(configstore.PushToken{
+		DeviceID: "dev-1", Token: "ExponentPushToken[concurrent-dedup-test1234]",
+		EnabledEvents: []string{constants.NotificationEventTaskCompleted},
+	})
+
+	bus := eventbus.New()
+	svc := NewService(store, bus, []ExpoClientOption{WithExpoURL(srv.URL)})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(context.Background())
+
+	exitZero := 0
+	// Publish 10 identical events simultaneously.
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			eventbus.Publish(ctx, bus, eventbus.Sessions.Lifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{
+				SessionID: "concurrent-dedup-session",
+				Label:     "test",
+				State:     eventbus.SessionStateStopped,
+				ExitCode:  &exitZero,
+			})
+		}()
+	}
+	wg.Wait()
+
+	// Wait for the single expected notification using the polling helper
+	// instead of a raw time.Sleep (consistent with Review 14 L3 pattern).
+	waitForMessages(t, &received, &mu, 1, 3*time.Second)
+
+	// Allow a brief window to catch any extra (duplicate) deliveries.
+	time.Sleep(500 * time.Millisecond)
+
+	mu.Lock()
+	count := len(received)
+	mu.Unlock()
+
+	// Should have sent exactly 1 notification (dedup protects the rest).
+	if count != 1 {
+		t.Errorf("expected exactly 1 notification, got %d (dedup race?)", count)
 	}
 }
 

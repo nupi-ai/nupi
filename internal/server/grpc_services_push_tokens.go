@@ -21,9 +21,16 @@ const (
 	maxDeviceIDLen  = 256
 )
 
-func (a *authService) RegisterPushToken(ctx context.Context, req *apiv1.RegisterPushTokenRequest) (*apiv1.RegisterPushTokenResponse, error) {
+func (a *authService) requireConfigStore() error {
 	if a.api.configStore == nil {
-		return nil, status.Error(codes.Unavailable, "configuration store unavailable")
+		return status.Error(codes.Unavailable, "configuration store unavailable")
+	}
+	return nil
+}
+
+func (a *authService) RegisterPushToken(ctx context.Context, req *apiv1.RegisterPushTokenRequest) (*apiv1.RegisterPushTokenResponse, error) {
+	if err := a.requireConfigStore(); err != nil {
+		return nil, err
 	}
 
 	token := strings.TrimSpace(req.GetToken())
@@ -90,8 +97,8 @@ func (a *authService) RegisterPushToken(ctx context.Context, req *apiv1.Register
 }
 
 func (a *authService) UnregisterPushToken(ctx context.Context, req *apiv1.UnregisterPushTokenRequest) (*apiv1.UnregisterPushTokenResponse, error) {
-	if a.api.configStore == nil {
-		return nil, status.Error(codes.Unavailable, "configuration store unavailable")
+	if err := a.requireConfigStore(); err != nil {
+		return nil, err
 	}
 
 	deviceID := strings.TrimSpace(req.GetDeviceId())

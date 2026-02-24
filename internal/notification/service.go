@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/url"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -16,13 +17,13 @@ import (
 )
 
 const (
-	dedupWindow           = constants.Duration30Seconds
-	notificationQueue     = 64
-	maxConcurrentSend     = 4
-	maxNotifBodyBytes     = 2048
-	dedupCleanupThreshold = 100
-	dedupHardCap          = 500
-	expoSendTimeout       = 8 * time.Second
+	defaultDedupWindow           = constants.Duration30Seconds
+	defaultNotificationQueue     = 64
+	defaultMaxConcurrentSend     = 4
+	maxNotifBodyBytes            = 2048
+	dedupCleanupThreshold        = 100
+	defaultDedupHardCap          = 500
+	defaultExpoSendTimeout       = 8 * time.Second
 )
 
 // TokenStore abstracts push token storage used by the notification service.
@@ -30,6 +31,29 @@ type TokenStore interface {
 	ListPushTokensForEvent(ctx context.Context, eventType string) ([]configstore.PushToken, error)
 	DeletePushToken(ctx context.Context, deviceID string) error
 	DeletePushTokenIfMatch(ctx context.Context, deviceID, token string) (bool, error)
+}
+
+// ServiceOption configures a Service.
+type ServiceOption func(*Service)
+
+// WithDedupWindow overrides the deduplication window (default 30s).
+func WithDedupWindow(d time.Duration) ServiceOption {
+	return func(s *Service) { s.dedupWindow = d }
+}
+
+// WithMaxConcurrentSend overrides the semaphore limit (default 4).
+func WithMaxConcurrentSend(n int) ServiceOption {
+	return func(s *Service) { s.maxConcurrentSend = n }
+}
+
+// WithDedupHardCap overrides the hard cap on dedup entries (default 500).
+func WithDedupHardCap(n int) ServiceOption {
+	return func(s *Service) { s.dedupHardCap = n }
+}
+
+// WithExpoSendTimeout overrides the per-batch send timeout (default 8s).
+func WithExpoSendTimeout(d time.Duration) ServiceOption {
+	return func(s *Service) { s.expoSendTimeout = d }
 }
 
 // Service subscribes to session lifecycle and conversation speak events,
@@ -55,17 +79,31 @@ type Service struct {
 
 	// sendSem bounds concurrent sendNotification goroutines.
 	sendSem chan struct{}
+
+	// Configurable parameters (set via ServiceOption or defaults).
+	dedupWindow      time.Duration
+	maxConcurrentSend int
+	dedupHardCap     int
+	expoSendTimeout  time.Duration
 }
 
 // NewService creates a notification service.
-func NewService(store TokenStore, bus *eventbus.Bus, opts ...ExpoClientOption) *Service {
-	return &Service{
-		store:   store,
-		bus:     bus,
-		expo:    NewExpoClient(opts...),
-		dedup:   make(map[string]time.Time),
-		sendSem: make(chan struct{}, maxConcurrentSend),
+func NewService(store TokenStore, bus *eventbus.Bus, expoOpts []ExpoClientOption, svcOpts ...ServiceOption) *Service {
+	s := &Service{
+		store:            store,
+		bus:              bus,
+		expo:             NewExpoClient(expoOpts...),
+		dedup:            make(map[string]time.Time),
+		dedupWindow:      defaultDedupWindow,
+		maxConcurrentSend: defaultMaxConcurrentSend,
+		dedupHardCap:     defaultDedupHardCap,
+		expoSendTimeout:  defaultExpoSendTimeout,
 	}
+	for _, opt := range svcOpts {
+		opt(s)
+	}
+	s.sendSem = make(chan struct{}, s.maxConcurrentSend)
+	return s
 }
 
 // Start subscribes to event bus topics and begins consuming events.
@@ -76,14 +114,14 @@ func (s *Service) Start(ctx context.Context) error {
 		s.bus,
 		eventbus.TopicSessionsLifecycle,
 		eventbus.WithSubscriptionName("notification_lifecycle"),
-		eventbus.WithSubscriptionBuffer(notificationQueue),
+		eventbus.WithSubscriptionBuffer(defaultNotificationQueue),
 	)
 
 	s.speakSub = eventbus.Subscribe[eventbus.ConversationSpeakEvent](
 		s.bus,
 		eventbus.TopicConversationSpeak,
 		eventbus.WithSubscriptionName("notification_speak"),
-		eventbus.WithSubscriptionBuffer(notificationQueue),
+		eventbus.WithSubscriptionBuffer(defaultNotificationQueue),
 	)
 
 	// Pipeline events are high-volume; a larger buffer reduces the risk
@@ -345,7 +383,7 @@ func (s *Service) sendNotification(ctx context.Context, sessionID, eventType, so
 	// Bound the Expo API send to prevent slow responses from blocking semaphore
 	// slots for the full service-level context lifetime. With maxConcurrentSend=4
 	// and a 10s HTTP timeout, all slots could be blocked for 10s without this.
-	sendCtx, sendCancel := context.WithTimeout(ctx, expoSendTimeout)
+	sendCtx, sendCancel := context.WithTimeout(ctx, s.expoSendTimeout)
 	defer sendCancel()
 	result, err := s.expo.Send(sendCtx, messages)
 	if err != nil {
@@ -408,7 +446,7 @@ func (s *Service) isDuplicate(key string, receivedAt time.Time) bool {
 	s.dedupMu.Lock()
 	defer s.dedupMu.Unlock()
 
-	if last, ok := s.dedup[key]; ok && receivedAt.Sub(last) < dedupWindow {
+	if last, ok := s.dedup[key]; ok && receivedAt.Sub(last) < s.dedupWindow {
 		return true
 	}
 	s.dedup[key] = receivedAt
@@ -419,13 +457,29 @@ func (s *Service) isDuplicate(key string, receivedAt time.Time) bool {
 	if len(s.dedup) > dedupCleanupThreshold {
 		now := time.Now()
 		for k, v := range s.dedup {
-			if now.Sub(v) >= dedupWindow {
+			if now.Sub(v) >= s.dedupWindow {
 				delete(s.dedup, k)
 			}
 		}
-		// If cleanup didn't bring us below the hard cap, remove oldest entries.
-		if len(s.dedup) > dedupHardCap {
-			clear(s.dedup)
+		// If TTL cleanup didn't bring us below the hard cap, evict the oldest
+		// half of entries. This preserves recent dedup timestamps (avoiding a
+		// window where all dedup protection is lost) while bounding memory.
+		if len(s.dedup) > s.dedupHardCap {
+			type entry struct {
+				key string
+				ts  time.Time
+			}
+			entries := make([]entry, 0, len(s.dedup))
+			for k, v := range s.dedup {
+				entries = append(entries, entry{k, v})
+			}
+			sort.Slice(entries, func(i, j int) bool {
+				return entries[i].ts.Before(entries[j].ts)
+			})
+			evictCount := len(entries) / 2
+			for i := 0; i < evictCount; i++ {
+				delete(s.dedup, entries[i].key)
+			}
 		}
 	}
 

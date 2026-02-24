@@ -48,20 +48,42 @@ export default function InAppNotificationBanner() {
   // so the banner doesn't flash empty text while animating away.
   const lastNotifRef = useRef(currentNotification);
 
+  // L1 fix (Review 14): split into two effects to break the dependency cycle
+  // where the effect depends on `visible` state that it also sets.
+  // Effect 1: slide in when a notification arrives.
   useEffect(() => {
     if (currentNotification) {
       lastNotifRef.current = currentNotification;
       setVisible(true);
       pressedRef.current = false;
-      slideAnim.stopAnimation();
-      slideAnim.setValue(-100);
-      Animated.spring(slideAnim, {
-        toValue: 0,
-        useNativeDriver: true,
-        tension: 80,
-        friction: 12,
-      }).start();
-    } else if (visible) {
+      // L2 fix: wait for stopAnimation to complete before resetting value
+      // and starting the slide-in spring, preventing visual glitches.
+      slideAnim.stopAnimation(() => {
+        slideAnim.setValue(-100);
+        Animated.spring(slideAnim, {
+          toValue: 0,
+          useNativeDriver: true,
+          tension: 80,
+          friction: 12,
+        }).start();
+      });
+    }
+  }, [currentNotification, slideAnim]);
+
+  // Reset tap debounce when notification is dismissed so the next
+  // notification's tap handler is not blocked (H3 review fix).
+  useEffect(() => {
+    if (!currentNotification) {
+      pressedRef.current = false;
+    }
+  }, [currentNotification]);
+
+  // Effect 2: slide out when notification is dismissed (becomes null).
+  const prevNotifRef = useRef(currentNotification);
+  useEffect(() => {
+    const wasShowing = prevNotifRef.current !== null;
+    prevNotifRef.current = currentNotification;
+    if (currentNotification === null && wasShowing && visible) {
       Animated.timing(slideAnim, {
         toValue: -100,
         duration: 200,
@@ -70,7 +92,7 @@ export default function InAppNotificationBanner() {
         if (finished) setVisible(false);
       });
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- slideAnim is a stable ref, never changes
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- slideAnim is a stable Animated.Value ref
   }, [currentNotification, visible]);
 
   if (!visible && !currentNotification) return null;
@@ -82,12 +104,15 @@ export default function InAppNotificationBanner() {
 
   const handlePress = () => {
     // Debounce: prevent duplicate navigation from rapid taps.
+    // Reset occurs in Effect 1 (line ~58) when the next notification arrives,
+    // and in dismiss() below as defense-in-depth.
     if (pressedRef.current) return;
     pressedRef.current = true;
     dismiss();
     if (notif?.url && isValidNotificationUrl(notif.url)) {
       try {
-        router.push(notif.url as any);
+        // URL validated by isValidNotificationUrl(); cast matches app/session/[id].tsx route.
+        router.push(notif.url as `/session/${string}`);
       } catch (err) {
         console.warn("[Notifications] Banner navigate failed:", notif.url, err);
       }
@@ -100,7 +125,10 @@ export default function InAppNotificationBanner() {
         styles.container,
         {
           backgroundColor: colors.surface,
-          top: insets.top + 8,
+          // M6 fix (Review 13): increased offset for Dynamic Island clearance
+          // on newer iPhones (14 Pro+). insets.top accounts for static safe area
+          // but not Dynamic Island expanded states (calls, Live Activities).
+          top: insets.top + 16,
           transform: [{ translateY: slideAnim }],
         },
       ]}
