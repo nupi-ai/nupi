@@ -283,11 +283,6 @@ func (c *Client) Shutdown(ctx context.Context) (*apiv1.ShutdownResponse, error) 
 	return c.daemon.Shutdown(ctx, &apiv1.ShutdownRequest{})
 }
 
-func (c *Client) GetPluginWarnings(ctx context.Context) (*apiv1.GetPluginWarningsResponse, error) {
-	ctx = c.attachToken(ctx)
-	return c.daemon.GetPluginWarnings(ctx, &apiv1.GetPluginWarningsRequest{})
-}
-
 func (c *Client) ReloadPlugins(ctx context.Context) (*apiv1.ReloadPluginsResponse, error) {
 	ctx = c.attachToken(ctx)
 	return c.daemon.ReloadPlugins(ctx, &apiv1.ReloadPluginsRequest{})

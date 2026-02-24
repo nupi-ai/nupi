@@ -267,149 +267,6 @@ func (x *ShutdownResponse) GetMessage() string {
 	return ""
 }
 
-// GetPluginWarningsRequest asks for plugin discovery warnings.
-type GetPluginWarningsRequest struct {
-	state         protoimpl.MessageState
-	sizeCache     protoimpl.SizeCache
-	unknownFields protoimpl.UnknownFields
-}
-
-func (x *GetPluginWarningsRequest) Reset() {
-	*x = GetPluginWarningsRequest{}
-	if protoimpl.UnsafeEnabled {
-		mi := &file_daemon_proto_msgTypes[4]
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		ms.StoreMessageInfo(mi)
-	}
-}
-
-func (x *GetPluginWarningsRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*GetPluginWarningsRequest) ProtoMessage() {}
-
-func (x *GetPluginWarningsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[4]
-	if protoimpl.UnsafeEnabled && x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use GetPluginWarningsRequest.ProtoReflect.Descriptor instead.
-func (*GetPluginWarningsRequest) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{4}
-}
-
-// PluginWarning mirrors PluginDiscoveryWarning from the plugin loader.
-type PluginWarning struct {
-	state         protoimpl.MessageState
-	sizeCache     protoimpl.SizeCache
-	unknownFields protoimpl.UnknownFields
-
-	Dir   string `protobuf:"bytes,1,opt,name=dir,proto3" json:"dir,omitempty"`
-	Error string `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
-}
-
-func (x *PluginWarning) Reset() {
-	*x = PluginWarning{}
-	if protoimpl.UnsafeEnabled {
-		mi := &file_daemon_proto_msgTypes[5]
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		ms.StoreMessageInfo(mi)
-	}
-}
-
-func (x *PluginWarning) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*PluginWarning) ProtoMessage() {}
-
-func (x *PluginWarning) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[5]
-	if protoimpl.UnsafeEnabled && x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use PluginWarning.ProtoReflect.Descriptor instead.
-func (*PluginWarning) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{5}
-}
-
-func (x *PluginWarning) GetDir() string {
-	if x != nil {
-		return x.Dir
-	}
-	return ""
-}
-
-func (x *PluginWarning) GetError() string {
-	if x != nil {
-		return x.Error
-	}
-	return ""
-}
-
-// GetPluginWarningsResponse returns warnings from the last plugin scan.
-type GetPluginWarningsResponse struct {
-	state         protoimpl.MessageState
-	sizeCache     protoimpl.SizeCache
-	unknownFields protoimpl.UnknownFields
-
-	Warnings []*PluginWarning `protobuf:"bytes,1,rep,name=warnings,proto3" json:"warnings,omitempty"`
-}
-
-func (x *GetPluginWarningsResponse) Reset() {
-	*x = GetPluginWarningsResponse{}
-	if protoimpl.UnsafeEnabled {
-		mi := &file_daemon_proto_msgTypes[6]
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		ms.StoreMessageInfo(mi)
-	}
-}
-
-func (x *GetPluginWarningsResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*GetPluginWarningsResponse) ProtoMessage() {}
-
-func (x *GetPluginWarningsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[6]
-	if protoimpl.UnsafeEnabled && x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use GetPluginWarningsResponse.ProtoReflect.Descriptor instead.
-func (*GetPluginWarningsResponse) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{6}
-}
-
-func (x *GetPluginWarningsResponse) GetWarnings() []*PluginWarning {
-	if x != nil {
-		return x.Warnings
-	}
-	return nil
-}
-
 // ReloadPluginsRequest triggers a hot-reload of all plugin indices.
 type ReloadPluginsRequest struct {
 	state         protoimpl.MessageState
@@ -420,7 +277,7 @@ type ReloadPluginsRequest struct {
 func (x *ReloadPluginsRequest) Reset() {
 	*x = ReloadPluginsRequest{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_daemon_proto_msgTypes[7]
+		mi := &file_daemon_proto_msgTypes[4]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -433,7 +290,7 @@ func (x *ReloadPluginsRequest) String() string {
 func (*ReloadPluginsRequest) ProtoMessage() {}
 
 func (x *ReloadPluginsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[7]
+	mi := &file_daemon_proto_msgTypes[4]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -446,7 +303,7 @@ func (x *ReloadPluginsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReloadPluginsRequest.ProtoReflect.Descriptor instead.
 func (*ReloadPluginsRequest) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{7}
+	return file_daemon_proto_rawDescGZIP(), []int{4}
 }
 
 // ReloadPluginsResponse confirms the reload.
@@ -461,7 +318,7 @@ type ReloadPluginsResponse struct {
 func (x *ReloadPluginsResponse) Reset() {
 	*x = ReloadPluginsResponse{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_daemon_proto_msgTypes[8]
+		mi := &file_daemon_proto_msgTypes[5]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -474,7 +331,7 @@ func (x *ReloadPluginsResponse) String() string {
 func (*ReloadPluginsResponse) ProtoMessage() {}
 
 func (x *ReloadPluginsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[8]
+	mi := &file_daemon_proto_msgTypes[5]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -487,7 +344,7 @@ func (x *ReloadPluginsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReloadPluginsResponse.ProtoReflect.Descriptor instead.
 func (*ReloadPluginsResponse) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{8}
+	return file_daemon_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *ReloadPluginsResponse) GetMessage() string {
@@ -513,7 +370,7 @@ type LanguageInfo struct {
 func (x *LanguageInfo) Reset() {
 	*x = LanguageInfo{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_daemon_proto_msgTypes[9]
+		mi := &file_daemon_proto_msgTypes[6]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -526,7 +383,7 @@ func (x *LanguageInfo) String() string {
 func (*LanguageInfo) ProtoMessage() {}
 
 func (x *LanguageInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[9]
+	mi := &file_daemon_proto_msgTypes[6]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -539,7 +396,7 @@ func (x *LanguageInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LanguageInfo.ProtoReflect.Descriptor instead.
 func (*LanguageInfo) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{9}
+	return file_daemon_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *LanguageInfo) GetIso1() string {
@@ -579,7 +436,7 @@ type ListLanguagesRequest struct {
 func (x *ListLanguagesRequest) Reset() {
 	*x = ListLanguagesRequest{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_daemon_proto_msgTypes[10]
+		mi := &file_daemon_proto_msgTypes[7]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -592,7 +449,7 @@ func (x *ListLanguagesRequest) String() string {
 func (*ListLanguagesRequest) ProtoMessage() {}
 
 func (x *ListLanguagesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[10]
+	mi := &file_daemon_proto_msgTypes[7]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -605,7 +462,7 @@ func (x *ListLanguagesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListLanguagesRequest.ProtoReflect.Descriptor instead.
 func (*ListLanguagesRequest) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{10}
+	return file_daemon_proto_rawDescGZIP(), []int{7}
 }
 
 type ListLanguagesResponse struct {
@@ -619,7 +476,7 @@ type ListLanguagesResponse struct {
 func (x *ListLanguagesResponse) Reset() {
 	*x = ListLanguagesResponse{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_daemon_proto_msgTypes[11]
+		mi := &file_daemon_proto_msgTypes[8]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
@@ -632,7 +489,7 @@ func (x *ListLanguagesResponse) String() string {
 func (*ListLanguagesResponse) ProtoMessage() {}
 
 func (x *ListLanguagesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_daemon_proto_msgTypes[11]
+	mi := &file_daemon_proto_msgTypes[8]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -645,7 +502,7 @@ func (x *ListLanguagesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListLanguagesResponse.ProtoReflect.Descriptor instead.
 func (*ListLanguagesResponse) Descriptor() ([]byte, []int) {
-	return file_daemon_proto_rawDescGZIP(), []int{11}
+	return file_daemon_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *ListLanguagesResponse) GetLanguages() []*LanguageInfo {
@@ -686,40 +543,30 @@ var file_daemon_proto_rawDesc = []byte{
 	0x71, 0x75, 0x65, 0x73, 0x74, 0x22, 0x2c, 0x0a, 0x10, 0x53, 0x68, 0x75, 0x74, 0x64, 0x6f, 0x77,
 	0x6e, 0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x12, 0x18, 0x0a, 0x07, 0x6d, 0x65, 0x73,
 	0x73, 0x61, 0x67, 0x65, 0x18, 0x01, 0x20, 0x01, 0x28, 0x09, 0x52, 0x07, 0x6d, 0x65, 0x73, 0x73,
-	0x61, 0x67, 0x65, 0x22, 0x1a, 0x0a, 0x18, 0x47, 0x65, 0x74, 0x50, 0x6c, 0x75, 0x67, 0x69, 0x6e,
-	0x57, 0x61, 0x72, 0x6e, 0x69, 0x6e, 0x67, 0x73, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x22,
-	0x37, 0x0a, 0x0d, 0x50, 0x6c, 0x75, 0x67, 0x69, 0x6e, 0x57, 0x61, 0x72, 0x6e, 0x69, 0x6e, 0x67,
-	0x12, 0x10, 0x0a, 0x03, 0x64, 0x69, 0x72, 0x18, 0x01, 0x20, 0x01, 0x28, 0x09, 0x52, 0x03, 0x64,
-	0x69, 0x72, 0x12, 0x14, 0x0a, 0x05, 0x65, 0x72, 0x72, 0x6f, 0x72, 0x18, 0x02, 0x20, 0x01, 0x28,
-	0x09, 0x52, 0x05, 0x65, 0x72, 0x72, 0x6f, 0x72, 0x22, 0x53, 0x0a, 0x19, 0x47, 0x65, 0x74, 0x50,
-	0x6c, 0x75, 0x67, 0x69, 0x6e, 0x57, 0x61, 0x72, 0x6e, 0x69, 0x6e, 0x67, 0x73, 0x52, 0x65, 0x73,
-	0x70, 0x6f, 0x6e, 0x73, 0x65, 0x12, 0x36, 0x0a, 0x08, 0x77, 0x61, 0x72, 0x6e, 0x69, 0x6e, 0x67,
-	0x73, 0x18, 0x01, 0x20, 0x03, 0x28, 0x0b, 0x32, 0x1a, 0x2e, 0x6e, 0x75, 0x70, 0x69, 0x2e, 0x61,
-	0x70, 0x69, 0x2e, 0x76, 0x31, 0x2e, 0x50, 0x6c, 0x75, 0x67, 0x69, 0x6e, 0x57, 0x61, 0x72, 0x6e,
-	0x69, 0x6e, 0x67, 0x52, 0x08, 0x77, 0x61, 0x72, 0x6e, 0x69, 0x6e, 0x67, 0x73, 0x22, 0x16, 0x0a,
-	0x14, 0x52, 0x65, 0x6c, 0x6f, 0x61, 0x64, 0x50, 0x6c, 0x75, 0x67, 0x69, 0x6e, 0x73, 0x52, 0x65,
-	0x71, 0x75, 0x65, 0x73, 0x74, 0x22, 0x31, 0x0a, 0x15, 0x52, 0x65, 0x6c, 0x6f, 0x61, 0x64, 0x50,
-	0x6c, 0x75, 0x67, 0x69, 0x6e, 0x73, 0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x12, 0x18,
-	0x0a, 0x07, 0x6d, 0x65, 0x73, 0x73, 0x61, 0x67, 0x65, 0x18, 0x01, 0x20, 0x01, 0x28, 0x09, 0x52,
-	0x07, 0x6d, 0x65, 0x73, 0x73, 0x61, 0x67, 0x65, 0x22, 0x7c, 0x0a, 0x0c, 0x4c, 0x61, 0x6e, 0x67,
-	0x75, 0x61, 0x67, 0x65, 0x49, 0x6e, 0x66, 0x6f, 0x12, 0x12, 0x0a, 0x04, 0x69, 0x73, 0x6f, 0x31,
-	0x18, 0x01, 0x20, 0x01, 0x28, 0x09, 0x52, 0x04, 0x69, 0x73, 0x6f, 0x31, 0x12, 0x14, 0x0a, 0x05,
-	0x62, 0x63, 0x70, 0x34, 0x37, 0x18, 0x02, 0x20, 0x01, 0x28, 0x09, 0x52, 0x05, 0x62, 0x63, 0x70,
-	0x34, 0x37, 0x12, 0x21, 0x0a, 0x0c, 0x65, 0x6e, 0x67, 0x6c, 0x69, 0x73, 0x68, 0x5f, 0x6e, 0x61,
-	0x6d, 0x65, 0x18, 0x03, 0x20, 0x01, 0x28, 0x09, 0x52, 0x0b, 0x65, 0x6e, 0x67, 0x6c, 0x69, 0x73,
-	0x68, 0x4e, 0x61, 0x6d, 0x65, 0x12, 0x1f, 0x0a, 0x0b, 0x6e, 0x61, 0x74, 0x69, 0x76, 0x65, 0x5f,
-	0x6e, 0x61, 0x6d, 0x65, 0x18, 0x04, 0x20, 0x01, 0x28, 0x09, 0x52, 0x0a, 0x6e, 0x61, 0x74, 0x69,
-	0x76, 0x65, 0x4e, 0x61, 0x6d, 0x65, 0x22, 0x16, 0x0a, 0x14, 0x4c, 0x69, 0x73, 0x74, 0x4c, 0x61,
-	0x6e, 0x67, 0x75, 0x61, 0x67, 0x65, 0x73, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x22, 0x50,
-	0x0a, 0x15, 0x4c, 0x69, 0x73, 0x74, 0x4c, 0x61, 0x6e, 0x67, 0x75, 0x61, 0x67, 0x65, 0x73, 0x52,
-	0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x12, 0x37, 0x0a, 0x09, 0x6c, 0x61, 0x6e, 0x67, 0x75,
-	0x61, 0x67, 0x65, 0x73, 0x18, 0x01, 0x20, 0x03, 0x28, 0x0b, 0x32, 0x19, 0x2e, 0x6e, 0x75, 0x70,
-	0x69, 0x2e, 0x61, 0x70, 0x69, 0x2e, 0x76, 0x31, 0x2e, 0x4c, 0x61, 0x6e, 0x67, 0x75, 0x61, 0x67,
-	0x65, 0x49, 0x6e, 0x66, 0x6f, 0x52, 0x09, 0x6c, 0x61, 0x6e, 0x67, 0x75, 0x61, 0x67, 0x65, 0x73,
-	0x42, 0x31, 0x5a, 0x2f, 0x67, 0x69, 0x74, 0x68, 0x75, 0x62, 0x2e, 0x63, 0x6f, 0x6d, 0x2f, 0x6e,
-	0x75, 0x70, 0x69, 0x2d, 0x61, 0x69, 0x2f, 0x6e, 0x75, 0x70, 0x69, 0x2f, 0x69, 0x6e, 0x74, 0x65,
-	0x72, 0x6e, 0x61, 0x6c, 0x2f, 0x61, 0x70, 0x69, 0x2f, 0x67, 0x72, 0x70, 0x63, 0x2f, 0x76, 0x31,
-	0x3b, 0x76, 0x31, 0x62, 0x06, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x33,
+	0x61, 0x67, 0x65, 0x22, 0x16, 0x0a, 0x14, 0x52, 0x65, 0x6c, 0x6f, 0x61, 0x64, 0x50, 0x6c, 0x75,
+	0x67, 0x69, 0x6e, 0x73, 0x52, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x22, 0x31, 0x0a, 0x15, 0x52,
+	0x65, 0x6c, 0x6f, 0x61, 0x64, 0x50, 0x6c, 0x75, 0x67, 0x69, 0x6e, 0x73, 0x52, 0x65, 0x73, 0x70,
+	0x6f, 0x6e, 0x73, 0x65, 0x12, 0x18, 0x0a, 0x07, 0x6d, 0x65, 0x73, 0x73, 0x61, 0x67, 0x65, 0x18,
+	0x01, 0x20, 0x01, 0x28, 0x09, 0x52, 0x07, 0x6d, 0x65, 0x73, 0x73, 0x61, 0x67, 0x65, 0x22, 0x7c,
+	0x0a, 0x0c, 0x4c, 0x61, 0x6e, 0x67, 0x75, 0x61, 0x67, 0x65, 0x49, 0x6e, 0x66, 0x6f, 0x12, 0x12,
+	0x0a, 0x04, 0x69, 0x73, 0x6f, 0x31, 0x18, 0x01, 0x20, 0x01, 0x28, 0x09, 0x52, 0x04, 0x69, 0x73,
+	0x6f, 0x31, 0x12, 0x14, 0x0a, 0x05, 0x62, 0x63, 0x70, 0x34, 0x37, 0x18, 0x02, 0x20, 0x01, 0x28,
+	0x09, 0x52, 0x05, 0x62, 0x63, 0x70, 0x34, 0x37, 0x12, 0x21, 0x0a, 0x0c, 0x65, 0x6e, 0x67, 0x6c,
+	0x69, 0x73, 0x68, 0x5f, 0x6e, 0x61, 0x6d, 0x65, 0x18, 0x03, 0x20, 0x01, 0x28, 0x09, 0x52, 0x0b,
+	0x65, 0x6e, 0x67, 0x6c, 0x69, 0x73, 0x68, 0x4e, 0x61, 0x6d, 0x65, 0x12, 0x1f, 0x0a, 0x0b, 0x6e,
+	0x61, 0x74, 0x69, 0x76, 0x65, 0x5f, 0x6e, 0x61, 0x6d, 0x65, 0x18, 0x04, 0x20, 0x01, 0x28, 0x09,
+	0x52, 0x0a, 0x6e, 0x61, 0x74, 0x69, 0x76, 0x65, 0x4e, 0x61, 0x6d, 0x65, 0x22, 0x16, 0x0a, 0x14,
+	0x4c, 0x69, 0x73, 0x74, 0x4c, 0x61, 0x6e, 0x67, 0x75, 0x61, 0x67, 0x65, 0x73, 0x52, 0x65, 0x71,
+	0x75, 0x65, 0x73, 0x74, 0x22, 0x50, 0x0a, 0x15, 0x4c, 0x69, 0x73, 0x74, 0x4c, 0x61, 0x6e, 0x67,
+	0x75, 0x61, 0x67, 0x65, 0x73, 0x52, 0x65, 0x73, 0x70, 0x6f, 0x6e, 0x73, 0x65, 0x12, 0x37, 0x0a,
+	0x09, 0x6c, 0x61, 0x6e, 0x67, 0x75, 0x61, 0x67, 0x65, 0x73, 0x18, 0x01, 0x20, 0x03, 0x28, 0x0b,
+	0x32, 0x19, 0x2e, 0x6e, 0x75, 0x70, 0x69, 0x2e, 0x61, 0x70, 0x69, 0x2e, 0x76, 0x31, 0x2e, 0x4c,
+	0x61, 0x6e, 0x67, 0x75, 0x61, 0x67, 0x65, 0x49, 0x6e, 0x66, 0x6f, 0x52, 0x09, 0x6c, 0x61, 0x6e,
+	0x67, 0x75, 0x61, 0x67, 0x65, 0x73, 0x42, 0x31, 0x5a, 0x2f, 0x67, 0x69, 0x74, 0x68, 0x75, 0x62,
+	0x2e, 0x63, 0x6f, 0x6d, 0x2f, 0x6e, 0x75, 0x70, 0x69, 0x2d, 0x61, 0x69, 0x2f, 0x6e, 0x75, 0x70,
+	0x69, 0x2f, 0x69, 0x6e, 0x74, 0x65, 0x72, 0x6e, 0x61, 0x6c, 0x2f, 0x61, 0x70, 0x69, 0x2f, 0x67,
+	0x72, 0x70, 0x63, 0x2f, 0x76, 0x31, 0x3b, 0x76, 0x31, 0x62, 0x06, 0x70, 0x72, 0x6f, 0x74, 0x6f,
+	0x33,
 }
 
 var (
@@ -734,29 +581,25 @@ func file_daemon_proto_rawDescGZIP() []byte {
 	return file_daemon_proto_rawDescData
 }
 
-var file_daemon_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_daemon_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
 var file_daemon_proto_goTypes = []interface{}{
-	(*DaemonStatusRequest)(nil),       // 0: nupi.api.v1.DaemonStatusRequest
-	(*DaemonStatusResponse)(nil),      // 1: nupi.api.v1.DaemonStatusResponse
-	(*ShutdownRequest)(nil),           // 2: nupi.api.v1.ShutdownRequest
-	(*ShutdownResponse)(nil),          // 3: nupi.api.v1.ShutdownResponse
-	(*GetPluginWarningsRequest)(nil),  // 4: nupi.api.v1.GetPluginWarningsRequest
-	(*PluginWarning)(nil),             // 5: nupi.api.v1.PluginWarning
-	(*GetPluginWarningsResponse)(nil), // 6: nupi.api.v1.GetPluginWarningsResponse
-	(*ReloadPluginsRequest)(nil),      // 7: nupi.api.v1.ReloadPluginsRequest
-	(*ReloadPluginsResponse)(nil),     // 8: nupi.api.v1.ReloadPluginsResponse
-	(*LanguageInfo)(nil),              // 9: nupi.api.v1.LanguageInfo
-	(*ListLanguagesRequest)(nil),      // 10: nupi.api.v1.ListLanguagesRequest
-	(*ListLanguagesResponse)(nil),     // 11: nupi.api.v1.ListLanguagesResponse
+	(*DaemonStatusRequest)(nil),   // 0: nupi.api.v1.DaemonStatusRequest
+	(*DaemonStatusResponse)(nil),  // 1: nupi.api.v1.DaemonStatusResponse
+	(*ShutdownRequest)(nil),       // 2: nupi.api.v1.ShutdownRequest
+	(*ShutdownResponse)(nil),      // 3: nupi.api.v1.ShutdownResponse
+	(*ReloadPluginsRequest)(nil),  // 4: nupi.api.v1.ReloadPluginsRequest
+	(*ReloadPluginsResponse)(nil), // 5: nupi.api.v1.ReloadPluginsResponse
+	(*LanguageInfo)(nil),          // 6: nupi.api.v1.LanguageInfo
+	(*ListLanguagesRequest)(nil),  // 7: nupi.api.v1.ListLanguagesRequest
+	(*ListLanguagesResponse)(nil), // 8: nupi.api.v1.ListLanguagesResponse
 }
 var file_daemon_proto_depIdxs = []int32{
-	5, // 0: nupi.api.v1.GetPluginWarningsResponse.warnings:type_name -> nupi.api.v1.PluginWarning
-	9, // 1: nupi.api.v1.ListLanguagesResponse.languages:type_name -> nupi.api.v1.LanguageInfo
-	2, // [2:2] is the sub-list for method output_type
-	2, // [2:2] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	6, // 0: nupi.api.v1.ListLanguagesResponse.languages:type_name -> nupi.api.v1.LanguageInfo
+	1, // [1:1] is the sub-list for method output_type
+	1, // [1:1] is the sub-list for method input_type
+	1, // [1:1] is the sub-list for extension type_name
+	1, // [1:1] is the sub-list for extension extendee
+	0, // [0:1] is the sub-list for field type_name
 }
 
 func init() { file_daemon_proto_init() }
@@ -814,42 +657,6 @@ func file_daemon_proto_init() {
 			}
 		}
 		file_daemon_proto_msgTypes[4].Exporter = func(v interface{}, i int) interface{} {
-			switch v := v.(*GetPluginWarningsRequest); i {
-			case 0:
-				return &v.state
-			case 1:
-				return &v.sizeCache
-			case 2:
-				return &v.unknownFields
-			default:
-				return nil
-			}
-		}
-		file_daemon_proto_msgTypes[5].Exporter = func(v interface{}, i int) interface{} {
-			switch v := v.(*PluginWarning); i {
-			case 0:
-				return &v.state
-			case 1:
-				return &v.sizeCache
-			case 2:
-				return &v.unknownFields
-			default:
-				return nil
-			}
-		}
-		file_daemon_proto_msgTypes[6].Exporter = func(v interface{}, i int) interface{} {
-			switch v := v.(*GetPluginWarningsResponse); i {
-			case 0:
-				return &v.state
-			case 1:
-				return &v.sizeCache
-			case 2:
-				return &v.unknownFields
-			default:
-				return nil
-			}
-		}
-		file_daemon_proto_msgTypes[7].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*ReloadPluginsRequest); i {
 			case 0:
 				return &v.state
@@ -861,7 +668,7 @@ func file_daemon_proto_init() {
 				return nil
 			}
 		}
-		file_daemon_proto_msgTypes[8].Exporter = func(v interface{}, i int) interface{} {
+		file_daemon_proto_msgTypes[5].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*ReloadPluginsResponse); i {
 			case 0:
 				return &v.state
@@ -873,7 +680,7 @@ func file_daemon_proto_init() {
 				return nil
 			}
 		}
-		file_daemon_proto_msgTypes[9].Exporter = func(v interface{}, i int) interface{} {
+		file_daemon_proto_msgTypes[6].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*LanguageInfo); i {
 			case 0:
 				return &v.state
@@ -885,7 +692,7 @@ func file_daemon_proto_init() {
 				return nil
 			}
 		}
-		file_daemon_proto_msgTypes[10].Exporter = func(v interface{}, i int) interface{} {
+		file_daemon_proto_msgTypes[7].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*ListLanguagesRequest); i {
 			case 0:
 				return &v.state
@@ -897,7 +704,7 @@ func file_daemon_proto_init() {
 				return nil
 			}
 		}
-		file_daemon_proto_msgTypes[11].Exporter = func(v interface{}, i int) interface{} {
+		file_daemon_proto_msgTypes[8].Exporter = func(v interface{}, i int) interface{} {
 			switch v := v.(*ListLanguagesResponse); i {
 			case 0:
 				return &v.state
@@ -916,7 +723,7 @@ func file_daemon_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: file_daemon_proto_rawDesc,
 			NumEnums:      0,
-			NumMessages:   12,
+			NumMessages:   9,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

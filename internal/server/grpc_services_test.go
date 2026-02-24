@@ -1463,7 +1463,7 @@ func TestAuthorizeGRPCMethodRoleMatrix(t *testing.T) {
 	})
 
 	t.Run("allowed_for_readonly_method", func(t *testing.T) {
-		err := apiServer.AuthorizeGRPCMethod(readOnlyCtx, "/nupi.api.v1.DaemonService/GetPluginWarnings")
+		err := apiServer.AuthorizeGRPCMethod(readOnlyCtx, "/nupi.api.v1.RecordingsService/ListRecordings")
 		if err != nil {
 			t.Fatalf("expected success, got %v", err)
 		}

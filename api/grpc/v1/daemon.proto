@@ -30,20 +30,6 @@ message ShutdownResponse {
   string message = 1;
 }
 
-// GetPluginWarningsRequest asks for plugin discovery warnings.
-message GetPluginWarningsRequest {}
-
-// PluginWarning mirrors PluginDiscoveryWarning from the plugin loader.
-message PluginWarning {
-  string dir = 1;
-  string error = 2;
-}
-
-// GetPluginWarningsResponse returns warnings from the last plugin scan.
-message GetPluginWarningsResponse {
-  repeated PluginWarning warnings = 1;
-}
-
 // ReloadPluginsRequest triggers a hot-reload of all plugin indices.
 message ReloadPluginsRequest {}
 

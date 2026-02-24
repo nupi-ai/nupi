@@ -106,41 +106,6 @@ var pluginsListCmd = &cobra.Command{
 	},
 }
 
-// pluginsWarningsCmd shows plugin discovery warnings
-var pluginsWarningsCmd = &cobra.Command{
-	Use:   "warnings",
-	Short: "Show plugin discovery warnings",
-	Long: `Displays warnings for plugins that were skipped during discovery due to manifest errors.
-
-This shows the current state from the most recent plugin discovery scan. Warnings will
-disappear when manifests are fixed and the daemon reloads plugins (e.g., after restart
-or config change). For historical tracking, check daemon logs.`,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		stdout := cmd.OutOrStdout()
-		return withPlainClientTimeout(constants.Duration5Seconds, "failed to connect to daemon", func(ctx context.Context, gc *grpcclient.Client) error {
-			resp, err := gc.GetPluginWarnings(ctx)
-			if err != nil {
-				return fmt.Errorf("failed to get plugin warnings: %w", err)
-			}
-
-			warnings := resp.GetWarnings()
-			if len(warnings) == 0 {
-				fmt.Fprintln(stdout, "No plugin discovery warnings.")
-				fmt.Fprintln(stdout, "All plugins loaded successfully.")
-				return nil
-			}
-
-			fmt.Fprintf(stdout, "Found %d plugin(s) with warnings:\n\n", len(warnings))
-			for i, w := range warnings {
-				fmt.Fprintf(stdout, "%d. %s\n", i+1, w.GetDir())
-				fmt.Fprintf(stdout, "   Error: %s\n\n", w.GetError())
-			}
-
-			return nil
-		})
-	},
-}
-
 // pluginsInfoCmd shows detailed plugin info
 var pluginsInfoCmd = &cobra.Command{
 	Use:   "info <namespace/slug>",
@@ -750,7 +715,6 @@ func init() {
 	pluginsCmd.AddCommand(pluginsRebuildCmd)
 	pluginsCmd.AddCommand(pluginsListCmd)
 	pluginsCmd.AddCommand(pluginsInfoCmd)
-	pluginsCmd.AddCommand(pluginsWarningsCmd)
 	pluginsCmd.AddCommand(pluginsInstallCmd)
 	pluginsCmd.AddCommand(pluginsUninstallCmd)
 	pluginsCmd.AddCommand(pluginsEnableCmd)

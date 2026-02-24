@@ -41,17 +41,6 @@ type AdaptersController interface {
 	StopSlot(ctx context.Context, slot adapters.Slot) (*adapters.BindingStatus, error)
 }
 
-// PluginDiscoveryWarning represents a plugin that was skipped during discovery.
-type PluginDiscoveryWarning struct {
-	Dir   string `json:"dir"`
-	Error string `json:"error"`
-}
-
-// PluginWarningsProvider exposes plugin discovery warnings for observability.
-type PluginWarningsProvider interface {
-	GetDiscoveryWarnings() []PluginDiscoveryWarning
-}
-
 // PluginReloader reloads all plugin indices (pipeline cleaners, tool handlers, index).
 type PluginReloader interface {
 	Reload() error
@@ -96,4 +85,14 @@ type ConfigStore interface {
 	QuickstartStatus(ctx context.Context) (bool, *time.Time, error)
 	PendingQuickstartSlots(ctx context.Context) ([]string, error)
 	MarkQuickstartCompleted(ctx context.Context, complete bool) error
+	SavePushToken(ctx context.Context, deviceID, token string, enabledEvents []string, authTokenID string) error
+	SavePushTokenOwned(ctx context.Context, deviceID, token string, enabledEvents []string, authTokenID string) (bool, error)
+	GetPushToken(ctx context.Context, deviceID string) (*configstore.PushToken, error)
+	DeletePushToken(ctx context.Context, deviceID string) error
+	DeletePushTokenOwned(ctx context.Context, deviceID, authTokenID string) (bool, error)
+	DeletePushTokenIfMatch(ctx context.Context, deviceID, token string) (bool, error)
+	DeletePushTokensByAuthToken(ctx context.Context, authTokenID string) error
+	DeleteAllPushTokens(ctx context.Context) error
+	ListPushTokens(ctx context.Context) ([]configstore.PushToken, error)
+	ListPushTokensForEvent(ctx context.Context, eventType string) ([]configstore.PushToken, error)
 }

@@ -83,7 +83,6 @@ const (
 	// transportMonitorInterval is the polling period for TLS certificate
 	// file-change detection in the transport monitor goroutine.
 	transportMonitorInterval = constants.Duration5Seconds
-
 )
 
 // New creates a new daemon instance bound to the provided configuration store.
@@ -185,7 +184,6 @@ func New(opts Options) (*Daemon, error) {
 	apiServer.SetAudioIngress(runtimebridge.AudioIngressProvider(audioIngressService))
 	apiServer.SetAudioEgress(runtimebridge.AudioEgressController(audioEgressService))
 	apiServer.SetEventBus(bus)
-	apiServer.SetPluginWarningsProvider(runtimebridge.PluginWarningsProvider(pluginService))
 	apiServer.SetPluginReloader(runtimebridge.PluginReloaderProvider(pluginService))
 
 	if err := host.Register("audio_ingress", func(ctx context.Context) (daemonruntime.Service, error) {

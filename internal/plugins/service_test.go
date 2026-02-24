@@ -195,12 +195,6 @@ spec:
 	if _, ok := svc.ToolHandlerPluginFor("mycommand"); !ok {
 		t.Fatal("expected valid tool handler to be loaded despite invalid sibling plugin")
 	}
-
-	// Warnings should be recorded.
-	warnings := svc.GetDiscoveryWarnings()
-	if len(warnings) == 0 {
-		t.Fatal("expected discovery warnings for invalid plugin")
-	}
 }
 
 // --- Tool Handler Plugin Loading and Execution ---
@@ -468,60 +462,6 @@ func TestServicePipelineTransformExecution(t *testing.T) {
 	}
 	if result.Text != "HELLO WORLD" {
 		t.Fatalf("expected 'HELLO WORLD', got %q", result.Text)
-	}
-}
-
-// --- Discovery warnings via Service ---
-
-func TestServiceLastDiscoveryWarnings(t *testing.T) {
-	skipIfNoBun(t)
-	t.Parallel()
-
-	root := t.TempDir()
-
-	// Create a valid plugin.
-	writePlugin(t, root, "test", "ok-handler", "tool-handler", `module.exports = {
-  name: "ok",
-  commands: ["okcmd"],
-  detect: function(output) { return true; }
-};`)
-
-	// Create an invalid plugin (missing slug in manifest).
-	invalidDir := filepath.Join(root, "plugins", "test", "bad-handler")
-	if err := os.MkdirAll(invalidDir, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	badYAML := `apiVersion: nap.nupi.ai/v1alpha1
-kind: Plugin
-type: tool-handler
-metadata:
-  name: Bad Handler
-spec:
-  main: main.js`
-	if err := os.WriteFile(filepath.Join(invalidDir, "plugin.yaml"), []byte(badYAML), 0o644); err != nil {
-		t.Fatalf("write bad manifest: %v", err)
-	}
-
-	svc := plugins.NewService(root)
-	if err := svc.Start(context.Background()); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer svc.Shutdown(context.Background())
-
-	warnings := svc.GetDiscoveryWarnings()
-	if len(warnings) == 0 {
-		t.Fatal("expected at least one discovery warning")
-	}
-
-	foundBad := false
-	for _, w := range warnings {
-		if filepath.Base(w.Dir) == "bad-handler" {
-			foundBad = true
-			break
-		}
-	}
-	if !foundBad {
-		t.Fatalf("expected warning for bad-handler, got warnings: %v", warnings)
 	}
 }
 
