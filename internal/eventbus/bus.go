@@ -16,21 +16,6 @@ type Bus struct {
 	topicBuffers  map[Topic]int
 	topicPolicies map[Topic]DeliveryPolicy
 	nextID        uint64
-	observerMu    sync.RWMutex
-	observers     []Observer
-}
-
-// Observer receives notifications for every published envelope.
-type Observer interface {
-	OnPublish(Envelope)
-}
-
-// ObserverFunc adapts a function to the Observer interface.
-type ObserverFunc func(Envelope)
-
-// OnPublish invokes the underlying function.
-func (f ObserverFunc) OnPublish(env Envelope) {
-	f(env)
 }
 
 // New constructs a bus with default topic buffer sizes.
@@ -100,15 +85,6 @@ func WithTopicBuffer(topic Topic, size int) BusOption {
 	}
 }
 
-// WithObserver registers an observer invoked for every published event.
-func WithObserver(observer Observer) BusOption {
-	return func(b *Bus) {
-		if observer != nil {
-			b.observers = append(b.observers, observer)
-		}
-	}
-}
-
 // WithTopicPolicy overrides the delivery policy for a specific topic.
 func WithTopicPolicy(topic Topic, policy DeliveryPolicy) BusOption {
 	return func(b *Bus) {
@@ -137,8 +113,6 @@ func (b *Bus) publish(ctx context.Context, env Envelope) {
 		sub.deliver(ctx, env, b.logger)
 	}
 	b.mu.RUnlock()
-
-	b.notifyObservers(env)
 }
 
 // Subscribe registers a subscriber for the given topic.
@@ -390,29 +364,5 @@ func (s *Subscription) recordDrop(logger *log.Logger, reason string) {
 			name = "subscription"
 		}
 		logger.Printf("[eventbus] dropped event #%d for %s on topic %s (%s)", count, name, s.topic, reason)
-	}
-}
-
-// AddObserver registers additional observers at runtime.
-// If b is nil the call is a no-op.
-func (b *Bus) AddObserver(observer Observer) {
-	if b == nil || observer == nil {
-		return
-	}
-	b.observerMu.Lock()
-	b.observers = append(b.observers, observer)
-	b.observerMu.Unlock()
-}
-
-func (b *Bus) notifyObservers(env Envelope) {
-	b.observerMu.RLock()
-	observers := b.observers
-	b.observerMu.RUnlock()
-
-	for _, observer := range observers {
-		if observer == nil {
-			continue
-		}
-		observer.OnPublish(env)
 	}
 }

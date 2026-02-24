@@ -63,7 +63,7 @@ type PipelineProvider interface {
 // Option configures optional behaviour on the Service.
 type Option func(*Service)
 
-// WithLogger overrides the logger used for observability output.
+// WithLogger overrides the logger used for service output.
 func WithLogger(logger *log.Logger) Option {
 	return func(s *Service) {
 		if logger != nil {

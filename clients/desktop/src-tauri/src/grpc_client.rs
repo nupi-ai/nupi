@@ -291,8 +291,6 @@ pub struct VoiceStreamSummary {
     pub stream_id: String,
     pub bytes_uploaded: u64,
     pub ingress_source: String,
-    pub playback_chunks: u64,
-    pub playback_bytes: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub playback_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1323,7 +1321,7 @@ impl GrpcClient {
         bytes_uploaded: u64,
     ) -> Result<VoiceStreamSummary, GrpcClientError> {
         let mut playback_error: Option<String> = None;
-        let playback_metrics = if subscribe_playback {
+        let playback_path = if subscribe_playback {
             if cancel_flag.load(Ordering::SeqCst) {
                 return Err(GrpcClientError::Audio(CANCELLED_MESSAGE.into()));
             }
@@ -1347,14 +1345,10 @@ impl GrpcClient {
                         }
                     };
                     match result {
-                        Ok(metrics) => metrics,
+                        Ok(saved_path) => saved_path,
                         Err(err) => {
                             playback_error = Some(err.to_string());
-                            PlaybackMetrics {
-                                chunks: 0,
-                                bytes: 0,
-                                saved_path: None,
-                            }
+                            None
                         }
                     }
                 }
@@ -1362,23 +1356,15 @@ impl GrpcClient {
                     .capture_playback(session_id, &stream_id, playback_output.clone())
                     .await
                 {
-                    Ok(metrics) => metrics,
+                    Ok(saved_path) => saved_path,
                     Err(err) => {
                         playback_error = Some(err.to_string());
-                        PlaybackMetrics {
-                            chunks: 0,
-                            bytes: 0,
-                            saved_path: None,
-                        }
+                        None
                     }
                 },
             }
         } else {
-            PlaybackMetrics {
-                chunks: 0,
-                bytes: 0,
-                saved_path: None,
-            }
+            None
         };
 
         if cancel_flag.load(Ordering::SeqCst) {
@@ -1390,9 +1376,7 @@ impl GrpcClient {
             stream_id,
             bytes_uploaded,
             ingress_source,
-            playback_chunks: playback_metrics.chunks,
-            playback_bytes: playback_metrics.bytes,
-            playback_path: playback_metrics.saved_path,
+            playback_path,
             playback_error,
         })
     }
@@ -1406,7 +1390,7 @@ impl GrpcClient {
         session_id: &str,
         stream_id: &str,
         playback_output: Option<PathBuf>,
-    ) -> Result<PlaybackMetrics, GrpcClientError> {
+    ) -> Result<Option<String>, GrpcClientError> {
         let mut client =
             nupi_api::audio_service_client::AudioServiceClient::new(self.channel.clone());
 
@@ -1422,7 +1406,6 @@ impl GrpcClient {
         let response = client.stream_audio_out(request).await?;
         let mut stream = response.into_inner();
 
-        let mut chunks = 0u64;
         let mut bytes = 0u64;
         let mut format_summary: Option<AudioFormatSummary> = None;
         let mut wav_writer: Option<WavWriter<std::io::BufWriter<std::fs::File>>> = None;
@@ -1490,10 +1473,6 @@ impl GrpcClient {
                     }
                 }
 
-                if !data.is_empty() {
-                    chunks += 1;
-                }
-
                 if chunk.last {
                     break;
                 }
@@ -1508,11 +1487,8 @@ impl GrpcClient {
             }
         }
 
-        Ok(PlaybackMetrics {
-            chunks,
-            bytes,
-            saved_path,
-        })
+        let _ = bytes;
+        Ok(saved_path)
     }
 
     // -----------------------------------------------------------------------
@@ -1699,17 +1675,6 @@ impl GrpcClient {
         String::from_utf8(data)
             .map_err(|e| GrpcClientError::Config(format!("recording is not valid UTF-8: {e}")))
     }
-}
-
-// ---------------------------------------------------------------------------
-// Playback metrics (internal)
-// ---------------------------------------------------------------------------
-
-#[derive(Debug)]
-struct PlaybackMetrics {
-    chunks: u64,
-    bytes: u64,
-    saved_path: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

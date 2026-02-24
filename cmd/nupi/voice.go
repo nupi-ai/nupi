@@ -166,8 +166,7 @@ func voiceStart(cmd *cobra.Command, _ []string) error {
 
 		var playbackWG sync.WaitGroup
 		var playbackErr error
-		var playbackBytes int64
-		var playbackChunks int
+		var playbackReceived bool
 
 		if !noPlayback {
 			targetStream := playbackStream
@@ -209,8 +208,9 @@ func voiceStart(cmd *cobra.Command, _ []string) error {
 						continue
 					}
 
-					playbackChunks++
-					playbackBytes += int64(len(chunk.GetData()))
+					if len(chunk.GetData()) > 0 {
+						playbackReceived = true
+					}
 
 					chunkFormat := mapper.FromProtoAudioFormat(resp.GetFormat())
 
@@ -283,12 +283,10 @@ func voiceStart(cmd *cobra.Command, _ []string) error {
 		}
 
 		payload := map[string]any{
-			"session_id":      sessionID,
-			"stream_id":       streamID,
-			"bytes_uploaded":  counter.n,
-			"ingress_source":  input.description,
-			"playback_chunks": playbackChunks,
-			"playback_bytes":  playbackBytes,
+			"session_id":     sessionID,
+			"stream_id":      streamID,
+			"bytes_uploaded": counter.n,
+			"ingress_source": input.description,
 		}
 
 		stdout := out.w
@@ -297,8 +295,8 @@ func voiceStart(cmd *cobra.Command, _ []string) error {
 			HumanReadable: func() error {
 				fmt.Fprintf(stdout, "Uploaded %d bytes from %s to session %s/%s\n", counter.n, input.description, sessionID, streamID)
 				if !noPlayback {
-					if playbackBytes > 0 {
-						fmt.Fprintf(stdout, "Received %d playback chunks (%d bytes)\n", playbackChunks, playbackBytes)
+					if playbackReceived {
+						fmt.Fprintln(stdout, "Received playback audio")
 						if outputPath != "" {
 							fmt.Fprintf(stdout, "Saved playback audio to %s\n", outputPath)
 						}

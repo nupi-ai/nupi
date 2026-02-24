@@ -1734,7 +1734,7 @@ func TestVoicePipelineTTSAdapterError(t *testing.T) {
 
 // TestVoicePipelineGoroutineLifecycle verifies that after a full pipeline
 // lifecycle (start → process audio → shutdown), no goroutines are leaked
-// from the voice services. Uses deterministic service metrics instead of
+// from the voice services. Uses deterministic service counters instead of
 // global goroutine counts which are sensitive to unrelated runtime goroutines.
 func TestVoicePipelineGoroutineLifecycle(t *testing.T) {
 	ctx := context.Background()

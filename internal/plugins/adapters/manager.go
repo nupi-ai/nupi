@@ -1026,6 +1026,9 @@ func computePlanFingerprint(binding Binding, manifest *manifest.Manifest, manife
 	write(strings.TrimSpace(rawConfig))
 
 	if manifest != nil && manifest.Adapter != nil {
+		write(strings.TrimSpace(manifest.Metadata.Name))
+		write(strings.TrimSpace(manifest.Metadata.Slug))
+		write(strings.TrimSpace(manifest.Metadata.Version))
 		spec := manifest.Adapter
 		write(strings.TrimSpace(spec.Slot))
 		write(strings.TrimSpace(spec.Entrypoint.Runtime))

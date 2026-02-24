@@ -426,7 +426,7 @@ export default function SessionTerminalScreen() {
           setVoiceCommandStatus("thinking");
           startPolling();
         } else {
-          // L2 fix (Review 10): log full error object for stack trace debugging.
+          // L2 fix (Review 10): log full error object for debugging.
           console.error("[voice-command] send failed:", e);
           setVoiceCommandStatus("error");
           removeLastOptimistic();
