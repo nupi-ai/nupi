@@ -46,6 +46,14 @@ const POLL_REQUEST_TIMEOUT = 5_000;
 const INITIAL_LIMIT = 20;
 const POLL_LIMIT = 10;
 
+interface PollState {
+  active: boolean;
+  inFlightToken: number | null;
+  startedAt: number;
+  consecutiveErrors: number;
+  token: number;
+}
+
 /**
  * Custom hook for conversation history management with adaptive polling.
  *
@@ -70,10 +78,14 @@ export function useConversation(
   const [error, setError] = useState<string | null>(null);
 
   const mountedRef = useRef(true);
-  const pollingRef = useRef(false);
+  const pollStateRef = useRef<PollState>({
+    active: false,
+    inFlightToken: null,
+    startedAt: 0,
+    consecutiveErrors: 0,
+    token: 0,
+  });
   const pollTimer = useTimeout();
-  const pollStartRef = useRef(0);
-  const fetchingRef = useRef(false);
   // M3 fix: AbortController for cancelling in-flight requests on cleanup.
   const pollAbort = useAbortController();
   // L3 fix: AbortController for cancelling in-flight refresh requests.
@@ -84,8 +96,6 @@ export function useConversation(
   // M2 fix: track isConnected via ref for access inside polling callbacks.
   const isConnectedRef = useRef(isConnected);
   isConnectedRef.current = isConnected;
-  // M1 fix (Review 9): consecutive error counter for poll backoff.
-  const consecutiveErrorsRef = useRef(0);
 
   const fetchTurns = useCallback(
     async (offset: number, limit: number, signal?: AbortSignal) => {
@@ -109,18 +119,31 @@ export function useConversation(
     [client, sessionId],
   );
 
+  const fetchRecentTurns = useCallback(
+    async (signal?: AbortSignal) => {
+      // Probe with limit=0 to discover total count without transferring turns.
+      const probe = await fetchTurns(0, 0, signal);
+      if (!probe || signal?.aborted) return null;
+      // Fetch the most recent INITIAL_LIMIT turns.
+      const recentOffset = Math.max(0, probe.total - INITIAL_LIMIT);
+      return fetchTurns(recentOffset, INITIAL_LIMIT, signal);
+    },
+    [fetchTurns],
+  );
+
   // Ref for the latest poll tick — timers call through this to avoid stale closures.
-  const pollTickRef = useRef<() => void>(() => {});
+  const pollTickRef = useRef<(token: number) => void>(() => {});
 
   useEffect(() => {
-    pollTickRef.current = async () => {
+    pollTickRef.current = async (token: number) => {
+      const state = pollStateRef.current;
       // M2 fix: skip poll tick when disconnected.
-      if (!pollingRef.current || !mountedRef.current || fetchingRef.current || !client || !isConnectedRef.current) return;
-      fetchingRef.current = true;
+      if (!state.active || state.token !== token || !mountedRef.current || state.inFlightToken === token || !client || !isConnectedRef.current) return;
+      state.inFlightToken = token;
 
       // M3 fix: use AbortController so cleanup can cancel in-flight polls.
       // H1 fix (Review 11): per-request timeout prevents a stuck RPC from
-      // blocking all subsequent polls (fetchingRef stays true indefinitely).
+      // blocking all subsequent polls.
       const controller = new AbortController();
       pollAbort.set(controller);
       const offset = serverTotalRef.current;
@@ -136,17 +159,19 @@ export function useConversation(
         result = null;
       } finally {
         pollAbort.clearIfCurrent(controller);
-        fetchingRef.current = false;
+        if (state.inFlightToken === token) {
+          state.inFlightToken = null;
+        }
       }
 
-      if (!pollingRef.current || !mountedRef.current) return;
+      if (!state.active || state.token !== token || !mountedRef.current) return;
 
       if (!result) {
         // M1 fix (Review 9): backoff on consecutive poll errors to avoid
         // hammering an unresponsive server (~45 failed requests in 60s).
-        consecutiveErrorsRef.current++;
+        state.consecutiveErrors += 1;
       } else {
-        consecutiveErrorsRef.current = 0;
+        state.consecutiveErrors = 0;
 
         // L1 fix (Review 9): detect server-side conversation truncation.
         // If server total dropped below our tracked offset, reset to avoid
@@ -176,10 +201,10 @@ export function useConversation(
       }
 
       // Schedule next poll
-      if (!pollingRef.current || !mountedRef.current) return;
-      const elapsed = Date.now() - pollStartRef.current;
+      if (!state.active || state.token !== token || !mountedRef.current) return;
+      const elapsed = Date.now() - state.startedAt;
       if (elapsed >= SLOW_PHASE_MS) {
-        pollingRef.current = false;
+        state.active = false;
         setIsPolling(false);
         // M3 fix: clear stale error when polling auto-stops.
         setError(null);
@@ -187,8 +212,8 @@ export function useConversation(
       }
       let interval = elapsed < FAST_PHASE_MS ? FAST_INTERVAL : SLOW_INTERVAL;
       // M1 fix (Review 9): after 3+ consecutive errors, backoff to slow interval.
-      if (consecutiveErrorsRef.current >= 3) interval = SLOW_INTERVAL;
-      pollTimer.schedule(() => pollTickRef.current(), interval);
+      if (state.consecutiveErrors >= 3) interval = SLOW_INTERVAL;
+      pollTimer.schedule(() => pollTickRef.current(token), interval);
     };
   }, [client, fetchTurns, pollAbort, pollTimer]);
 
@@ -203,77 +228,71 @@ export function useConversation(
     setError(null);
 
     (async () => {
-      // Probe with limit=0 to discover total count without transferring turns.
-      const probe = await fetchTurns(0, 0, controller.signal);
-      if (controller.signal.aborted) return;
-      if (!probe) {
+      const result = await fetchRecentTurns(controller.signal);
+      if (controller.signal.aborted || !mountedRef.current) return;
+      if (!result) {
         setIsLoading(false);
         return;
       }
-      // Fetch the most recent INITIAL_LIMIT turns.
-      const recentOffset = Math.max(0, probe.total - INITIAL_LIMIT);
-      const result = await fetchTurns(recentOffset, INITIAL_LIMIT, controller.signal);
-      if (controller.signal.aborted) return;
-      if (result) {
-        serverTotalRef.current = result.total;
-        setTurns(result.turns);
-      }
+      serverTotalRef.current = result.total;
+      setTurns(result.turns);
       setIsLoading(false);
     })();
 
     return () => {
       controller.abort();
     };
-  }, [client, sessionId, fetchTurns]);
+  }, [client, sessionId, fetchRecentTurns]);
 
   const startPolling = useCallback(() => {
+    if (!mountedRef.current) return;
     // M2 fix (Review 6): clear stale error from previous polling session so
     // the error banner doesn't persist when a new voice command starts polling.
     setError(null);
+    const state = pollStateRef.current;
     // M1 fix (Review 9): reset error counter on new polling session.
-    consecutiveErrorsRef.current = 0;
+    state.consecutiveErrors = 0;
     // H1 fix: restart fast phase when a new voice command arrives during slow phase.
-    pollStartRef.current = Date.now();
-    if (pollingRef.current) {
+    state.startedAt = Date.now();
+    if (state.active) {
       // Cancel current (potentially slow-phase) timer and reschedule at fast interval.
-      pollTimer.schedule(() => pollTickRef.current(), FAST_INTERVAL);
+      pollTimer.schedule(() => pollTickRef.current(state.token), FAST_INTERVAL);
       return;
     }
-    pollingRef.current = true;
+    state.active = true;
+    state.token += 1;
     setIsPolling(true);
-    pollTimer.schedule(() => pollTickRef.current(), FAST_INTERVAL);
+    pollTimer.schedule(() => pollTickRef.current(state.token), FAST_INTERVAL);
   }, [pollTimer]);
 
   const stopPolling = useCallback(() => {
-    pollingRef.current = false;
+    const state = pollStateRef.current;
+    state.active = false;
+    state.token += 1;
     pollTimer.clear();
+    pollAbort.abort();
     setIsPolling(false);
-  }, [pollTimer]);
+  }, [pollAbort, pollTimer]);
 
   const refresh = useCallback(async () => {
     if (!client) return;
     // L3 fix: abort any previous in-flight refresh and use AbortController.
     const controller = refreshAbort.abortAndCreate();
     setIsLoading(true);
-    // Probe total, then fetch most recent turns.
-    const probe = await fetchTurns(0, 0, controller.signal);
-    if (!probe || !mountedRef.current) {
+    const result = await fetchRecentTurns(controller.signal);
+    if (!result || !mountedRef.current) {
       // Only clear ref if still ours — a concurrent refresh may have superseded.
       refreshAbort.clearIfCurrent(controller);
       setIsLoading(false);
       return;
     }
-    const recentOffset = Math.max(0, probe.total - INITIAL_LIMIT);
-    const result = await fetchTurns(recentOffset, INITIAL_LIMIT, controller.signal);
     // Only clear ref if still ours — a concurrent refresh may have superseded.
     refreshAbort.clearIfCurrent(controller);
     if (!mountedRef.current) return;
-    if (result) {
-      serverTotalRef.current = result.total;
-      setTurns(result.turns);
-    }
+    serverTotalRef.current = result.total;
+    setTurns(result.turns);
     setIsLoading(false);
-  }, [client, fetchTurns, refreshAbort]);
+  }, [client, fetchRecentTurns, refreshAbort]);
 
   const addOptimistic = useCallback((text: string) => {
     setTurns(prev => [
@@ -300,7 +319,9 @@ export function useConversation(
   useEffect(() => {
     return () => {
       mountedRef.current = false;
-      pollingRef.current = false;
+      const state = pollStateRef.current;
+      state.active = false;
+      state.token += 1;
       // M3 fix: abort any in-flight request on unmount.
       pollAbort.abort();
       // L3 fix: abort any in-flight refresh on unmount.
