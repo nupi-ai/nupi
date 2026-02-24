@@ -54,12 +54,6 @@ type Service struct {
 
 	// sendSem bounds concurrent sendNotification goroutines.
 	sendSem chan struct{}
-
-	// Counters for observability (logged on shutdown).
-	metricSent    atomic.Int64
-	metricFailed  atomic.Int64
-	metricDeduped atomic.Int64
-	metricCleaned atomic.Int64
 }
 
 // NewService creates a notification service.
@@ -91,10 +85,8 @@ func (s *Service) Start(ctx context.Context) error {
 		eventbus.WithSubscriptionBuffer(notificationQueue),
 	)
 
-	// M3/R5: Pipeline events are high-volume; a larger buffer reduces the risk
+	// Pipeline events are high-volume; a larger buffer reduces the risk
 	// of dropping notable idle-state events under heavy terminal output.
-	// Longer-term fix: introduce a dedicated topic so tool handlers publish
-	// idle notifications directly instead of filtering the full pipeline stream.
 	s.pipelineSub = eventbus.Subscribe[eventbus.PipelineMessageEvent](
 		s.bus,
 		eventbus.TopicPipelineCleaned,
@@ -120,8 +112,6 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		return err
 	}
 	err := eventbus.WaitForWorkers(ctx, &s.asyncWG)
-	log.Printf("[Notification] shutdown: sent=%d failed=%d deduped=%d cleaned=%d",
-		s.metricSent.Load(), s.metricFailed.Load(), s.metricDeduped.Load(), s.metricCleaned.Load())
 
 	// Release dedup map memory now that all workers are done.
 	s.dedupMu.Lock()
@@ -161,8 +151,8 @@ func (s *Service) dispatchAsync(ctx context.Context, fn func()) {
 	case <-ctx.Done():
 		return
 	}
-	// Add to WaitGroup BEFORE launching goroutine so Shutdown's WaitForWorkers
-	// cannot return zero while a goroutine is about to start (H1 race fix).
+	// Add to WaitGroup before launching the goroutine so Shutdown does not
+	// finish while a worker is about to start.
 	s.asyncWG.Add(1)
 	go func() {
 		defer s.asyncWG.Done()
@@ -257,8 +247,7 @@ func (s *Service) handlePipelineEvent(ctx context.Context, evt eventbus.Pipeline
 	if body == "" {
 		body = fmt.Sprintf("Session is waiting for %s", waitingFor)
 	}
-	// L2 fix: strip terminal control sequences from tool handler prompt text
-	// before sending as push notification (could contain raw terminal output).
+	// Strip terminal control sequences from tool handler prompt text.
 	body = sanitize.StripControlChars(body)
 	body = sanitize.TruncateUTF8(body, maxNotifBodyBytes)
 
@@ -300,8 +289,7 @@ func (s *Service) handleSpeakEvent(ctx context.Context, evt eventbus.Conversatio
 	}
 
 	title := "Nupi: " + eventLabel(eventType)
-	// M2 fix (Review 13): strip control chars before truncating, consistent
-	// with handlePipelineEvent. Speak error messages may contain ANSI codes.
+	// Strip control chars before truncating; speak messages may contain ANSI codes.
 	body := sanitize.StripControlChars(evt.Text)
 	body = sanitize.TruncateUTF8(body, maxNotifBodyBytes)
 	s.sendNotification(ctx, evt.SessionID, eventType, "speak", title, body, receivedAt)
@@ -310,7 +298,6 @@ func (s *Service) handleSpeakEvent(ctx context.Context, evt eventbus.Conversatio
 func (s *Service) sendNotification(ctx context.Context, sessionID, eventType, source, title, body string, receivedAt time.Time) {
 	dk := dedupKey(sessionID, eventType, source, body)
 	if s.isDuplicate(dk, receivedAt) {
-		s.metricDeduped.Add(1)
 		return
 	}
 
@@ -361,16 +348,13 @@ func (s *Service) sendNotification(ctx context.Context, sessionID, eventType, so
 	defer sendCancel()
 	result, err := s.expo.Send(sendCtx, messages)
 	if err != nil {
-		// M1 fix (Review 13): on partial batch failure, count any successful
-		// tickets from earlier batches instead of marking all as failed.
+		// On partial batch failure, keep successful tickets from earlier batches.
 		var partialOK int64
 		for _, t := range result.Tickets {
 			if t.Status == "ok" {
 				partialOK++
 			}
 		}
-		s.metricSent.Add(partialOK)
-		s.metricFailed.Add(int64(len(messages)) - partialOK)
 		log.Printf("[Notification] send push: %v (partial ok=%d)", err, partialOK)
 		// Process stale token cleanup from partial results.
 		s.cleanupStaleTokens(ctx, result.DeviceNotRegistered, tokens)
@@ -379,23 +363,17 @@ func (s *Service) sendNotification(ctx context.Context, sessionID, eventType, so
 		return
 	}
 
-	// H3/R5 fix: count only successful tickets, not total messages sent.
-	// Individual tickets can report errors (e.g., DeviceNotRegistered)
-	// even when the batch request succeeds.
+	// Count only successful tickets; a successful batch can still contain
+	// individual ticket errors (for example DeviceNotRegistered).
 	var okCount int64
 	for _, t := range result.Tickets {
 		if t.Status == "ok" {
 			okCount++
 		}
 	}
-	s.metricSent.Add(okCount)
-	if errCount := int64(len(messages)) - okCount; errCount > 0 {
-		s.metricFailed.Add(errCount)
-	}
 
-	// M1 fix: if all tickets failed (e.g., rate-limited), clear dedup so the
-	// notification can be retried on the next event instead of being blocked
-	// for the full 30s dedup window.
+	// If all tickets failed, clear dedup so the notification can be retried
+	// on the next event instead of waiting for the full dedup window.
 	if okCount == 0 && len(messages) > 0 {
 		s.clearDedup(dk)
 	}
@@ -422,12 +400,9 @@ func dedupKey(sessionID, eventType, source, body string) string {
 // synchronously in the consume callback) so that dedup timing is not skewed
 // by async dispatch delays.
 //
-// H6 note (Review 14): check-and-set is atomic under dedupMu. Two concurrent
-// events with the same key cannot both pass: the first acquires the lock and
-// sets the timestamp; the second sees it and returns true. The window between
-// isDuplicate returning false and the eventual clearDedup (on send failure) is
-// intentional — during that window, duplicates are suppressed, which is correct
-// because a send is in progress.
+// Check-and-set is atomic under dedupMu. Two concurrent events with the same
+// key cannot both pass. The window between isDuplicate returning false and
+// clearDedup on send failure is intentional while send is in progress.
 func (s *Service) isDuplicate(key string, receivedAt time.Time) bool {
 	s.dedupMu.Lock()
 	defer s.dedupMu.Unlock()
@@ -458,8 +433,6 @@ func (s *Service) clearDedup(key string) {
 }
 
 // cleanupStaleTokens removes all stale tokens from the store in a single pass.
-// H7 fix (Review 14): accepts a slice of stale tokens and processes them in one
-// bounded context, instead of creating a separate context per token (N+1 pattern).
 func (s *Service) cleanupStaleTokens(ctx context.Context, staleTokens []string, tokens []configstore.PushToken) {
 	if len(staleTokens) == 0 {
 		return
@@ -478,14 +451,11 @@ func (s *Service) cleanupStaleTokens(ctx context.Context, staleTokens []string, 
 		if !staleSet[pt.Token] {
 			continue
 		}
-		// M6 fix: use DeletePushTokenIfMatch to only delete when the stored
-		// token still matches the stale value. This prevents removing a freshly
-		// re-registered valid token if a concurrent RegisterPushToken RPC ran.
+		// Delete only when the stored token still matches the stale value.
 		deleted, err := s.store.DeletePushTokenIfMatch(cleanupCtx, pt.DeviceID, pt.Token)
 		if err != nil {
 			log.Printf("[Notification] cleanup stale token for device %q: %v", pt.DeviceID, err)
 		} else if deleted {
-			s.metricCleaned.Add(1)
 			log.Printf("[Notification] removed stale push token for device %q (DeviceNotRegistered)", pt.DeviceID)
 		}
 	}

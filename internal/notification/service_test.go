@@ -80,7 +80,7 @@ func (m *mockTokenStore) DeletePushTokenIfMatch(_ context.Context, deviceID, tok
 	return false, nil
 }
 
-// L3 fix (Review 14): replace fragile time.Sleep(time.Second) negative
+// replace fragile time.Sleep(time.Second) negative
 // assertions with a polling helper that checks the counter at short intervals
 // for a bounded duration. Fails the test only if the counter becomes non-zero.
 func assertNoRequestsWithin(t *testing.T, counter *atomic.Int32, duration time.Duration, msg string) {
@@ -225,7 +225,7 @@ func TestService_LifecycleEvent_Error(t *testing.T) {
 	}
 }
 
-// M4/R5: verify that nil ExitCode produces a generic error body without "(code ...)".
+// verify that nil ExitCode produces a generic error body without "(code ...)".
 func TestService_LifecycleEvent_NilExitCode(t *testing.T) {
 	t.Parallel()
 	bus := eventbus.New()
@@ -312,7 +312,7 @@ func TestService_LifecycleEvent_UserKill_Suppressed(t *testing.T) {
 		Reason:    eventbus.SessionReasonKilled,
 	})
 
-	// L3 fix (Review 14): polling-based negative assertion instead of fixed sleep.
+	// polling-based negative assertion instead of fixed sleep.
 	assertNoRequestsWithin(t, &requestCount, 500*time.Millisecond, "user-initiated kill")
 }
 
@@ -436,7 +436,7 @@ func TestService_NoTokens_NoSend(t *testing.T) {
 		ExitCode:  &exitCode,
 	})
 
-	// L3 fix (Review 14): polling-based negative assertion instead of fixed sleep.
+	// polling-based negative assertion instead of fixed sleep.
 	assertNoRequestsWithin(t, &requestCount, 500*time.Millisecond, "no tokens")
 }
 
@@ -472,7 +472,7 @@ func TestService_IgnoresRunningState(t *testing.T) {
 		State:     eventbus.SessionStateRunning,
 	})
 
-	// L3 fix (Review 14): polling-based negative assertion instead of fixed sleep.
+	// polling-based negative assertion instead of fixed sleep.
 	assertNoRequestsWithin(t, &requestCount, 500*time.Millisecond, "running state")
 }
 
@@ -553,7 +553,7 @@ func TestService_SpeakEvent_IgnoresRegularSpeak(t *testing.T) {
 		Text:      "Here is the TTS response for the user",
 	})
 
-	// L3 fix (Review 14): polling-based negative assertion instead of fixed sleep.
+	// polling-based negative assertion instead of fixed sleep.
 	assertNoRequestsWithin(t, &requestCount, 500*time.Millisecond, "regular speak")
 }
 
@@ -637,7 +637,7 @@ func TestService_ShuttingDown_SuppressesNotifications(t *testing.T) {
 		ExitCode:  &exitCode,
 	})
 
-	// L3 fix (Review 14): polling-based negative assertion instead of fixed sleep.
+	// polling-based negative assertion instead of fixed sleep.
 	assertNoRequestsWithin(t, &requestCount, 500*time.Millisecond, "after shutdown")
 }
 
@@ -910,11 +910,11 @@ func TestService_PipelineEvent_IgnoresNonNotable(t *testing.T) {
 		Annotations: map[string]string{constants.MetadataKeyIdleState: "timeout"},
 	})
 
-	// L3 fix (Review 14): polling-based negative assertion instead of fixed sleep.
+	// polling-based negative assertion instead of fixed sleep.
 	assertNoRequestsWithin(t, &requestCount, 500*time.Millisecond, "non-notable pipeline event")
 }
 
-// M5/R8: verify that unknown waiting_for values are ignored by the pipeline handler.
+// verify that unknown waiting_for values are ignored by the pipeline handler.
 func TestService_PipelineEvent_UnknownWaitingFor_Ignored(t *testing.T) {
 	t.Parallel()
 	bus := eventbus.New()
@@ -953,11 +953,11 @@ func TestService_PipelineEvent_UnknownWaitingFor_Ignored(t *testing.T) {
 		},
 	})
 
-	// L3 fix (Review 14): polling-based negative assertion instead of fixed sleep.
+	// polling-based negative assertion instead of fixed sleep.
 	assertNoRequestsWithin(t, &requestCount, 500*time.Millisecond, "unknown waiting_for")
 }
 
-// H1/R10: verify that pipeline events with empty SessionID are ignored.
+// verify that pipeline events with empty SessionID are ignored.
 func TestService_PipelineEvent_EmptySessionID_Ignored(t *testing.T) {
 	t.Parallel()
 	bus := eventbus.New()
@@ -996,7 +996,7 @@ func TestService_PipelineEvent_EmptySessionID_Ignored(t *testing.T) {
 		},
 	})
 
-	// L3 fix (Review 14): polling-based negative assertion instead of fixed sleep.
+	// polling-based negative assertion instead of fixed sleep.
 	assertNoRequestsWithin(t, &requestCount, 500*time.Millisecond, "empty sessionID pipeline event")
 }
 
@@ -1256,7 +1256,7 @@ func waitForTokenCount(t *testing.T, store *mockTokenStore, want int, timeout ti
 	}
 }
 
-// M4/R9: verify that empty Label falls back to SessionID for display name.
+// verify that empty Label falls back to SessionID for display name.
 func TestService_LifecycleEvent_EmptyLabel_FallbackToSessionID(t *testing.T) {
 	t.Parallel()
 	bus := eventbus.New()
@@ -1300,7 +1300,7 @@ func TestService_LifecycleEvent_EmptyLabel_FallbackToSessionID(t *testing.T) {
 	}
 }
 
-// H1/R9: verify that lifecycle events with empty SessionID are ignored.
+// verify that lifecycle events with empty SessionID are ignored.
 func TestService_LifecycleEvent_EmptySessionID_Ignored(t *testing.T) {
 	t.Parallel()
 	bus := eventbus.New()
@@ -1334,11 +1334,11 @@ func TestService_LifecycleEvent_EmptySessionID_Ignored(t *testing.T) {
 		ExitCode:  &exitCode,
 	})
 
-	// L3 fix (Review 14): polling-based negative assertion instead of fixed sleep.
+	// polling-based negative assertion instead of fixed sleep.
 	assertNoRequestsWithin(t, &requestCount, 500*time.Millisecond, "empty sessionID")
 }
 
-// M5/R9: verify pipeline event body truncation for oversized prompt_text.
+// verify pipeline event body truncation for oversized prompt_text.
 func TestService_PipelineEvent_BodyTruncation(t *testing.T) {
 	t.Parallel()
 	bus := eventbus.New()
