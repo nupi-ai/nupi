@@ -48,6 +48,24 @@ export function conversationOptimisticQueryKey(sessionId: string) {
   return ["conversation-optimistic", sessionId || "global"] as const;
 }
 
+interface PollingIntervalInput {
+  isPolling: boolean;
+  pollStartedAt: number | null;
+  isConnected: boolean;
+  consecutiveErrors: number;
+  now?: number;
+}
+
+export function getPollingInterval(input: PollingIntervalInput): number | false {
+  const { isPolling, pollStartedAt, isConnected, consecutiveErrors } = input;
+  if (!isPolling || !pollStartedAt || !isConnected) return false;
+  const now = input.now ?? Date.now();
+  const elapsed = now - pollStartedAt;
+  if (elapsed >= SLOW_PHASE_MS) return false;
+  if (consecutiveErrors >= 3) return SLOW_INTERVAL;
+  return elapsed < FAST_PHASE_MS ? FAST_INTERVAL : SLOW_INTERVAL;
+}
+
 export function useConversationQuery(
   sessionId: string,
   client: NupiClient | null,
@@ -58,6 +76,7 @@ export function useConversationQuery(
   const [pollStartedAt, setPollStartedAt] = useState<number | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const consecutiveErrorsRef = useRef(0);
+  const prevConnectedRef = useRef(isConnected);
   const optimisticQueryKey = conversationOptimisticQueryKey(sessionId);
 
   const query = useQuery({
@@ -67,13 +86,12 @@ export function useConversationQuery(
       if (!client) return [] as ConversationTurn[];
       return fetchRecentConversation(sessionId, client, signal);
     },
-    refetchInterval: () => {
-      if (!isPolling || !pollStartedAt || !isConnected) return false;
-      const elapsed = Date.now() - pollStartedAt;
-      if (elapsed >= SLOW_PHASE_MS) return false;
-      if (consecutiveErrorsRef.current >= 3) return SLOW_INTERVAL;
-      return elapsed < FAST_PHASE_MS ? FAST_INTERVAL : SLOW_INTERVAL;
-    },
+    refetchInterval: () => getPollingInterval({
+      isPolling,
+      pollStartedAt,
+      isConnected,
+      consecutiveErrors: consecutiveErrorsRef.current,
+    }),
   });
   const optimisticQuery = useQuery({
     queryKey: optimisticQueryKey,
@@ -103,6 +121,15 @@ export function useConversationQuery(
     }, remainingMs);
     return () => clearTimeout(timer);
   }, [isPolling, pollStartedAt]);
+
+  // If connection returns during active polling, force immediate refresh.
+  useEffect(() => {
+    const wasConnected = prevConnectedRef.current;
+    prevConnectedRef.current = isConnected;
+    if (!wasConnected && isConnected && isPolling) {
+      void query.refetch();
+    }
+  }, [isConnected, isPolling, query]);
 
   const startPolling = useCallback(() => {
     consecutiveErrorsRef.current = 0;
