@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/nupi-ai/nupi/internal/constants"
+	"github.com/nupi-ai/nupi/internal/sanitize"
 )
 
 const (
@@ -129,12 +131,17 @@ func (c *ExpoClient) Send(ctx context.Context, messages []ExpoMessage) (*SendRes
 		}
 
 		for j, ticket := range tickets {
-			if ticket.Status == "error" {
+			// Guard nil/empty Details to avoid unmarshal errors for error
+			// tickets without detail payloads (for example MessageRateExceeded).
+			if ticket.Status == "error" && len(ticket.Details) > 0 {
 				var detail ExpoTicketError
-				if err := json.Unmarshal(ticket.Details, &detail); err == nil {
-					if detail.Error == "DeviceNotRegistered" && i+j < len(messages) {
-						result.DeviceNotRegistered = append(result.DeviceNotRegistered, messages[i+j].To)
-					}
+				if err := json.Unmarshal(ticket.Details, &detail); err != nil {
+					// Log malformed ticket details so DeviceNotRegistered
+					// cleanup isn't silently skipped.
+					log.Printf("[Notification] unmarshal expo ticket detail: %v (raw: %s)",
+						err, sanitize.TruncateUTF8(string(ticket.Details), 128))
+				} else if detail.Error == "DeviceNotRegistered" && i+j < len(messages) {
+					result.DeviceNotRegistered = append(result.DeviceNotRegistered, messages[i+j].To)
 				}
 			}
 		}
@@ -156,10 +163,13 @@ func (c *ExpoClient) sendBatch(ctx context.Context, messages []ExpoMessage) ([]E
 		// Wait before retrying (skip on first attempt).
 		if attempt > 0 {
 			delay := c.retryBackoffs[attempt-1]
+			timer := time.NewTimer(delay)
 			select {
 			case <-ctx.Done():
+				timer.Stop()
 				return nil, ctx.Err()
-			case <-time.After(delay):
+			case <-timer.C:
+				timer.Stop()
 			}
 		}
 
@@ -208,7 +218,10 @@ func (c *ExpoClient) doSendBatch(ctx context.Context, body []byte) ([]ExpoTicket
 
 	if resp.StatusCode != http.StatusOK {
 		retryable := resp.StatusCode >= 500
-		return nil, fmt.Errorf("expo API returned status %d: %s", resp.StatusCode, string(respBody)), retryable
+		// Truncate response body in error message to prevent oversized log entries.
+		// Use TruncateUTF8 to avoid splitting multi-byte characters.
+		bodySnippet := sanitize.TruncateUTF8(string(respBody), 512)
+		return nil, fmt.Errorf("expo API returned status %d: %s", resp.StatusCode, bodySnippet), retryable
 	}
 
 	var expoResp ExpoResponse
@@ -219,9 +232,10 @@ func (c *ExpoClient) doSendBatch(ctx context.Context, body []byte) ([]ExpoTicket
 	if len(expoResp.Errors) > 0 {
 		msgs := make([]string, len(expoResp.Errors))
 		for i, e := range expoResp.Errors {
-			msgs[i] = e.Message
+			msgs[i] = sanitize.TruncateUTF8(e.Message, 256)
 		}
-		return nil, fmt.Errorf("expo API errors: %s", strings.Join(msgs, "; ")), false
+		joined := strings.Join(msgs, "; ")
+		return nil, fmt.Errorf("expo API errors: %s", sanitize.TruncateUTF8(joined, 512)), false
 	}
 
 	return expoResp.Data, nil, false
