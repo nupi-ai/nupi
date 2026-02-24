@@ -154,9 +154,7 @@ func (a *audioService) StreamAudioIn(stream apiv1.AudioService_StreamAudioInServ
 				return status.Errorf(codes.Internal, "voice readiness: %v", err)
 			}
 			if !readiness.CaptureEnabled {
-				diags := filterDiagnostics(mapVoiceDiagnostics(readiness.Issues), slots.STT)
-				message := voiceIssueSummary(diags, "voice capture unavailable")
-				return status.Error(codes.FailedPrecondition, message)
+				return status.Error(codes.FailedPrecondition, "voice capture unavailable")
 			}
 			metadata = language.MergeContextLanguage(stream.Context(), metadata)
 			metadata, err = normalizeAndValidateAudioChunkMetadata(metadata)
@@ -239,9 +237,7 @@ func (a *audioService) StreamAudioOut(req *apiv1.StreamAudioOutRequest, srv apiv
 		return status.Errorf(codes.Internal, "voice readiness: %v", err)
 	}
 	if !readiness.PlaybackEnabled {
-		diags := filterDiagnostics(mapVoiceDiagnostics(readiness.Issues), slots.TTS)
-		message := voiceIssueSummary(diags, "voice playback unavailable")
-		return status.Error(codes.FailedPrecondition, message)
+		return status.Error(codes.FailedPrecondition, "voice playback unavailable")
 	}
 
 	sub := eventbus.Subscribe[eventbus.AudioEgressPlaybackEvent](a.api.eventBus,
@@ -316,9 +312,7 @@ func (a *audioService) InterruptTTS(ctx context.Context, req *apiv1.InterruptTTS
 		return nil, status.Errorf(codes.Internal, "voice readiness: %v", err)
 	}
 	if !readiness.PlaybackEnabled {
-		diags := filterDiagnostics(mapVoiceDiagnostics(readiness.Issues), slots.TTS)
-		message := voiceIssueSummary(diags, "voice playback unavailable")
-		return nil, status.Error(codes.FailedPrecondition, message)
+		return nil, status.Error(codes.FailedPrecondition, "voice playback unavailable")
 	}
 
 	a.api.publishAudioInterrupt(sessionID, streamID, reason, nil)
@@ -345,7 +339,6 @@ func (a *audioService) GetAudioCapabilities(ctx context.Context, req *apiv1.GetA
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "voice readiness: %v", err)
 	}
-	diagnostics := mapVoiceDiagnostics(readiness.Issues)
 
 	resp := &apiv1.GetAudioCapabilitiesResponse{}
 
@@ -353,10 +346,6 @@ func (a *audioService) GetAudioCapabilities(ctx context.Context, req *apiv1.GetA
 		meta := map[string]string{
 			"recommended": "true",
 			"ready":       strconv.FormatBool(readiness.CaptureEnabled),
-		}
-		if !readiness.CaptureEnabled {
-			diags := filterDiagnostics(diagnostics, slots.STT)
-			meta["diagnostics"] = voiceIssueSummary(diags, "voice capture unavailable")
 		}
 		resp.Capture = append(resp.Capture, &apiv1.AudioCapability{
 			StreamId: DefaultCaptureStreamID,
@@ -369,10 +358,6 @@ func (a *audioService) GetAudioCapabilities(ctx context.Context, req *apiv1.GetA
 		meta := map[string]string{
 			"recommended": "true",
 			"ready":       strconv.FormatBool(readiness.PlaybackEnabled),
-		}
-		if !readiness.PlaybackEnabled {
-			diags := filterDiagnostics(diagnostics, slots.TTS)
-			meta["diagnostics"] = voiceIssueSummary(diags, "voice playback unavailable")
 		}
 		resp.Playback = append(resp.Playback, &apiv1.AudioCapability{
 			StreamId: a.api.audioEgress.DefaultStreamID(),

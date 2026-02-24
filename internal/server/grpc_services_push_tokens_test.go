@@ -16,7 +16,7 @@ func TestRegisterPushToken_Success(t *testing.T) {
 	ctx := authCtxWithToken(t, apiServer, service)
 
 	resp, err := service.RegisterPushToken(ctx, &apiv1.RegisterPushTokenRequest{
-		Token:    "ExponentPushToken[abc123]",
+		Token:    "ExponentPushToken[test_abc12345]",
 		DeviceId: "device-1",
 		EnabledEvents: []apiv1.NotificationEventType{
 			apiv1.NotificationEventType_NOTIFICATION_EVENT_TYPE_TASK_COMPLETED,
@@ -36,7 +36,7 @@ func TestRegisterPushToken_Unauthenticated(t *testing.T) {
 	service := &authService{api: apiServer}
 
 	_, err := service.RegisterPushToken(context.Background(), &apiv1.RegisterPushTokenRequest{
-		Token:    "ExponentPushToken[abc123]",
+		Token:    "ExponentPushToken[test_abc12345]",
 		DeviceId: "device-1",
 		EnabledEvents: []apiv1.NotificationEventType{
 			apiv1.NotificationEventType_NOTIFICATION_EVENT_TYPE_ERROR,
@@ -93,7 +93,7 @@ func TestRegisterPushToken_EmptyDeviceID(t *testing.T) {
 	service := &authService{api: apiServer}
 
 	_, err := service.RegisterPushToken(context.Background(), &apiv1.RegisterPushTokenRequest{
-		Token:    "ExponentPushToken[abc123]",
+		Token:    "ExponentPushToken[test_abc12345]",
 		DeviceId: "",
 		EnabledEvents: []apiv1.NotificationEventType{
 			apiv1.NotificationEventType_NOTIFICATION_EVENT_TYPE_ERROR,
@@ -112,7 +112,7 @@ func TestRegisterPushToken_NoEvents(t *testing.T) {
 	service := &authService{api: apiServer}
 
 	_, err := service.RegisterPushToken(context.Background(), &apiv1.RegisterPushTokenRequest{
-		Token:         "ExponentPushToken[abc123]",
+		Token:         "ExponentPushToken[test_abc12345]",
 		DeviceId:      "device-1",
 		EnabledEvents: []apiv1.NotificationEventType{},
 	})
@@ -129,7 +129,7 @@ func TestRegisterPushToken_UnspecifiedEvent(t *testing.T) {
 	service := &authService{api: apiServer}
 
 	_, err := service.RegisterPushToken(context.Background(), &apiv1.RegisterPushTokenRequest{
-		Token:    "ExponentPushToken[abc123]",
+		Token:    "ExponentPushToken[test_abc12345]",
 		DeviceId: "device-1",
 		EnabledEvents: []apiv1.NotificationEventType{
 			apiv1.NotificationEventType_NOTIFICATION_EVENT_TYPE_UNSPECIFIED,
@@ -148,7 +148,7 @@ func TestRegisterPushToken_UnknownEventType(t *testing.T) {
 	service := &authService{api: apiServer}
 
 	_, err := service.RegisterPushToken(context.Background(), &apiv1.RegisterPushTokenRequest{
-		Token:    "ExponentPushToken[abc123]",
+		Token:    "ExponentPushToken[test_abc12345]",
 		DeviceId: "device-1",
 		EnabledEvents: []apiv1.NotificationEventType{
 			apiv1.NotificationEventType(99),
@@ -169,7 +169,7 @@ func TestRegisterPushToken_Upsert(t *testing.T) {
 
 	// Register initial token.
 	_, err := service.RegisterPushToken(ctx, &apiv1.RegisterPushTokenRequest{
-		Token:    "ExponentPushToken[old]",
+		Token:    "ExponentPushToken[old_token_123]",
 		DeviceId: "device-1",
 		EnabledEvents: []apiv1.NotificationEventType{
 			apiv1.NotificationEventType_NOTIFICATION_EVENT_TYPE_ERROR,
@@ -181,7 +181,7 @@ func TestRegisterPushToken_Upsert(t *testing.T) {
 
 	// Update with new token and events for same device.
 	_, err = service.RegisterPushToken(ctx, &apiv1.RegisterPushTokenRequest{
-		Token:    "ExponentPushToken[new]",
+		Token:    "ExponentPushToken[new_token_456]",
 		DeviceId: "device-1",
 		EnabledEvents: []apiv1.NotificationEventType{
 			apiv1.NotificationEventType_NOTIFICATION_EVENT_TYPE_TASK_COMPLETED,
@@ -200,8 +200,8 @@ func TestRegisterPushToken_Upsert(t *testing.T) {
 	if len(tokens) != 1 {
 		t.Fatalf("expected 1 token after upsert, got %d", len(tokens))
 	}
-	if tokens[0].Token != "ExponentPushToken[new]" {
-		t.Errorf("token = %q, want ExponentPushToken[new]", tokens[0].Token)
+	if tokens[0].Token != "ExponentPushToken[new_token_456]" {
+		t.Errorf("token = %q, want ExponentPushToken[new_token_456]", tokens[0].Token)
 	}
 }
 
@@ -212,7 +212,7 @@ func TestUnregisterPushToken_Success(t *testing.T) {
 
 	// Register first.
 	_, err := service.RegisterPushToken(ctx, &apiv1.RegisterPushTokenRequest{
-		Token:    "ExponentPushToken[abc]",
+		Token:    "ExponentPushToken[test_abc_def]",
 		DeviceId: "device-1",
 		EnabledEvents: []apiv1.NotificationEventType{
 			apiv1.NotificationEventType_NOTIFICATION_EVENT_TYPE_ERROR,
@@ -293,7 +293,7 @@ func TestRegisterPushToken_NilConfigStore(t *testing.T) {
 	service := &authService{api: apiServer}
 
 	_, err := service.RegisterPushToken(context.Background(), &apiv1.RegisterPushTokenRequest{
-		Token:    "ExponentPushToken[abc]",
+		Token:    "ExponentPushToken[test_abc_def]",
 		DeviceId: "device-1",
 		EnabledEvents: []apiv1.NotificationEventType{
 			apiv1.NotificationEventType_NOTIFICATION_EVENT_TYPE_ERROR,
@@ -367,7 +367,7 @@ func TestDeleteToken_CascadePushTokenCleanup(t *testing.T) {
 		Role:  "admin",
 	})
 	_, err = service.RegisterPushToken(authCtx1, &apiv1.RegisterPushTokenRequest{
-		Token:    "ExponentPushToken[cascade-1]",
+		Token:    "ExponentPushToken[cascade-tok-1]",
 		DeviceId: "device-cascade-1",
 		EnabledEvents: []apiv1.NotificationEventType{
 			apiv1.NotificationEventType_NOTIFICATION_EVENT_TYPE_ERROR,
@@ -383,7 +383,7 @@ func TestDeleteToken_CascadePushTokenCleanup(t *testing.T) {
 		Role:  "admin",
 	})
 	_, err = service.RegisterPushToken(authCtx2, &apiv1.RegisterPushTokenRequest{
-		Token:    "ExponentPushToken[cascade-2]",
+		Token:    "ExponentPushToken[cascade-tok-2]",
 		DeviceId: "device-cascade-2",
 		EnabledEvents: []apiv1.NotificationEventType{
 			apiv1.NotificationEventType_NOTIFICATION_EVENT_TYPE_ERROR,
@@ -451,7 +451,7 @@ func TestRegisterPushToken_DeviceIDTooLong(t *testing.T) {
 
 	longDeviceID := strings.Repeat("d", 300)
 	_, err := service.RegisterPushToken(context.Background(), &apiv1.RegisterPushTokenRequest{
-		Token:    "ExponentPushToken[abc123]",
+		Token:    "ExponentPushToken[test_abc12345]",
 		DeviceId: longDeviceID,
 		EnabledEvents: []apiv1.NotificationEventType{
 			apiv1.NotificationEventType_NOTIFICATION_EVENT_TYPE_ERROR,
@@ -495,7 +495,7 @@ func TestRegisterPushToken_OwnershipDenied(t *testing.T) {
 		Role:  "admin",
 	})
 	_, err = service.RegisterPushToken(authCtx1, &apiv1.RegisterPushTokenRequest{
-		Token:    "ExponentPushToken[owned]",
+		Token:    "ExponentPushToken[owned_dev_1]",
 		DeviceId: "shared-device",
 		EnabledEvents: []apiv1.NotificationEventType{
 			apiv1.NotificationEventType_NOTIFICATION_EVENT_TYPE_ERROR,
@@ -512,7 +512,7 @@ func TestRegisterPushToken_OwnershipDenied(t *testing.T) {
 		Role:  "admin",
 	})
 	_, err = service.RegisterPushToken(authCtx2, &apiv1.RegisterPushTokenRequest{
-		Token:    "ExponentPushToken[hijacked]",
+		Token:    "ExponentPushToken[hijacked_tok]",
 		DeviceId: "shared-device",
 		EnabledEvents: []apiv1.NotificationEventType{
 			apiv1.NotificationEventType_NOTIFICATION_EVENT_TYPE_TASK_COMPLETED,
@@ -530,8 +530,8 @@ func TestRegisterPushToken_OwnershipDenied(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetPushToken: %v", err)
 	}
-	if tok.Token != "ExponentPushToken[owned]" {
-		t.Errorf("token = %q, want ExponentPushToken[owned] (should not be overwritten)", tok.Token)
+	if tok.Token != "ExponentPushToken[owned_dev_1]" {
+		t.Errorf("token = %q, want ExponentPushToken[owned_dev_1] (should not be overwritten)", tok.Token)
 	}
 }
 

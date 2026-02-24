@@ -53,18 +53,21 @@ func (a *authService) RegisterPushToken(ctx context.Context, req *apiv1.Register
 		return nil, status.Error(codes.InvalidArgument, "at least one enabled_event is required")
 	}
 
-	// Deduplicate and validate event types.
-	seen := make(map[apiv1.NotificationEventType]bool, len(protoEvents))
+	// Validate and deduplicate event types. M4 fix (Review 14): dedup is done
+	// after string conversion to prevent theoretical collisions where two proto
+	// enum values map to the same string.
+	seenStrings := make(map[string]bool, len(protoEvents))
 	events := make([]string, 0, len(protoEvents))
 	for _, ev := range protoEvents {
 		if !isKnownNotificationEventType(ev) {
 			return nil, status.Errorf(codes.InvalidArgument, "unknown event type: %v", ev)
 		}
-		if seen[ev] {
+		s := notificationEventTypeToString(ev)
+		if seenStrings[s] {
 			continue
 		}
-		seen[ev] = true
-		events = append(events, notificationEventTypeToString(ev))
+		seenStrings[s] = true
+		events = append(events, s)
 	}
 
 	// Link push token to the auth token that registered it, so cascade

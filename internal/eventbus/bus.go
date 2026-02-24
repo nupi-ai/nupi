@@ -55,7 +55,6 @@ func New(opts ...BusOption) *Bus {
 		TopicSpeechVADDetected:       128,
 		TopicSpeechBargeIn:           64,
 		TopicConversationSpeak:       128,
-		TopicIntentRouterDiagnostics: 64,
 		TopicMemoryFlushRequest:      64,
 		TopicMemoryFlushResponse:     64,
 		TopicAwarenessSync:           64,
@@ -277,7 +276,6 @@ type Subscription struct {
 	policy    DeliveryPolicy
 	ovf       *overflowBuffer
 	ovfCancel context.CancelFunc
-	overflow  atomic.Uint64
 }
 
 // C exposes the event channel.
@@ -347,7 +345,6 @@ func (s *Subscription) deliver(ctx context.Context, env Envelope, logger *log.Lo
 	// Direct channel sends would race with the drain goroutine and break ordering.
 	if s.policy.Strategy == StrategyOverflow && s.ovf != nil {
 		if s.ovf.push(env) {
-			s.overflow.Add(1)
 			return
 		}
 		// Overflow full — fall back to drop-oldest on the channel.
@@ -419,4 +416,3 @@ func (b *Bus) notifyObservers(env Envelope) {
 		observer.OnPublish(env)
 	}
 }
-

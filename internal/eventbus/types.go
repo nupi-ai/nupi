@@ -31,9 +31,7 @@ const (
 	TopicSpeechTranscriptFinal   Topic = "speech.transcript.final"
 	TopicSpeechVADDetected       Topic = "speech.vad.detected"
 	TopicSpeechBargeIn           Topic = "speech.barge_in"
-	TopicVoiceDiagnostics        Topic = "voice.diagnostics"
 	TopicConversationSpeak       Topic = "conversation.speak"
-	TopicIntentRouterDiagnostics Topic = "intentrouter.diagnostics"
 	TopicPairingCreated          Topic = "pairing.created"
 	TopicPairingClaimed          Topic = "pairing.claimed"
 	TopicMemoryFlushRequest      Topic = "memory.flush.request"
@@ -108,6 +106,11 @@ const (
 	SessionStateDetached SessionState = "detached"
 	SessionStateStopped  SessionState = "stopped"
 )
+
+// SessionReasonKilled is the Reason value set on lifecycle events published
+// by KillSession. Consumers can use this to suppress notifications for
+// user-initiated kills (the user already knows they killed the session).
+const SessionReasonKilled = "session_killed"
 
 // SessionOutputEvent carries raw PTY chunks.
 type SessionOutputEvent struct {
@@ -354,7 +357,7 @@ type AdapterStatusEvent struct {
 	Extra     map[string]string
 }
 
-// LogLevel indicates severity for adapter log messages.
+// LogLevel indicates severity for plugin log messages.
 type LogLevel string
 
 const (
@@ -372,34 +375,6 @@ type AdapterLogEvent struct {
 	Fields    map[string]string
 	Timestamp time.Time
 }
-
-// BridgeDiagnosticType categorizes bridge diagnostic events.
-type BridgeDiagnosticType string
-
-const (
-	// BridgeDiagnosticConfigInvalid indicates config validation failed against manifest.
-	// User action: fix config in DB (check field names, types, required values).
-	// NOT recoverable - requires user intervention.
-	BridgeDiagnosticConfigInvalid BridgeDiagnosticType = "config_invalid"
-
-	// BridgeDiagnosticConnectionFailed indicates connection to adapter failed.
-	// May be transient - adapter might recover on next READY.
-	// Recoverable - system may retry automatically.
-	BridgeDiagnosticConnectionFailed BridgeDiagnosticType = "connection_failed"
-
-	// BridgeDiagnosticLookupFailed indicates controller/DB lookup failed.
-	// May be transient - retry on next READY.
-	// Recoverable - system may retry automatically.
-	BridgeDiagnosticLookupFailed BridgeDiagnosticType = "lookup_failed"
-
-	// BridgeDiagnosticConfigured indicates adapter was successfully configured.
-	// Informational - no action needed.
-	BridgeDiagnosticConfigured BridgeDiagnosticType = "configured"
-
-	// BridgeDiagnosticCleared indicates adapter was cleared (disconnected).
-	// Informational - adapter stopped or errored.
-	BridgeDiagnosticCleared BridgeDiagnosticType = "cleared"
-)
 
 // ---------------------------------------------------------------------------
 // Typed topic descriptors
@@ -466,13 +441,6 @@ var Speech = struct {
 	BargeIn:           NewTopicDef[SpeechBargeInEvent](TopicSpeechBargeIn),
 }
 
-// Voice groups voice-specific diagnostic topic descriptors.
-var Voice = struct {
-	Diagnostics TopicDef[VoiceDiagnosticsEvent]
-}{
-	Diagnostics: NewTopicDef[VoiceDiagnosticsEvent](TopicVoiceDiagnostics),
-}
-
 // Adapters groups adapter topic descriptors.
 var Adapters = struct {
 	Status TopicDef[AdapterStatusEvent]
@@ -482,13 +450,6 @@ var Adapters = struct {
 	Log:    NewTopicDef[AdapterLogEvent](TopicAdaptersLog),
 }
 
-// IntentRouter groups intent router topic descriptors.
-var IntentRouter = struct {
-	Diagnostics TopicDef[BridgeDiagnosticEvent]
-}{
-	Diagnostics: NewTopicDef[BridgeDiagnosticEvent](TopicIntentRouterDiagnostics),
-}
-
 // Pairing groups pairing topic descriptors.
 var Pairing = struct {
 	Created TopicDef[PairingCreatedEvent]
@@ -496,55 +457,6 @@ var Pairing = struct {
 }{
 	Created: NewTopicDef[PairingCreatedEvent](TopicPairingCreated),
 	Claimed: NewTopicDef[PairingClaimedEvent](TopicPairingClaimed),
-}
-
-// BridgeDiagnosticEvent reports intent router bridge state changes.
-// Published on TopicIntentRouterDiagnostics, separate from adapter lifecycle events.
-//
-// This event type is for observability/debugging of the bridge component,
-// not for adapter process lifecycle (use AdapterStatusEvent for that).
-type BridgeDiagnosticEvent struct {
-	// AdapterID identifies the adapter involved (may be empty for general errors).
-	AdapterID string
-
-	// Type categorizes the diagnostic event.
-	Type BridgeDiagnosticType
-
-	// Message provides human-readable details.
-	Message string
-
-	// Recoverable indicates if the error might resolve on retry.
-	// true: transient error, system may retry automatically.
-	// false: requires user intervention (e.g., fix config).
-	Recoverable bool
-
-	// Timestamp when the event occurred.
-	Timestamp time.Time
-
-	// Extra contains additional diagnostic data (e.g., field that failed validation).
-	Extra map[string]string
-}
-
-// VoiceDiagnosticType describes high-level voice diagnostics categories.
-type VoiceDiagnosticType string
-
-const (
-	VoiceDiagnosticTypeVADLatencyDegradation VoiceDiagnosticType = "vad_latency_degradation"
-)
-
-// VoiceDiagnosticsEvent reports diagnostics for voice processing components.
-type VoiceDiagnosticsEvent struct {
-	SessionID string
-	StreamID  string
-	Type      VoiceDiagnosticType
-	Message   string
-
-	ThresholdMs int64
-	ObservedMs  int64
-	Consecutive int
-
-	Timestamp time.Time
-	Metadata  map[string]string
 }
 
 // DefaultFlushTimeout is the default timeout for memory flush operations.

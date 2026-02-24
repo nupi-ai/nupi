@@ -52,7 +52,6 @@ type PipelineCleanerSpec struct {
 type AdapterSpec struct {
 	Slot       string                   `yaml:"slot"`
 	Entrypoint AdapterEntrypoint        `yaml:"entrypoint"`
-	Telemetry  AdapterTelemetry         `yaml:"telemetry"`
 	Options    map[string]AdapterOption `yaml:"options"`
 }
 
@@ -65,11 +64,6 @@ type AdapterEntrypoint struct {
 	WorkingDir      string   `yaml:"workingDir"`
 	ReadyTimeout    string   `yaml:"readyTimeout"`
 	ShutdownTimeout string   `yaml:"shutdownTimeout"`
-}
-
-type AdapterTelemetry struct {
-	Stdout *bool `yaml:"stdout"`
-	Stderr *bool `yaml:"stderr"`
 }
 
 // AdapterOption describes a configurable option exposed by an adapter plugin.

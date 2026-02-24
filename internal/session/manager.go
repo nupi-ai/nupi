@@ -393,7 +393,7 @@ func (m *Manager) KillSession(id string) error {
 	if exitCode >= 0 {
 		exitPtr = &exitCode
 	}
-	m.publishLifecycle(session, eventbus.SessionStateStopped, exitPtr, "session_killed")
+	m.publishLifecycle(session, eventbus.SessionStateStopped, exitPtr, eventbus.SessionReasonKilled)
 
 	return nil
 }

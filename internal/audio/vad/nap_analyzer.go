@@ -9,7 +9,6 @@ import (
 	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/mapper"
-	maputil "github.com/nupi-ai/nupi/internal/util/maps"
 	"google.golang.org/grpc"
 )
 
@@ -93,7 +92,6 @@ const vadResponseGracePeriod = constants.Duration10Milliseconds
 func speechEventToDetection(evt *napv1.SpeechEvent) Detection {
 	det := Detection{
 		Confidence: evt.GetConfidence(),
-		Metadata:   maputil.Clone(evt.GetMetadata()),
 	}
 	switch evt.GetType() {
 	case napv1.SpeechEventType_SPEECH_EVENT_TYPE_START,

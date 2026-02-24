@@ -148,6 +148,9 @@ func (s *Store) DeletePushTokenOwned(ctx context.Context, deviceID, authTokenID 
 	if deviceID == "" {
 		return false, fmt.Errorf("config: delete push token owned: device_id required")
 	}
+	if authTokenID == "" {
+		return false, fmt.Errorf("config: delete push token owned: auth_token_id required")
+	}
 
 	result, err := s.db.ExecContext(ctx, `
 		DELETE FROM push_tokens

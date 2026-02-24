@@ -627,9 +627,6 @@ spec:
     token:
       type: string
       description: API token
-  telemetry:
-    stdout: true
-    stderr: false
 `
 
 	adapter := configstore.Adapter{
@@ -1302,8 +1299,6 @@ spec:
   entrypoint:
     transport: process
     command: ./mock-adapter
-  telemetry:
-    stdout: true
 `
 	adapter.Manifest = manifestV2
 	if err := store.UpsertAdapter(ctx, adapter); err != nil {
@@ -2668,9 +2663,6 @@ spec:
     workingDir: /opt/adapter
     readyTimeout: 10s
     shutdownTimeout: 5s
-  telemetry:
-    stdout: true
-    stderr: false
   options:
     model:
       type: string
@@ -2681,9 +2673,6 @@ spec:
 	if err != nil {
 		t.Fatalf("parse base manifest: %v", err)
 	}
-
-	trueVal := true
-	falseVal := false
 
 	baseBinding := Binding{
 		Slot:      SlotSTT,
@@ -2714,14 +2703,6 @@ spec:
 		cp := *baseMF
 		if baseMF.Adapter != nil {
 			spec := *baseMF.Adapter
-			if baseMF.Adapter.Telemetry.Stdout != nil {
-				v := *baseMF.Adapter.Telemetry.Stdout
-				spec.Telemetry.Stdout = &v
-			}
-			if baseMF.Adapter.Telemetry.Stderr != nil {
-				v := *baseMF.Adapter.Telemetry.Stderr
-				spec.Telemetry.Stderr = &v
-			}
 			if baseMF.Adapter.Entrypoint.Args != nil {
 				spec.Entrypoint.Args = append([]string(nil), baseMF.Adapter.Entrypoint.Args...)
 			}
@@ -2979,34 +2960,6 @@ spec:
 		mf := cloneManifest()
 		mf.Adapter.Entrypoint.ShutdownTimeout = "60s"
 		assertChanged(t, computePlanFingerprint(baseBinding, mf, baseManifestYAML, baseEndpoint))
-	})
-
-	// --- Manifest telemetry ---
-
-	t.Run("manifest/telemetry/Stdout_changed", func(t *testing.T) {
-		mf := cloneManifest()
-		mf.Adapter.Telemetry.Stdout = &falseVal
-		assertChanged(t, computePlanFingerprint(baseBinding, mf, baseManifestYAML, baseEndpoint))
-	})
-
-	t.Run("manifest/telemetry/Stderr_changed", func(t *testing.T) {
-		mf := cloneManifest()
-		mf.Adapter.Telemetry.Stderr = &trueVal
-		assertChanged(t, computePlanFingerprint(baseBinding, mf, baseManifestYAML, baseEndpoint))
-	})
-
-	t.Run("manifest/telemetry/Stdout_nil_vs_explicit", func(t *testing.T) {
-		mf := cloneManifest()
-		mf.Adapter.Telemetry.Stdout = nil
-		fpNil := computePlanFingerprint(baseBinding, mf, baseManifestYAML, baseEndpoint)
-
-		mf2 := cloneManifest()
-		mf2.Adapter.Telemetry.Stdout = &trueVal
-		fpExplicit := computePlanFingerprint(baseBinding, mf2, baseManifestYAML, baseEndpoint)
-
-		if fpNil == fpExplicit {
-			t.Fatal("nil Stdout pointer should produce different fingerprint than explicit true")
-		}
 	})
 
 	// --- Manifest slot ---

@@ -15,7 +15,7 @@ import (
 // Option configures the coordinator behaviour.
 type Option func(*Service)
 
-// WithLogger overrides the logger used for diagnostics.
+// WithLogger overrides the logger used for logging.
 func WithLogger(logger *log.Logger) Option {
 	return func(s *Service) {
 		if logger != nil {
@@ -366,4 +366,3 @@ func splitStreamKey(key string) (string, string) {
 	}
 	return key, ""
 }
-

@@ -112,6 +112,7 @@ type Runtime struct {
 	conn   net.Conn
 	reader *bufio.Reader
 	stderr io.ReadCloser
+	stdout io.ReadCloser
 
 	socketPath string // IPC address: UDS path (Unix) or TCP addr (Windows)
 
@@ -126,6 +127,8 @@ type Runtime struct {
 	err     error
 
 	logger        Logger
+	stdoutWriter  io.Writer
+	stderrWriter  io.Writer
 	hostScript    string // path to host.js (temp file if embedded)
 	cleanupScript bool   // whether to remove hostScript on shutdown
 	runDir        string // directory for IPC sockets
@@ -143,6 +146,20 @@ type Option func(*Runtime)
 func WithLogger(logger Logger) Option {
 	return func(r *Runtime) {
 		r.logger = logger
+	}
+}
+
+// WithStdoutWriter captures stdout output from the JS runtime process.
+func WithStdoutWriter(w io.Writer) Option {
+	return func(r *Runtime) {
+		r.stdoutWriter = w
+	}
+}
+
+// WithStderrWriter captures stderr output from the JS runtime process.
+func WithStderrWriter(w io.Writer) Option {
+	return func(r *Runtime) {
+		r.stderrWriter = w
 	}
 }
 
@@ -218,10 +235,21 @@ func New(ctx context.Context, bunPath, hostScript string, opts ...Option) (*Runt
 	cmd := exec.CommandContext(ctx, bunPath, "run", hostScript)
 	cmd.Env = append(os.Environ(), "NUPI_IPC_SOCKET="+socketPath)
 
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		listener.Close()
+		cleanupSocket(socketPath)
+		if cleanupScript {
+			os.Remove(hostScript)
+		}
+		return nil, fmt.Errorf("jsruntime: stdout pipe: %w", err)
+	}
+
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		listener.Close()
 		cleanupSocket(socketPath)
+		stdout.Close()
 		if cleanupScript {
 			os.Remove(hostScript)
 		}
@@ -230,10 +258,12 @@ func New(ctx context.Context, bunPath, hostScript string, opts ...Option) (*Runt
 
 	r.cmd = cmd
 	r.stderr = stderr
+	r.stdout = stdout
 
 	if err := cmd.Start(); err != nil {
 		listener.Close()
 		cleanupSocket(socketPath)
+		stdout.Close()
 		stderr.Close()
 		if cleanupScript {
 			os.Remove(hostScript)
@@ -255,6 +285,7 @@ func New(ctx context.Context, bunPath, hostScript string, opts ...Option) (*Runt
 	r.reader = bufio.NewReader(conn)
 
 	go r.readResponses()
+	go r.readStdout()
 	go r.readStderr()
 	go r.waitProcess()
 
@@ -295,13 +326,35 @@ func (r *Runtime) readResponses() {
 	}
 }
 
+// readStdout forwards stdout output from the Bun process.
+func (r *Runtime) readStdout() {
+	if r.stdout == nil {
+		return
+	}
+	buf := make([]byte, 4096)
+	for {
+		n, err := r.stdout.Read(buf)
+		if n > 0 && r.stdoutWriter != nil {
+			_, _ = r.stdoutWriter.Write(buf[:n])
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
 // readStderr logs stderr output from the Bun process.
 func (r *Runtime) readStderr() {
 	buf := make([]byte, 4096)
 	for {
 		n, err := r.stderr.Read(buf)
-		if n > 0 && r.logger != nil {
-			r.logger.Printf("[jsruntime:stderr] %s", string(buf[:n]))
+		if n > 0 {
+			if r.stderrWriter != nil {
+				_, _ = r.stderrWriter.Write(buf[:n])
+			}
+			if r.logger != nil {
+				r.logger.Printf("[jsruntime:stderr] %s", string(buf[:n]))
+			}
 		}
 		if err != nil {
 			return

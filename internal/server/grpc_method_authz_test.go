@@ -9,21 +9,6 @@ import (
 	"google.golang.org/grpc"
 )
 
-var grpcTokenOnlyMethods = map[string]struct{}{
-	"/nupi.api.v1.AdaptersService/ClearAdapterBinding": {},
-	"/nupi.api.v1.AdaptersService/ListAdapterBindings": {},
-	"/nupi.api.v1.AdaptersService/ListAdapters":        {},
-	"/nupi.api.v1.AdaptersService/SetAdapterBinding":   {},
-	"/nupi.api.v1.DaemonService/ListLanguages":         {},
-	"/nupi.api.v1.DaemonService/Status":                {},
-	"/nupi.api.v1.QuickstartService/GetStatus":         {},
-	"/nupi.api.v1.QuickstartService/Update":            {},
-}
-
-var grpcPublicMethods = map[string]struct{}{
-	"/nupi.api.v1.AuthService/ClaimPairing": {},
-}
-
 func TestGRPCMethodAuthorizationPolicyCoverage(t *testing.T) {
 	allMethods := allGRPCMethods()
 

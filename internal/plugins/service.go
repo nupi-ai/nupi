@@ -41,6 +41,8 @@ type Service struct {
 
 	supervisedRT   *jsruntime.SupervisedRuntime
 	supervisedRTMu sync.RWMutex
+	jsStdout       *os.File
+	jsStderr       *os.File
 }
 
 // NewService constructs a plugin service rooted in the given instance directory.
@@ -462,16 +464,72 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		}
 		log.Printf("[Plugins] JS runtime stopped")
 	}
+	if s.jsStdout != nil {
+		_ = s.jsStdout.Close()
+		s.jsStdout = nil
+	}
+	if s.jsStderr != nil {
+		_ = s.jsStderr.Close()
+		s.jsStderr = nil
+	}
 	return nil
+}
+
+func (s *Service) pluginLogDir() (string, error) {
+	if s.pluginDir == "" {
+		return "", fmt.Errorf("plugin dir not configured")
+	}
+	instanceDir := filepath.Dir(s.pluginDir)
+	dir := filepath.Join(instanceDir, "logs", "plugins")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+func (s *Service) openPluginLogFiles() {
+	if s.jsStdout != nil {
+		_ = s.jsStdout.Close()
+		s.jsStdout = nil
+	}
+	if s.jsStderr != nil {
+		_ = s.jsStderr.Close()
+		s.jsStderr = nil
+	}
+	dir, err := s.pluginLogDir()
+	if err != nil {
+		log.Printf("[Plugins] failed to prepare plugin log dir: %v", err)
+		return
+	}
+	stdoutPath := filepath.Join(dir, "plugin.jsruntime.runtime.stdout.log")
+	stderrPath := filepath.Join(dir, "plugin.jsruntime.runtime.stderr.log")
+	if f, err := os.OpenFile(stdoutPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err != nil {
+		log.Printf("[Plugins] failed to open runtime stdout log: %v", err)
+	} else {
+		s.jsStdout = f
+	}
+	if f, err := os.OpenFile(stderrPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err != nil {
+		log.Printf("[Plugins] failed to open runtime stderr log: %v", err)
+	} else {
+		s.jsStderr = f
+	}
 }
 
 // startJSRuntime initializes the supervised persistent Bun subprocess.
 // Uses embedded host.js script - no external file needed.
 // The supervised runtime will automatically restart if the process crashes.
 func (s *Service) startJSRuntime(ctx context.Context) error {
+	s.openPluginLogFiles()
 	// Pass empty strings - NewSupervised() will use embedded host.js and resolve bun.
 	// WithRunDir tells the runtime where to place the IPC socket.
-	srt, err := jsruntime.NewSupervised(ctx, "", "", jsruntime.WithRunDir(s.runDir))
+	srt, err := jsruntime.NewSupervised(
+		ctx,
+		"",
+		"",
+		jsruntime.WithRunDir(s.runDir),
+		jsruntime.WithStdoutWriter(s.jsStdout),
+		jsruntime.WithStderrWriter(s.jsStderr),
+	)
 	if err != nil {
 		return err
 	}

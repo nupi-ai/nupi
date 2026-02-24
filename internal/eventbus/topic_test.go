@@ -120,7 +120,12 @@ func TestDescriptorTopicsMatch(t *testing.T) {
 		{"Speech.BargeIn", Speech.BargeIn.Topic(), TopicSpeechBargeIn},
 		{"Adapters.Status", Adapters.Status.Topic(), TopicAdaptersStatus},
 		{"Adapters.Log", Adapters.Log.Topic(), TopicAdaptersLog},
-		{"IntentRouter.Diagnostics", IntentRouter.Diagnostics.Topic(), TopicIntentRouterDiagnostics},
+		{"Pairing.Created", Pairing.Created.Topic(), TopicPairingCreated},
+		{"Pairing.Claimed", Pairing.Claimed.Topic(), TopicPairingClaimed},
+		{"Memory.FlushRequest", Memory.FlushRequest.Topic(), TopicMemoryFlushRequest},
+		{"Memory.FlushResponse", Memory.FlushResponse.Topic(), TopicMemoryFlushResponse},
+		{"Memory.Sync", Memory.Sync.Topic(), TopicAwarenessSync},
+		{"Memory.ExportRequest", Memory.ExportRequest.Topic(), TopicSessionExportRequest},
 	}
 
 	for _, tt := range tests {
