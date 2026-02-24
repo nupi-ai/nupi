@@ -70,12 +70,13 @@ type MobileSessionsClient = Pick<
 
 /**
  * Mobile-safe subset of AuthService.
- * Only exposes claimPairing (pairing flow) and read-only token listing.
+ * Exposes claimPairing (pairing flow), read-only token listing, and push
+ * token registration/unregistration for notifications.
  * Excludes createToken, deleteToken, createPairing (admin operations).
  */
 type MobileAuthClient = Pick<
   Client<typeof AuthService>,
-  "claimPairing" | "listTokens" | "listPairings"
+  "claimPairing" | "listTokens" | "listPairings" | "registerPushToken" | "unregisterPushToken"
 >;
 
 /**
@@ -108,6 +109,8 @@ export function createNupiClient(baseUrl: string) {
     claimPairing: fullAuth.claimPairing.bind(fullAuth),
     listTokens: fullAuth.listTokens.bind(fullAuth),
     listPairings: fullAuth.listPairings.bind(fullAuth),
+    registerPushToken: fullAuth.registerPushToken.bind(fullAuth),
+    unregisterPushToken: fullAuth.unregisterPushToken.bind(fullAuth),
   };
 
   return {

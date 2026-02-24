@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from "react";
+import React, { useCallback, useEffect } from "react";
 
 import { createNupiClientFromConfig } from "./connect";
 import {
@@ -8,16 +8,25 @@ import {
   type ConnectionStateActions,
 } from "./connectionUtils";
 import { mapConnectionError } from "./errorMessages";
+import { unregisterPushTokenWithToken, cancelInflightRegistration } from "./notifications";
+import { raceTimeout } from "./raceTimeout";
 import {
   clearAll,
+  getToken,
   saveConnectionConfig,
   saveToken,
   type StoredConnectionConfig,
 } from "./storage";
 
+const STATUS_TIMEOUT_MS = 5000;
+
 interface UseClientLifecycleParams {
   actions: ConnectionStateActions;
   refs: ConnectionRuntimeRefs;
+  /** M5 fix (Review 13): ref to a callback invoked synchronously before
+   * unregisterPushToken to cancel any pending registration retry in
+   * NotificationContext. Set by NotificationProvider via ConnectionContext. */
+  onBeforeDisconnectRef: React.MutableRefObject<(() => void) | null>;
 }
 
 interface UseClientLifecycleResult {
@@ -31,6 +40,7 @@ interface UseClientLifecycleResult {
 export function useClientLifecycle({
   actions,
   refs,
+  onBeforeDisconnectRef,
 }: UseClientLifecycleParams): UseClientLifecycleResult {
   const {
     setClient,
@@ -50,6 +60,7 @@ export function useClientLifecycle({
     isReconnectingRef,
     reconnectAttemptsRef,
     reconnectTimerRef,
+    clientRef,
   } = refs;
 
   const connectWithConfig = useCallback(
@@ -69,7 +80,7 @@ export function useClientLifecycle({
         const nupiClient = createNupiClientFromConfig(config);
 
         // Verify connection — auth interceptor reads token from SecureStore.
-        await nupiClient.daemon.status({});
+        await raceTimeout(nupiClient.daemon.status({}), STATUS_TIMEOUT_MS, "daemon status check timed out");
 
         setClient(nupiClient);
         setHostInfo(`${config.host}:${config.port}`);
@@ -110,6 +121,29 @@ export function useClientLifecycle({
     isReconnectingRef.current = false;
     reconnectAttemptsRef.current = 0;
 
+    // M5 fix (Review 13): cancel pending registration retry before unregister
+    // to prevent a race where the retry re-registers after unregister fires.
+    onBeforeDisconnectRef.current?.();
+    // H3 fix (Review 14): abort any in-flight registerPushToken RPC. Without
+    // this, a slow register could complete AFTER unregister, leaving the daemon
+    // with a token the client thinks was unregistered.
+    cancelInflightRegistration();
+
+    // C1 fix (Review 13): Capture auth token synchronously BEFORE clearAll()
+    // wipes it. Pass the captured token directly to the unregister RPC so
+    // the fire-and-forget call doesn't race with credential clearing.
+    const currentClient = clientRef.current;
+    const capturedToken = await getToken();
+    if (currentClient && capturedToken) {
+      // Fire-and-forget: don't block disconnect on unregister RPC.
+      // If daemon is unreachable (common disconnect reason), awaiting would
+      // delay the UI by the full raceTimeout (5s). Daemon cleans up stale
+      // tokens via DeviceNotRegistered on next push attempt anyway.
+      unregisterPushTokenWithToken(currentClient, capturedToken).catch((err) => {
+        console.warn("[Notifications] unregisterPushToken on disconnect:", err);
+      });
+    }
+
     setClient(null);
     setHostInfo(null);
     updateStatus("disconnected");
@@ -121,6 +155,7 @@ export function useClientLifecycle({
 
     await clearAll();
   }, [
+    clientRef,
     isReconnectingRef,
     manualDisconnectRef,
     reconnectAttemptsRef,
@@ -148,7 +183,7 @@ export function useClientLifecycle({
 
       try {
         const nupiClient = createNupiClientFromConfig(config);
-        await nupiClient.daemon.status({});
+        await raceTimeout(nupiClient.daemon.status({}), STATUS_TIMEOUT_MS, "daemon status check timed out");
 
         if (mountedRef.current && !manualConnectRef.current) {
           setClient(nupiClient);

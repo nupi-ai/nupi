@@ -21,7 +21,7 @@ import { Text } from "@/components/Themed";
 import { TranscriptionBubble } from "@/components/TranscriptionBubble";
 import { useColorScheme } from "@/components/useColorScheme";
 import { VoiceButton } from "@/components/VoiceButton";
-import Colors from "@/constants/Colors";
+import Colors from "@/constants/designTokens";
 import { arrayBufferToBase64 } from "@/lib/base64";
 import { useConnection } from "@/lib/ConnectionContext";
 import { getTerminalHtml } from "@/lib/terminal-html";
@@ -31,6 +31,8 @@ import {
   type WsEvent,
 } from "@/lib/useSessionStream";
 import { useVoice } from "@/lib/VoiceContext";
+import { useNotifications } from "@/lib/NotificationContext";
+import { wasNotificationPermissionPrompted, markNotificationPermissionPrompted } from "@/lib/storage";
 import { raceTimeout } from "@/lib/raceTimeout";
 
 /** Reusable encoder — TextEncoder is stateless, no need to allocate per-call. */
@@ -75,6 +77,14 @@ export default function SessionTerminalScreen() {
   const modelStatusRef = useRef(modelStatus);
   modelStatusRef.current = modelStatus;
   const { client } = useConnection();
+  const { permissionGranted, requestPermission } = useNotifications();
+  // H2 fix (Review 13): Use refs for notification values inside the voice
+  // command effect to avoid re-running the effect (and potentially double-sending
+  // commands) when permission state changes.
+  const permissionGrantedRef = useRef(permissionGranted);
+  permissionGrantedRef.current = permissionGranted;
+  const requestPermissionRef = useRef(requestPermission);
+  requestPermissionRef.current = requestPermission;
   const [voiceCommandStatus, setVoiceCommandStatus] = useState<
     "idle" | "sending" | "thinking" | "error"
   >("idle");
@@ -358,6 +368,29 @@ export default function SessionTerminalScreen() {
     isSendingRef.current = true;
     setVoiceCommandStatus("sending");
 
+    // Request notification permission on first voice command (Task 5.5).
+    // Fire-and-forget: don't block voice command send on permission result.
+    // H2 fix (Review 13): Read from refs to avoid including in effect deps.
+    // M2 fix (Review 14): Check wasNotificationPermissionPrompted() BEFORE
+    // checking permissionGranted so we don't re-prompt on every command after
+    // the user denied permissions. Once prompted, never ask again (OS blocks
+    // it anyway after first denial).
+    if (!permissionGrantedRef.current) {
+      wasNotificationPermissionPrompted().then((prompted) => {
+        if (!prompted) {
+          requestPermissionRef.current().then(() =>
+            markNotificationPermissionPrompted()
+          ).catch((err) => {
+            // M5 fix (Review 14): log instead of silently swallowing.
+            console.warn("[Notifications] requestPermission failed:", err);
+          });
+        }
+      }).catch((err) => {
+        // M5 fix (Review 14): log instead of silently swallowing.
+        console.warn("[Notifications] wasNotificationPermissionPrompted failed:", err);
+      });
+    }
+
     const text = confirmedText;
     addOptimistic(text);
     clearTranscription();
@@ -415,6 +448,8 @@ export default function SessionTerminalScreen() {
         isSendingRef.current = false;
       }
     })();
+  // H2 fix (Review 13): permissionGranted/requestPermission removed from deps
+  // (read via refs) to prevent re-running this effect when permission changes.
   }, [recordingStatus, confirmedText, client, id, addOptimistic, removeLastOptimistic, clearTranscription, startPolling]);
 
   // Detect AI response arrival — decrement pending counter, stop polling when all answered.

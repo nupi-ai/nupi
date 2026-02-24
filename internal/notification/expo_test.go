@@ -403,3 +403,42 @@ func TestExpoClient_MalformedTicketDetails(t *testing.T) {
 		t.Errorf("expected 0 DeviceNotRegistered, got %d", len(result.DeviceNotRegistered))
 	}
 }
+
+// TestExpoClient_TimeoutEnforcement verifies that a hanging Expo API server
+// does not block the client indefinitely. The HTTP client timeout (or context
+// cancellation) should cause Send to return an error within a reasonable time.
+func TestExpoClient_TimeoutEnforcement(t *testing.T) {
+	t.Parallel()
+
+	// Server that never responds until signalled.
+	done := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-done
+	}))
+	t.Cleanup(func() {
+		close(done) // unblock the handler goroutine so srv.Close() can drain
+		srv.Close()
+	})
+
+	client := NewExpoClient(
+		WithExpoURL(srv.URL),
+		// Short HTTP timeout to keep test fast.
+		WithHTTPClient(&http.Client{Timeout: 200 * time.Millisecond}),
+		// No retries — single attempt is sufficient to verify timeout.
+		withRetryBackoffs(nil),
+	)
+
+	start := time.Now()
+	_, err := client.Send(context.Background(), []ExpoMessage{
+		{To: "ExponentPushToken[test-timeout-abcdef1234]", Title: "Timeout test"},
+	})
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error from hanging server, got nil")
+	}
+	// Should complete well within 2s (200ms timeout + margin).
+	if elapsed > 2*time.Second {
+		t.Errorf("Send took %v, expected it to timeout within 2s", elapsed)
+	}
+}

@@ -9,7 +9,7 @@ import {
 import { router } from "expo-router";
 
 import { ConnectionErrorView } from "@/components/ConnectionErrorView";
-import type { Session } from "@/lib/gen/nupi_pb";
+import type { Session } from "@/lib/gen/sessions_pb";
 import { useThemeColors } from "@/components/useColorScheme";
 import { Text, View } from "@/components/Themed";
 import { useConnection } from "@/lib/ConnectionContext";

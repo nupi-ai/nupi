@@ -159,6 +159,8 @@ func (c *ExpoClient) sendBatch(ctx context.Context, messages []ExpoMessage) ([]E
 	}
 
 	var lastErr error
+	// Total attempts = 1 (initial) + len(retryBackoffs) retries.
+	// With default backoffs [500ms, 1s, 2s] this means 4 attempts total.
 	for attempt := 0; attempt <= len(c.retryBackoffs); attempt++ {
 		// Wait before retrying (skip on first attempt).
 		if attempt > 0 {

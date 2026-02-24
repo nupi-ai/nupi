@@ -1,6 +1,6 @@
 import { Pressable, StyleSheet, View as RNView } from "react-native";
 
-import type { Session } from "@/lib/gen/nupi_pb";
+import type { Session } from "@/lib/gen/sessions_pb";
 import Colors from "@/constants/designTokens";
 import { useThemeColors } from "@/components/useColorScheme";
 import { Text } from "@/components/Themed";

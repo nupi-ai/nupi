@@ -35,8 +35,6 @@ const MAX_AUDIO_FILE_SIZE: u64 = 500 * 1024 * 1024;
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const DEFAULT_CAPTURE_STREAM_ID: &str = "mic";
 const DEFAULT_PLAYBACK_STREAM_ID: &str = "tts";
-const SLOT_STT: &str = "stt";
-const SLOT_TTS: &str = "tts";
 const CANCELLED_MESSAGE: &str = "Voice stream cancelled by user";
 
 const AUDIO_CHUNK_SIZE: usize = 4096;
@@ -54,10 +52,7 @@ pub enum GrpcClientError {
     Grpc(tonic::Status),
     Transport(tonic::transport::Error),
     Audio(String),
-    VoiceNotReady {
-        message: String,
-        diagnostics: Vec<VoiceDiagnosticSummary>,
-    },
+    VoiceNotReady { message: String },
 }
 
 impl std::fmt::Display for GrpcClientError {
@@ -72,21 +67,7 @@ impl std::fmt::Display for GrpcClientError {
             GrpcClientError::Grpc(status) => write!(f, "gRPC error: {status}"),
             GrpcClientError::Transport(err) => write!(f, "gRPC transport error: {err}"),
             GrpcClientError::Audio(err) => write!(f, "{err}"),
-            GrpcClientError::VoiceNotReady {
-                message,
-                diagnostics,
-            } => {
-                if diagnostics.is_empty() {
-                    write!(f, "{message}")
-                } else {
-                    let joined = diagnostics
-                        .iter()
-                        .map(|diag| format!("[{}] {}", diag.slot, diag.message))
-                        .collect::<Vec<_>>()
-                        .join("; ");
-                    write!(f, "{message} ({joined})")
-                }
-            }
+            GrpcClientError::VoiceNotReady { message } => write!(f, "{message}"),
         }
     }
 }
@@ -376,20 +357,11 @@ impl From<nupi_api::AudioCapability> for AudioCapabilitySummary {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct VoiceDiagnosticSummary {
-    pub slot: String,
-    pub code: String,
-    pub message: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
 pub struct AudioCapabilitiesSummary {
     pub capture: Vec<AudioCapabilitySummary>,
     pub playback: Vec<AudioCapabilitySummary>,
     pub capture_enabled: bool,
     pub playback_enabled: bool,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub diagnostics: Vec<VoiceDiagnosticSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
 }
@@ -580,23 +552,6 @@ fn default_capture_format_summary() -> AudioFormatSummary {
         bit_depth: 16,
         frame_ms: Some(20),
     }
-}
-
-/// Picks the most relevant diagnostic message for a logical slot.
-fn primary_diagnostic_message(
-    diags: &[VoiceDiagnosticSummary],
-    slot: &str,
-    fallback: &str,
-) -> String {
-    for diag in diags {
-        if diag.slot.eq_ignore_ascii_case(slot) {
-            return diag.message.clone();
-        }
-    }
-    diags
-        .first()
-        .map(|diag| diag.message.clone())
-        .unwrap_or_else(|| fallback.to_string())
 }
 
 fn require_not_empty<'a>(val: &'a str, field_name: &str) -> Result<&'a str, GrpcClientError> {
@@ -1105,27 +1060,11 @@ impl GrpcClient {
                         .unwrap_or(false)
                 });
 
-                let mut diagnostics = Vec::new();
-                for cap in capture.iter().chain(playback.iter()) {
-                    if let Some(meta) = &cap.metadata {
-                        if let Some(diag_str) = meta.get("diagnostics") {
-                            if !diag_str.trim().is_empty() {
-                                diagnostics.push(VoiceDiagnosticSummary {
-                                    slot: cap.stream_id.clone(),
-                                    code: "info".to_string(),
-                                    message: diag_str.clone(),
-                                });
-                            }
-                        }
-                    }
-                }
-
                 Ok(AudioCapabilitiesSummary {
                     capture,
                     playback,
                     capture_enabled,
                     playback_enabled,
-                    diagnostics,
                     message: None,
                 })
             }
@@ -1135,7 +1074,6 @@ impl GrpcClient {
                     playback: Vec::new(),
                     capture_enabled: false,
                     playback_enabled: false,
-                    diagnostics: Vec::new(),
                     message: Some(status.message().to_string()),
                 })
             }
@@ -1198,30 +1136,18 @@ impl GrpcClient {
         let capabilities = self.audio_capabilities(Some(trimmed_session)).await?;
 
         if !capabilities.capture_enabled {
-            let message = capabilities.message.clone().unwrap_or_else(|| {
-                primary_diagnostic_message(
-                    &capabilities.diagnostics,
-                    SLOT_STT,
-                    "Voice capture is disabled",
-                )
-            });
-            return Err(GrpcClientError::VoiceNotReady {
-                message,
-                diagnostics: capabilities.diagnostics.clone(),
-            });
+            let message = capabilities
+                .message
+                .clone()
+                .unwrap_or_else(|| "Voice capture is disabled".to_string());
+            return Err(GrpcClientError::VoiceNotReady { message });
         }
         if subscribe_playback && !capabilities.playback_enabled {
-            let message = capabilities.message.clone().unwrap_or_else(|| {
-                primary_diagnostic_message(
-                    &capabilities.diagnostics,
-                    SLOT_TTS,
-                    "Voice playback is disabled",
-                )
-            });
-            return Err(GrpcClientError::VoiceNotReady {
-                message,
-                diagnostics: capabilities.diagnostics.clone(),
-            });
+            let message = capabilities
+                .message
+                .clone()
+                .unwrap_or_else(|| "Voice playback is disabled".to_string());
+            return Err(GrpcClientError::VoiceNotReady { message });
         }
 
         let cancel_flag = Arc::new(AtomicBool::new(false));
@@ -1626,17 +1552,11 @@ impl GrpcClient {
 
         let capabilities = self.audio_capabilities(Some(trimmed_session)).await?;
         if !capabilities.playback_enabled {
-            let message = capabilities.message.clone().unwrap_or_else(|| {
-                primary_diagnostic_message(
-                    &capabilities.diagnostics,
-                    SLOT_TTS,
-                    "Voice playback is disabled",
-                )
-            });
-            return Err(GrpcClientError::VoiceNotReady {
-                message,
-                diagnostics: capabilities.diagnostics.clone(),
-            });
+            let message = capabilities
+                .message
+                .clone()
+                .unwrap_or_else(|| "Voice playback is disabled".to_string());
+            return Err(GrpcClientError::VoiceNotReady { message });
         }
 
         let mut client =

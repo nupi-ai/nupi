@@ -98,13 +98,10 @@ impl From<GrpcClientError> for CommandError {
             }
             GrpcClientError::Transport(err) => Self::new("UNAVAILABLE", err.to_string()),
             GrpcClientError::Audio(err) => Self::new("AUDIO_ERROR", err),
-            GrpcClientError::VoiceNotReady {
-                message,
-                diagnostics,
-            } => Self {
+            GrpcClientError::VoiceNotReady { message } => Self {
                 code: "FAILED_PRECONDITION",
                 message,
-                details: Some(json!({ "diagnostics": diagnostics })),
+                details: None,
             },
         }
     }
