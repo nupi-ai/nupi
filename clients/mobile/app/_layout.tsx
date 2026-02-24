@@ -9,11 +9,13 @@ import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { useEffect } from "react";
 import "react-native-reanimated";
+import { QueryClientProvider } from "@tanstack/react-query";
 
 import { useColorScheme } from "@/components/useColorScheme";
 import { ConnectionProvider } from "@/lib/ConnectionContext";
 import { NotificationProvider } from "@/lib/NotificationContext";
 import { VoiceProvider } from "@/lib/VoiceContext";
+import { mobileQueryClient } from "@/lib/queryClient";
 import InAppNotificationBanner from "@/components/InAppNotification";
 
 export { ErrorBoundary } from "expo-router";
@@ -51,25 +53,27 @@ function RootLayoutNav() {
   const colorScheme = useColorScheme();
 
   return (
-    <ConnectionProvider>
-      <NotificationProvider>
-        <VoiceProvider>
-          <ThemeProvider value={colorScheme === "dark" ? DarkTheme : DefaultTheme}>
-            <Stack>
-              <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-              <Stack.Screen
-                name="scan"
-                options={{ presentation: "modal", title: "Scan QR Code" }}
-              />
-              <Stack.Screen
-                name="session/[id]"
-                options={{ title: "Terminal", headerBackTitle: "Sessions" }}
-              />
-            </Stack>
-            <InAppNotificationBanner />
-          </ThemeProvider>
-        </VoiceProvider>
-      </NotificationProvider>
-    </ConnectionProvider>
+    <QueryClientProvider client={mobileQueryClient}>
+      <ConnectionProvider>
+        <NotificationProvider>
+          <VoiceProvider>
+            <ThemeProvider value={colorScheme === "dark" ? DarkTheme : DefaultTheme}>
+              <Stack>
+                <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+                <Stack.Screen
+                  name="scan"
+                  options={{ presentation: "modal", title: "Scan QR Code" }}
+                />
+                <Stack.Screen
+                  name="session/[id]"
+                  options={{ title: "Terminal", headerBackTitle: "Sessions" }}
+                />
+              </Stack>
+              <InAppNotificationBanner />
+            </ThemeProvider>
+          </VoiceProvider>
+        </NotificationProvider>
+      </ConnectionProvider>
+    </QueryClientProvider>
   );
 }
