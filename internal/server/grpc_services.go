@@ -13,6 +13,7 @@ import (
 
 	"github.com/nupi-ai/nupi/internal/api"
 	apiv1 "github.com/nupi-ai/nupi/internal/api/grpc/v1"
+	"github.com/nupi-ai/nupi/internal/audio/audiofmt"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/language"
@@ -719,7 +720,12 @@ func playbackDuration(evt eventbus.AudioEgressPlaybackEvent) time.Duration {
 	if evt.Duration > 0 {
 		return evt.Duration
 	}
-	return pcmDuration(evt.Format, len(evt.Data))
+	const maxPCMFrames = 1 << 30
+	frames := audiofmt.PCMFrameCountFromBytes(evt.Format, len(evt.Data))
+	if frames <= 0 || frames > maxPCMFrames {
+		return 0
+	}
+	return audiofmt.DurationFromFrames(evt.Format.SampleRate, frames)
 }
 
 func durationToMillis(d time.Duration) uint32 {
@@ -727,29 +733,6 @@ func durationToMillis(d time.Duration) uint32 {
 		return 0
 	}
 	return uint32(d / time.Millisecond)
-}
-
-func pcmDuration(format eventbus.AudioFormat, dataLen int) time.Duration {
-	if dataLen <= 0 || format.SampleRate <= 0 || format.Channels <= 0 || format.BitDepth <= 0 {
-		return 0
-	}
-	bytesPerSample := format.BitDepth / 8
-	if bytesPerSample <= 0 {
-		return 0
-	}
-	frameSize := format.Channels * bytesPerSample
-	if frameSize <= 0 {
-		return 0
-	}
-	samples := dataLen / frameSize
-	if samples <= 0 {
-		return 0
-	}
-	const maxPCMFrames = 1 << 30
-	if samples > maxPCMFrames {
-		return 0
-	}
-	return time.Duration(float64(samples) / float64(format.SampleRate) * float64(time.Second))
 }
 
 func (c *configService) GetTransportConfig(ctx context.Context, _ *emptypb.Empty) (*apiv1.TransportConfig, error) {

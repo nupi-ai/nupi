@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nupi-ai/nupi/internal/audio/audiofmt"
 	"github.com/nupi-ai/nupi/internal/audio/serviceutil"
 	"github.com/nupi-ai/nupi/internal/audio/streammanager"
 	"github.com/nupi-ai/nupi/internal/constants"
@@ -688,25 +689,5 @@ func chunkDuration(format eventbus.AudioFormat, chunk SynthesisChunk) time.Durat
 	if chunk.Duration > 0 {
 		return chunk.Duration
 	}
-	return durationFromPCM(format, len(chunk.Data))
-}
-
-func durationFromPCM(format eventbus.AudioFormat, bytes int) time.Duration {
-	if bytes <= 0 || format.SampleRate <= 0 || format.Channels <= 0 || format.BitDepth <= 0 {
-		return 0
-	}
-	bytesPerSample := format.BitDepth / 8
-	if bytesPerSample <= 0 {
-		return 0
-	}
-	frameSize := format.Channels * bytesPerSample
-	if frameSize <= 0 {
-		return 0
-	}
-	samples := bytes / frameSize
-	if samples <= 0 {
-		return 0
-	}
-	seconds := float64(samples) / float64(format.SampleRate)
-	return time.Duration(seconds * float64(time.Second))
+	return audiofmt.DurationFromPCMBytes(format, len(chunk.Data))
 }
