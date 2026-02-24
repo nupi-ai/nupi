@@ -198,8 +198,8 @@ func TestServiceMetricsActiveStreams(t *testing.T) {
 	}
 	t.Cleanup(func() { svc.Shutdown(context.Background()) })
 
-	if metrics := svc.Metrics(); metrics.ActiveStreams != 0 {
-		t.Fatalf("expected initial ActiveStreams = 0, got %d", metrics.ActiveStreams)
+	if count := svc.ActiveStreamCount(); count != 0 {
+		t.Fatalf("expected initial ActiveStreams = 0, got %d", count)
 	}
 
 	params := SessionParams{
@@ -221,13 +221,13 @@ func TestServiceMetricsActiveStreams(t *testing.T) {
 	}
 	st := h.(*stream)
 
-	if metrics := svc.Metrics(); metrics.ActiveStreams != 1 {
-		t.Fatalf("expected ActiveStreams = 1, got %d", metrics.ActiveStreams)
+	if count := svc.ActiveStreamCount(); count != 1 {
+		t.Fatalf("expected ActiveStreams = 1, got %d", count)
 	}
 
 	svc.onStreamClosed(key, st)
-	if metrics := svc.Metrics(); metrics.ActiveStreams != 0 {
-		t.Fatalf("expected ActiveStreams to return to 0, got %d", metrics.ActiveStreams)
+	if count := svc.ActiveStreamCount(); count != 0 {
+		t.Fatalf("expected ActiveStreams to return to 0, got %d", count)
 	}
 
 	params2 := params
@@ -245,8 +245,8 @@ func TestServiceMetricsActiveStreams(t *testing.T) {
 	if len(handles) != 2 {
 		t.Fatalf("expected CloseAllStreams to return 2 handles, got %d", len(handles))
 	}
-	if metrics := svc.Metrics(); metrics.ActiveStreams != 0 {
-		t.Fatalf("expected ActiveStreams = 0 after CloseAllStreams, got %d", metrics.ActiveStreams)
+	if count := svc.ActiveStreamCount(); count != 0 {
+		t.Fatalf("expected ActiveStreams = 0 after CloseAllStreams, got %d", count)
 	}
 }
 

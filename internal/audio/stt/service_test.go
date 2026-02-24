@@ -157,44 +157,6 @@ func TestServiceFactoryError(t *testing.T) {
 	}
 }
 
-func TestServiceMetricsSegments(t *testing.T) {
-	bus := eventbus.New()
-	svc := New(bus, WithFactory(FactoryFunc(func(context.Context, SessionParams) (Transcriber, error) {
-		return nil, ErrAdapterUnavailable
-	})))
-
-	if metrics := svc.Metrics(); metrics.SegmentsTotal != 0 {
-		t.Fatalf("expected initial SegmentsTotal to be 0, got %d", metrics.SegmentsTotal)
-	}
-
-	// Need to call Start to initialise manager.
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	svc.Start(ctx)
-	defer svc.Shutdown(context.Background())
-
-	segment := eventbus.AudioIngressSegmentEvent{
-		SessionID: "metrics-session",
-		StreamID:  "mic",
-		Sequence:  1,
-		Format: eventbus.AudioFormat{
-			Encoding:   eventbus.AudioEncodingPCM16,
-			SampleRate: 16000,
-			Channels:   1,
-			BitDepth:   16,
-		},
-		Data:     make([]byte, 640),
-		Duration: 20 * time.Millisecond,
-	}
-
-	svc.handleSegment(segment)
-	svc.handleSegment(segment)
-
-	if metrics := svc.Metrics(); metrics.SegmentsTotal != 2 {
-		t.Fatalf("expected SegmentsTotal 2, got %d", metrics.SegmentsTotal)
-	}
-}
-
 func TestServiceBuffersUntilAdapterAvailable(t *testing.T) {
 	bus := eventbus.New()
 

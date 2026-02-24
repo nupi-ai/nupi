@@ -226,14 +226,6 @@ func TestServiceNoAdapterPublishesError(t *testing.T) {
 		t.Fatal("Timeout waiting for error speak event")
 	}
 
-	metrics := svc.Metrics()
-	if metrics.RequestsTotal != 1 {
-		t.Errorf("Expected 1 request, got %d", metrics.RequestsTotal)
-	}
-	if metrics.RequestsFailed != 1 {
-		t.Errorf("Expected 1 failed request, got %d", metrics.RequestsFailed)
-	}
-
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 	svc.Shutdown(shutdownCtx)
@@ -366,11 +358,6 @@ func TestServiceCommandAction(t *testing.T) {
 		t.Errorf("Expected OriginAI, got %s", commands[0].Origin)
 	}
 
-	metrics := svc.Metrics()
-	if metrics.CommandsQueued != 1 {
-		t.Errorf("Expected 1 command queued, got %d", metrics.CommandsQueued)
-	}
-
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 	svc.Shutdown(shutdownCtx)
@@ -439,11 +426,6 @@ func TestServiceSpeakAction(t *testing.T) {
 		t.Fatal("Timeout waiting for reply event")
 	}
 
-	metrics := svc.Metrics()
-	if metrics.SpeakEvents != 1 {
-		t.Errorf("Expected 1 speak event, got %d", metrics.SpeakEvents)
-	}
-
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 	svc.Shutdown(shutdownCtx)
@@ -497,11 +479,6 @@ func TestServiceClarifyAction(t *testing.T) {
 		t.Fatal("Timeout waiting for clarification event")
 	}
 
-	metrics := svc.Metrics()
-	if metrics.Clarifications != 1 {
-		t.Errorf("Expected 1 clarification, got %d", metrics.Clarifications)
-	}
-
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 	svc.Shutdown(shutdownCtx)
@@ -545,11 +522,6 @@ func TestServiceAdapterError(t *testing.T) {
 		}
 	case <-time.After(1 * time.Second):
 		t.Fatal("Timeout waiting for error reply")
-	}
-
-	metrics := svc.Metrics()
-	if metrics.RequestsFailed != 1 {
-		t.Errorf("Expected 1 failed request, got %d", metrics.RequestsFailed)
 	}
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -785,8 +757,8 @@ func TestServiceSetAdapterRuntime(t *testing.T) {
 	}
 
 	// Initially no adapter
-	metrics := svc.Metrics()
-	if metrics.AdapterName != "" {
+	status := svc.AdapterStatus()
+	if status.AdapterName != "" {
 		t.Errorf("Expected empty adapter name initially")
 	}
 
@@ -794,11 +766,11 @@ func TestServiceSetAdapterRuntime(t *testing.T) {
 	adapter := &testAdapter{name: "runtime-adapter", ready: true}
 	svc.SetAdapter(adapter)
 
-	metrics = svc.Metrics()
-	if metrics.AdapterName != "runtime-adapter" {
-		t.Errorf("Expected runtime-adapter, got %s", metrics.AdapterName)
+	status = svc.AdapterStatus()
+	if status.AdapterName != "runtime-adapter" {
+		t.Errorf("Expected runtime-adapter, got %s", status.AdapterName)
 	}
-	if !metrics.AdapterReady {
+	if !status.AdapterReady {
 		t.Errorf("Expected adapter to be ready")
 	}
 
@@ -1022,18 +994,6 @@ func TestE2ECommandFlowWithMockAdapter(t *testing.T) {
 		t.Errorf("Expected OriginAI, got %s", commands[0].Origin)
 	}
 
-	// Verify metrics
-	metrics := svc.Metrics()
-	if metrics.RequestsTotal != 1 {
-		t.Errorf("Expected 1 request, got %d", metrics.RequestsTotal)
-	}
-	if metrics.RequestsFailed != 0 {
-		t.Errorf("Expected 0 failed, got %d", metrics.RequestsFailed)
-	}
-	if metrics.CommandsQueued != 1 {
-		t.Errorf("Expected 1 command queued, got %d", metrics.CommandsQueued)
-	}
-
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 	svc.Shutdown(shutdownCtx)
@@ -1096,12 +1056,6 @@ func TestE2ESpeakFlowWithEchoAdapter(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Timeout waiting for reply")
-	}
-
-	// Verify metrics
-	metrics := svc.Metrics()
-	if metrics.SpeakEvents != 1 {
-		t.Errorf("Expected 1 speak event, got %d", metrics.SpeakEvents)
 	}
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1167,12 +1121,6 @@ func TestE2EClarifyFlowWithMockAdapter(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Timeout waiting for reply")
-	}
-
-	// Verify metrics
-	metrics := svc.Metrics()
-	if metrics.Clarifications != 1 {
-		t.Errorf("Expected 1 clarification, got %d", metrics.Clarifications)
 	}
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)

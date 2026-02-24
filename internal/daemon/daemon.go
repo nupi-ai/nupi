@@ -30,7 +30,6 @@ import (
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/intentrouter"
 	"github.com/nupi-ai/nupi/internal/notification"
-	"github.com/nupi-ai/nupi/internal/observability"
 	"github.com/nupi-ai/nupi/internal/plugins"
 	adapters "github.com/nupi-ai/nupi/internal/plugins/adapters"
 	"github.com/nupi-ai/nupi/internal/plugins/integrity"
@@ -85,80 +84,7 @@ const (
 	// file-change detection in the transport monitor goroutine.
 	transportMonitorInterval = constants.Duration5Seconds
 
-	vadLatencyThresholdKey = "vad_latency_p99_threshold_ms"
 )
-
-func loadVADLatencyThreshold(store *configstore.Store) (time.Duration, bool) {
-	if store == nil {
-		return 0, false
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), storeQueryTimeout)
-	defer cancel()
-
-	settings, err := store.LoadAudioSettings(ctx)
-	if err != nil {
-		log.Printf("[Daemon] load audio settings for VAD latency threshold: %v", err)
-		return 0, false
-	}
-	if !settings.Metadata.Valid || strings.TrimSpace(settings.Metadata.String) == "" {
-		return 0, false
-	}
-
-	var metadata map[string]any
-	if err := json.Unmarshal([]byte(settings.Metadata.String), &metadata); err != nil {
-		log.Printf("[Daemon] parse audio settings metadata for VAD latency threshold: %v", err)
-		return 0, false
-	}
-
-	raw, ok := metadata[vadLatencyThresholdKey]
-	if !ok {
-		return 0, false
-	}
-
-	var thresholdMs float64
-	switch val := raw.(type) {
-	case float64:
-		thresholdMs = val
-	case string:
-		trimmed := strings.TrimSpace(val)
-		parsed, err := strconv.ParseFloat(trimmed, 64)
-		if err != nil {
-			duration, durErr := time.ParseDuration(trimmed)
-			if durErr != nil {
-				log.Printf("[Daemon] parse VAD latency threshold %q: %v", val, err)
-				return 0, false
-			}
-			thresholdMs = duration.Seconds() * 1000
-		} else {
-			thresholdMs = parsed
-		}
-	default:
-		log.Printf("[Daemon] unsupported VAD latency threshold type %T", raw)
-		return 0, false
-	}
-
-	if thresholdMs <= 0 {
-		log.Printf("[Daemon] invalid VAD latency threshold %.2fms; using default", thresholdMs)
-		return 0, false
-	}
-
-	return time.Duration(thresholdMs * float64(time.Millisecond)), true
-}
-
-func mapVADLatencySnapshot(snapshot vad.LatencyHistogramSnapshot) observability.HistogramSnapshot {
-	bounds := make([]float64, len(snapshot.Bounds))
-	for i, bound := range snapshot.Bounds {
-		bounds[i] = bound.Seconds()
-	}
-	counts := make([]uint64, len(snapshot.Counts))
-	copy(counts, snapshot.Counts)
-	return observability.HistogramSnapshot{
-		Bounds: bounds,
-		Counts: counts,
-		Sum:    snapshot.Sum.Seconds(),
-		Count:  snapshot.Count,
-	}
-}
 
 // New creates a new daemon instance bound to the provided configuration store.
 func New(opts Options) (*Daemon, error) {
@@ -244,28 +170,16 @@ func New(opts Options) (*Daemon, error) {
 	})
 	adaptersService := adapters.NewService(adapterManager, opts.Store, bus)
 
-	pipelineService := contentpipeline.NewService(bus, pluginService, contentpipeline.WithMetricsInterval(constants.Duration30Seconds))
+	pipelineService := contentpipeline.NewService(bus, pluginService)
 	audioIngressService := ingress.New(bus)
 	audioSTTService := stt.New(bus, stt.WithFactory(stt.NewAdapterFactory(opts.Store, adaptersService)))
-	vadOptions := []vad.Option{
-		vad.WithFactory(vad.NewAdapterFactory(opts.Store, adaptersService)),
-	}
-	if threshold, ok := loadVADLatencyThreshold(opts.Store); ok {
-		vadOptions = append(vadOptions, vad.WithLatencyThreshold(threshold))
-	}
-	audioVADService := vad.New(bus, vadOptions...)
+	audioVADService := vad.New(bus, vad.WithFactory(vad.NewAdapterFactory(opts.Store, adaptersService)))
 	audioBargeService := barge.New(bus)
 	audioEgressService := egress.New(bus, egress.WithFactory(egress.NewAdapterFactory(opts.Store, adaptersService)))
 
 	// Global conversation store for sessionless ("bezpańskie") messages
 	globalConversationStore := conversation.NewGlobalStore()
 	conversationService := conversation.NewService(bus, conversation.WithGlobalStore(globalConversationStore))
-	eventCounter := observability.NewEventCounter()
-	bus.AddObserver(eventCounter)
-	metricsExporter := observability.NewPrometheusExporter(bus, eventCounter)
-	metricsExporter.WithPipeline(pipelineService)
-	metricsExporter.WithPluginWarnings(pluginService)
-	apiServer.SetMetricsExporter(metricsExporter)
 	apiServer.SetConversationStore(conversationService)
 	apiServer.SetAdaptersController(adaptersService)
 	apiServer.SetAudioIngress(runtimebridge.AudioIngressProvider(audioIngressService))
@@ -376,20 +290,6 @@ func New(opts Options) (*Daemon, error) {
 		return nil, err
 	}
 
-	// Wire intent router metrics to Prometheus exporter
-	metricsExporter.WithIntentRouter(func() observability.IntentRouterMetricsSnapshot {
-		m := intentRouterService.Metrics()
-		return observability.IntentRouterMetricsSnapshot{
-			RequestsTotal:  m.RequestsTotal,
-			RequestsFailed: m.RequestsFailed,
-			CommandsQueued: m.CommandsQueued,
-			Clarifications: m.Clarifications,
-			SpeakEvents:    m.SpeakEvents,
-			AdapterName:    m.AdapterName,
-			AdapterReady:   m.AdapterReady,
-		}
-	})
-
 	// Intent router adapter bridge - watches for AI adapter status changes
 	// and updates the intent router with the appropriate adapter.
 	// Uses adaptersService for initial sync with current binding state.
@@ -442,30 +342,6 @@ func New(opts Options) (*Daemon, error) {
 		commandExecutor: commandExecutor,
 	}
 
-	metricsExporter.WithAudioMetrics(func() observability.AudioMetricsSnapshot {
-		select {
-		case <-d.lifecycle.Done():
-			return observability.AudioMetricsSnapshot{}
-		default:
-		}
-		ingressStats := audioIngressService.Metrics()
-		sttStats := audioSTTService.Metrics()
-		ttsStats := audioEgressService.Metrics()
-		bargeStats := audioBargeService.Metrics()
-		vadStats := audioVADService.Metrics()
-		return observability.AudioMetricsSnapshot{
-			AudioIngressBytes:    ingressStats.BytesTotal,
-			STTSegments:          sttStats.SegmentsTotal,
-			TTSActiveStreams:     ttsStats.ActiveStreams,
-			SpeechBargeInTotal:   bargeStats.BargeInTotal,
-			VADDetections:        vadStats.DetectionsTotal,
-			VADRetryAttempts:     vadStats.RetryAttemptsTotal,
-			VADRetryAbandoned:    vadStats.RetryAbandonedTotal,
-			VADFramesTotal:       vadStats.FramesTotal,
-			VADProcessingLatency: mapVADLatencySnapshot(vadStats.ProcessingLatency),
-		}
-	})
-
 	apiServer.AddTransportListener(func() {
 		select {
 		case <-d.lifecycle.Done():
@@ -502,8 +378,6 @@ func (d *Daemon) Start() error {
 
 	d.runtimeInfo.SetStartTime(time.Now())
 	d.ctx, d.cancel = context.WithCancel(context.Background())
-	d.eventBus.StartMetricsReporter(d.ctx, constants.Duration30Seconds, nil)
-
 	// Start global conversation store periodic pruning
 	if d.globalStore != nil {
 		d.globalStore.Start()

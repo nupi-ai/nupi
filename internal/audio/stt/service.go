@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/nupi-ai/nupi/internal/audio/serviceutil"
@@ -111,8 +110,6 @@ type Service struct {
 	manager *streammanager.Manager[eventbus.AudioIngressSegmentEvent]
 
 	sub *eventbus.TypedSubscription[eventbus.AudioIngressSegmentEvent]
-
-	segmentsTotal atomic.Uint64
 }
 
 // New constructs an STT service bound to the provided event bus.
@@ -198,8 +195,6 @@ func (s *Service) handleSegment(segment eventbus.AudioIngressSegmentEvent) {
 	if segment.SessionID == "" || segment.StreamID == "" {
 		return
 	}
-
-	s.segmentsTotal.Add(1)
 
 	key := streammanager.StreamKey(segment.SessionID, segment.StreamID)
 
@@ -410,14 +405,3 @@ func (st *stream) closeTranscriber(reason string) {
 	})
 }
 
-// Metrics represents aggregated statistics for the STT service.
-type Metrics struct {
-	SegmentsTotal uint64
-}
-
-// Metrics returns the current STT metrics snapshot.
-func (s *Service) Metrics() Metrics {
-	return Metrics{
-		SegmentsTotal: s.segmentsTotal.Load(),
-	}
-}

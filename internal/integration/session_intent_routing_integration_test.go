@@ -374,14 +374,6 @@ func TestAICommandRoutingMultiAction(t *testing.T) {
 		t.Errorf("expected command targeting sess-target, got %q", commands[0].SessionID)
 	}
 
-	// Verify metrics show both command and speak
-	metrics := setup.Router.Metrics()
-	if metrics.CommandsQueued != 1 {
-		t.Errorf("expected 1 command queued, got %d", metrics.CommandsQueued)
-	}
-	if metrics.SpeakEvents != 1 {
-		t.Errorf("expected 1 speak event, got %d", metrics.SpeakEvents)
-	}
 }
 
 // --- Task 2: Validate proactive idle notifications via session output events (AC: #2) ---
@@ -875,11 +867,6 @@ func TestIntentClarificationFlow(t *testing.T) {
 		t.Errorf("expected reply status=clarification, got %q", reply.Metadata["status"])
 	}
 
-	// Verify clarification metric
-	metrics := setup.Router.Metrics()
-	if metrics.Clarifications != 1 {
-		t.Errorf("expected 1 clarification, got %d", metrics.Clarifications)
-	}
 }
 
 func TestClarificationResponseRoutedCorrectly(t *testing.T) {

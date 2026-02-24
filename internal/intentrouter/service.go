@@ -8,7 +8,6 @@ import (
 	"log"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/nupi-ai/nupi/internal/constants"
@@ -79,13 +78,6 @@ type Service struct {
 	// Smart session routing - tracks conversation context for session selection
 	conversationSession     string    // Last session that was discussed/targeted
 	conversationSessionTime time.Time // When it was last referenced
-
-	// Metrics - using atomic for thread-safe access
-	requestsTotal  uint64
-	requestsFailed uint64
-	commandsQueued uint64
-	clarifications uint64
-	speakEvents    uint64
 }
 
 // NewService creates an intent router service.
@@ -326,19 +318,15 @@ func (s *Service) handlePrompt(ctx context.Context, prompt eventbus.Conversation
 	onboardingProvider := s.onboardingProvider
 	s.mu.RUnlock()
 
-	atomic.AddUint64(&s.requestsTotal, 1)
-
 	// Check if we have an adapter - publish error to bus so UI gets feedback
 	if adapter == nil {
 		log.Printf("[IntentRouter] No adapter configured for prompt %s", prompt.PromptID)
-		atomic.AddUint64(&s.requestsFailed, 1)
 		s.publishError(prompt.SessionID, prompt.PromptID, ErrNoAdapter)
 		return
 	}
 
 	if !adapter.Ready() {
 		log.Printf("[IntentRouter] Adapter %s not ready for prompt %s", adapter.Name(), prompt.PromptID)
-		atomic.AddUint64(&s.requestsFailed, 1)
 		s.publishError(prompt.SessionID, prompt.PromptID, ErrAdapterNotReady)
 		return
 	}
@@ -380,7 +368,6 @@ func (s *Service) handlePrompt(ctx context.Context, prompt eventbus.Conversation
 		if err != nil {
 			log.Printf("[IntentRouter] Adapter %s failed to resolve intent for prompt %s (iteration %d): %v",
 				adapter.Name(), prompt.PromptID, iteration, err)
-			atomic.AddUint64(&s.requestsFailed, 1)
 			s.publishError(prompt.SessionID, prompt.PromptID, err)
 			return
 		}
@@ -410,7 +397,6 @@ func (s *Service) handlePrompt(ctx context.Context, prompt eventbus.Conversation
 		// Tool-use requires a registry
 		if toolRegistry == nil {
 			log.Printf("[IntentRouter] Adapter returned tool_use but no tool registry configured for prompt %s", prompt.PromptID)
-			atomic.AddUint64(&s.requestsFailed, 1)
 			s.publishError(prompt.SessionID, prompt.PromptID, ErrNoToolRegistry)
 			return
 		}
@@ -444,7 +430,6 @@ func (s *Service) handlePrompt(ctx context.Context, prompt eventbus.Conversation
 
 	// Safety cap reached — publish error
 	log.Printf("[IntentRouter] Max tool iterations (%d) reached for prompt %s", maxToolIterations, prompt.PromptID)
-	atomic.AddUint64(&s.requestsFailed, 1)
 	s.publishError(prompt.SessionID, prompt.PromptID, ErrMaxToolIterations)
 }
 
@@ -640,8 +625,6 @@ func (s *Service) executeCommand(ctx context.Context, prompt eventbus.Conversati
 		return
 	}
 
-	atomic.AddUint64(&s.commandsQueued, 1)
-
 	// Update conversation session tracking - this session is now the context
 	s.updateConversationSession(sessionRef)
 
@@ -669,8 +652,6 @@ func (s *Service) executeSpeak(ctx context.Context, prompt eventbus.Conversation
 	if s.bus == nil || action.Text == "" {
 		return
 	}
-
-	atomic.AddUint64(&s.speakEvents, 1)
 
 	// Use targetSession from smart routing (may differ from prompt.SessionID for sessionless prompts)
 	sessionID := targetSession
@@ -711,8 +692,6 @@ func (s *Service) executeClarify(ctx context.Context, prompt eventbus.Conversati
 	if s.bus == nil || action.Text == "" {
 		return
 	}
-
-	atomic.AddUint64(&s.clarifications, 1)
 
 	// Use targetSession from smart routing (may differ from prompt.SessionID for sessionless prompts)
 	sessionID := targetSession
@@ -841,37 +820,26 @@ func userFriendlyError(err error) string {
 	}
 }
 
-// Metrics returns current service metrics.
-func (s *Service) Metrics() ServiceMetrics {
-	s.mu.RLock()
-	adapterName := ""
-	adapterReady := false
-	if s.adapter != nil {
-		adapterName = s.adapter.Name()
-		adapterReady = s.adapter.Ready()
-	}
-	s.mu.RUnlock()
-
-	return ServiceMetrics{
-		RequestsTotal:  atomic.LoadUint64(&s.requestsTotal),
-		RequestsFailed: atomic.LoadUint64(&s.requestsFailed),
-		CommandsQueued: atomic.LoadUint64(&s.commandsQueued),
-		Clarifications: atomic.LoadUint64(&s.clarifications),
-		SpeakEvents:    atomic.LoadUint64(&s.speakEvents),
-		AdapterName:    adapterName,
-		AdapterReady:   adapterReady,
-	}
+// AdapterStatus reports the current AI adapter binding.
+type AdapterStatus struct {
+	AdapterName  string
+	AdapterReady bool
 }
 
-// ServiceMetrics contains runtime statistics.
-type ServiceMetrics struct {
-	RequestsTotal  uint64
-	RequestsFailed uint64
-	CommandsQueued uint64
-	Clarifications uint64
-	SpeakEvents    uint64
-	AdapterName    string
-	AdapterReady   bool
+// AdapterStatus returns the current adapter binding status.
+func (s *Service) AdapterStatus() AdapterStatus {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var name string
+	var ready bool
+	if s.adapter != nil {
+		name = s.adapter.Name()
+		ready = s.adapter.Ready()
+	}
+	return AdapterStatus{
+		AdapterName:  name,
+		AdapterReady: ready,
+	}
 }
 
 // hasToolUseAction returns true if the response indicates the AI wants to use tools.

@@ -21,6 +21,7 @@ const (
 	maxConcurrentSend     = 4
 	maxNotifBodyBytes     = 2048
 	dedupCleanupThreshold = 100
+	expoSendTimeout       = 8 * time.Second
 )
 
 // TokenStore abstracts push token storage used by the notification service.
@@ -299,7 +300,10 @@ func (s *Service) handleSpeakEvent(ctx context.Context, evt eventbus.Conversatio
 	}
 
 	title := "Nupi: " + eventLabel(eventType)
-	body := sanitize.TruncateUTF8(evt.Text, maxNotifBodyBytes)
+	// M2 fix (Review 13): strip control chars before truncating, consistent
+	// with handlePipelineEvent. Speak error messages may contain ANSI codes.
+	body := sanitize.StripControlChars(evt.Text)
+	body = sanitize.TruncateUTF8(body, maxNotifBodyBytes)
 	s.sendNotification(ctx, evt.SessionID, eventType, "speak", title, body, receivedAt)
 }
 
@@ -350,10 +354,26 @@ func (s *Service) sendNotification(ctx context.Context, sessionID, eventType, so
 		})
 	}
 
-	result, err := s.expo.Send(ctx, messages)
+	// Bound the Expo API send to prevent slow responses from blocking semaphore
+	// slots for the full service-level context lifetime. With maxConcurrentSend=4
+	// and a 10s HTTP timeout, all slots could be blocked for 10s without this.
+	sendCtx, sendCancel := context.WithTimeout(ctx, expoSendTimeout)
+	defer sendCancel()
+	result, err := s.expo.Send(sendCtx, messages)
 	if err != nil {
-		s.metricFailed.Add(int64(len(messages)))
-		log.Printf("[Notification] send push: %v", err)
+		// M1 fix (Review 13): on partial batch failure, count any successful
+		// tickets from earlier batches instead of marking all as failed.
+		var partialOK int64
+		for _, t := range result.Tickets {
+			if t.Status == "ok" {
+				partialOK++
+			}
+		}
+		s.metricSent.Add(partialOK)
+		s.metricFailed.Add(int64(len(messages)) - partialOK)
+		log.Printf("[Notification] send push: %v (partial ok=%d)", err, partialOK)
+		// Process stale token cleanup from partial results.
+		s.cleanupStaleTokens(ctx, result.DeviceNotRegistered, tokens)
 		// Don't mark as dedup — allow retry on next event.
 		s.clearDedup(dk)
 		return
@@ -381,9 +401,7 @@ func (s *Service) sendNotification(ctx context.Context, sessionID, eventType, so
 	}
 
 	// Auto-cleanup stale tokens.
-	for _, staleToken := range result.DeviceNotRegistered {
-		s.cleanupStaleToken(ctx, staleToken, tokens)
-	}
+	s.cleanupStaleTokens(ctx, result.DeviceNotRegistered, tokens)
 }
 
 // dedupKey builds a dedup map key. The source tag (e.g., "lifecycle",
@@ -403,6 +421,13 @@ func dedupKey(sessionID, eventType, source, body string) string {
 // sent within the dedup window. receivedAt is the event receipt time (captured
 // synchronously in the consume callback) so that dedup timing is not skewed
 // by async dispatch delays.
+//
+// H6 note (Review 14): check-and-set is atomic under dedupMu. Two concurrent
+// events with the same key cannot both pass: the first acquires the lock and
+// sets the timestamp; the second sees it and returns true. The window between
+// isDuplicate returning false and the eventual clearDedup (on send failure) is
+// intentional — during that window, duplicates are suppressed, which is correct
+// because a send is in progress.
 func (s *Service) isDuplicate(key string, receivedAt time.Time) bool {
 	s.dedupMu.Lock()
 	defer s.dedupMu.Unlock()
@@ -412,7 +437,8 @@ func (s *Service) isDuplicate(key string, receivedAt time.Time) bool {
 	}
 	s.dedup[key] = receivedAt
 
-	// Lazy cleanup of expired entries.
+	// Lazy cleanup of expired entries. Full map iteration under mutex is acceptable
+	// at the current threshold (100); revisit if session count grows significantly.
 	now := time.Now()
 	if len(s.dedup) > dedupCleanupThreshold {
 		for k, v := range s.dedup {
@@ -431,20 +457,31 @@ func (s *Service) clearDedup(key string) {
 	s.dedupMu.Unlock()
 }
 
-func (s *Service) cleanupStaleToken(ctx context.Context, staleToken string, tokens []configstore.PushToken) {
-	// Bound the store delete to prevent a busy SQLite lock from blocking
+// cleanupStaleTokens removes all stale tokens from the store in a single pass.
+// H7 fix (Review 14): accepts a slice of stale tokens and processes them in one
+// bounded context, instead of creating a separate context per token (N+1 pattern).
+func (s *Service) cleanupStaleTokens(ctx context.Context, staleTokens []string, tokens []configstore.PushToken) {
+	if len(staleTokens) == 0 {
+		return
+	}
+	// Bound the store deletes to prevent a busy SQLite lock from blocking
 	// a semaphore slot for the full service-level context lifetime.
 	cleanupCtx, cleanupCancel := context.WithTimeout(ctx, constants.Duration3Seconds)
 	defer cleanupCancel()
 
+	staleSet := make(map[string]bool, len(staleTokens))
+	for _, t := range staleTokens {
+		staleSet[t] = true
+	}
+
 	for _, pt := range tokens {
-		if pt.Token != staleToken {
+		if !staleSet[pt.Token] {
 			continue
 		}
 		// M6 fix: use DeletePushTokenIfMatch to only delete when the stored
 		// token still matches the stale value. This prevents removing a freshly
 		// re-registered valid token if a concurrent RegisterPushToken RPC ran.
-		deleted, err := s.store.DeletePushTokenIfMatch(cleanupCtx, pt.DeviceID, staleToken)
+		deleted, err := s.store.DeletePushTokenIfMatch(cleanupCtx, pt.DeviceID, pt.Token)
 		if err != nil {
 			log.Printf("[Notification] cleanup stale token for device %q: %v", pt.DeviceID, err)
 		} else if deleted {

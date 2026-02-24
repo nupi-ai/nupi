@@ -80,6 +80,24 @@ func (m *mockTokenStore) DeletePushTokenIfMatch(_ context.Context, deviceID, tok
 	return false, nil
 }
 
+// L3 fix (Review 14): replace fragile time.Sleep(time.Second) negative
+// assertions with a polling helper that checks the counter at short intervals
+// for a bounded duration. Fails the test only if the counter becomes non-zero.
+func assertNoRequestsWithin(t *testing.T, counter *atomic.Int32, duration time.Duration, msg string) {
+	t.Helper()
+	deadline := time.Now().Add(duration)
+	for time.Now().Before(deadline) {
+		if counter.Load() != 0 {
+			t.Errorf("%s: expected 0 HTTP requests, got %d", msg, counter.Load())
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if counter.Load() != 0 {
+		t.Errorf("%s: expected 0 HTTP requests, got %d", msg, counter.Load())
+	}
+}
+
 func newExpoTestServer(t *testing.T, received *[]ExpoMessage, mu *sync.Mutex) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -294,12 +312,8 @@ func TestService_LifecycleEvent_UserKill_Suppressed(t *testing.T) {
 		Reason:    eventbus.SessionReasonKilled,
 	})
 
-	// Negative assertion: allow enough time for event propagation under CI load.
-	time.Sleep(time.Second)
-
-	if rc := requestCount.Load(); rc != 0 {
-		t.Errorf("expected 0 HTTP requests for user-initiated kill, got %d", rc)
-	}
+	// L3 fix (Review 14): polling-based negative assertion instead of fixed sleep.
+	assertNoRequestsWithin(t, &requestCount, 500*time.Millisecond, "user-initiated kill")
 }
 
 func TestService_SpeakEvent_InputNeeded(t *testing.T) {
@@ -422,12 +436,8 @@ func TestService_NoTokens_NoSend(t *testing.T) {
 		ExitCode:  &exitCode,
 	})
 
-	// Negative assertion: allow enough time for event propagation under CI load.
-	time.Sleep(time.Second)
-
-	if rc := requestCount.Load(); rc != 0 {
-		t.Errorf("expected 0 HTTP requests when no tokens, got %d", rc)
-	}
+	// L3 fix (Review 14): polling-based negative assertion instead of fixed sleep.
+	assertNoRequestsWithin(t, &requestCount, 500*time.Millisecond, "no tokens")
 }
 
 func TestService_IgnoresRunningState(t *testing.T) {
@@ -462,12 +472,8 @@ func TestService_IgnoresRunningState(t *testing.T) {
 		State:     eventbus.SessionStateRunning,
 	})
 
-	// Negative assertion: allow enough time for event propagation under CI load.
-	time.Sleep(time.Second)
-
-	if rc := requestCount.Load(); rc != 0 {
-		t.Errorf("expected 0 HTTP requests for running state, got %d", rc)
-	}
+	// L3 fix (Review 14): polling-based negative assertion instead of fixed sleep.
+	assertNoRequestsWithin(t, &requestCount, 500*time.Millisecond, "running state")
 }
 
 func TestService_DeviceNotRegisteredCleanup(t *testing.T) {
@@ -547,12 +553,8 @@ func TestService_SpeakEvent_IgnoresRegularSpeak(t *testing.T) {
 		Text:      "Here is the TTS response for the user",
 	})
 
-	// Negative assertion: allow enough time for event propagation under CI load.
-	time.Sleep(time.Second)
-
-	if rc := requestCount.Load(); rc != 0 {
-		t.Errorf("expected 0 HTTP requests for regular speak, got %d", rc)
-	}
+	// L3 fix (Review 14): polling-based negative assertion instead of fixed sleep.
+	assertNoRequestsWithin(t, &requestCount, 500*time.Millisecond, "regular speak")
 }
 
 func TestService_SpeakEvent_Completion(t *testing.T) {
@@ -635,12 +637,8 @@ func TestService_ShuttingDown_SuppressesNotifications(t *testing.T) {
 		ExitCode:  &exitCode,
 	})
 
-	// Negative assertion: allow enough time for event propagation under CI load.
-	time.Sleep(time.Second)
-
-	if rc := requestCount.Load(); rc != 0 {
-		t.Errorf("expected 0 HTTP requests after shutdown, got %d", rc)
-	}
+	// L3 fix (Review 14): polling-based negative assertion instead of fixed sleep.
+	assertNoRequestsWithin(t, &requestCount, 500*time.Millisecond, "after shutdown")
 }
 
 func TestService_SpeakEvent_ErrorMetadata(t *testing.T) {
@@ -854,10 +852,10 @@ func TestService_PipelineEvent_IdleInputNeeded(t *testing.T) {
 		SessionID: "sess-idle",
 		Text:      "$ ",
 		Annotations: map[string]string{
-			"notable":                       "true",
-			"idle_state":                    "prompt",
+			constants.MetadataKeyNotable:    constants.MetadataValueTrue,
+			constants.MetadataKeyIdleState:  "prompt",
 			constants.MetadataKeyWaitingFor: constants.PipelineWaitingForUserInput,
-			"prompt_text":                   "Waiting for user input at shell prompt",
+			constants.MetadataKeyPromptText: "Waiting for user input at shell prompt",
 		},
 	})
 
@@ -909,15 +907,11 @@ func TestService_PipelineEvent_IgnoresNonNotable(t *testing.T) {
 	eventbus.Publish(ctx, bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{
 		SessionID:   "sess-normal",
 		Text:        "some output",
-		Annotations: map[string]string{"idle_state": "timeout"},
+		Annotations: map[string]string{constants.MetadataKeyIdleState: "timeout"},
 	})
 
-	// Negative assertion: allow enough time for event propagation under CI load.
-	time.Sleep(time.Second)
-
-	if rc := requestCount.Load(); rc != 0 {
-		t.Errorf("expected 0 HTTP requests for non-notable pipeline event, got %d", rc)
-	}
+	// L3 fix (Review 14): polling-based negative assertion instead of fixed sleep.
+	assertNoRequestsWithin(t, &requestCount, 500*time.Millisecond, "non-notable pipeline event")
 }
 
 // M5/R8: verify that unknown waiting_for values are ignored by the pipeline handler.
@@ -953,18 +947,14 @@ func TestService_PipelineEvent_UnknownWaitingFor_Ignored(t *testing.T) {
 		SessionID: "sess-unknown-wait",
 		Text:      "$ ",
 		Annotations: map[string]string{
-			"notable":                       "true",
-			"idle_state":                    "prompt",
+			constants.MetadataKeyNotable:    constants.MetadataValueTrue,
+			constants.MetadataKeyIdleState:  "prompt",
 			constants.MetadataKeyWaitingFor: "unknown_type",
 		},
 	})
 
-	// Negative assertion: allow enough time for event propagation under CI load.
-	time.Sleep(time.Second)
-
-	if rc := requestCount.Load(); rc != 0 {
-		t.Errorf("expected 0 HTTP requests for unknown waiting_for, got %d", rc)
-	}
+	// L3 fix (Review 14): polling-based negative assertion instead of fixed sleep.
+	assertNoRequestsWithin(t, &requestCount, 500*time.Millisecond, "unknown waiting_for")
 }
 
 // H1/R10: verify that pipeline events with empty SessionID are ignored.
@@ -999,19 +989,15 @@ func TestService_PipelineEvent_EmptySessionID_Ignored(t *testing.T) {
 		SessionID: "",
 		Text:      "$ ",
 		Annotations: map[string]string{
-			"notable":                       "true",
-			"idle_state":                    "prompt",
+			constants.MetadataKeyNotable:    constants.MetadataValueTrue,
+			constants.MetadataKeyIdleState:  "prompt",
 			constants.MetadataKeyWaitingFor: constants.PipelineWaitingForUserInput,
-			"prompt_text":                   "Waiting for input",
+			constants.MetadataKeyPromptText: "Waiting for input",
 		},
 	})
 
-	// Negative assertion: allow enough time for event propagation under CI load.
-	time.Sleep(time.Second)
-
-	if rc := requestCount.Load(); rc != 0 {
-		t.Errorf("expected 0 HTTP requests for empty sessionID pipeline event, got %d", rc)
-	}
+	// L3 fix (Review 14): polling-based negative assertion instead of fixed sleep.
+	assertNoRequestsWithin(t, &requestCount, 500*time.Millisecond, "empty sessionID pipeline event")
 }
 
 func TestService_PipelineEvent_FallbackBody(t *testing.T) {
@@ -1041,8 +1027,8 @@ func TestService_PipelineEvent_FallbackBody(t *testing.T) {
 		SessionID: "sess-confirm",
 		Text:      "y/n?",
 		Annotations: map[string]string{
-			"notable":                       "true",
-			"idle_state":                    "prompt",
+			constants.MetadataKeyNotable:    constants.MetadataValueTrue,
+			constants.MetadataKeyIdleState:  "prompt",
 			constants.MetadataKeyWaitingFor: constants.PipelineWaitingForConfirmation,
 		},
 	})
@@ -1348,11 +1334,8 @@ func TestService_LifecycleEvent_EmptySessionID_Ignored(t *testing.T) {
 		ExitCode:  &exitCode,
 	})
 
-	time.Sleep(time.Second)
-
-	if rc := requestCount.Load(); rc != 0 {
-		t.Errorf("expected 0 HTTP requests for empty sessionID, got %d", rc)
-	}
+	// L3 fix (Review 14): polling-based negative assertion instead of fixed sleep.
+	assertNoRequestsWithin(t, &requestCount, 500*time.Millisecond, "empty sessionID")
 }
 
 // M5/R9: verify pipeline event body truncation for oversized prompt_text.
@@ -1383,10 +1366,10 @@ func TestService_PipelineEvent_BodyTruncation(t *testing.T) {
 		SessionID: "sess-trunc-pipe",
 		Text:      "$ ",
 		Annotations: map[string]string{
-			"notable":                       "true",
-			"idle_state":                    "prompt",
+			constants.MetadataKeyNotable:    constants.MetadataValueTrue,
+			constants.MetadataKeyIdleState:  "prompt",
 			constants.MetadataKeyWaitingFor: constants.PipelineWaitingForUserInput,
-			"prompt_text":                   longPrompt,
+			constants.MetadataKeyPromptText: longPrompt,
 		},
 	})
 

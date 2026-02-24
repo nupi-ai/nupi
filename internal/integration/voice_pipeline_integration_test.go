@@ -1834,9 +1834,8 @@ func TestVoicePipelineGoroutineLifecycle(t *testing.T) {
 	shutdownOnce.Do(teardown)
 
 	// Verify egress has no active streams — deterministic, not flaky.
-	metrics := egressSvc.Metrics()
-	if metrics.ActiveStreams != 0 {
-		t.Errorf("egress active streams after shutdown: %d, want 0", metrics.ActiveStreams)
+	if count := egressSvc.ActiveStreamCount(); count != 0 {
+		t.Errorf("egress active streams after shutdown: %d, want 0", count)
 	}
 }
 
@@ -2790,9 +2789,8 @@ func TestVoiceFallbackServicesStartWithoutAdapters(t *testing.T) {
 	}
 
 	// Verify egress has no active streams.
-	metrics := egressSvc.Metrics()
-	if metrics.ActiveStreams != 0 {
-		t.Errorf("egress active streams after shutdown: %d, want 0", metrics.ActiveStreams)
+	if count := egressSvc.ActiveStreamCount(); count != 0 {
+		t.Errorf("egress active streams after shutdown: %d, want 0", count)
 	}
 }
 
@@ -2888,9 +2886,8 @@ func TestVoiceFallbackEgressDropsWithoutTTS(t *testing.T) {
 	}
 
 	// Verify egress did not create any streams.
-	metrics := egressSvc.Metrics()
-	if metrics.ActiveStreams != 0 {
-		t.Errorf("egress should have 0 active streams, got %d", metrics.ActiveStreams)
+	if count := egressSvc.ActiveStreamCount(); count != 0 {
+		t.Errorf("egress should have 0 active streams, got %d", count)
 	}
 }
 
@@ -2958,11 +2955,6 @@ func TestVoiceFallbackSTTDropsWithoutAdapter(t *testing.T) {
 		// No transcript — correct: factory unavailable drops segments.
 	}
 
-	// Verify STT processed segments (counter increments even for dropped segments).
-	sttMetrics := sttSvc.Metrics()
-	if sttMetrics.SegmentsTotal == 0 {
-		t.Errorf("STT should have received segments (even if dropped), got 0")
-	}
 }
 
 // TestVoiceFallbackBargeInertWithoutVAD validates that the barge coordinator
@@ -3183,9 +3175,8 @@ func TestVoiceFallbackEgressBuffersWithAdapterFactory(t *testing.T) {
 
 	// Clean shutdown must not panic even with pending buffered requests.
 	cancel()
-	metrics := egressSvc.Metrics()
-	if metrics.ActiveStreams != 0 {
-		t.Errorf("egress should have 0 active streams, got %d", metrics.ActiveStreams)
+	if count := egressSvc.ActiveStreamCount(); count != 0 {
+		t.Errorf("egress should have 0 active streams, got %d", count)
 	}
 }
 
@@ -3274,11 +3265,6 @@ func TestVoiceFallbackSTTBuffersWithAdapterFactory(t *testing.T) {
 		t.Errorf("unexpected factory-unavailable log — should be buffer path, got: %s", logOutput)
 	}
 
-	// STT should have received segments (counter increments even for buffered segments).
-	sttMetrics := sttSvc.Metrics()
-	if sttMetrics.SegmentsTotal == 0 {
-		t.Errorf("STT should have received segments, got 0")
-	}
 }
 
 // ---------------------------------------------------------------------------
