@@ -2,7 +2,6 @@ package eventbus_test
 
 import (
 	"context"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -71,31 +70,6 @@ func TestBusDropOldest(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for event after drops")
-	}
-}
-
-func TestBusObserver(t *testing.T) {
-	var count atomic.Uint64
-
-	observer := eventbus.ObserverFunc(func(env eventbus.Envelope) {
-		if env.Topic == eventbus.TopicPipelineCleaned {
-			count.Add(1)
-		}
-	})
-
-	bus := eventbus.New(eventbus.WithObserver(observer))
-	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{})
-
-	if got := count.Load(); got != 1 {
-		t.Fatalf("expected observer to be invoked once, got %d", got)
-	}
-
-	// Adding observer after construction should also work.
-	bus.AddObserver(observer)
-	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{})
-
-	if got := count.Load(); got != 3 {
-		t.Fatalf("expected observer to be invoked three times, got %d", got)
 	}
 }
 

@@ -39,7 +39,7 @@ func WithTimestamp(ts time.Time) PublishOption {
 	}
 }
 
-// WithCorrelationID sets the envelope correlation ID for distributed tracing.
+// WithCorrelationID sets the envelope correlation ID.
 func WithCorrelationID(id string) PublishOption {
 	return func(env *Envelope) {
 		env.CorrelationID = id
