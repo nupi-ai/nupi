@@ -7,7 +7,7 @@ import (
 )
 
 const securityKeyColumns = "key"
-const securityValueColumn = "value"
+const securitySettingsValueColumn = "value"
 
 // SaveSecuritySettings upserts secret entries for the active profile.
 func (s *Store) SaveSecuritySettings(ctx context.Context, values map[string]string) error {
