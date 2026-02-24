@@ -46,45 +46,39 @@ function asCommandErrorPayload(value: unknown): CommandErrorPayload | null {
   };
 }
 
-function normalizeInvokeError(error: unknown): Error {
-  if (error instanceof Error) {
-    return error;
-  }
-
+function extractCommandError(error: unknown): CommandErrorPayload | null {
   const direct = asCommandErrorPayload(error);
   if (direct) {
-    const parsed = new Error(direct.message);
-    parsed.name = direct.code;
-    return parsed;
+    return direct;
   }
 
   if (error && typeof error === 'object') {
     const nested = asCommandErrorPayload((error as Record<string, unknown>).error);
     if (nested) {
-      const parsed = new Error(nested.message);
-      parsed.name = nested.code;
-      return parsed;
+      return nested;
     }
   }
 
-  return new Error(String(error));
+  return null;
 }
 
 export function toErrorMessage(error: unknown): string {
-  return normalizeInvokeError(error).message;
+  const payload = extractCommandError(error);
+  if (payload) {
+    return payload.message;
+  }
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return String(error);
 }
 
 export function toErrorCode(error: unknown): string | null {
-  const normalized = normalizeInvokeError(error);
-  return normalized.name === 'Error' ? null : normalized.name;
+  return extractCommandError(error)?.code ?? null;
 }
 
 async function ipc<T>(command: string, args?: InvokeArgs): Promise<T> {
-  try {
-    return await invoke<T>(command, args as Record<string, unknown> | undefined);
-  } catch (error) {
-    throw normalizeInvokeError(error);
-  }
+  return invoke<T>(command, args as Record<string, unknown> | undefined);
 }
 
 export const api = {
