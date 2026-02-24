@@ -68,7 +68,7 @@ function getActionAnnotations(metadata: Record<string, string>): string[] {
   return annotations;
 }
 
-// L1 fix: ThinkingIndicator only receives `visible` — animation starts/stops conditionally.
+// ThinkingIndicator only receives `visible` — animation starts/stops conditionally.
 function ThinkingIndicator({ visible }: { visible: boolean }) {
   const opacity = useSharedValue(0.3);
 
@@ -205,7 +205,7 @@ export function ConversationPanel({ turns, isThinking, pollError, sendError, sty
   // Map from deterministic turn identity to stable key string.
   const keyMapRef = useRef(new Map<string, string>());
 
-  // M2 fix (Review 9): memoize key identity computation so it only re-runs
+  // Memoize key identity computation so it only re-runs
   // when `turns` changes, not on unrelated prop changes (isThinking, errors).
   const turnKeys = useMemo(() => {
     const keys = turns.map((turn) => {
@@ -228,7 +228,7 @@ export function ConversationPanel({ turns, isThinking, pollError, sendError, sty
     return keys;
   }, [turns]);
 
-  // H1 fix: track scroll position to avoid auto-scroll when user reads older messages.
+  // Track scroll position to avoid auto-scroll when user reads older messages.
   const handleScroll = useRef((event: NativeSyntheticEvent<NativeScrollEvent>) => {
     const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
     const isAtBottom = contentOffset.y + layoutMeasurement.height >= contentSize.height - 50;
