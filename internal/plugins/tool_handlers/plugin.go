@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/jsruntime"
@@ -53,6 +54,7 @@ func LoadPluginWithRuntime(ctx context.Context, rt *jsruntime.Runtime, filePath 
 
 	meta, err := rt.LoadPluginWithOptions(ctx, filePath, jsruntime.LoadPluginOptions{
 		RequireFunctions: []string{"detect"},
+		Slug:             pluginSlugFromPath(filePath),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("tool handler: load %s: %w", filePath, err)
@@ -80,6 +82,11 @@ func LoadPluginWithRuntime(ctx context.Context, rt *jsruntime.Runtime, filePath 
 	}
 
 	return plugin, nil
+}
+
+func pluginSlugFromPath(path string) string {
+	parent := filepath.Base(filepath.Dir(path))
+	return strings.TrimSpace(parent)
 }
 
 // Detect runs the plugin's detect function with the given output via jsruntime.

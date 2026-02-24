@@ -66,6 +66,15 @@ type Response struct {
 	ID     uint64 `json:"id"`
 	Result any    `json:"result,omitempty"`
 	Error  string `json:"error,omitempty"`
+	Log    *LogEntry `json:"log,omitempty"`
+}
+
+// LogEntry represents a structured log line emitted by the JS runtime.
+type LogEntry struct {
+	Plugin  string `json:"plugin"`
+	Level   string `json:"level"`
+	Message string `json:"message"`
+	Stream  string `json:"stream"`
 }
 
 // PluginMetadata holds metadata extracted from a loaded JS plugin.
@@ -104,6 +113,8 @@ type LoadPluginOptions struct {
 	// RequireFunctions specifies function names that must be present in the plugin.
 	// If any are missing, LoadPlugin will return an error.
 	RequireFunctions []string
+	// Slug identifies the plugin for log routing.
+	Slug string
 }
 
 // Runtime manages a persistent Bun subprocess for fast JS execution.
@@ -129,6 +140,7 @@ type Runtime struct {
 	logger        Logger
 	stdoutWriter  io.Writer
 	stderrWriter  io.Writer
+	logHandler    func(LogEntry)
 	hostScript    string // path to host.js (temp file if embedded)
 	cleanupScript bool   // whether to remove hostScript on shutdown
 	runDir        string // directory for IPC sockets
@@ -160,6 +172,13 @@ func WithStdoutWriter(w io.Writer) Option {
 func WithStderrWriter(w io.Writer) Option {
 	return func(r *Runtime) {
 		r.stderrWriter = w
+	}
+}
+
+// WithLogHandler handles structured log lines emitted by the JS runtime.
+func WithLogHandler(handler func(LogEntry)) Option {
+	return func(r *Runtime) {
+		r.logHandler = handler
 	}
 }
 
@@ -312,6 +331,13 @@ func (r *Runtime) readResponses() {
 			continue
 		}
 
+		if resp.Log != nil {
+			if r.logHandler != nil {
+				r.logHandler(*resp.Log)
+			}
+			continue
+		}
+
 		r.pendingMu.Lock()
 		ch, ok := r.pending[resp.ID]
 		if ok {
@@ -442,6 +468,9 @@ func (r *Runtime) LoadPluginWithOptions(ctx context.Context, path string, opts L
 	params := map[string]any{"path": path}
 	if len(opts.RequireFunctions) > 0 {
 		params["requireFunctions"] = opts.RequireFunctions
+	}
+	if slug := strings.TrimSpace(opts.Slug); slug != "" {
+		params["slug"] = slug
 	}
 
 	result, err := r.call(ctx, "loadPlugin", params)
