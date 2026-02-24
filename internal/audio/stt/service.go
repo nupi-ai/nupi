@@ -287,7 +287,7 @@ type stream struct {
 	format    eventbus.AudioFormat
 	metadata  map[string]string
 
-	transcriber Transcriber
+	adapter *streammanager.RetryableAdapter[Transcriber, Transcription]
 
 	worker    *streammanager.Worker[eventbus.AudioIngressSegmentEvent]
 	closeOnce sync.Once
@@ -296,15 +296,45 @@ type stream struct {
 
 func newStream(key string, svc *Service, params SessionParams, transcriber Transcriber) *stream {
 	st := &stream{
-		service:     svc,
-		key:         key,
-		sessionID:   params.SessionID,
-		streamID:    params.StreamID,
-		format:      params.Format,
-		metadata:    maputil.Clone(params.Metadata),
-		transcriber: transcriber,
-		worker:      streammanager.NewWorker[eventbus.AudioIngressSegmentEvent](svc.lifecycle.Context(), svc.segmentBuffer),
+		service:   svc,
+		key:       key,
+		sessionID: params.SessionID,
+		streamID:  params.StreamID,
+		format:    params.Format,
+		metadata:  maputil.Clone(params.Metadata),
+		worker:    streammanager.NewWorker[eventbus.AudioIngressSegmentEvent](svc.lifecycle.Context(), svc.segmentBuffer),
 	}
+	st.adapter = streammanager.NewRetryableAdapter(streammanager.RetryableAdapterConfig[Transcriber, Transcription]{
+		Create: func(ctx context.Context) (Transcriber, error) {
+			reconnected, err := st.service.factory.Create(ctx, SessionParams{
+				SessionID: st.sessionID,
+				StreamID:  st.streamID,
+				Format:    st.format,
+				Metadata:  maputil.Clone(st.metadata),
+			})
+			return reconnected, err
+		},
+		Close: func(ctx context.Context, adapter Transcriber) ([]Transcription, error) {
+			return adapter.Close(ctx)
+		},
+		IsAdapterUnavailable: func(err error) bool {
+			return errors.Is(err, ErrAdapterUnavailable)
+		},
+		OnCreateError: func(err error) {
+			st.service.logger.Printf("[STT] reconnect transcriber session=%s stream=%s: %v", st.sessionID, st.streamID, err)
+		},
+		OnReconnected: func() {
+			st.service.logger.Printf("[STT] transcriber reconnected session=%s stream=%s", st.sessionID, st.streamID)
+		},
+		OnAdapterUnavailable: func(err error) {
+			st.service.logger.Printf("[STT] transcriber unavailable session=%s stream=%s, will retry: %v", st.sessionID, st.streamID, err)
+		},
+		OnCloseError: func(reason string, err error) {
+			st.service.logger.Printf("[STT] close transcriber session=%s stream=%s (%s): %v", st.sessionID, st.streamID, reason, err)
+		},
+		RecoveryCloseTimeout: constants.Duration2Seconds,
+	})
+	st.adapter.SetActive(transcriber)
 	st.worker.Start(st.processSegment, func() {
 		st.closeTranscriber("context cancelled")
 	}, func() {
@@ -338,69 +368,23 @@ func (st *stream) processSegment(segment eventbus.AudioIngressSegmentEvent) bool
 }
 
 func (st *stream) handleSegment(segment eventbus.AudioIngressSegmentEvent) {
-	if st.transcriber == nil {
-		params := SessionParams{
-			SessionID: st.sessionID,
-			StreamID:  st.streamID,
-			Format:    st.format,
-			Metadata:  maputil.Clone(st.metadata),
+	st.adapter.Process(st.worker.Context(), func(ctx context.Context, transcriber Transcriber) ([]Transcription, error) {
+		transcripts, err := transcriber.OnSegment(ctx, segment)
+		if err != nil && !errors.Is(err, ErrAdapterUnavailable) {
+			st.service.logger.Printf("[STT] transcribe segment session=%s stream=%s seq=%d: %v", st.sessionID, st.streamID, segment.Sequence, err)
 		}
-		transcriber, err := st.service.factory.Create(st.worker.Context(), params)
-		if err != nil {
-			if !errors.Is(err, ErrAdapterUnavailable) {
-				st.service.logger.Printf("[STT] reconnect transcriber session=%s stream=%s: %v", st.sessionID, st.streamID, err)
-			}
-			return
-		}
-		st.transcriber = transcriber
-		st.service.logger.Printf("[STT] transcriber reconnected session=%s stream=%s", st.sessionID, st.streamID)
-	}
-
-	transcripts, err := st.transcriber.OnSegment(st.worker.Context(), segment)
-
-	// Publish any transcripts returned alongside the error — the NAP
-	// contract allows partial results + error (see nap_transcriber.go:182).
-	for _, tr := range transcripts {
+		return transcripts, err
+	}, func(tr Transcription) {
+		// Publish any transcripts returned alongside the error — the NAP
+		// contract allows partial results + error (see nap_transcriber.go:182).
 		st.service.publishTranscript(st, tr)
-	}
-
-	if err != nil {
-		if errors.Is(err, ErrAdapterUnavailable) {
-			st.service.logger.Printf("[STT] transcriber unavailable session=%s stream=%s, will retry: %v", st.sessionID, st.streamID, err)
-			st.closeTranscriberForRecovery("adapter unavailable")
-			return
-		}
-		st.service.logger.Printf("[STT] transcribe segment session=%s stream=%s seq=%d: %v", st.sessionID, st.streamID, segment.Sequence, err)
-	}
-}
-
-func (st *stream) closeTranscriberForRecovery(reason string) {
-	if st.transcriber == nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), constants.Duration2Seconds)
-	defer cancel()
-	_, err := st.transcriber.Close(ctx)
-	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-		st.service.logger.Printf("[STT] close broken transcriber session=%s stream=%s (%s): %v", st.sessionID, st.streamID, reason, err)
-	}
-	st.transcriber = nil
+	})
 }
 
 func (st *stream) closeTranscriber(reason string) {
 	st.closeOnce.Do(func() {
-		if st.transcriber == nil {
-			return
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), st.service.flushTimeout)
-		defer cancel()
-
-		transcripts, err := st.transcriber.Close(ctx)
-		if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-			st.service.logger.Printf("[STT] close transcriber session=%s stream=%s (%s): %v", st.sessionID, st.streamID, reason, err)
-		}
-		for _, tr := range transcripts {
+		st.adapter.Close(reason, st.service.flushTimeout, func(tr Transcription) {
 			st.service.publishTranscript(st, tr)
-		}
+		})
 	})
 }
