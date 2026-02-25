@@ -196,6 +196,13 @@ export function AudioPlaybackProvider({
             // discard any buffered PCM from a previous interrupted stream.
             // Without this, in-flight frames arriving after barge-in would
             // leak into the next stream's playback.
+            //
+            // Trade-off: in non-barge-in transitions (old stream ended with
+            // audio_meta.last, new stream starts), the first ~1-3 PCM frames
+            // of the new stream are also discarded because we can't distinguish
+            // them from stale old-stream frames. The loss is ~20-60ms of audio
+            // at stream start — imperceptible. The alternative (leaking old
+            // stream audio into new stream) is much worse for UX.
             if (msg.first) {
               pendingPcmBufferRef.current = [];
             }
@@ -211,6 +218,16 @@ export function AudioPlaybackProvider({
           if (msg.last) {
             markDraining();
             awaitingFirstMetaRef.current = true;
+            // Clear stale buffer and cancel fallback timer — mirrors the
+            // close_stream case in handleControlMessage below. Without this,
+            // late-arriving PCM frames after audio_meta.last could be
+            // auto-flushed by the 2s fallback timer, causing ghost audio
+            // after TTS should have stopped.
+            pendingPcmBufferRef.current = [];
+            if (pcmBufferTimeoutRef.current) {
+              clearTimeout(pcmBufferTimeoutRef.current);
+              pcmBufferTimeoutRef.current = null;
+            }
           }
           break;
         case "capabilities_response":
@@ -239,6 +256,14 @@ export function AudioPlaybackProvider({
           // Reset so next TTS stream buffers PCM until audio_meta arrives
           // with the new format (mirrors the reset in audio_meta.last path).
           awaitingFirstMetaRef.current = true;
+          // Clear any pending PCM frames from the closed stream and cancel
+          // the 2s fallback timer. Without this, a pending timer could flush
+          // stale frames into the next TTS stream after close_stream.
+          pendingPcmBufferRef.current = [];
+          if (pcmBufferTimeoutRef.current) {
+            clearTimeout(pcmBufferTimeoutRef.current);
+            pcmBufferTimeoutRef.current = null;
+          }
           break;
       }
     },
