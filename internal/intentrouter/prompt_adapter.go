@@ -1,8 +1,6 @@
 package intentrouter
 
 import (
-	"log"
-
 	"github.com/nupi-ai/nupi/internal/prompts"
 )
 
@@ -52,11 +50,8 @@ func (a *PromptEngineAdapter) Build(req PromptBuildRequest) (*PromptBuildRespons
 		eventType = prompts.EventTypeSessionSlug
 	case EventTypeOnboarding:
 		eventType = prompts.EventTypeOnboarding
-	case EventTypeScheduledTask:
-		// Scheduled task template not yet created (Story 15.3).
-		// Falls back to user_intent to avoid build errors.
-		log.Printf("[IntentRouter] EventTypeScheduledTask using user_intent fallback template (TODO: Story 15.3)")
-		eventType = prompts.EventTypeUserIntent
+	case EventTypeHeartbeat:
+		eventType = prompts.EventTypeHeartbeat
 	default:
 		eventType = prompts.EventTypeUserIntent
 	}

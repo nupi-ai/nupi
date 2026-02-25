@@ -38,6 +38,9 @@ const (
 
 	// EventTypeOnboarding is for the first-time user setup conversation.
 	EventTypeOnboarding EventType = constants.PromptEventOnboarding
+
+	// EventTypeHeartbeat is for periodic background heartbeat tasks.
+	EventTypeHeartbeat EventType = constants.PromptEventHeartbeat
 )
 
 // SessionInfo provides context about an available session.
@@ -238,7 +241,7 @@ func (e *Engine) buildTemplateData(req BuildRequest) map[string]any {
 		"clarification_q":                  req.ClarificationQuestion,
 		"has_session":                      req.SessionID != "",
 		"has_tool":                         req.CurrentTool != "",
-		"metadata":                         req.Metadata,
+		"metadata":                         nonNilMap(req.Metadata),
 	}
 
 	// Format history
@@ -263,6 +266,13 @@ func (e *Engine) buildTemplateData(req BuildRequest) map[string]any {
 	data["sessions_count"] = len(req.AvailableSessions)
 
 	return data
+}
+
+func nonNilMap(m map[string]string) map[string]string {
+	if m == nil {
+		return map[string]string{}
+	}
+	return m
 }
 
 var templateFuncs = template.FuncMap{

@@ -111,9 +111,36 @@ func (e NotFoundError) Error() string {
 	return fmt.Sprintf("%s %s not found", e.Entity, e.Key)
 }
 
+// NotFound is a marker method enabling cross-package detection via interface
+// (e.g., awareness package checks for not-found without importing config/store).
+func (e NotFoundError) NotFound() bool { return true }
+
 // IsNotFound returns true when err is (or wraps) a NotFoundError.
 func IsNotFound(err error) bool {
 	var target NotFoundError
+	return errors.As(err, &target)
+}
+
+// DuplicateError indicates a record with the same unique key already exists.
+type DuplicateError struct {
+	Entity string
+	Key    string
+}
+
+func (e DuplicateError) Error() string {
+	if e.Key == "" {
+		return fmt.Sprintf("%s already exists", e.Entity)
+	}
+	return fmt.Sprintf("%s %q already exists", e.Entity, e.Key)
+}
+
+// Duplicate is a marker method enabling cross-package detection via interface
+// (e.g., awareness package checks for duplicates without importing config/store).
+func (e DuplicateError) Duplicate() bool { return true }
+
+// IsDuplicate returns true when err is (or wraps) a DuplicateError.
+func IsDuplicate(err error) bool {
+	var target DuplicateError
 	return errors.As(err, &target)
 }
 

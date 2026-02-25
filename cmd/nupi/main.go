@@ -189,6 +189,7 @@ func main() {
 		newVoiceCommand(),
 		newPairRootCommand(),
 		newPromptsCommand(),
+		newHeartbeatCommand(),
 		newMarketplaceCommand(),
 		newVersionCommand(),
 	)

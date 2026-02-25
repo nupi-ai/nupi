@@ -154,6 +154,14 @@ var schemaStatements = []string{
 		updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 	)`,
 	`CREATE INDEX IF NOT EXISTS idx_push_tokens_auth_token_id ON push_tokens(auth_token_id)`,
+	`CREATE TABLE IF NOT EXISTS heartbeats (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		name TEXT NOT NULL UNIQUE,
+		cron_expr TEXT NOT NULL,
+		prompt TEXT NOT NULL,
+		last_run_at TEXT,
+		created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`,
 }
 
 func applyPragmas(ctx context.Context, db *sql.DB, readOnly bool) error {

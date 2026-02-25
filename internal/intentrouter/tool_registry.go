@@ -27,7 +27,8 @@ func NewToolRegistry() ToolRegistry {
 		eventTypeMapping: map[EventType][]string{
 			EventTypeUserIntent: {
 				"memory_search", "memory_get", "memory_write",
-				"core_memory_update", "schedule_add", "schedule_remove",
+				"core_memory_update", "heartbeat_add", "heartbeat_remove",
+				"heartbeat_list",
 			},
 			EventTypeSessionOutput: {
 				"memory_search",
@@ -35,10 +36,13 @@ func NewToolRegistry() ToolRegistry {
 			EventTypeHistorySummary: {},
 			EventTypeClarification:  {},
 
-			EventTypeMemoryFlush:   {"memory_write"},
-			EventTypeScheduledTask: {"memory_search", "memory_write"},
-			EventTypeOnboarding:    {"core_memory_update", "onboarding_complete"},
-			EventTypeSessionSlug:   {},
+			EventTypeMemoryFlush: {"memory_write"},
+			// NOTE: heartbeat.txt declares "You only have access to these tools:
+			// memory_search, memory_write." — if this list changes, update
+			// internal/config/store/prompts/heartbeat.txt to match.
+			EventTypeHeartbeat:  {"memory_search", "memory_write"},
+			EventTypeOnboarding: {"core_memory_update", "onboarding_complete"},
+			EventTypeSessionSlug: {},
 		},
 	}
 	return r

@@ -24,6 +24,7 @@ func init() {
 		constants.PromptEventMemoryFlush:    mustReadPrompt("prompts/memory_flush.txt"),
 		constants.PromptEventSessionSlug:    mustReadPrompt("prompts/session_slug.txt"),
 		constants.PromptEventOnboarding:     mustReadPrompt("prompts/onboarding.txt"),
+		constants.PromptEventHeartbeat:      mustReadPrompt("prompts/heartbeat.txt"),
 	}
 }
 
@@ -53,6 +54,7 @@ var promptEventDescriptions = map[string]string{
 	constants.PromptEventMemoryFlush:    "Saves important context before conversation compaction",
 	constants.PromptEventSessionSlug:    "Generates a session slug and summary on session close",
 	constants.PromptEventOnboarding:     "First-time setup conversation with a new user",
+	constants.PromptEventHeartbeat:      "Executes scheduled background heartbeat tasks",
 }
 
 // PromptEventDescriptions returns a copy of the event type descriptions.
