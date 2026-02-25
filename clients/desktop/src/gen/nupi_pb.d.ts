@@ -3,7 +3,7 @@
 /* eslint-disable */
 
 import type { GenFile, GenService } from "@bufbuild/protobuf/codegenv2";
-import type { DaemonStatusRequestSchema, DaemonStatusResponseSchema, GetPluginWarningsRequestSchema, GetPluginWarningsResponseSchema, ListLanguagesRequestSchema, ListLanguagesResponseSchema, ReloadPluginsRequestSchema, ReloadPluginsResponseSchema, ShutdownRequestSchema, ShutdownResponseSchema } from "./daemon_pb";
+import type { DaemonStatusRequestSchema, DaemonStatusResponseSchema, ListLanguagesRequestSchema, ListLanguagesResponseSchema, ReloadPluginsRequestSchema, ReloadPluginsResponseSchema, ShutdownRequestSchema, ShutdownResponseSchema } from "./daemon_pb";
 import type { AttachSessionRequestSchema, AttachSessionResponseSchema, CreateSessionRequestSchema, CreateSessionResponseSchema, GetConversationRequestSchema, GetConversationResponseSchema, GetGlobalConversationRequestSchema, GetGlobalConversationResponseSchema, GetSessionModeRequestSchema, GetSessionModeResponseSchema, GetSessionRequestSchema, GetSessionResponseSchema, KillSessionRequestSchema, KillSessionResponseSchema, ListSessionsRequestSchema, ListSessionsResponseSchema, SendInputRequestSchema, SendInputResponseSchema, SendVoiceCommandRequestSchema, SendVoiceCommandResponseSchema, SetSessionModeRequestSchema, SetSessionModeResponseSchema } from "./sessions_pb";
 import type { EmptySchema } from "@bufbuild/protobuf/wkt";
 import type { AdapterActionResponseSchema, AdapterBindingSchema, AdapterLogStreamEntrySchema, AdapterSlotRequestSchema, AdaptersOverviewResponseSchema, BindAdapterRequestSchema, ClearAdapterBindingRequestSchema, GetAdapterLogsRequestSchema, GetAdapterLogsResponseSchema, ListAdapterBindingsResponseSchema, ListAdaptersResponseSchema, RegisterAdapterRequestSchema, RegisterAdapterResponseSchema, SetAdapterBindingRequestSchema, StreamAdapterLogsRequestSchema } from "./adapters_pb";
@@ -36,14 +36,6 @@ export declare const DaemonService: GenService<{
     methodKind: "unary";
     input: typeof ShutdownRequestSchema;
     output: typeof ShutdownResponseSchema;
-  },
-  /**
-   * @generated from rpc nupi.api.v1.DaemonService.GetPluginWarnings
-   */
-  getPluginWarnings: {
-    methodKind: "unary";
-    input: typeof GetPluginWarningsRequestSchema;
-    output: typeof GetPluginWarningsResponseSchema;
   },
   /**
    * @generated from rpc nupi.api.v1.DaemonService.ListLanguages

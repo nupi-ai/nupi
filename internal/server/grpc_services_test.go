@@ -820,13 +820,24 @@ func TestAudioServiceGetAudioCapabilities(t *testing.T) {
 	if len(resp.GetCapture()) == 0 {
 		t.Fatalf("expected capture capabilities")
 	}
-	if capture := resp.GetCapture()[0]; capture.GetStreamId() != "mic" || capture.GetFormat().GetSampleRate() != 16000 {
+	capture := resp.GetCapture()[0]
+	if capture.GetStreamId() != "mic" || capture.GetFormat().GetSampleRate() != 16000 {
 		t.Fatalf("unexpected capture capability: %+v", capture)
-	} else {
-		if capture.GetMetadata()["ready"] != "true" {
-			t.Fatalf("expected capture ready=true, got %+v", capture.GetMetadata())
-		}
 	}
+	if capture.GetFormat().GetEncoding() != "pcm_s16le" {
+		t.Fatalf("expected capture encoding=pcm_s16le, got %q", capture.GetFormat().GetEncoding())
+	}
+	if !capture.GetReady() {
+		t.Fatalf("expected capture Ready=true, got false")
+	}
+	if !capture.GetRecommended() {
+		t.Fatalf("expected capture Recommended=true, got false")
+	}
+	if capture.GetDiagnostics() != "" {
+		t.Fatalf("expected empty capture Diagnostics when ready, got %q", capture.GetDiagnostics())
+	}
+	assertNoReservedMetadataKeys(t, capture, "capture")
+
 	if len(resp.GetPlayback()) == 0 {
 		t.Fatalf("expected playback capabilities")
 	}
@@ -837,12 +848,278 @@ func TestAudioServiceGetAudioCapabilities(t *testing.T) {
 	if playback.GetFormat().GetSampleRate() != uint32(egressSvc.PlaybackFormat().SampleRate) {
 		t.Fatalf("playback format mismatch: %+v", playback.GetFormat())
 	}
-	if playback.GetMetadata()["ready"] != "true" {
-		t.Fatalf("expected playback ready=true, got %+v", playback.GetMetadata())
+	if !playback.GetReady() {
+		t.Fatalf("expected playback Ready=true, got false")
 	}
+	if !playback.GetRecommended() {
+		t.Fatalf("expected playback Recommended=true, got false")
+	}
+	if playback.GetDiagnostics() != "" {
+		t.Fatalf("expected empty playback Diagnostics when ready, got %q", playback.GetDiagnostics())
+	}
+	assertNoReservedMetadataKeys(t, playback, "playback")
 
 	if _, err := service.GetAudioCapabilities(ctx, &apiv1.GetAudioCapabilitiesRequest{SessionId: "sess"}); err != nil {
 		t.Fatalf("GetAudioCapabilities with session returned error: %v", err)
+	}
+}
+
+func TestAudioServiceGetAudioCapabilitiesNotReady(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	// Do NOT call enableVoiceAdapters — adapters are unconfigured so Ready=false.
+	bus := eventbus.New()
+	apiServer.SetEventBus(bus)
+	ingressSvc := ingress.New(bus)
+	apiServer.SetAudioIngress(newTestAudioIngressProvider(ingressSvc))
+	egressSvc := egress.New(bus)
+	apiServer.SetAudioEgress(newTestAudioEgressController(egressSvc))
+	apiServer.sessionManager = &stubSessionManager{}
+
+	service := &audioService{api: apiServer}
+	ctx := context.WithValue(context.Background(), authContextKey{}, storedToken{Role: string(roleAdmin)})
+
+	resp, err := service.GetAudioCapabilities(ctx, &apiv1.GetAudioCapabilitiesRequest{})
+	if err != nil {
+		t.Fatalf("GetAudioCapabilities returned error: %v", err)
+	}
+
+	if len(resp.GetCapture()) == 0 {
+		t.Fatalf("expected capture capabilities")
+	}
+	capture := resp.GetCapture()[0]
+	if capture.GetReady() {
+		t.Fatalf("expected capture Ready=false when no STT adapter configured")
+	}
+	if !capture.GetRecommended() {
+		t.Fatalf("expected capture Recommended=true even when not ready")
+	}
+	if capture.GetDiagnostics() != DiagnosticsCaptureUnavailable {
+		t.Fatalf("expected capture Diagnostics=%q, got %q", DiagnosticsCaptureUnavailable, capture.GetDiagnostics())
+	}
+	if capture.GetFormat().GetEncoding() != "pcm_s16le" {
+		t.Fatalf("expected capture encoding=pcm_s16le even when not ready, got %q", capture.GetFormat().GetEncoding())
+	}
+	assertNoReservedMetadataKeys(t, capture, "capture (not ready)")
+
+	if len(resp.GetPlayback()) == 0 {
+		t.Fatalf("expected playback capabilities")
+	}
+	playback := resp.GetPlayback()[0]
+	if playback.GetReady() {
+		t.Fatalf("expected playback Ready=false when no TTS adapter configured")
+	}
+	if !playback.GetRecommended() {
+		t.Fatalf("expected playback Recommended=true even when not ready")
+	}
+	if playback.GetDiagnostics() != DiagnosticsPlaybackUnavailable {
+		t.Fatalf("expected playback Diagnostics=%q, got %q", DiagnosticsPlaybackUnavailable, playback.GetDiagnostics())
+	}
+	if playback.GetFormat().GetEncoding() == "" {
+		t.Fatalf("expected non-empty playback encoding even when not ready")
+	}
+	assertNoReservedMetadataKeys(t, playback, "playback (not ready)")
+}
+
+func TestAudioServiceGetAudioCapabilitiesAsymmetricSTTOnly(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+
+	// Configure only STT — capture should be ready, playback should not.
+	ctx := context.Background()
+	sttAdapter := configstore.Adapter{ID: "test-stt", Source: "test", Type: "stt", Name: "Test STT"}
+	if err := apiServer.configStore.UpsertAdapter(ctx, sttAdapter); err != nil {
+		t.Fatalf("upsert stt adapter: %v", err)
+	}
+	if err := apiServer.configStore.UpsertAdapterEndpoint(ctx, configstore.AdapterEndpoint{
+		AdapterID: sttAdapter.ID,
+		Transport: "grpc",
+		Address:   "127.0.0.1:0",
+	}); err != nil {
+		t.Fatalf("upsert stt endpoint: %v", err)
+	}
+	if err := apiServer.configStore.SetActiveAdapter(ctx, "stt", sttAdapter.ID, nil); err != nil {
+		t.Fatalf("set active stt adapter: %v", err)
+	}
+
+	bus := eventbus.New()
+	apiServer.SetEventBus(bus)
+	ingressSvc := ingress.New(bus)
+	apiServer.SetAudioIngress(newTestAudioIngressProvider(ingressSvc))
+	egressSvc := egress.New(bus)
+	apiServer.SetAudioEgress(newTestAudioEgressController(egressSvc))
+	apiServer.sessionManager = &stubSessionManager{}
+
+	service := &audioService{api: apiServer}
+	authCtx := context.WithValue(context.Background(), authContextKey{}, storedToken{Role: string(roleAdmin)})
+
+	resp, err := service.GetAudioCapabilities(authCtx, &apiv1.GetAudioCapabilitiesRequest{})
+	if err != nil {
+		t.Fatalf("GetAudioCapabilities returned error: %v", err)
+	}
+
+	// Capture should be ready (STT configured).
+	if len(resp.GetCapture()) == 0 {
+		t.Fatalf("expected capture capabilities")
+	}
+	capture := resp.GetCapture()[0]
+	if !capture.GetReady() {
+		t.Fatalf("expected capture Ready=true (STT configured), got false")
+	}
+	if capture.GetDiagnostics() != "" {
+		t.Fatalf("expected empty capture Diagnostics when ready, got %q", capture.GetDiagnostics())
+	}
+
+	// Playback should NOT be ready (no TTS configured).
+	if len(resp.GetPlayback()) == 0 {
+		t.Fatalf("expected playback capabilities")
+	}
+	playback := resp.GetPlayback()[0]
+	if playback.GetReady() {
+		t.Fatalf("expected playback Ready=false (no TTS configured), got true")
+	}
+	if playback.GetDiagnostics() != DiagnosticsPlaybackUnavailable {
+		t.Fatalf("expected playback Diagnostics=%q, got %q", DiagnosticsPlaybackUnavailable, playback.GetDiagnostics())
+	}
+
+	// Both should still be recommended.
+	if !capture.GetRecommended() {
+		t.Fatalf("expected capture Recommended=true")
+	}
+	if !playback.GetRecommended() {
+		t.Fatalf("expected playback Recommended=true")
+	}
+
+	// AC7: metadata map must not contain reserved keys in asymmetric config.
+	assertNoReservedMetadataKeys(t, capture, "capture (STT-only)")
+	assertNoReservedMetadataKeys(t, playback, "playback (STT-only)")
+}
+
+func TestAudioServiceGetAudioCapabilitiesAsymmetricTTSOnly(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+
+	// Configure only TTS — playback should be ready, capture should not.
+	ctx := context.Background()
+	ttsAdapter := configstore.Adapter{ID: "test-tts", Source: "test", Type: "tts", Name: "Test TTS"}
+	if err := apiServer.configStore.UpsertAdapter(ctx, ttsAdapter); err != nil {
+		t.Fatalf("upsert tts adapter: %v", err)
+	}
+	if err := apiServer.configStore.UpsertAdapterEndpoint(ctx, configstore.AdapterEndpoint{
+		AdapterID: ttsAdapter.ID,
+		Transport: "grpc",
+		Address:   "127.0.0.1:0",
+	}); err != nil {
+		t.Fatalf("upsert tts endpoint: %v", err)
+	}
+	if err := apiServer.configStore.SetActiveAdapter(ctx, "tts", ttsAdapter.ID, nil); err != nil {
+		t.Fatalf("set active tts adapter: %v", err)
+	}
+
+	bus := eventbus.New()
+	apiServer.SetEventBus(bus)
+	ingressSvc := ingress.New(bus)
+	apiServer.SetAudioIngress(newTestAudioIngressProvider(ingressSvc))
+	egressSvc := egress.New(bus)
+	apiServer.SetAudioEgress(newTestAudioEgressController(egressSvc))
+	apiServer.sessionManager = &stubSessionManager{}
+
+	service := &audioService{api: apiServer}
+	authCtx := context.WithValue(context.Background(), authContextKey{}, storedToken{Role: string(roleAdmin)})
+
+	resp, err := service.GetAudioCapabilities(authCtx, &apiv1.GetAudioCapabilitiesRequest{})
+	if err != nil {
+		t.Fatalf("GetAudioCapabilities returned error: %v", err)
+	}
+
+	// Capture should NOT be ready (no STT configured).
+	if len(resp.GetCapture()) == 0 {
+		t.Fatalf("expected capture capabilities")
+	}
+	capture := resp.GetCapture()[0]
+	if capture.GetReady() {
+		t.Fatalf("expected capture Ready=false (no STT configured), got true")
+	}
+	if capture.GetDiagnostics() != DiagnosticsCaptureUnavailable {
+		t.Fatalf("expected capture Diagnostics=%q, got %q", DiagnosticsCaptureUnavailable, capture.GetDiagnostics())
+	}
+
+	// Playback should be ready (TTS configured).
+	if len(resp.GetPlayback()) == 0 {
+		t.Fatalf("expected playback capabilities")
+	}
+	playback := resp.GetPlayback()[0]
+	if !playback.GetReady() {
+		t.Fatalf("expected playback Ready=true (TTS configured), got false")
+	}
+	if playback.GetDiagnostics() != "" {
+		t.Fatalf("expected empty playback Diagnostics when ready, got %q", playback.GetDiagnostics())
+	}
+
+	// Both should still be recommended.
+	if !capture.GetRecommended() {
+		t.Fatalf("expected capture Recommended=true")
+	}
+	if !playback.GetRecommended() {
+		t.Fatalf("expected playback Recommended=true")
+	}
+
+	// AC7: metadata map must not contain reserved keys in asymmetric config.
+	assertNoReservedMetadataKeys(t, capture, "capture (TTS-only)")
+	assertNoReservedMetadataKeys(t, playback, "playback (TTS-only)")
+}
+
+func TestAudioServiceGetAudioCapabilitiesNoAudioServices(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	apiServer.sessionManager = &stubSessionManager{}
+	// Do NOT set audioIngress or audioEgress — response should have empty arrays.
+
+	service := &audioService{api: apiServer}
+	ctx := context.WithValue(context.Background(), authContextKey{}, storedToken{Role: string(roleAdmin)})
+
+	resp, err := service.GetAudioCapabilities(ctx, &apiv1.GetAudioCapabilitiesRequest{})
+	if err != nil {
+		t.Fatalf("GetAudioCapabilities returned error: %v", err)
+	}
+	if len(resp.GetCapture()) != 0 {
+		t.Fatalf("expected no capture capabilities when audioIngress is nil, got %d", len(resp.GetCapture()))
+	}
+	if len(resp.GetPlayback()) != 0 {
+		t.Fatalf("expected no playback capabilities when audioEgress is nil, got %d", len(resp.GetPlayback()))
+	}
+}
+
+func TestAudioServiceGetAudioCapabilitiesNilRequest(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	enableVoiceAdapters(t, apiServer.configStore)
+	bus := eventbus.New()
+	apiServer.SetEventBus(bus)
+	ingressSvc := ingress.New(bus)
+	apiServer.SetAudioIngress(newTestAudioIngressProvider(ingressSvc))
+	egressSvc := egress.New(bus)
+	apiServer.SetAudioEgress(newTestAudioEgressController(egressSvc))
+	apiServer.sessionManager = &stubSessionManager{}
+
+	service := &audioService{api: apiServer}
+	ctx := context.WithValue(context.Background(), authContextKey{}, storedToken{Role: string(roleAdmin)})
+
+	resp, err := service.GetAudioCapabilities(ctx, nil)
+	if err != nil {
+		t.Fatalf("GetAudioCapabilities(nil) returned error: %v", err)
+	}
+	if len(resp.GetCapture()) == 0 {
+		t.Fatalf("expected capture capabilities for nil request")
+	}
+	if len(resp.GetPlayback()) == 0 {
+		t.Fatalf("expected playback capabilities for nil request")
+	}
+}
+
+// assertNoReservedMetadataKeys verifies AC7: the metadata map must not contain
+// ready, recommended, or diagnostics keys (these have dedicated proto fields).
+func assertNoReservedMetadataKeys(t *testing.T, cap *apiv1.AudioCapability, label string) {
+	t.Helper()
+	for _, key := range []string{"ready", "recommended", "diagnostics"} {
+		if _, ok := cap.GetMetadata()[key]; ok {
+			t.Fatalf("%s: metadata map must not contain %q key, got %v", label, key, cap.GetMetadata())
+		}
 	}
 }
 
