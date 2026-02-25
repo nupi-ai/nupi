@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -344,27 +343,29 @@ func (a *audioService) GetAudioCapabilities(ctx context.Context, req *apiv1.GetA
 	resp := &apiv1.GetAudioCapabilitiesResponse{}
 
 	if a.api.audioIngress != nil {
-		meta := map[string]string{
-			"recommended": "true",
-			"ready":       strconv.FormatBool(readiness.CaptureEnabled),
+		cap := &apiv1.AudioCapability{
+			StreamId:    DefaultCaptureStreamID,
+			Format:      mapper.ToProtoAudioFormat(defaultCaptureFormat),
+			Ready:       readiness.CaptureEnabled,
+			Recommended: true,
 		}
-		resp.Capture = append(resp.Capture, &apiv1.AudioCapability{
-			StreamId: DefaultCaptureStreamID,
-			Format:   mapper.ToProtoAudioFormat(defaultCaptureFormat),
-			Metadata: meta,
-		})
+		if !readiness.CaptureEnabled {
+			cap.Diagnostics = DiagnosticsCaptureUnavailable
+		}
+		resp.Capture = append(resp.Capture, cap)
 	}
 
 	if a.api.audioEgress != nil {
-		meta := map[string]string{
-			"recommended": "true",
-			"ready":       strconv.FormatBool(readiness.PlaybackEnabled),
+		cap := &apiv1.AudioCapability{
+			StreamId:    a.api.audioEgress.DefaultStreamID(),
+			Format:      mapper.ToProtoAudioFormat(a.api.audioEgress.PlaybackFormat()),
+			Ready:       readiness.PlaybackEnabled,
+			Recommended: true,
 		}
-		resp.Playback = append(resp.Playback, &apiv1.AudioCapability{
-			StreamId: a.api.audioEgress.DefaultStreamID(),
-			Format:   mapper.ToProtoAudioFormat(a.api.audioEgress.PlaybackFormat()),
-			Metadata: meta,
-		})
+		if !readiness.PlaybackEnabled {
+			cap.Diagnostics = DiagnosticsPlaybackUnavailable
+		}
+		resp.Playback = append(resp.Playback, cap)
 	}
 
 	return resp, nil
@@ -682,6 +683,16 @@ func RegisterGRPCServices(api *APIServer, registrar grpc.ServiceRegistrar) {
 
 // DefaultCaptureStreamID is the default stream identifier for audio capture.
 const DefaultCaptureStreamID = "mic"
+
+// DiagnosticsCaptureUnavailable is the diagnostics message when voice capture is not ready.
+// TODO: VoiceReadiness currently returns only booleans; once it carries per-slot
+// failure reasons, replace this constant with a dynamic message.
+const DiagnosticsCaptureUnavailable = "voice capture unavailable: check STT adapter configuration"
+
+// DiagnosticsPlaybackUnavailable is the diagnostics message when voice playback is not ready.
+// TODO: both constants use static messages — replace with dynamic per-slot diagnostics
+// when VoiceReadiness provides detailed failure reasons.
+const DiagnosticsPlaybackUnavailable = "voice playback unavailable: check TTS adapter configuration"
 
 const (
 	maxAudioChunkMetadataEntries    = sanitize.DefaultMetadataMaxEntries

@@ -313,14 +313,20 @@ pub struct AudioFormatSummary {
     pub sample_rate: u32,
     pub channels: u16,
     pub bit_depth: u16,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub frame_ms: Option<u32>,
+    pub frame_ms: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AudioCapabilitySummary {
     pub stream_id: String,
     pub format: AudioFormatSummary,
+    /// True when this capability is active and usable.
+    pub ready: bool,
+    /// True when this is the preferred capability among alternatives of the same direction.
+    pub recommended: bool,
+    /// Human-readable reason when ready is false; empty otherwise.
+    /// Always included in JSON output for consistency with Go CLI.
+    pub diagnostics: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<HashMap<String, String>>,
 }
@@ -331,20 +337,22 @@ impl From<nupi_api::AudioCapability> for AudioCapabilitySummary {
         Self {
             stream_id: c.stream_id,
             format: AudioFormatSummary {
+                // Defensive fallback: the Go server always populates Format with a real
+                // encoding (e.g. "pcm_s16le"), so this "n/a" branch is unreachable in
+                // practice. It exists only to handle hypothetical proto zero-values.
                 encoding: if fmt.encoding.is_empty() {
-                    "pcm_s16le".to_string()
+                    "n/a".to_string()
                 } else {
                     fmt.encoding
                 },
                 sample_rate: fmt.sample_rate,
                 channels: fmt.channels as u16,
                 bit_depth: fmt.bit_depth as u16,
-                frame_ms: if fmt.frame_duration_ms == 0 {
-                    None
-                } else {
-                    Some(fmt.frame_duration_ms)
-                },
+                frame_ms: fmt.frame_duration_ms,
             },
+            ready: c.ready,
+            recommended: c.recommended,
+            diagnostics: c.diagnostics,
             metadata: if c.metadata.is_empty() {
                 None
             } else {
@@ -548,7 +556,7 @@ fn default_capture_format_summary() -> AudioFormatSummary {
         sample_rate: 16_000,
         channels: 1,
         bit_depth: 16,
-        frame_ms: Some(20),
+        frame_ms: 20,
     }
 }
 
@@ -1043,20 +1051,8 @@ impl GrpcClient {
                     .map(AudioCapabilitySummary::from)
                     .collect();
 
-                let capture_enabled = capture.iter().any(|c| {
-                    c.metadata
-                        .as_ref()
-                        .and_then(|m| m.get("ready"))
-                        .map(|v| v == "true")
-                        .unwrap_or(false)
-                });
-                let playback_enabled = playback.iter().any(|c| {
-                    c.metadata
-                        .as_ref()
-                        .and_then(|m| m.get("ready"))
-                        .map(|v| v == "true")
-                        .unwrap_or(false)
-                });
+                let capture_enabled = capture.iter().any(|c| c.ready);
+                let playback_enabled = playback.iter().any(|c| c.ready);
 
                 Ok(AudioCapabilitiesSummary {
                     capture,
@@ -1424,11 +1420,7 @@ impl GrpcClient {
                         sample_rate: fmt.sample_rate,
                         channels: fmt.channels as u16,
                         bit_depth: fmt.bit_depth as u16,
-                        frame_ms: if fmt.frame_duration_ms == 0 {
-                            None
-                        } else {
-                            Some(fmt.frame_duration_ms)
-                        },
+                        frame_ms: fmt.frame_duration_ms,
                     });
                 }
             }
@@ -2142,5 +2134,68 @@ mod tests {
     fn determine_host_trims_whitespace() {
         assert_eq!(determine_host("  loopback  ", false), "127.0.0.1");
         assert_eq!(determine_host("  192.168.1.1  ", false), "192.168.1.1");
+    }
+
+    // TODO: audio_capabilities() method (lines ~1020-1079) is not tested end-to-end
+    // because it requires a running gRPC server. The From<AudioCapability> mapping
+    // tests below cover the field extraction logic.
+
+    // NOTE: Diagnostics strings below must match the Go constants
+    // DiagnosticsCaptureUnavailable / DiagnosticsPlaybackUnavailable
+    // defined in internal/server/grpc_services.go. If the Go constants
+    // change, update these test values accordingly.
+
+    #[test]
+    fn audio_capability_summary_from_proto_ready() {
+        let proto = nupi_api::AudioCapability {
+            stream_id: "mic".to_string(),
+            format: Some(nupi_api::AudioFormat {
+                encoding: "pcm_s16le".to_string(),
+                sample_rate: 16000,
+                channels: 1,
+                bit_depth: 16,
+                frame_duration_ms: 20,
+            }),
+            metadata: HashMap::new(),
+            ready: true,
+            recommended: true,
+            diagnostics: String::new(),
+        };
+        let summary = AudioCapabilitySummary::from(proto);
+        assert_eq!(summary.stream_id, "mic");
+        assert!(summary.ready);
+        assert!(summary.recommended);
+        assert_eq!(summary.diagnostics, "");
+        assert!(summary.metadata.is_none());
+        assert_eq!(summary.format.sample_rate, 16000);
+        assert_eq!(summary.format.channels, 1);
+        assert_eq!(summary.format.bit_depth, 16);
+        assert_eq!(summary.format.frame_ms, 20);
+    }
+
+    #[test]
+    fn audio_capability_summary_from_proto_not_ready() {
+        // CROSS-LANGUAGE DRIFT WARNING: This diagnostics string must match
+        // DiagnosticsCaptureUnavailable in internal/server/grpc_services.go.
+        // If the Go constant changes, update this test to match.
+        let proto = nupi_api::AudioCapability {
+            stream_id: "mic".to_string(),
+            format: None,
+            metadata: HashMap::new(),
+            ready: false,
+            recommended: true,
+            diagnostics: "voice capture unavailable: check STT adapter configuration".to_string(),
+        };
+        let summary = AudioCapabilitySummary::from(proto);
+        assert!(!summary.ready);
+        assert!(summary.recommended);
+        assert_eq!(
+            summary.diagnostics,
+            "voice capture unavailable: check STT adapter configuration"
+        );
+        // Default encoding when format is None
+        assert_eq!(summary.format.encoding, "n/a");
+        assert_eq!(summary.format.sample_rate, 0);
+        assert_eq!(summary.format.frame_ms, 0);
     }
 }

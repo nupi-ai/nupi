@@ -274,6 +274,21 @@ export declare type AudioCapability = Message<"nupi.api.v1.AudioCapability"> & {
    * @generated from field: map<string, string> metadata = 3;
    */
   metadata: { [key: string]: string };
+
+  /**
+   * @generated from field: bool ready = 4;
+   */
+  ready: boolean;
+
+  /**
+   * @generated from field: bool recommended = 5;
+   */
+  recommended: boolean;
+
+  /**
+   * @generated from field: string diagnostics = 6;
+   */
+  diagnostics: string;
 };
 
 /**

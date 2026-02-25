@@ -121,61 +121,6 @@ export declare type ShutdownResponse = Message<"nupi.api.v1.ShutdownResponse"> &
 export declare const ShutdownResponseSchema: GenMessage<ShutdownResponse>;
 
 /**
- * GetPluginWarningsRequest asks for plugin discovery warnings.
- *
- * @generated from message nupi.api.v1.GetPluginWarningsRequest
- */
-export declare type GetPluginWarningsRequest = Message<"nupi.api.v1.GetPluginWarningsRequest"> & {
-};
-
-/**
- * Describes the message nupi.api.v1.GetPluginWarningsRequest.
- * Use `create(GetPluginWarningsRequestSchema)` to create a new message.
- */
-export declare const GetPluginWarningsRequestSchema: GenMessage<GetPluginWarningsRequest>;
-
-/**
- * PluginWarning mirrors PluginDiscoveryWarning from the plugin loader.
- *
- * @generated from message nupi.api.v1.PluginWarning
- */
-export declare type PluginWarning = Message<"nupi.api.v1.PluginWarning"> & {
-  /**
-   * @generated from field: string dir = 1;
-   */
-  dir: string;
-
-  /**
-   * @generated from field: string error = 2;
-   */
-  error: string;
-};
-
-/**
- * Describes the message nupi.api.v1.PluginWarning.
- * Use `create(PluginWarningSchema)` to create a new message.
- */
-export declare const PluginWarningSchema: GenMessage<PluginWarning>;
-
-/**
- * GetPluginWarningsResponse returns warnings from the last plugin scan.
- *
- * @generated from message nupi.api.v1.GetPluginWarningsResponse
- */
-export declare type GetPluginWarningsResponse = Message<"nupi.api.v1.GetPluginWarningsResponse"> & {
-  /**
-   * @generated from field: repeated nupi.api.v1.PluginWarning warnings = 1;
-   */
-  warnings: PluginWarning[];
-};
-
-/**
- * Describes the message nupi.api.v1.GetPluginWarningsResponse.
- * Use `create(GetPluginWarningsResponseSchema)` to create a new message.
- */
-export declare const GetPluginWarningsResponseSchema: GenMessage<GetPluginWarningsResponse>;
-
-/**
  * ReloadPluginsRequest triggers a hot-reload of all plugin indices.
  *
  * @generated from message nupi.api.v1.ReloadPluginsRequest

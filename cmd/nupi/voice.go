@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -381,12 +380,7 @@ func voiceStatus(cmd *cobra.Command, _ []string) error {
 					fmt.Fprintln(stdout, "  (none)")
 				} else {
 					for _, cap := range caps.GetCapture() {
-						fmt.Fprintf(stdout, "  - stream=%s %dHz %dbit %dch\n",
-							cap.GetStreamId(),
-							cap.GetFormat().GetSampleRate(),
-							cap.GetFormat().GetBitDepth(),
-							cap.GetFormat().GetChannels(),
-						)
+						fmt.Fprintln(stdout, formatCapabilityHumanLine(cap))
 					}
 				}
 
@@ -396,12 +390,7 @@ func voiceStatus(cmd *cobra.Command, _ []string) error {
 					fmt.Fprintln(stdout, "  (none)")
 				} else {
 					for _, cap := range caps.GetPlayback() {
-						fmt.Fprintf(stdout, "  - stream=%s %dHz %dbit %dch\n",
-							cap.GetStreamId(),
-							cap.GetFormat().GetSampleRate(),
-							cap.GetFormat().GetBitDepth(),
-							cap.GetFormat().GetChannels(),
-						)
+						fmt.Fprintln(stdout, formatCapabilityHumanLine(cap))
 					}
 				}
 				return nil
@@ -414,34 +403,74 @@ func formatCapabilitiesProtoJSON(caps []*apiv1.AudioCapability) []map[string]any
 	result := make([]map[string]any, 0, len(caps))
 	for _, cap := range caps {
 		entry := map[string]any{
-			"stream_id": cap.GetStreamId(),
-			"metadata":  cap.GetMetadata(),
+			"stream_id":   cap.GetStreamId(),
+			"ready":       cap.GetReady(),
+			"recommended": cap.GetRecommended(),
 		}
+		entry["diagnostics"] = cap.GetDiagnostics()
+		if m := cap.GetMetadata(); len(m) > 0 {
+			entry["metadata"] = m
+		}
+		enc := "n/a"
+		var sampleRate, channels, bitDepth, frameMs uint32
 		if f := cap.GetFormat(); f != nil {
-			entry["sample_rate"] = f.GetSampleRate()
-			entry["channels"] = f.GetChannels()
-			entry["bit_depth"] = f.GetBitDepth()
-			entry["frame_ms"] = f.GetFrameDurationMs()
+			if f.GetEncoding() != "" {
+				enc = f.GetEncoding()
+			}
+			sampleRate = f.GetSampleRate()
+			channels = f.GetChannels()
+			bitDepth = f.GetBitDepth()
+			frameMs = f.GetFrameDurationMs()
 		}
+		entry["encoding"] = enc
+		entry["sample_rate"] = sampleRate
+		entry["channels"] = channels
+		entry["bit_depth"] = bitDepth
+		entry["frame_ms"] = frameMs
 		result = append(result, entry)
 	}
 	return result
 }
 
-// hasCaptureEnabled returns true if any capture capability has ready=true in metadata.
+// formatCapabilityHumanLine returns a single human-readable line for an audio capability.
+func formatCapabilityHumanLine(cap *apiv1.AudioCapability) string {
+	enc := cap.GetFormat().GetEncoding()
+	if enc == "" {
+		enc = "n/a"
+	}
+	line := fmt.Sprintf("  - stream=%s ready=%v recommended=%v encoding=%s %dHz %dbit %dch %dms",
+		cap.GetStreamId(),
+		cap.GetReady(),
+		cap.GetRecommended(),
+		enc,
+		cap.GetFormat().GetSampleRate(),
+		cap.GetFormat().GetBitDepth(),
+		cap.GetFormat().GetChannels(),
+		cap.GetFormat().GetFrameDurationMs(),
+	)
+	if m := cap.GetMetadata(); len(m) > 0 {
+		line += fmt.Sprintf("\n    metadata: %v", m)
+	}
+	if diag := cap.GetDiagnostics(); diag != "" {
+		line += fmt.Sprintf("\n    diagnostics: %s", diag)
+	}
+	return line
+}
+
+// hasCaptureEnabled returns true if any capture capability has ready=true.
 func hasCaptureEnabled(caps *apiv1.GetAudioCapabilitiesResponse) bool {
 	for _, cap := range caps.GetCapture() {
-		if cap.GetMetadata()["ready"] == "true" {
+		if cap.GetReady() {
 			return true
 		}
 	}
 	return false
 }
 
-// hasPlaybackEnabled returns true if any playback capability has ready=true in metadata.
+// hasPlaybackEnabled returns true if any playback capability has ready=true.
 func hasPlaybackEnabled(caps *apiv1.GetAudioCapabilitiesResponse) bool {
 	for _, cap := range caps.GetPlayback() {
-		if cap.GetMetadata()["ready"] == "true" {
+		if cap.GetReady() {
 			return true
 		}
 	}
@@ -611,15 +640,3 @@ func (cr *countingReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// capabilityReadyValue extracts the "ready" boolean from capability metadata.
-func capabilityReadyValue(cap *apiv1.AudioCapability) bool {
-	if cap == nil {
-		return false
-	}
-	val, ok := cap.GetMetadata()["ready"]
-	if !ok {
-		return false
-	}
-	b, _ := strconv.ParseBool(val)
-	return b
-}
