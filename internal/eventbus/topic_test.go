@@ -95,6 +95,33 @@ func TestTopicDefTopic(t *testing.T) {
 	}
 }
 
+func TestSerializeTurns(t *testing.T) {
+	tests := []struct {
+		name  string
+		turns []ConversationTurn
+		want  string
+	}{
+		{"nil", nil, ""},
+		{"empty", []ConversationTurn{}, ""},
+		{"single", []ConversationTurn{
+			{Origin: OriginUser, Text: "hello"},
+		}, "[user] hello"},
+		{"multiple", []ConversationTurn{
+			{Origin: OriginUser, Text: "hello"},
+			{Origin: OriginAI, Text: "hi there"},
+			{Origin: OriginSystem, Text: "status ok"},
+		}, "[user] hello\n[assistant] hi there\n[system] status ok"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := SerializeTurns(tt.turns)
+			if got != tt.want {
+				t.Fatalf("SerializeTurns() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestDescriptorTopicsMatch(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -110,6 +137,7 @@ func TestDescriptorTopicsMatch(t *testing.T) {
 		{"Conversation.Prompt", Conversation.Prompt.Topic(), TopicConversationPrompt},
 		{"Conversation.Reply", Conversation.Reply.Topic(), TopicConversationReply},
 		{"Conversation.Speak", Conversation.Speak.Topic(), TopicConversationSpeak},
+		{"Conversation.Turn", Conversation.Turn.Topic(), TopicConversationTurn},
 		{"Audio.IngressRaw", Audio.IngressRaw.Topic(), TopicAudioIngressRaw},
 		{"Audio.IngressSegment", Audio.IngressSegment.Topic(), TopicAudioIngressSegment},
 		{"Audio.EgressPlayback", Audio.EgressPlayback.Topic(), TopicAudioEgressPlayback},
@@ -122,10 +150,7 @@ func TestDescriptorTopicsMatch(t *testing.T) {
 		{"Adapters.Log", Adapters.Log.Topic(), TopicAdaptersLog},
 		{"Pairing.Created", Pairing.Created.Topic(), TopicPairingCreated},
 		{"Pairing.Claimed", Pairing.Claimed.Topic(), TopicPairingClaimed},
-		{"Memory.FlushRequest", Memory.FlushRequest.Topic(), TopicMemoryFlushRequest},
-		{"Memory.FlushResponse", Memory.FlushResponse.Topic(), TopicMemoryFlushResponse},
 		{"Memory.Sync", Memory.Sync.Topic(), TopicAwarenessSync},
-		{"Memory.ExportRequest", Memory.ExportRequest.Topic(), TopicSessionExportRequest},
 	}
 
 	for _, tt := range tests {

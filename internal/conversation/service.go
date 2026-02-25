@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"maps"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,12 +22,6 @@ type summaryRequest struct {
 	count    int // number of turns being summarized
 	firstAt  time.Time
 	timer    *time.Timer
-}
-
-type flushRequest struct {
-	oldest    []eventbus.ConversationTurn
-	batchSize int
-	timer     *time.Timer
 }
 
 type Option func(*Service)
@@ -69,15 +62,6 @@ func WithSummaryBatchSize(size int) Option {
 	}
 }
 
-// WithFlushTimeout overrides the timeout for memory flush before compaction.
-func WithFlushTimeout(timeout time.Duration) Option {
-	return func(s *Service) {
-		if timeout > 0 {
-			s.flushTimeout = timeout
-		}
-	}
-}
-
 // WithGlobalStore enables global conversation history for sessionless messages.
 func WithGlobalStore(store *GlobalStore) Option {
 	return func(s *Service) {
@@ -107,11 +91,7 @@ type Service struct {
 	summaryThreshold int      // trigger summarization when len(history) >= this
 	summaryBatchSize int      // number of oldest turns to summarize
 
-	// Memory flush before compaction
-	pendingFlush     sync.Map // sessionID -> *flushRequest
-	flushTimeout     time.Duration
-	flushResponseSub *eventbus.TypedSubscription[eventbus.MemoryFlushResponseEvent]
-	shuttingDown     atomic.Bool
+	shuttingDown atomic.Bool
 
 	lifecycle     eventbus.ServiceLifecycle
 	cleanedSub    *eventbus.TypedSubscription[eventbus.PipelineMessageEvent]
@@ -154,8 +134,7 @@ func NewService(bus *eventbus.Bus, opts ...Option) *Service {
 		detachTTL:        defaultDetachTTL,
 		summaryThreshold: defaultSummaryThreshold,
 		summaryBatchSize: defaultSummaryBatchSize,
-		flushTimeout:     eventbus.DefaultFlushTimeout,
-		sessions:         make(map[string][]eventbus.ConversationTurn),
+		sessions: make(map[string][]eventbus.ConversationTurn),
 		sessionAI:        make(map[string]bool),
 		detach:           make(map[string]*time.Timer),
 		toolCache:        make(map[string]string),
@@ -195,16 +174,13 @@ func (s *Service) Start(ctx context.Context) error {
 	s.bargeSub = eventbus.Subscribe[eventbus.SpeechBargeInEvent](s.bus, eventbus.TopicSpeechBargeIn, eventbus.WithSubscriptionName("conversation_barge"))
 	s.toolSub = eventbus.Subscribe[eventbus.SessionToolEvent](s.bus, eventbus.TopicSessionsTool, eventbus.WithSubscriptionName("conversation_tool"))
 	s.toolChangeSub = eventbus.Subscribe[eventbus.SessionToolChangedEvent](s.bus, eventbus.TopicSessionsToolChanged, eventbus.WithSubscriptionName("conversation_tool_changed"))
-	s.flushResponseSub = eventbus.Subscribe[eventbus.MemoryFlushResponseEvent](s.bus, eventbus.TopicMemoryFlushResponse, eventbus.WithSubscriptionName("conversation_flush_response"))
-
-	s.lifecycle.AddSubscriptions(s.cleanedSub, s.lifecycleSub, s.replySub, s.bargeSub, s.toolSub, s.toolChangeSub, s.flushResponseSub)
+	s.lifecycle.AddSubscriptions(s.cleanedSub, s.lifecycleSub, s.replySub, s.bargeSub, s.toolSub, s.toolChangeSub)
 	s.lifecycle.Go(s.consumePipeline)
 	s.lifecycle.Go(s.consumeLifecycle)
 	s.lifecycle.Go(s.consumeReplies)
 	s.lifecycle.Go(s.consumeBarge)
 	s.lifecycle.Go(s.consumeToolEvents)
 	s.lifecycle.Go(s.consumeToolChangeEvents)
-	s.lifecycle.Go(s.consumeFlushResponses)
 	return nil
 }
 
@@ -225,15 +201,6 @@ func (s *Service) Shutdown(ctx context.Context) error {
 			req.timer.Stop()
 		}
 		s.pendingSummary.Delete(key)
-		return true
-	})
-
-	// Stop all pending flush timers
-	s.pendingFlush.Range(func(key, val any) bool {
-		if flush, ok := val.(*flushRequest); ok && flush.timer != nil {
-			flush.timer.Stop()
-		}
-		s.pendingFlush.Delete(key)
 		return true
 	})
 
@@ -464,7 +431,6 @@ func (s *Service) publishPrompt(sessionID string, ctxTurns []eventbus.Conversati
 	prompt := eventbus.ConversationPromptEvent{
 		SessionID: sessionID,
 		PromptID:  uuid.NewString(),
-		Context:   ctxTurns,
 		NewMessage: eventbus.ConversationMessage{
 			Origin: newTurn.Origin,
 			Text:   newTurn.Text,
@@ -482,38 +448,7 @@ func (s *Service) clearSession(sessionID string) {
 		return
 	}
 
-	// Collect export data under lock, then publish outside the lock
-	// to avoid holding s.mu during event bus dispatch.
-	var exportEvent *eventbus.SessionExportRequestEvent
-
 	s.mu.Lock()
-
-	// Capture session export request before clearing turns so the
-	// awareness service can generate a session summary markdown file.
-	// Guard with shuttingDown to avoid publishing to a draining bus
-	// when detach cleanup timers fire after Shutdown.
-	// Only export sessions with actual AI interaction (AC#4): sessionAI
-	// flag survives FIFO history trimming (unlike scanning the buffer).
-	if turns := s.sessions[sessionID]; s.bus != nil && !s.shuttingDown.Load() && s.sessionAI[sessionID] && len(turns) > 0 {
-		exportTurns := turns
-		if len(exportTurns) > 30 {
-			exportTurns = exportTurns[len(exportTurns)-30:]
-		}
-		// Deep copy turns including Meta maps to prevent shared references
-		// after the session entry is deleted from s.sessions.
-		copied := make([]eventbus.ConversationTurn, len(exportTurns))
-		for i, turn := range exportTurns {
-			copied[i] = turn
-			if turn.Meta != nil {
-				copied[i].Meta = maps.Clone(turn.Meta)
-			}
-		}
-		exportEvent = &eventbus.SessionExportRequestEvent{
-			SessionID: sessionID,
-			Turns:     copied,
-		}
-	}
-
 	delete(s.sessions, sessionID)
 	delete(s.sessionAI, sessionID)
 	delete(s.toolCache, sessionID)
@@ -522,11 +457,6 @@ func (s *Service) clearSession(sessionID string) {
 		delete(s.detach, sessionID)
 	}
 	s.mu.Unlock()
-
-	// Publish synchronously outside the lock (no untracked goroutine).
-	if exportEvent != nil {
-		eventbus.Publish(context.Background(), s.bus, eventbus.Memory.ExportRequest, eventbus.SourceConversation, *exportEvent)
-	}
 
 	// Clean up rate limiting entry to prevent memory leaks
 	s.lastSessionOutput.Delete(sessionID)
@@ -538,30 +468,17 @@ func (s *Service) clearSession(sessionID string) {
 		}
 	}
 
-	// Clean up pending flush state
-	if val, ok := s.pendingFlush.LoadAndDelete(sessionID); ok {
-		if flush, ok := val.(*flushRequest); ok && flush.timer != nil {
-			flush.timer.Stop()
-		}
-	}
 }
 
 // requestSummary triggers an async history summarization if the threshold is met
-// and no summary or flush is already pending for the session.
-// Step 1: publishes a MemoryFlushRequestEvent so the awareness service can
-// extract important context before the turns are compacted.
-// Step 2: when the flush response arrives (or times out), proceedWithSummary
-// sends the actual history_summary prompt.
+// and no summary is already pending for the session.
 func (s *Service) requestSummary(sessionID string) {
 	if sessionID == "" || s.bus == nil {
 		return
 	}
 
-	// Idempotency: check if a summary or flush is already pending for this session
+	// Idempotency: skip if a summary is already pending for this session.
 	if _, loaded := s.pendingSummary.Load(sessionID); loaded {
-		return
-	}
-	if _, loaded := s.pendingFlush.Load(sessionID); loaded {
 		return
 	}
 
@@ -578,49 +495,17 @@ func (s *Service) requestSummary(sessionID string) {
 		batchSize = histLen
 	}
 
-	// Copy the oldest N turns for serialization
+	// Copy the oldest N turns for serialization.
 	oldest := make([]eventbus.ConversationTurn, batchSize)
 	copy(oldest, history[:batchSize])
 	s.mu.RUnlock()
 
-	// Request memory flush before compaction.
-	flush := &flushRequest{
-		oldest:    oldest,
-		batchSize: batchSize,
-	}
-
-	// Set timer before storing so the struct is fully initialized before
-	// being exposed to other goroutines via the map. The theoretical risk
-	// of the timer firing before LoadOrStore is negligible with 30s timeouts
-	// and handled gracefully: LoadAndDelete returns false (no-op), and the
-	// awareness service's own timeout serves as the safety net.
-	flush.timer = time.AfterFunc(s.flushTimeout, func() {
-		// Guard: skip if the service is shutting down to prevent
-		// publishing to a draining bus after Shutdown returns.
-		if s.shuttingDown.Load() {
-			s.pendingFlush.Delete(sessionID)
-			return
-		}
-		// Timeout: proceed with summary without waiting for flush.
-		if _, loaded := s.pendingFlush.LoadAndDelete(sessionID); loaded {
-			s.proceedWithSummary(sessionID, oldest, batchSize)
-		}
-	})
-
-	// Atomically store only if no other goroutine stored first.
-	if _, loaded := s.pendingFlush.LoadOrStore(sessionID, flush); loaded {
-		flush.timer.Stop()
-		return
-	}
-
-	eventbus.Publish(context.Background(), s.bus, eventbus.Memory.FlushRequest, eventbus.SourceConversation, eventbus.MemoryFlushRequestEvent{
-		SessionID: sessionID,
-		Turns:     oldest,
-	})
+	s.proceedWithSummary(sessionID, oldest, batchSize)
 }
 
 // proceedWithSummary sends the history_summary prompt to the AI adapter.
-// Called after the memory flush completes or times out.
+// TODO(epic-18.2): Story 18.2 removes EventTypeHistorySummary — this method
+// must be updated to use the replacement event type or removed entirely.
 func (s *Service) proceedWithSummary(sessionID string, oldest []eventbus.ConversationTurn, batchSize int) {
 	if len(oldest) == 0 {
 		return
@@ -639,6 +524,9 @@ func (s *Service) proceedWithSummary(sessionID string, oldest []eventbus.Convers
 	// being exposed to other goroutines via the map (prevents data race
 	// on req.timer field detected by Go race detector).
 	req.timer = time.AfterFunc(summaryTimeout, func() {
+		if s.shuttingDown.Load() {
+			return
+		}
 		s.pendingSummary.Delete(sessionID)
 	})
 
@@ -652,7 +540,6 @@ func (s *Service) proceedWithSummary(sessionID string, oldest []eventbus.Convers
 	prompt := eventbus.ConversationPromptEvent{
 		SessionID: sessionID,
 		PromptID:  promptID,
-		Context:   oldest, // Structured turns for prompt engine (populates {{.history}})
 		NewMessage: eventbus.ConversationMessage{
 			Origin: eventbus.OriginSystem,
 			Text:   promptText, // Serialized text as fallback for adapters without prompt engine
@@ -667,30 +554,6 @@ func (s *Service) proceedWithSummary(sessionID string, oldest []eventbus.Convers
 	}
 
 	eventbus.Publish(context.Background(), s.bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, prompt)
-}
-
-// consumeFlushResponses listens for memory flush responses from the awareness service.
-func (s *Service) consumeFlushResponses(ctx context.Context) {
-	eventbus.Consume(ctx, s.flushResponseSub, nil, s.handleFlushResponse)
-}
-
-// handleFlushResponse processes a memory flush response, then proceeds with summary.
-func (s *Service) handleFlushResponse(event eventbus.MemoryFlushResponseEvent) {
-	val, ok := s.pendingFlush.LoadAndDelete(event.SessionID)
-	if !ok {
-		return
-	}
-
-	flush, ok := val.(*flushRequest)
-	if !ok {
-		return
-	}
-
-	if flush.timer != nil {
-		flush.timer.Stop()
-	}
-
-	s.proceedWithSummary(event.SessionID, flush.oldest, flush.batchSize)
 }
 
 // handleSummaryReply processes an AI reply to a history_summary prompt,
@@ -778,6 +641,9 @@ func (s *Service) scheduleDetachCleanup(sessionID string) {
 	}
 
 	timer := time.AfterFunc(s.detachTTL, func() {
+		if s.shuttingDown.Load() {
+			return
+		}
 		s.clearSession(sessionID)
 	})
 	s.detach[sessionID] = timer
@@ -851,17 +717,6 @@ func (s *Service) handleReplyMessage(ts time.Time, msg eventbus.ConversationRepl
 	// Intercept history_summary replies before normal processing
 	if msg.Metadata[constants.MetadataKeyEventType] == constants.PromptEventHistorySummary && msg.SessionID != "" {
 		s.handleSummaryReply(msg.SessionID, msg)
-		return
-	}
-
-	// Intercept memory_flush replies — awareness service handles these,
-	// do not store in conversation history.
-	if msg.Metadata[constants.MetadataKeyEventType] == constants.PromptEventMemoryFlush {
-		return
-	}
-
-	// Intercept session_slug replies — awareness service handles these.
-	if msg.Metadata[constants.MetadataKeyEventType] == constants.PromptEventSessionSlug {
 		return
 	}
 

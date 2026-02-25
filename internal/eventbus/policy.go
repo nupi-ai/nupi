@@ -56,6 +56,7 @@ var defaultPolicies = map[Topic]DeliveryPolicy{
 	TopicSpeechTranscriptPartial: {Strategy: StrategyDropOldest, Priority: PriorityNormal},
 	TopicSpeechVADDetected:       {Strategy: StrategyDropOldest, Priority: PriorityNormal},
 	TopicConversationSpeak:       {Strategy: StrategyDropOldest, Priority: PriorityNormal},
+	TopicConversationTurn:        {Strategy: StrategyDropOldest, Priority: PriorityNormal},
 	TopicSessionsTool:            {Strategy: StrategyDropOldest, Priority: PriorityNormal},
 	TopicSessionsToolChanged:     {Strategy: StrategyDropOldest, Priority: PriorityNormal},
 	TopicAudioIngressRaw:         {Strategy: StrategyDropOldest, Priority: PriorityNormal},
@@ -66,10 +67,7 @@ var defaultPolicies = map[Topic]DeliveryPolicy{
 	// Normal — infrequent events that tolerate occasional drops.
 	TopicPairingCreated:       {Strategy: StrategyDropOldest, Priority: PriorityNormal},
 	TopicPairingClaimed:       {Strategy: StrategyDropOldest, Priority: PriorityNormal},
-	TopicMemoryFlushRequest:   {Strategy: StrategyOverflow, Priority: PriorityNormal, MaxOverflow: defaultMaxOverflow},
-	TopicMemoryFlushResponse:  {Strategy: StrategyOverflow, Priority: PriorityNormal, MaxOverflow: defaultMaxOverflow},
 	TopicAwarenessSync:        {Strategy: StrategyDropOldest, Priority: PriorityNormal},
-	TopicSessionExportRequest: {Strategy: StrategyOverflow, Priority: PriorityNormal, MaxOverflow: defaultMaxOverflow},
 
 	// Low — informational, already rate-limited or infrequent.
 	TopicAdaptersLog:    {Strategy: StrategyDropNewest, Priority: PriorityLow},

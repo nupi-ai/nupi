@@ -262,6 +262,39 @@ func TestBusSubscribeWithContextShutdownRace(t *testing.T) {
 	// If we reach here without panic, the CAS guards are correct.
 }
 
+func TestBusConversationTurnBufferAllocated(t *testing.T) {
+	// Verify TopicConversationTurn has a default buffer allocation in New().
+	bus := eventbus.New()
+	defer bus.Shutdown()
+
+	sub := eventbus.SubscribeTo(bus, eventbus.Conversation.Turn)
+	defer sub.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	turn := eventbus.ConversationTurnEvent{
+		SessionID: "buf-test",
+		Turn: eventbus.ConversationTurn{
+			Origin: eventbus.OriginUser,
+			Text:   "hello",
+		},
+	}
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Turn, eventbus.SourceConversation, turn)
+
+	select {
+	case env := <-sub.C():
+		if env.Payload.SessionID != "buf-test" {
+			t.Fatalf("expected SessionID buf-test, got %s", env.Payload.SessionID)
+		}
+		if env.Payload.Turn.Text != "hello" {
+			t.Fatalf("expected turn text hello, got %s", env.Payload.Turn.Text)
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for ConversationTurnEvent — buffer may not be allocated")
+	}
+}
+
 func TestBusWithTopicPolicy(t *testing.T) {
 	// Override a normally drop-oldest topic to use drop-newest.
 	bus := eventbus.New(

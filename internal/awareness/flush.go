@@ -11,7 +11,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/google/uuid"
 	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 )
@@ -25,90 +24,6 @@ const maxFlushContentBytes = 10 * 1024 // 10 KB
 type flushState struct {
 	sessionID string
 	promptID  string
-}
-
-func (s *Service) consumeFlushRequests(ctx context.Context) {
-	eventbus.Consume(ctx, s.flushSub, nil, func(event eventbus.MemoryFlushRequestEvent) {
-		s.handleFlushRequest(ctx, event)
-	})
-}
-
-func (s *Service) handleFlushRequest(ctx context.Context, event eventbus.MemoryFlushRequestEvent) {
-	if s.bus == nil {
-		return
-	}
-
-	if event.SessionID == "" {
-		log.Printf("[Awareness] WARNING: ignoring flush request with empty SessionID")
-		return
-	}
-
-	if len(event.Turns) == 0 {
-		eventbus.Publish(ctx, s.bus, eventbus.Memory.FlushResponse, eventbus.SourceAwareness, eventbus.MemoryFlushResponseEvent{
-			SessionID: event.SessionID,
-			Saved:     false,
-		})
-		return
-	}
-
-	serialized := eventbus.SerializeTurns(event.Turns)
-	promptID := uuid.NewString()
-
-	timeout := s.flushTimeout
-	if timeout == 0 {
-		timeout = eventbus.DefaultFlushTimeout
-	}
-
-	state := &flushState{
-		sessionID: event.SessionID,
-		promptID:  promptID,
-	}
-
-	// Store before starting the timer so the timeout callback always finds
-	// the entry via LoadAndDelete. The timer is fire-and-forget: if a reply
-	// arrives first, LoadAndDelete succeeds there and the timer callback
-	// harmlessly gets loaded=false.
-	s.pendingFlush.Store(promptID, state)
-
-	time.AfterFunc(timeout, func() {
-		// Guard: skip if the service is shutting down to prevent log noise
-		// and publishing to a draining bus after Shutdown returns.
-		if s.shuttingDown.Load() {
-			s.pendingFlush.Delete(promptID)
-			return
-		}
-		if _, loaded := s.pendingFlush.LoadAndDelete(promptID); loaded {
-			log.Printf("[Awareness] WARNING: flush timeout for session %s (promptID=%s)", event.SessionID, promptID)
-			// Use context.Background() because this fires asynchronously —
-			// the derived context from Start() may already be cancelled.
-			eventbus.Publish(context.Background(), s.bus, eventbus.Memory.FlushResponse, eventbus.SourceAwareness, eventbus.MemoryFlushResponseEvent{
-				SessionID: event.SessionID,
-				Saved:     false,
-			})
-		}
-	})
-
-	now := time.Now().UTC()
-	prompt := eventbus.ConversationPromptEvent{
-		SessionID: event.SessionID,
-		PromptID:  promptID,
-		Context:   event.Turns,
-		NewMessage: eventbus.ConversationMessage{
-			Origin: eventbus.OriginSystem,
-			Text:   serialized,
-			At:     now,
-			Meta: map[string]string{
-				constants.MetadataKeyEventType: constants.PromptEventMemoryFlush,
-			},
-		},
-		Metadata: map[string]string{
-			constants.MetadataKeyEventType: constants.PromptEventMemoryFlush,
-		},
-	}
-
-	// Use the request context so the prompt publish respects shutdown cancellation
-	// (contrast with timeout callback which uses context.Background()).
-	eventbus.Publish(ctx, s.bus, eventbus.Conversation.Prompt, eventbus.SourceAwareness, prompt)
 }
 
 func (s *Service) consumeFlushReplies(ctx context.Context) {
@@ -132,9 +47,6 @@ func (s *Service) handleFlushReply(ctx context.Context, reply eventbus.Conversat
 		return
 	}
 
-	// No need to stop the timer — if it fires after this point,
-	// LoadAndDelete will return loaded=false (harmless no-op).
-
 	// Defense-in-depth: log if the adapter returned a different or empty
 	// SessionID compared to what the original flush request carried.
 	if reply.SessionID == "" {
@@ -147,26 +59,12 @@ func (s *Service) handleFlushReply(ctx context.Context, reply eventbus.Conversat
 
 	text := strings.TrimSpace(reply.Text)
 	if text == "" || strings.EqualFold(text, "NO_REPLY") {
-		eventbus.Publish(ctx, s.bus, eventbus.Memory.FlushResponse, eventbus.SourceAwareness, eventbus.MemoryFlushResponseEvent{
-			SessionID: state.sessionID,
-			Saved:     false,
-		})
 		return
 	}
 
 	if err := s.writeFlushContent(ctx, state.sessionID, text); err != nil {
 		log.Printf("[Awareness] ERROR: writing flush content for session %s: %v", state.sessionID, err)
-		eventbus.Publish(ctx, s.bus, eventbus.Memory.FlushResponse, eventbus.SourceAwareness, eventbus.MemoryFlushResponseEvent{
-			SessionID: state.sessionID,
-			Saved:     false,
-		})
-		return
 	}
-
-	eventbus.Publish(ctx, s.bus, eventbus.Memory.FlushResponse, eventbus.SourceAwareness, eventbus.MemoryFlushResponseEvent{
-		SessionID: state.sessionID,
-		Saved:     true,
-	})
 }
 
 func (s *Service) writeFlushContent(ctx context.Context, sessionID, content string) error {
