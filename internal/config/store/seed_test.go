@@ -101,6 +101,23 @@ func TestDefaultPromptTemplatesIncludesOnboarding(t *testing.T) {
 	}
 }
 
+func TestDefaultPromptTemplatesIncludesHeartbeat(t *testing.T) {
+	templates := DefaultPromptTemplates()
+	content, ok := templates[constants.PromptEventHeartbeat]
+	if !ok {
+		t.Fatal("expected heartbeat key in DefaultPromptTemplates")
+	}
+	if !strings.Contains(content, "heartbeat") {
+		t.Fatal("heartbeat template should mention heartbeat")
+	}
+	if !strings.Contains(content, "{{.transcript}}") {
+		t.Fatal("heartbeat template should use {{.transcript}} placeholder")
+	}
+	if !strings.Contains(content, "heartbeat_name") {
+		t.Fatal("heartbeat template should reference heartbeat_name metadata")
+	}
+}
+
 func TestDefaultPromptTemplatesIncludesMemoryFlush(t *testing.T) {
 	templates := DefaultPromptTemplates()
 	content, ok := templates[constants.PromptEventMemoryFlush]

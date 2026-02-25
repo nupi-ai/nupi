@@ -44,6 +44,7 @@ import (
 // Compile-time interface assertions.
 var _ intentrouter.OnboardingProvider = (*awareness.Service)(nil)
 var _ intentrouter.CoreMemoryProvider = (*awareness.Service)(nil)
+var _ awareness.InsertHeartbeatStore = (*heartbeatStoreAdapter)(nil)
 
 // Options groups dependencies required to construct a Daemon.
 type Options struct {
@@ -238,6 +239,7 @@ func New(opts Options) (*Daemon, error) {
 	// and provides it for system prompt injection.
 	awarenessService := awareness.NewService(paths.Home)
 	awarenessService.SetEventBus(bus)
+	awarenessService.SetHeartbeatStore(&heartbeatStoreAdapter{store: opts.Store})
 
 	if err := host.Register("awareness", func(ctx context.Context) (daemonruntime.Service, error) {
 		return awarenessService, nil
@@ -749,4 +751,43 @@ func (w *awarenessToolWrapper) Definition() intentrouter.ToolDefinition {
 
 func (w *awarenessToolWrapper) Execute(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
 	return w.handler(ctx, args)
+}
+
+// heartbeatStoreAdapter bridges config/store.Store to awareness.InsertHeartbeatStore.
+type heartbeatStoreAdapter struct {
+	store *configstore.Store
+}
+
+func (a *heartbeatStoreAdapter) ListHeartbeats(ctx context.Context) ([]awareness.Heartbeat, error) {
+	hbs, err := a.store.ListHeartbeats(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]awareness.Heartbeat, len(hbs))
+	for i, h := range hbs {
+		result[i] = awareness.Heartbeat{
+			ID:        h.ID,
+			Name:      h.Name,
+			CronExpr:  h.CronExpr,
+			Prompt:    h.Prompt,
+			CreatedAt: h.CreatedAt,
+		}
+		if h.LastRunAt != nil {
+			t := *h.LastRunAt
+			result[i].LastRunAt = &t
+		}
+	}
+	return result, nil
+}
+
+func (a *heartbeatStoreAdapter) UpdateHeartbeatLastRun(ctx context.Context, id int64, lastRunAt time.Time) error {
+	return a.store.UpdateHeartbeatLastRun(ctx, id, lastRunAt)
+}
+
+func (a *heartbeatStoreAdapter) InsertHeartbeat(ctx context.Context, name, cronExpr, prompt string, maxCount int) error {
+	return a.store.InsertHeartbeat(ctx, name, cronExpr, prompt, maxCount)
+}
+
+func (a *heartbeatStoreAdapter) DeleteHeartbeat(ctx context.Context, name string) error {
+	return a.store.DeleteHeartbeat(ctx, name)
 }

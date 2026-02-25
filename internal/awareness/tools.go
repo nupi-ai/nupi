@@ -50,13 +50,17 @@ type ToolSpec struct {
 // Must be called after NewService; handlers are safe to register before Start()
 // but must only be invoked after Start() (indexer must be open).
 func (s *Service) ToolSpecs() []ToolSpec {
-	return []ToolSpec{
+	specs := []ToolSpec{
 		memorySearchSpec(s),
 		memoryGetSpec(s),
 		memoryWriteSpec(s),
 		coreMemoryUpdateSpec(s),
 		onboardingCompleteSpec(s),
 	}
+	if s.heartbeatStore != nil {
+		specs = append(specs, heartbeatAddSpec(s), heartbeatRemoveSpec(s), heartbeatListSpec(s))
+	}
+	return specs
 }
 
 // maxGetFileBytes is the maximum content size returned by GetFile.

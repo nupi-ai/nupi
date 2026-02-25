@@ -46,6 +46,9 @@ type Service struct {
 	exportWriteMu  sync.Mutex // serializes session export file writes
 	coreWriteMu    sync.Mutex // serializes core memory file writes in UpdateCoreMemory
 
+	heartbeatStore InsertHeartbeatStore
+
+	started      bool
 	shuttingDown atomic.Bool
 
 	onboardingMu        sync.Mutex
@@ -67,7 +70,7 @@ func NewService(instanceDir string) *Service {
 // SetEventBus wires the event bus for publish/subscribe.
 // Must be called before Start.
 func (s *Service) SetEventBus(bus *eventbus.Bus) {
-	if s.indexer != nil {
+	if s.started {
 		panic("awareness: SetEventBus called after Start")
 	}
 	s.bus = bus
@@ -97,7 +100,7 @@ func (s *Service) SetSlugTimeout(timeout time.Duration) {
 // Start initializes the awareness service: ensures directory structure exists,
 // loads core memory files, and opens the archival memory indexer.
 func (s *Service) Start(ctx context.Context) error {
-	if s.indexer != nil {
+	if s.started {
 		return fmt.Errorf("awareness: service already started")
 	}
 
@@ -154,8 +157,13 @@ func (s *Service) Start(ctx context.Context) error {
 		s.lifecycle.Go(s.consumeExportRequests)
 		s.lifecycle.Go(s.consumeExportReplies)
 		s.lifecycle.Go(s.consumeLifecycleEvents)
+
+		if s.heartbeatStore != nil {
+			s.lifecycle.Go(s.runHeartbeatLoop)
+		}
 	}
 
+	s.started = true
 	log.Printf("[Awareness] Service started (core memory: %d chars)", utf8.RuneCountInString(s.CoreMemory()))
 	return nil
 }
@@ -199,6 +207,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		s.indexer = nil
 	}
 
+	s.started = false
 	log.Printf("[Awareness] Service shutdown complete")
 	return nil
 }

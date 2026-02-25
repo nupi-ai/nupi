@@ -100,10 +100,8 @@ const (
 	EventTypeClarification EventType = constants.PromptEventClarification
 	// EventTypeMemoryFlush saves memories before conversation compaction.
 	EventTypeMemoryFlush EventType = constants.PromptEventMemoryFlush
-	// EventTypeScheduledTask is for periodic background tasks.
-	// TODO(story-15.3): Replace string literal with constants.PromptEventScheduledTask
-	// once the scheduler constant and prompt template are added.
-	EventTypeScheduledTask EventType = "scheduled_task"
+	// EventTypeHeartbeat is for periodic background heartbeat tasks.
+	EventTypeHeartbeat EventType = constants.PromptEventHeartbeat
 	// EventTypeSessionSlug generates session file names.
 	EventTypeSessionSlug EventType = constants.PromptEventSessionSlug
 	// EventTypeOnboarding is for first-time user setup.

@@ -446,8 +446,8 @@ func (s *Service) buildIntentRequest(prompt eventbus.ConversationPromptEvent, pr
 			eventType = EventTypeClarification
 		case constants.PromptEventMemoryFlush:
 			eventType = EventTypeMemoryFlush
-		case string(EventTypeScheduledTask):
-			eventType = EventTypeScheduledTask
+		case constants.PromptEventHeartbeat:
+			eventType = EventTypeHeartbeat
 		case constants.PromptEventSessionSlug:
 			eventType = EventTypeSessionSlug
 		case constants.PromptEventOnboarding:

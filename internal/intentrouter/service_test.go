@@ -2598,3 +2598,73 @@ func TestServiceNoCoreMemoryProviderLeavesPromptUnchanged(t *testing.T) {
 	defer shutdownCancel()
 	svc.Shutdown(shutdownCtx)
 }
+
+func TestServiceHeartbeatEventWithEmptySessionID(t *testing.T) {
+	bus := eventbus.New()
+	defer bus.Shutdown()
+
+	var capturedReq IntentRequest
+	adapter := NewMockAdapter(
+		WithMockCustomHandler(func(ctx context.Context, req IntentRequest) (*IntentResponse, error) {
+			capturedReq = req
+			return &IntentResponse{
+				PromptID: req.PromptID,
+				Actions:  []IntentAction{{Type: ActionNoop}},
+			}, nil
+		}),
+	)
+
+	svc := NewService(bus, WithAdapter(adapter))
+
+	replySub := eventbus.SubscribeTo(bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("test_heartbeat_reply"))
+	defer replySub.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Heartbeat events have empty SessionID (background task, no user session).
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceAwareness, eventbus.ConversationPromptEvent{
+		SessionID: "",
+		PromptID:  "heartbeat-prompt-1",
+		NewMessage: eventbus.ConversationMessage{
+			Origin: eventbus.OriginSystem,
+			Text:   "Summarize today's activity",
+			Meta:   map[string]string{"event_type": constants.PromptEventHeartbeat},
+		},
+		Metadata: map[string]string{
+			constants.MetadataKeyEventType: constants.PromptEventHeartbeat,
+			"heartbeat_name":              "daily-summary",
+		},
+	})
+
+	select {
+	case <-replySub.C():
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for heartbeat reply — buildIntentRequest may panic on empty SessionID")
+	}
+
+	if capturedReq.EventType != EventTypeHeartbeat {
+		t.Fatalf("expected EventType=%q, got %q", EventTypeHeartbeat, capturedReq.EventType)
+	}
+	if capturedReq.SessionID != "" {
+		// Heartbeat has no session; selectTargetSession should return "" when no
+		// sessions exist and SessionID is empty.
+		t.Fatalf("expected empty SessionID for heartbeat, got %q", capturedReq.SessionID)
+	}
+	if capturedReq.Transcript != "Summarize today's activity" {
+		t.Fatalf("expected heartbeat prompt text, got %q", capturedReq.Transcript)
+	}
+	if capturedReq.Metadata["heartbeat_name"] != "daily-summary" {
+		t.Fatalf("expected heartbeat_name metadata, got %v", capturedReq.Metadata)
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	svc.Shutdown(shutdownCtx)
+}

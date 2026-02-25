@@ -133,7 +133,7 @@ func TestGetToolsForEventTypeUnknownEventType(t *testing.T) {
 func TestGetToolsReturnsOnlyRegistered(t *testing.T) {
 	reg := NewToolRegistry()
 
-	// user_intent maps 6 tools, but only register memory_search
+	// user_intent maps 7 tools, but only register memory_search
 	reg.Register(newMockHandler("memory_search", "Search memory"))
 
 	defs := reg.GetToolsForEventType(EventTypeUserIntent)
@@ -161,21 +161,21 @@ func TestGetToolsFutureEventTypes(t *testing.T) {
 		t.Fatalf("Expected memory_write for memory_flush, got %s", defs[0].Name)
 	}
 
-	// scheduled_task should return memory_search and memory_write
+	// heartbeat should return memory_search and memory_write
 	reg.Register(newMockHandler("memory_search", "Search memory"))
-	defs = reg.GetToolsForEventType(EventTypeScheduledTask)
+	defs = reg.GetToolsForEventType(EventTypeHeartbeat)
 	if len(defs) != 2 {
-		t.Fatalf("Expected 2 tools for scheduled_task, got %d", len(defs))
+		t.Fatalf("Expected 2 tools for heartbeat, got %d", len(defs))
 	}
-	schedNames := make(map[string]bool)
+	heartbeatNames := make(map[string]bool)
 	for _, d := range defs {
-		schedNames[d.Name] = true
+		heartbeatNames[d.Name] = true
 	}
-	if !schedNames["memory_search"] {
-		t.Fatal("Expected memory_search in scheduled_task results")
+	if !heartbeatNames["memory_search"] {
+		t.Fatal("Expected memory_search in heartbeat results")
 	}
-	if !schedNames["memory_write"] {
-		t.Fatal("Expected memory_write in scheduled_task results")
+	if !heartbeatNames["memory_write"] {
+		t.Fatal("Expected memory_write in heartbeat results")
 	}
 
 	// onboarding should return core_memory_update and onboarding_complete
@@ -287,7 +287,7 @@ func TestConcurrentRegisterAndGet(t *testing.T) {
 	var wg sync.WaitGroup
 
 	// Concurrent registrations with different tool names
-	toolNames := []string{"memory_search", "memory_write", "memory_get", "core_memory_update", "schedule_add"}
+	toolNames := []string{"memory_search", "memory_write", "memory_get", "core_memory_update", "heartbeat_add", "heartbeat_list"}
 	for i := 0; i < 10; i++ {
 		wg.Add(1)
 		go func(idx int) {
@@ -512,19 +512,19 @@ func TestRegisteredAwarenessToolsEventTypeFiltering(t *testing.T) {
 		t.Fatalf("Expected memory_search for session_output, got %s", defs[0].Name)
 	}
 
-	// scheduled_task should return memory_search and memory_write.
-	defs = reg.GetToolsForEventType(EventTypeScheduledTask)
+	// heartbeat should return memory_search and memory_write.
+	defs = reg.GetToolsForEventType(EventTypeHeartbeat)
 	if len(defs) != 2 {
-		t.Fatalf("Expected 2 tools for scheduled_task, got %d", len(defs))
+		t.Fatalf("Expected 2 tools for heartbeat, got %d", len(defs))
 	}
-	schedNames := make(map[string]bool)
+	heartbeatNames := make(map[string]bool)
 	for _, d := range defs {
-		schedNames[d.Name] = true
+		heartbeatNames[d.Name] = true
 	}
-	if !schedNames["memory_search"] {
-		t.Fatal("Expected memory_search in scheduled_task results")
+	if !heartbeatNames["memory_search"] {
+		t.Fatal("Expected memory_search in heartbeat results")
 	}
-	if !schedNames["memory_write"] {
-		t.Fatal("Expected memory_write in scheduled_task results")
+	if !heartbeatNames["memory_write"] {
+		t.Fatal("Expected memory_write in heartbeat results")
 	}
 }

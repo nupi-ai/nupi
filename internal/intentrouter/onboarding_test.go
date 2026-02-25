@@ -93,7 +93,7 @@ func TestNoOverrideForNonUserIntentEvents(t *testing.T) {
 		constants.PromptEventMemoryFlush,
 		constants.PromptEventSessionSlug,
 		constants.PromptEventSessionOutput,
-		string(EventTypeScheduledTask),
+		string(EventTypeHeartbeat),
 	} {
 		prompt := eventbus.ConversationPromptEvent{
 			PromptID:  "p1",

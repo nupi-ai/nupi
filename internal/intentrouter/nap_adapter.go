@@ -280,7 +280,7 @@ func eventTypeToProto(et EventType) napv1.EventType {
 		return napv1.EventType_EVENT_TYPE_CLARIFICATION
 	case EventTypeMemoryFlush:
 		return napv1.EventType_EVENT_TYPE_MEMORY_FLUSH
-	case EventTypeScheduledTask:
+	case EventTypeHeartbeat:
 		return napv1.EventType_EVENT_TYPE_SCHEDULED_TASK
 	case EventTypeSessionSlug:
 		return napv1.EventType_EVENT_TYPE_SESSION_SLUG
