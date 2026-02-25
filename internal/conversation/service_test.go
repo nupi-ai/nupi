@@ -65,9 +65,6 @@ func TestConversationPublishesPromptOnUserInput(t *testing.T) {
 		if prompt.SessionID != "chat" {
 			t.Fatalf("unexpected session id: %s", prompt.SessionID)
 		}
-		if len(prompt.Context) != 1 || prompt.Context[0].Text != "previous" {
-			t.Fatalf("unexpected context: %+v", prompt.Context)
-		}
 		if prompt.NewMessage.Text != "hello" {
 			t.Fatalf("unexpected new message: %+v", prompt.NewMessage)
 		}
@@ -390,9 +387,6 @@ func TestConversationSessionlessPrompt(t *testing.T) {
 		prompt := env.Payload
 		if prompt.SessionID != "" {
 			t.Fatalf("expected empty session id for sessionless prompt, got %q", prompt.SessionID)
-		}
-		if len(prompt.Context) != 1 || prompt.Context[0].Text != "context message" {
-			t.Fatalf("unexpected context: %+v", prompt.Context)
 		}
 		if prompt.NewMessage.Text != "list sessions" {
 			t.Fatalf("unexpected new message: %+v", prompt.NewMessage)
@@ -754,30 +748,11 @@ func TestConversation_RateLimitingCleanup(t *testing.T) {
 	}
 }
 
-// completeFlush simulates the flush response arriving, transitioning from
-// pendingFlush to pendingSummary. Used by summary tests that need to bypass
-// the flush phase.
-func completeFlush(t *testing.T, svc *Service, sessionID string) {
-	t.Helper()
-	val, ok := svc.pendingFlush.LoadAndDelete(sessionID)
-	if !ok {
-		t.Fatalf("completeFlush: no pending flush for session %s", sessionID)
-	}
-	flush, ok := val.(*flushRequest)
-	if !ok {
-		t.Fatal("completeFlush: unexpected type in pendingFlush")
-	}
-	if flush.timer != nil {
-		flush.timer.Stop()
-	}
-	svc.proceedWithSummary(sessionID, flush.oldest, flush.batchSize)
-}
-
 // --- History Summary Tests ---
 
 func TestSummaryTrigger(t *testing.T) {
 	bus := eventbus.New()
-	svc := NewService(bus, WithHistoryLimit(50), WithFlushTimeout(100*time.Millisecond))
+	svc := NewService(bus, WithHistoryLimit(50))
 	// Lower threshold for testing
 	svc.summaryThreshold = 5
 	svc.summaryBatchSize = 3
@@ -834,13 +809,6 @@ func TestSummaryTrigger(t *testing.T) {
 	if !strings.Contains(summaryPrompt.NewMessage.Text, "[user] message 0") {
 		t.Fatalf("expected serialized turns in prompt text, got: %s", summaryPrompt.NewMessage.Text)
 	}
-	// Context should contain structured turns for prompt engine (populates {{.history}})
-	if len(summaryPrompt.Context) != 3 {
-		t.Fatalf("expected 3 turns in Context (summaryBatchSize=3), got %d", len(summaryPrompt.Context))
-	}
-	if summaryPrompt.Context[0].Text != "message 0" {
-		t.Fatalf("expected first context turn text 'message 0', got %q", summaryPrompt.Context[0].Text)
-	}
 }
 
 func TestSummaryReplyReplacesTurns(t *testing.T) {
@@ -862,11 +830,8 @@ func TestSummaryReplyReplacesTurns(t *testing.T) {
 	}
 	svc.mu.Unlock()
 
-	// Manually trigger summary (now goes through flush-first)
+	// Manually trigger summary
 	svc.requestSummary("summary-replace")
-
-	// Complete the flush phase to transition to summary
-	completeFlush(t, svc, "summary-replace")
 
 	// Get the pending request to find the promptID
 	val, ok := svc.pendingSummary.Load("summary-replace")
@@ -949,27 +914,27 @@ func TestSummaryIdempotency(t *testing.T) {
 	}
 	svc.mu.Unlock()
 
-	// First call should succeed (creates pendingFlush)
+	// First call should succeed (creates pendingSummary)
 	svc.requestSummary("idempotent")
-	val1, ok := svc.pendingFlush.Load("idempotent")
+	val1, ok := svc.pendingSummary.Load("idempotent")
 	if !ok {
-		t.Fatal("expected pending flush after first call")
+		t.Fatal("expected pending summary after first call")
 	}
-	flush1 := val1.(*flushRequest)
+	req1 := val1.(*summaryRequest)
 
-	// Second call should be a no-op (flush already pending)
+	// Second call should be a no-op (summary already pending)
 	svc.requestSummary("idempotent")
 
-	// Should still be the same flush request
-	val2, _ := svc.pendingFlush.Load("idempotent")
-	flush2 := val2.(*flushRequest)
-	if flush2 != flush1 {
-		t.Fatal("expected same flush request after duplicate call")
+	// Should still be the same summary request
+	val2, _ := svc.pendingSummary.Load("idempotent")
+	req2 := val2.(*summaryRequest)
+	if req2 != req1 {
+		t.Fatal("expected same summary request after duplicate call")
 	}
 
 	// Clean up timer
-	if flush1.timer != nil {
-		flush1.timer.Stop()
+	if req1.timer != nil {
+		req1.timer.Stop()
 	}
 }
 
@@ -992,9 +957,8 @@ func TestSummaryTimeout(t *testing.T) {
 	}
 	svc.mu.Unlock()
 
-	// Trigger summary and complete flush phase
+	// Trigger summary
 	svc.requestSummary("timeout-sess")
-	completeFlush(t, svc, "timeout-sess")
 
 	val, ok := svc.pendingSummary.Load("timeout-sess")
 	if !ok {
@@ -1040,9 +1004,8 @@ func TestSummaryPromptIDMismatch(t *testing.T) {
 	}
 	svc.mu.Unlock()
 
-	// Trigger summary and complete flush phase
+	// Trigger summary
 	svc.requestSummary("mismatch")
-	completeFlush(t, svc, "mismatch")
 
 	val, ok := svc.pendingSummary.Load("mismatch")
 	if !ok {
@@ -1093,18 +1056,18 @@ func TestSummaryClearSession(t *testing.T) {
 	}
 	svc.mu.Unlock()
 
-	// Trigger summary to create pending flush state
+	// Trigger summary to create pending summary state
 	svc.requestSummary("clear-sess")
-	if _, ok := svc.pendingFlush.Load("clear-sess"); !ok {
-		t.Fatal("expected pending flush before clear")
+	if _, ok := svc.pendingSummary.Load("clear-sess"); !ok {
+		t.Fatal("expected pending summary before clear")
 	}
 
 	// Clear the session
 	svc.clearSession("clear-sess")
 
-	// Pending flush should be cleaned up
-	if _, ok := svc.pendingFlush.Load("clear-sess"); ok {
-		t.Fatal("expected pending flush to be cleared after clearSession")
+	// Pending summary should be cleaned up
+	if _, ok := svc.pendingSummary.Load("clear-sess"); ok {
+		t.Fatal("expected pending summary to be cleared after clearSession")
 	}
 
 	// History should be empty
@@ -1181,8 +1144,8 @@ func TestSummaryShutdownCleansTimers(t *testing.T) {
 	svc.mu.Unlock()
 
 	svc.requestSummary("shutdown-sess")
-	if _, ok := svc.pendingFlush.Load("shutdown-sess"); !ok {
-		t.Fatal("expected pending flush before shutdown")
+	if _, ok := svc.pendingSummary.Load("shutdown-sess"); !ok {
+		t.Fatal("expected pending summary before shutdown")
 	}
 
 	// Shutdown should clean up pending timers
@@ -1190,9 +1153,9 @@ func TestSummaryShutdownCleansTimers(t *testing.T) {
 		t.Fatalf("shutdown: %v", err)
 	}
 
-	// Pending flush should be cleaned up
-	if _, ok := svc.pendingFlush.Load("shutdown-sess"); ok {
-		t.Fatal("expected pending flush to be cleaned after shutdown")
+	// Pending summary should be cleaned up
+	if _, ok := svc.pendingSummary.Load("shutdown-sess"); ok {
+		t.Fatal("expected pending summary to be cleaned after shutdown")
 	}
 }
 
@@ -1223,486 +1186,12 @@ func TestSummaryWithOptionFunctions(t *testing.T) {
 	}
 }
 
-// --- Memory Flush Tests ---
 
-func TestRequestSummaryPublishesFlushFirst(t *testing.T) {
-	bus := eventbus.New()
-	svc := NewService(bus, WithHistoryLimit(50))
-	svc.summaryThreshold = 5
-	svc.summaryBatchSize = 3
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	if err := svc.Start(ctx); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	defer svc.Shutdown(context.Background())
-
-	// Subscribe to flush request topic
-	flushSub := eventbus.SubscribeTo(bus, eventbus.Memory.FlushRequest)
-	defer flushSub.Close()
-
-	now := time.Now().UTC()
-
-	// Add 5 turns to reach threshold
-	for i := 0; i < 5; i++ {
-		svc.handlePipelineMessage(now.Add(time.Duration(i)*time.Millisecond), eventbus.PipelineMessageEvent{
-			SessionID: "flush-first",
-			Origin:    eventbus.OriginUser,
-			Text:      "message " + strconv.Itoa(i),
-		})
-	}
-
-	// Expect a MemoryFlushRequestEvent (NOT immediately a history_summary prompt)
-	select {
-	case env := <-flushSub.C():
-		req := env.Payload
-		if req.SessionID != "flush-first" {
-			t.Fatalf("expected session flush-first, got %s", req.SessionID)
-		}
-		if len(req.Turns) != 3 {
-			t.Fatalf("expected 3 turns (batchSize), got %d", len(req.Turns))
-		}
-		if req.Turns[0].Text != "message 0" {
-			t.Fatalf("expected first turn text 'message 0', got %q", req.Turns[0].Text)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timeout waiting for flush request")
-	}
-
-	// Verify pendingFlush is set
-	if _, ok := svc.pendingFlush.Load("flush-first"); !ok {
-		t.Fatal("expected pendingFlush to be set")
-	}
-}
-
-func TestFlushResponseTriggersSummary(t *testing.T) {
-	bus := eventbus.New()
-	svc := NewService(bus, WithHistoryLimit(50))
-	svc.summaryThreshold = 5
-	svc.summaryBatchSize = 3
-
-	now := time.Now().UTC()
-
-	// Pre-populate enough turns
-	svc.mu.Lock()
-	for i := 0; i < 6; i++ {
-		svc.sessions["flush-then-summary"] = append(svc.sessions["flush-then-summary"], eventbus.ConversationTurn{
-			Origin: eventbus.OriginUser,
-			Text:   "turn " + strconv.Itoa(i),
-			At:     now.Add(time.Duration(i) * time.Millisecond),
-		})
-	}
-	svc.mu.Unlock()
-
-	// Trigger summary (creates pendingFlush)
-	svc.requestSummary("flush-then-summary")
-
-	// Verify pendingFlush is set and pendingSummary is NOT
-	if _, ok := svc.pendingFlush.Load("flush-then-summary"); !ok {
-		t.Fatal("expected pendingFlush to be set")
-	}
-	if _, ok := svc.pendingSummary.Load("flush-then-summary"); ok {
-		t.Fatal("expected pendingSummary to NOT be set before flush completes")
-	}
-
-	// Simulate flush response
-	svc.handleFlushResponse(eventbus.MemoryFlushResponseEvent{
-		SessionID: "flush-then-summary",
-		Saved:     true,
-	})
-
-	// Now pendingFlush should be gone and pendingSummary should be set
-	if _, ok := svc.pendingFlush.Load("flush-then-summary"); ok {
-		t.Fatal("expected pendingFlush to be cleared after response")
-	}
-	if _, ok := svc.pendingSummary.Load("flush-then-summary"); !ok {
-		t.Fatal("expected pendingSummary to be set after flush response")
-	}
-
-	// Clean up
-	val, _ := svc.pendingSummary.Load("flush-then-summary")
-	if req, ok := val.(*summaryRequest); ok && req.timer != nil {
-		req.timer.Stop()
-	}
-}
-
-// TestFlushResponseSavedFalseProceedsWithSummary verifies that handleFlushResponse
-// proceeds with summary even when the awareness service reports Saved=false.
-// The Saved field is informational — compaction must never be blocked by flush results.
-func TestFlushResponseSavedFalseProceedsWithSummary(t *testing.T) {
-	bus := eventbus.New()
-	svc := NewService(bus, WithHistoryLimit(50))
-	svc.summaryThreshold = 5
-	svc.summaryBatchSize = 3
-
-	now := time.Now().UTC()
-
-	// Pre-populate enough turns
-	svc.mu.Lock()
-	for i := 0; i < 6; i++ {
-		svc.sessions["saved-false"] = append(svc.sessions["saved-false"], eventbus.ConversationTurn{
-			Origin: eventbus.OriginUser,
-			Text:   "turn " + strconv.Itoa(i),
-			At:     now.Add(time.Duration(i) * time.Millisecond),
-		})
-	}
-	svc.mu.Unlock()
-
-	// Trigger summary → creates pendingFlush
-	svc.requestSummary("saved-false")
-
-	if _, ok := svc.pendingFlush.Load("saved-false"); !ok {
-		t.Fatal("expected pendingFlush to be set")
-	}
-
-	// Simulate flush response with Saved=false (AI returned NO_REPLY or error)
-	svc.handleFlushResponse(eventbus.MemoryFlushResponseEvent{
-		SessionID: "saved-false",
-		Saved:     false,
-	})
-
-	// Summary must still proceed regardless of Saved value
-	if _, ok := svc.pendingFlush.Load("saved-false"); ok {
-		t.Fatal("expected pendingFlush to be cleared")
-	}
-	if _, ok := svc.pendingSummary.Load("saved-false"); !ok {
-		t.Fatal("expected pendingSummary to be set even when Saved=false")
-	}
-
-	// Clean up
-	val, _ := svc.pendingSummary.Load("saved-false")
-	if req, ok := val.(*summaryRequest); ok && req.timer != nil {
-		req.timer.Stop()
-	}
-}
-
-// TestFlushResponseSubscriptionWiring verifies that the consumeFlushResponses
-// goroutine correctly picks up MemoryFlushResponseEvent from the event bus and
-// routes it to handleFlushResponse. Previous tests called handleFlushResponse
-// directly, bypassing the subscription entirely.
-func TestFlushResponseSubscriptionWiring(t *testing.T) {
-	bus := eventbus.New()
-	svc := NewService(bus, WithHistoryLimit(50), WithFlushTimeout(30*time.Second))
-	svc.summaryThreshold = 5
-	svc.summaryBatchSize = 3
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	if err := svc.Start(ctx); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	defer svc.Shutdown(context.Background())
-
-	now := time.Now().UTC()
-
-	// Pre-populate enough turns to trigger summary
-	svc.mu.Lock()
-	for i := 0; i < 6; i++ {
-		svc.sessions["sub-wiring"] = append(svc.sessions["sub-wiring"], eventbus.ConversationTurn{
-			Origin: eventbus.OriginUser,
-			Text:   "turn " + strconv.Itoa(i),
-			At:     now.Add(time.Duration(i) * time.Millisecond),
-		})
-	}
-	svc.mu.Unlock()
-
-	// Trigger summary → creates pendingFlush
-	svc.requestSummary("sub-wiring")
-
-	if _, ok := svc.pendingFlush.Load("sub-wiring"); !ok {
-		t.Fatal("expected pendingFlush to be set")
-	}
-
-	// Publish flush response via event bus (NOT calling handleFlushResponse directly).
-	// This exercises the consumeFlushResponses goroutine subscription.
-	eventbus.Publish(ctx, bus, eventbus.Memory.FlushResponse, eventbus.SourceAwareness, eventbus.MemoryFlushResponseEvent{
-		SessionID: "sub-wiring",
-		Saved:     true,
-	})
-
-	// Wait for the subscription goroutine to process the event
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if _, ok := svc.pendingFlush.Load("sub-wiring"); !ok {
-			break // Flush was consumed via subscription
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("timeout: consumeFlushResponses did not process the event bus message")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-
-	// Verify pendingSummary was set (flush → summary transition happened)
-	if _, ok := svc.pendingSummary.Load("sub-wiring"); !ok {
-		t.Fatal("expected pendingSummary to be set after flush response via subscription")
-	}
-
-	// Clean up
-	val, _ := svc.pendingSummary.Load("sub-wiring")
-	if req, ok := val.(*summaryRequest); ok && req.timer != nil {
-		req.timer.Stop()
-	}
-}
-
-func TestFlushTimeoutProceedsWithSummary(t *testing.T) {
-	bus := eventbus.New()
-	svc := NewService(bus, WithHistoryLimit(50), WithFlushTimeout(100*time.Millisecond))
-	svc.summaryThreshold = 5
-	svc.summaryBatchSize = 3
-
-	now := time.Now().UTC()
-
-	// Pre-populate turns
-	svc.mu.Lock()
-	for i := 0; i < 6; i++ {
-		svc.sessions["flush-timeout"] = append(svc.sessions["flush-timeout"], eventbus.ConversationTurn{
-			Origin: eventbus.OriginUser,
-			Text:   "turn " + strconv.Itoa(i),
-			At:     now.Add(time.Duration(i) * time.Millisecond),
-		})
-	}
-	svc.mu.Unlock()
-
-	// Trigger summary with short flush timeout
-	svc.requestSummary("flush-timeout")
-
-	// Verify flush was requested
-	if _, ok := svc.pendingFlush.Load("flush-timeout"); !ok {
-		t.Fatal("expected pendingFlush to be set")
-	}
-
-	// Wait for flush timeout to fire (should proceed to summary)
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if _, ok := svc.pendingSummary.Load("flush-timeout"); ok {
-			break // Summary was triggered after flush timeout
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("expected pendingSummary to be set after flush timeout")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	// pendingFlush should be gone
-	if _, ok := svc.pendingFlush.Load("flush-timeout"); ok {
-		t.Fatal("expected pendingFlush to be cleared after timeout")
-	}
-
-	// Clean up
-	val, _ := svc.pendingSummary.Load("flush-timeout")
-	if req, ok := val.(*summaryRequest); ok && req.timer != nil {
-		req.timer.Stop()
-	}
-}
-
-func TestMemoryFlushReplyNotStoredInHistory(t *testing.T) {
-	bus := eventbus.New()
-	svc := NewService(bus)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	if err := svc.Start(ctx); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	defer svc.Shutdown(context.Background())
-
-	// Add one turn to establish a session
-	now := time.Now().UTC()
-	svc.handlePipelineMessage(now, eventbus.PipelineMessageEvent{
-		SessionID: "no-flush-in-history",
-		Origin:    eventbus.OriginUser,
-		Text:      "hello",
-	})
-
-	time.Sleep(50 * time.Millisecond)
-
-	// Verify 1 turn in history
-	history := svc.Context("no-flush-in-history")
-	if len(history) != 1 {
-		t.Fatalf("expected 1 turn, got %d", len(history))
-	}
-
-	// Send a memory_flush reply through handleReplyMessage
-	svc.handleReplyMessage(now.Add(time.Second), eventbus.ConversationReplyEvent{
-		SessionID: "no-flush-in-history",
-		PromptID:  "flush-prompt-1",
-		Text:      "Extracted: user said hello",
-		Metadata:  map[string]string{constants.MetadataKeyEventType: constants.PromptEventMemoryFlush},
-	})
-
-	// Verify history still has only 1 turn (flush reply was NOT stored)
-	history = svc.Context("no-flush-in-history")
-	if len(history) != 1 {
-		t.Fatalf("expected 1 turn (flush reply should not be stored), got %d", len(history))
-	}
-}
-
-func TestFlushThenSummaryEndToEnd(t *testing.T) {
-	bus := eventbus.New()
-	svc := NewService(bus, WithHistoryLimit(50), WithFlushTimeout(100*time.Millisecond))
-	svc.summaryThreshold = 5
-	svc.summaryBatchSize = 3
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	if err := svc.Start(ctx); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	defer svc.Shutdown(context.Background())
-
-	// Subscribe to all intermediate topics
-	flushReqSub := eventbus.SubscribeTo(bus, eventbus.Memory.FlushRequest)
-	defer flushReqSub.Close()
-	promptSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Prompt)
-	defer promptSub.Close()
-
-	now := time.Now().UTC()
-
-	// Add 5 turns to reach threshold
-	for i := 0; i < 5; i++ {
-		svc.handlePipelineMessage(now.Add(time.Duration(i)*time.Millisecond), eventbus.PipelineMessageEvent{
-			SessionID: "e2e-session",
-			Origin:    eventbus.OriginUser,
-			Text:      "msg " + strconv.Itoa(i),
-		})
-	}
-
-	// Phase 1: Verify flush request was published
-	select {
-	case env := <-flushReqSub.C():
-		if env.Payload.SessionID != "e2e-session" {
-			t.Fatalf("expected session e2e-session, got %s", env.Payload.SessionID)
-		}
-		if len(env.Payload.Turns) != 3 {
-			t.Fatalf("expected 3 turns in flush request, got %d", len(env.Payload.Turns))
-		}
-		// Verify actual turn content (oldest 3 of 5 turns)
-		if env.Payload.Turns[0].Text != "msg 0" {
-			t.Fatalf("expected first flush turn text 'msg 0', got %q", env.Payload.Turns[0].Text)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timeout waiting for flush request")
-	}
-
-	// Phase 2: Simulate flush response from awareness service
-	svc.handleFlushResponse(eventbus.MemoryFlushResponseEvent{
-		SessionID: "e2e-session",
-		Saved:     true,
-	})
-
-	// Phase 3: Verify history_summary prompt was published
-	var summaryPrompt *eventbus.ConversationPromptEvent
-	deadline := time.After(2 * time.Second)
-	for summaryPrompt == nil {
-		select {
-		case env := <-promptSub.C():
-			if env.Payload.Metadata[constants.MetadataKeyEventType] == constants.PromptEventHistorySummary {
-				summaryPrompt = &env.Payload
-			}
-		case <-deadline:
-			t.Fatal("timeout waiting for history_summary prompt")
-		}
-	}
-
-	if summaryPrompt.SessionID != "e2e-session" {
-		t.Fatalf("expected session e2e-session, got %s", summaryPrompt.SessionID)
-	}
-
-	// Phase 4: Simulate summary reply
-	val, ok := svc.pendingSummary.Load("e2e-session")
-	if !ok {
-		t.Fatal("expected pending summary")
-	}
-	req := val.(*summaryRequest)
-
-	svc.handleSummaryReply("e2e-session", eventbus.ConversationReplyEvent{
-		SessionID: "e2e-session",
-		PromptID:  req.promptID,
-		Text:      "Summary: messages 0-2 discussed greetings",
-		Metadata:  map[string]string{constants.MetadataKeyEventType: constants.PromptEventHistorySummary},
-	})
-
-	// Phase 5: Verify history is compacted (1 summary + 2 remaining = 3 turns)
-	history := svc.Context("e2e-session")
-	if len(history) != 3 {
-		t.Fatalf("expected 3 turns after compaction (1 summary + 2 remaining), got %d", len(history))
-	}
-	if history[0].Origin != eventbus.OriginSystem {
-		t.Fatalf("expected system origin for summary turn, got %s", history[0].Origin)
-	}
-	if history[0].Meta[constants.MetadataKeySummarized] != "true" {
-		t.Fatal("expected summarized=true on first turn")
-	}
-
-	// Verify cleanup
-	if _, ok := svc.pendingFlush.Load("e2e-session"); ok {
-		t.Fatal("expected pendingFlush cleaned up")
-	}
-	if _, ok := svc.pendingSummary.Load("e2e-session"); ok {
-		t.Fatal("expected pendingSummary cleaned up")
-	}
-}
-
-func TestFlushTimeoutSkippedDuringShutdown(t *testing.T) {
-	bus := eventbus.New()
-	svc := NewService(bus, WithHistoryLimit(50), WithFlushTimeout(100*time.Millisecond))
-	svc.summaryThreshold = 5
-	svc.summaryBatchSize = 3
-
-	now := time.Now().UTC()
-
-	// Pre-populate turns
-	svc.mu.Lock()
-	for i := 0; i < 6; i++ {
-		svc.sessions["shutdown-guard"] = append(svc.sessions["shutdown-guard"], eventbus.ConversationTurn{
-			Origin: eventbus.OriginUser,
-			Text:   "turn " + strconv.Itoa(i),
-			At:     now.Add(time.Duration(i) * time.Millisecond),
-		})
-	}
-	svc.mu.Unlock()
-
-	// Trigger flush-before-summary
-	svc.requestSummary("shutdown-guard")
-
-	if _, ok := svc.pendingFlush.Load("shutdown-guard"); !ok {
-		t.Fatal("expected pendingFlush to be set")
-	}
-
-	// Signal shutdown BEFORE the flush timer fires
-	svc.shuttingDown.Store(true)
-
-	// Poll until the timer callback fires (evidenced by pendingFlush cleanup —
-	// the shuttingDown guard deletes the entry before returning).
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if _, ok := svc.pendingFlush.Load("shutdown-guard"); !ok {
-			break // Timer fired and cleaned up
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("timeout waiting for flush timer to fire during shutdown")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-
-	// The shuttingDown guard should have prevented proceedWithSummary,
-	// so pendingSummary should NOT be set.
-	if _, ok := svc.pendingSummary.Load("shutdown-guard"); ok {
-		t.Fatal("expected pendingSummary to NOT be set when shuttingDown is true")
-	}
-}
-
-// TestShutdownStartResetsShuttingDown verifies that after Shutdown→Start,
-// the shuttingDown flag is reset so flush timeouts still fire normally.
-// This was a bug found in review #6 and the fix must be covered by a test.
+// TestShutdownStartResetsShuttingDown verifies that after Shutdown followed by
+// Start, the service can still process summaries normally.
 func TestShutdownStartResetsShuttingDown(t *testing.T) {
 	bus := eventbus.New()
-	svc := NewService(bus, WithHistoryLimit(50), WithFlushTimeout(100*time.Millisecond))
+	svc := NewService(bus, WithHistoryLimit(50))
 	svc.summaryThreshold = 5
 	svc.summaryBatchSize = 3
 
@@ -1737,24 +1226,12 @@ func TestShutdownStartResetsShuttingDown(t *testing.T) {
 	}
 	svc.mu.Unlock()
 
-	// Trigger summary → creates pendingFlush with 100ms timeout
+	// Trigger summary — should work after restart
 	svc.requestSummary("restart-test")
 
-	if _, ok := svc.pendingFlush.Load("restart-test"); !ok {
-		t.Fatal("expected pendingFlush to be set")
-	}
-
-	// Wait for flush timeout to fire — if shuttingDown was NOT reset,
-	// the timer callback would bail out and never create pendingSummary.
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if _, ok := svc.pendingSummary.Load("restart-test"); ok {
-			break // Timeout fired and transitioned to summary
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("timeout: flush timer did not fire after restart (shuttingDown not reset?)")
-		}
-		time.Sleep(5 * time.Millisecond)
+	// pendingSummary should be set (requestSummary proceeds directly)
+	if _, ok := svc.pendingSummary.Load("restart-test"); !ok {
+		t.Fatal("expected pendingSummary to be set after restart")
 	}
 
 	// Clean up
@@ -1764,252 +1241,6 @@ func TestShutdownStartResetsShuttingDown(t *testing.T) {
 	}
 }
 
-func TestClearSessionPublishesExportRequest(t *testing.T) {
-	bus := eventbus.New()
-	svc := NewService(bus)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	if err := svc.Start(ctx); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	defer svc.Shutdown(context.Background())
-
-	// Add turns to establish a session
-	now := time.Now().UTC()
-	svc.handlePipelineMessage(now, eventbus.PipelineMessageEvent{
-		SessionID: "export-session",
-		Origin:    eventbus.OriginUser,
-		Text:      "set up docker",
-	})
-	svc.handleReplyMessage(now.Add(10*time.Millisecond), eventbus.ConversationReplyEvent{
-		SessionID: "export-session",
-		PromptID:  "p1",
-		Text:      "Docker configured.",
-	})
-
-	// No sleep needed: handlePipelineMessage and handleReplyMessage are
-	// called directly (synchronous), so turns are already in s.sessions.
-
-	// Subscribe to export request topic
-	exportSub := eventbus.SubscribeTo(bus, eventbus.Memory.ExportRequest)
-	defer exportSub.Close()
-
-	// Trigger session close via lifecycle event
-	eventbus.Publish(ctx, bus, eventbus.Sessions.Lifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{
-		SessionID: "export-session",
-		State:     eventbus.SessionStateStopped,
-	})
-
-	// Verify SessionExportRequestEvent published
-	select {
-	case env := <-exportSub.C():
-		if env.Payload.SessionID != "export-session" {
-			t.Fatalf("expected session export-session, got %s", env.Payload.SessionID)
-		}
-		if len(env.Payload.Turns) == 0 {
-			t.Fatal("expected non-empty turns in export request")
-		}
-		if len(env.Payload.Turns) > 30 {
-			t.Fatalf("expected at most 30 turns, got %d", len(env.Payload.Turns))
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timeout waiting for export request")
-	}
-}
-
-func TestClearSessionNoTurnsNoExport(t *testing.T) {
-	bus := eventbus.New()
-	svc := NewService(bus)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	if err := svc.Start(ctx); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	defer svc.Shutdown(context.Background())
-
-	// Subscribe to export request topic
-	exportSub := eventbus.SubscribeTo(bus, eventbus.Memory.ExportRequest)
-	defer exportSub.Close()
-
-	// Trigger session close for a session that has NO turns (never interacted)
-	eventbus.Publish(ctx, bus, eventbus.Sessions.Lifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{
-		SessionID: "empty-session",
-		State:     eventbus.SessionStateStopped,
-	})
-
-	// Verify NO export request published
-	select {
-	case env := <-exportSub.C():
-		t.Fatalf("expected no export request for empty session, got: %+v", env.Payload)
-	case <-time.After(200 * time.Millisecond):
-		// Expected: no export request
-	}
-}
-
-func TestClearSessionNoAITurnsNoExport(t *testing.T) {
-	bus := eventbus.New()
-	svc := NewService(bus)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	if err := svc.Start(ctx); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	defer svc.Shutdown(context.Background())
-
-	// Add only non-AI turns (user + tool output, no AI reply).
-	// AC#4: sessions without AI interaction should NOT be exported.
-	now := time.Now().UTC()
-	svc.handlePipelineMessage(now, eventbus.PipelineMessageEvent{
-		SessionID:   "no-ai-session",
-		Origin:      eventbus.OriginUser,
-		Text:        "hello",
-		Annotations: map[string]string{constants.MetadataKeyEventType: constants.PromptEventUserIntent},
-	})
-	svc.handlePipelineMessage(now.Add(time.Second), eventbus.PipelineMessageEvent{
-		SessionID:   "no-ai-session",
-		Origin:      eventbus.OriginTool,
-		Text:        "tool output",
-		Annotations: map[string]string{constants.MetadataKeyNotable: constants.MetadataValueTrue},
-	})
-
-	// Subscribe to export request topic
-	exportSub := eventbus.SubscribeTo(bus, eventbus.Memory.ExportRequest)
-	defer exportSub.Close()
-
-	// Trigger session close — session has turns but NO AI turn
-	eventbus.Publish(ctx, bus, eventbus.Sessions.Lifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{
-		SessionID: "no-ai-session",
-		State:     eventbus.SessionStateStopped,
-	})
-
-	// Verify NO export request published (no AI interaction)
-	select {
-	case env := <-exportSub.C():
-		t.Fatalf("expected no export request for session without AI turns, got: %+v", env.Payload)
-	case <-time.After(200 * time.Millisecond):
-		// Expected: no export request
-	}
-}
-
-// TestExportSurvivesFIFOTrim verifies that session export still triggers even when
-// FIFO history trimming has evicted all AI turns from the buffer. The sessionAI
-// flag (set once when an AI turn is added) survives trimming, unlike scanning the buffer.
-func TestExportSurvivesFIFOTrim(t *testing.T) {
-	bus := eventbus.New()
-	// maxHistory=5: small buffer to make AI turns easy to evict.
-	svc := NewService(bus, WithHistoryLimit(5))
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	if err := svc.Start(ctx); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	defer svc.Shutdown(context.Background())
-
-	sid := "fifo-trim-session"
-	now := time.Now().UTC()
-
-	// 1. Add one AI turn (this sets the sessionAI flag).
-	svc.handleReplyMessage(now, eventbus.ConversationReplyEvent{
-		SessionID: sid,
-		PromptID:  "p1",
-		Text:      "AI response",
-	})
-
-	// 2. Add enough non-AI turns to evict the AI turn from the buffer.
-	for i := 0; i < 6; i++ {
-		svc.handlePipelineMessage(now.Add(time.Duration(i+1)*time.Second), eventbus.PipelineMessageEvent{
-			SessionID:   sid,
-			Origin:      eventbus.OriginUser,
-			Text:        "user msg " + strconv.Itoa(i),
-			Annotations: map[string]string{constants.MetadataKeyEventType: constants.PromptEventSessionOutput},
-		})
-	}
-
-	// Verify: buffer should have no AI turns left.
-	svc.mu.RLock()
-	turns := svc.sessions[sid]
-	hasAI := false
-	for _, t2 := range turns {
-		if t2.Origin == eventbus.OriginAI {
-			hasAI = true
-		}
-	}
-	svc.mu.RUnlock()
-	if hasAI {
-		t.Fatal("expected AI turn to be evicted from buffer by FIFO trim")
-	}
-
-	// Subscribe to export request topic.
-	exportSub := eventbus.SubscribeTo(bus, eventbus.Memory.ExportRequest)
-	defer exportSub.Close()
-
-	// Trigger session close — buffer has no AI turns, but sessionAI flag is set.
-	eventbus.Publish(ctx, bus, eventbus.Sessions.Lifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{
-		SessionID: sid,
-		State:     eventbus.SessionStateStopped,
-	})
-
-	// Verify export request IS published (sessionAI flag survives trim).
-	select {
-	case env := <-exportSub.C():
-		if env.Payload.SessionID != sid {
-			t.Fatalf("expected sessionID %q, got %q", sid, env.Payload.SessionID)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timeout: expected export request after FIFO trim (sessionAI flag should survive)")
-	}
-}
-
-func TestSessionSlugReplyNotStoredInHistory(t *testing.T) {
-	bus := eventbus.New()
-	svc := NewService(bus)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	if err := svc.Start(ctx); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	defer svc.Shutdown(context.Background())
-
-	// Add one turn to establish a session
-	now := time.Now().UTC()
-	svc.handlePipelineMessage(now, eventbus.PipelineMessageEvent{
-		SessionID: "slug-reply-session",
-		Origin:    eventbus.OriginUser,
-		Text:      "hello",
-	})
-
-	// No sleep needed: handlePipelineMessage is called directly (synchronous).
-
-	// Verify 1 turn in history
-	history := svc.Context("slug-reply-session")
-	if len(history) != 1 {
-		t.Fatalf("expected 1 turn, got %d", len(history))
-	}
-
-	// Send a session_slug reply through handleReplyMessage
-	svc.handleReplyMessage(now.Add(time.Second), eventbus.ConversationReplyEvent{
-		SessionID: "slug-reply-session",
-		PromptID:  "slug-prompt-1",
-		Text:      "SLUG: docker-setup\n\nSUMMARY:\nConfigured Docker.",
-		Metadata:  map[string]string{constants.MetadataKeyEventType: constants.PromptEventSessionSlug},
-	})
-
-	// Verify history still has only 1 turn (session_slug reply was NOT stored)
-	history = svc.Context("slug-reply-session")
-	if len(history) != 1 {
-		t.Fatalf("expected 1 turn (session_slug reply should not be stored), got %d", len(history))
-	}
-}
 
 func TestValidEventTypesSyncWithPromptTemplates(t *testing.T) {
 	templates := store.DefaultPromptTemplates()

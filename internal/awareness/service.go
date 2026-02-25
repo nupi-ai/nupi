@@ -33,13 +33,10 @@ type Service struct {
 	indexer           *Indexer
 	embeddingProvider EmbeddingProvider
 
-	flushSub      *eventbus.TypedSubscription[eventbus.MemoryFlushRequestEvent]
 	flushReplySub *eventbus.TypedSubscription[eventbus.ConversationReplyEvent]
 	pendingFlush  sync.Map // promptID → *flushState
-	flushTimeout  time.Duration
 	memoryWriteMu sync.Mutex // serializes all memory file writes (flush, daily, topic)
 
-	exportSub      *eventbus.TypedSubscription[eventbus.SessionExportRequestEvent]
 	exportReplySub *eventbus.TypedSubscription[eventbus.ConversationReplyEvent]
 	pendingExport  sync.Map // promptID → *exportState
 	slugTimeout    time.Duration
@@ -79,14 +76,6 @@ func (s *Service) SetEventBus(bus *eventbus.Bus) {
 // SetEmbeddingProvider wires the embedding provider for vector search.
 func (s *Service) SetEmbeddingProvider(provider EmbeddingProvider) {
 	s.embeddingProvider = provider
-}
-
-// SetFlushTimeout overrides the default timeout for memory flush operations.
-// Must be called before Start.
-func (s *Service) SetFlushTimeout(timeout time.Duration) {
-	if timeout > 0 {
-		s.flushTimeout = timeout
-	}
 }
 
 // SetSlugTimeout overrides the default timeout for session slug generation.
@@ -133,17 +122,11 @@ func (s *Service) Start(ctx context.Context) error {
 		log.Printf("[Awareness] WARNING: initial index sync failed: %v", err)
 	}
 
-	// Start flush consumer goroutines if event bus is available.
+	// Start consumer goroutines if event bus is available.
 	if s.bus != nil {
 		s.lifecycle.Start(ctx)
 
-		if s.flushTimeout == 0 {
-			s.flushTimeout = eventbus.DefaultFlushTimeout
-		}
-
-		s.flushSub = eventbus.Subscribe[eventbus.MemoryFlushRequestEvent](s.bus, eventbus.TopicMemoryFlushRequest, eventbus.WithSubscriptionName("awareness_flush_request"))
 		s.flushReplySub = eventbus.Subscribe[eventbus.ConversationReplyEvent](s.bus, eventbus.TopicConversationReply, eventbus.WithSubscriptionName("awareness_flush_reply"))
-		s.exportSub = eventbus.Subscribe[eventbus.SessionExportRequestEvent](s.bus, eventbus.TopicSessionExportRequest, eventbus.WithSubscriptionName("awareness_export_request"))
 		s.exportReplySub = eventbus.Subscribe[eventbus.ConversationReplyEvent](s.bus, eventbus.TopicConversationReply, eventbus.WithSubscriptionName("awareness_export_reply"))
 		s.lifecycleSub = eventbus.Subscribe[eventbus.SessionLifecycleEvent](s.bus, eventbus.TopicSessionsLifecycle, eventbus.WithSubscriptionName("awareness_lifecycle"))
 
@@ -151,10 +134,8 @@ func (s *Service) Start(ctx context.Context) error {
 			s.slugTimeout = defaultSlugTimeout
 		}
 
-		s.lifecycle.AddSubscriptions(s.flushSub, s.flushReplySub, s.exportSub, s.exportReplySub, s.lifecycleSub)
-		s.lifecycle.Go(s.consumeFlushRequests)
+		s.lifecycle.AddSubscriptions(s.flushReplySub, s.exportReplySub, s.lifecycleSub)
 		s.lifecycle.Go(s.consumeFlushReplies)
-		s.lifecycle.Go(s.consumeExportRequests)
 		s.lifecycle.Go(s.consumeExportReplies)
 		s.lifecycle.Go(s.consumeLifecycleEvents)
 
@@ -179,20 +160,6 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	// handleFlushReply calls (which may call writeFlushContent → indexer.Sync)
 	// finish before the indexer is closed.
 	s.lifecycle.Stop()
-
-	// Clear pending flush entries. Timers are fire-and-forget: the
-	// shuttingDown flag (set above) makes callbacks no-op.
-	s.pendingFlush.Range(func(key, _ any) bool {
-		s.pendingFlush.Delete(key)
-		return true
-	})
-
-	// Clear pending export entries. Timers are fire-and-forget: the
-	// shuttingDown flag (set above) makes callbacks no-op.
-	s.pendingExport.Range(func(key, _ any) bool {
-		s.pendingExport.Delete(key)
-		return true
-	})
 
 	if err := s.lifecycle.Wait(ctx); err != nil {
 		return err

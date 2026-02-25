@@ -30,6 +30,7 @@ func TestDefaultPolicies(t *testing.T) {
 		TopicSpeechTranscriptPartial,
 		TopicSpeechVADDetected,
 		TopicConversationSpeak,
+		TopicConversationTurn,
 		TopicSessionsTool,
 		TopicSessionsToolChanged,
 		TopicAudioIngressRaw,
@@ -67,25 +68,6 @@ func TestDefaultPolicies(t *testing.T) {
 		}
 		if p.Priority != PriorityLow {
 			t.Fatalf("expected low priority for %s, got %d", topic, p.Priority)
-		}
-	}
-
-	// Normal-priority topics using overflow strategy (must not lose events).
-	normalOverflow := []Topic{
-		TopicMemoryFlushRequest,
-		TopicMemoryFlushResponse,
-		TopicSessionExportRequest,
-	}
-	for _, topic := range normalOverflow {
-		p, ok := defaultPolicies[topic]
-		if !ok {
-			t.Fatalf("expected defaultPolicies entry for %s", topic)
-		}
-		if p.Strategy != StrategyOverflow {
-			t.Fatalf("expected overflow strategy for %s, got %s", topic, p.Strategy)
-		}
-		if p.Priority != PriorityNormal {
-			t.Fatalf("expected normal priority for %s, got %d", topic, p.Priority)
 		}
 	}
 

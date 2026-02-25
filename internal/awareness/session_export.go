@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/sanitize"
@@ -35,87 +34,6 @@ var slugSanitizeRe = regexp.MustCompile(`[^a-z0-9-]`)
 
 // multiHyphenRe collapses consecutive hyphens.
 var multiHyphenRe = regexp.MustCompile(`-{2,}`)
-
-func (s *Service) consumeExportRequests(ctx context.Context) {
-	eventbus.Consume(ctx, s.exportSub, nil, func(event eventbus.SessionExportRequestEvent) {
-		s.handleExportRequest(ctx, event)
-	})
-}
-
-func (s *Service) handleExportRequest(ctx context.Context, event eventbus.SessionExportRequestEvent) {
-	if s.bus == nil {
-		return
-	}
-
-	if event.SessionID == "" {
-		log.Printf("[Awareness] WARNING: ignoring export request with empty SessionID")
-		return
-	}
-
-	if len(event.Turns) == 0 {
-		log.Printf("[Awareness] WARNING: ignoring export request with empty turns for session %s", event.SessionID)
-		return
-	}
-
-	serialized := eventbus.SerializeTurns(event.Turns)
-	promptID := uuid.NewString()
-
-	timeout := s.slugTimeout
-	if timeout == 0 {
-		timeout = defaultSlugTimeout
-	}
-
-	state := &exportState{
-		sessionID: event.SessionID,
-		promptID:  promptID,
-		turns:     event.Turns,
-	}
-
-	// Store before starting the timer so the timeout callback always finds
-	// the entry via LoadAndDelete. Previously the timer was started first
-	// which created a race window where the callback could fire before Store,
-	// silently losing the export (observed under stress with 1ns timeout).
-	// The timer field was removed from exportState to eliminate data races:
-	// the reply handler no longer needs to stop the timer — if a reply
-	// arrives first, LoadAndDelete succeeds there and the timer callback
-	// harmlessly gets loaded=false.
-	s.pendingExport.Store(promptID, state)
-
-	time.AfterFunc(timeout, func() {
-		if s.shuttingDown.Load() {
-			s.pendingExport.Delete(promptID)
-			return
-		}
-		if _, loaded := s.pendingExport.LoadAndDelete(promptID); loaded {
-			log.Printf("[Awareness] WARNING: slug generation timed out for session %s (promptID=%s), using fallback",
-				event.SessionID, promptID)
-			fallbackSlug := time.Now().UTC().Format("20060102-150405")
-			if err := s.writeSessionExport(context.Background(), event.SessionID, fallbackSlug, "", event.Turns); err != nil {
-				log.Printf("[Awareness] ERROR: writing fallback session export for session %s: %v", event.SessionID, err)
-			}
-		}
-	})
-
-	now := time.Now().UTC()
-	prompt := eventbus.ConversationPromptEvent{
-		SessionID: event.SessionID,
-		PromptID:  promptID,
-		Context:   event.Turns,
-		NewMessage: eventbus.ConversationMessage{
-			Origin: eventbus.OriginSystem,
-			Text:   serialized,
-			At:     now,
-			Meta: map[string]string{
-				constants.MetadataKeyEventType: constants.PromptEventSessionSlug,
-			},
-		},
-		Metadata: map[string]string{
-			constants.MetadataKeyEventType: constants.PromptEventSessionSlug,
-		},
-	}
-
-	eventbus.Publish(ctx, s.bus, eventbus.Conversation.Prompt, eventbus.SourceAwareness, prompt)
-}
 
 func (s *Service) consumeExportReplies(ctx context.Context) {
 	eventbus.Consume(ctx, s.exportReplySub, nil, func(reply eventbus.ConversationReplyEvent) {

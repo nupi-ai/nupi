@@ -138,7 +138,6 @@ func (s *Service) checkHeartbeats(ctx context.Context, gron *gronx.Gronx) {
 		event := eventbus.ConversationPromptEvent{
 			SessionID: "",
 			PromptID:  uuid.New().String(),
-			Context:   nil,
 			NewMessage: eventbus.ConversationMessage{
 				Origin: eventbus.OriginSystem,
 				Text:   hb.Prompt,

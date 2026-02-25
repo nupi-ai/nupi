@@ -480,13 +480,12 @@ func (s *Service) buildIntentRequest(prompt eventbus.ConversationPromptEvent, pr
 	}
 
 	req := IntentRequest{
-		PromptID:            prompt.PromptID,
-		SessionID:           targetSession,
-		EventType:           eventType,
-		Transcript:          prompt.NewMessage.Text,
-		ConversationHistory: prompt.Context,
-		CurrentTool:         currentTool,
-		Metadata:            prompt.Metadata,
+		PromptID:    prompt.PromptID,
+		SessionID:   targetSession,
+		EventType:   eventType,
+		Transcript:  prompt.NewMessage.Text,
+		CurrentTool: currentTool,
+		Metadata:    prompt.Metadata,
 	}
 
 	// Add smart routing hint to metadata
@@ -520,7 +519,7 @@ func (s *Service) buildIntentRequest(prompt eventbus.ConversationPromptEvent, pr
 			EventType:             eventType,
 			SessionID:             targetSession, // Use smart-routed session, not original prompt.SessionID
 			Transcript:            prompt.NewMessage.Text,
-			History:               prompt.Context,
+			History:               nil,
 			AvailableSessions:     sessions,
 			CurrentTool:           currentTool,
 			SessionOutput:         req.SessionOutput,

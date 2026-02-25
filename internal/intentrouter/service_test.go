@@ -705,9 +705,6 @@ func TestServiceContextPassedToAdapter(t *testing.T) {
 	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
 		SessionID: "session-1",
 		PromptID:  "test-prompt",
-		Context: []eventbus.ConversationTurn{
-			{Origin: eventbus.OriginUser, Text: "previous message"},
-		},
 		NewMessage: eventbus.ConversationMessage{
 			Text: "new message",
 		},
@@ -731,8 +728,8 @@ func TestServiceContextPassedToAdapter(t *testing.T) {
 	if req.Transcript != "new message" {
 		t.Errorf("Expected transcript 'new message', got %s", req.Transcript)
 	}
-	if len(req.ConversationHistory) != 1 {
-		t.Errorf("Expected 1 history entry, got %d", len(req.ConversationHistory))
+	if len(req.ConversationHistory) != 0 {
+		t.Errorf("Expected 0 history entries (Context field removed), got %d", len(req.ConversationHistory))
 	}
 	if len(req.AvailableSessions) != 2 {
 		t.Errorf("Expected 2 available sessions, got %d", len(req.AvailableSessions))

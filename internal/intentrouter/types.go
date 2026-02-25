@@ -122,7 +122,8 @@ type IntentRequest struct {
 	// Transcript is the user's speech or text input.
 	Transcript string `json:"transcript"`
 
-	// ConversationHistory contains recent conversation turns for context.
+	// ConversationHistory will be populated by JournalProvider / ConversationLogProvider
+	// once those context providers are implemented (Epic 19+). Currently always nil.
 	ConversationHistory []eventbus.ConversationTurn `json:"conversation_history,omitempty"`
 
 	// AvailableSessions lists all sessions the user can interact with.
@@ -265,7 +266,9 @@ type PromptBuildRequest struct {
 	EventType             EventType
 	SessionID             string
 	Transcript            string
-	History               []eventbus.ConversationTurn
+	// History will be populated by JournalProvider / ConversationLogProvider
+	// once those context providers are implemented (Epic 19+). Currently always nil.
+	History []eventbus.ConversationTurn
 	AvailableSessions     []SessionInfo
 	CurrentTool           string
 	SessionOutput         string

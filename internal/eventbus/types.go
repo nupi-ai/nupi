@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-
-	"github.com/nupi-ai/nupi/internal/constants"
 )
 
 // Topic identifies a logical channel on the bus.
@@ -32,12 +30,10 @@ const (
 	TopicSpeechVADDetected       Topic = "speech.vad.detected"
 	TopicSpeechBargeIn           Topic = "speech.barge_in"
 	TopicConversationSpeak       Topic = "conversation.speak"
+	TopicConversationTurn        Topic = "conversation.turn"
 	TopicPairingCreated          Topic = "pairing.created"
 	TopicPairingClaimed          Topic = "pairing.claimed"
-	TopicMemoryFlushRequest      Topic = "memory.flush.request"
-	TopicMemoryFlushResponse     Topic = "memory.flush.response"
 	TopicAwarenessSync           Topic = "awareness.sync"
-	TopicSessionExportRequest    Topic = "session.export.request"
 )
 
 // Source describes which component produced an event.
@@ -190,11 +186,17 @@ type ConversationMessage struct {
 	Meta   map[string]string
 }
 
+// ConversationTurnEvent carries a single conversation turn for downstream consumers.
+// Publisher: conversation service (wired in Epic 19.2).
+type ConversationTurnEvent struct {
+	SessionID string
+	Turn      ConversationTurn
+}
+
 // ConversationPromptEvent encapsulates context sent to AI adapters.
 type ConversationPromptEvent struct {
 	SessionID  string
 	PromptID   string
-	Context    []ConversationTurn
 	NewMessage ConversationMessage
 	Metadata   map[string]string
 }
@@ -409,10 +411,12 @@ var Conversation = struct {
 	Prompt TopicDef[ConversationPromptEvent]
 	Reply  TopicDef[ConversationReplyEvent]
 	Speak  TopicDef[ConversationSpeakEvent]
+	Turn   TopicDef[ConversationTurnEvent]
 }{
 	Prompt: NewTopicDef[ConversationPromptEvent](TopicConversationPrompt),
 	Reply:  NewTopicDef[ConversationReplyEvent](TopicConversationReply),
 	Speak:  NewTopicDef[ConversationSpeakEvent](TopicConversationSpeak),
+	Turn:   NewTopicDef[ConversationTurnEvent](TopicConversationTurn),
 }
 
 // Audio groups audio topic descriptors.
@@ -459,31 +463,6 @@ var Pairing = struct {
 	Claimed: NewTopicDef[PairingClaimedEvent](TopicPairingClaimed),
 }
 
-// DefaultFlushTimeout is the default timeout for memory flush operations.
-// Shared between awareness and conversation services to keep them in sync.
-const DefaultFlushTimeout = constants.Duration30Seconds
-
-// MemoryFlushRequestEvent asks the awareness service to save important context
-// before conversation compaction discards old turns.
-type MemoryFlushRequestEvent struct {
-	SessionID string
-	Turns     []ConversationTurn
-}
-
-// MemoryFlushResponseEvent signals that the memory flush is complete
-// and conversation compaction may proceed.
-type MemoryFlushResponseEvent struct {
-	SessionID string
-	Saved     bool
-}
-
-// SessionExportRequestEvent asks the awareness service to export a completed
-// session to a markdown file in the archival memory directory.
-type SessionExportRequestEvent struct {
-	SessionID string
-	Turns     []ConversationTurn
-}
-
 // AwarenessSyncEvent notifies that an awareness file was created or updated.
 type AwarenessSyncEvent struct {
 	FilePath string
@@ -492,13 +471,7 @@ type AwarenessSyncEvent struct {
 
 // Memory groups awareness/memory topic descriptors.
 var Memory = struct {
-	FlushRequest  TopicDef[MemoryFlushRequestEvent]
-	FlushResponse TopicDef[MemoryFlushResponseEvent]
-	Sync          TopicDef[AwarenessSyncEvent]
-	ExportRequest TopicDef[SessionExportRequestEvent]
+	Sync TopicDef[AwarenessSyncEvent]
 }{
-	FlushRequest:  NewTopicDef[MemoryFlushRequestEvent](TopicMemoryFlushRequest),
-	FlushResponse: NewTopicDef[MemoryFlushResponseEvent](TopicMemoryFlushResponse),
-	Sync:          NewTopicDef[AwarenessSyncEvent](TopicAwarenessSync),
-	ExportRequest: NewTopicDef[SessionExportRequestEvent](TopicSessionExportRequest),
+	Sync: NewTopicDef[AwarenessSyncEvent](TopicAwarenessSync),
 }

@@ -40,10 +40,10 @@ func New(opts ...BusOption) *Bus {
 		TopicSpeechVADDetected:       128,
 		TopicSpeechBargeIn:           64,
 		TopicConversationSpeak:       128,
-		TopicMemoryFlushRequest:      64,
-		TopicMemoryFlushResponse:     64,
+		TopicConversationTurn:        256,
+		TopicPairingCreated:          64,
+		TopicPairingClaimed:          64,
 		TopicAwarenessSync:           64,
-		TopicSessionExportRequest:    64,
 	}
 
 	bus := &Bus{
