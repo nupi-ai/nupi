@@ -2,6 +2,7 @@ package plugins_test
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -25,6 +26,11 @@ var (
 
 // skipIfNoBun skips the test if the JS runtime is not available.
 // Uses sync.Once + os.Setenv (not t.Setenv) so tests can use t.Parallel().
+//
+// The os.Setenv is intentionally not cleaned up: the env var persists for the
+// entire test process, which is acceptable because (1) the value is always a
+// valid bun path discovered via LookPath, (2) all tests in this package need
+// the same value, and (3) t.Setenv prevents t.Parallel() which we require.
 func skipIfNoBun(t *testing.T) {
 	t.Helper()
 	bunOnce.Do(func() {
@@ -44,7 +50,7 @@ func skipIfNoBun(t *testing.T) {
 	}
 }
 
-func writePlugin(t *testing.T, root, namespace, slug, pluginType, script string) {
+func writePlugin(t testing.TB, root, namespace, slug, pluginType, script string) {
 	t.Helper()
 	dir := filepath.Join(root, "plugins", namespace, slug)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -990,7 +996,7 @@ func TestServiceIntegrityCheckerExcludesFromIndexOnReload(t *testing.T) {
 		return fmt.Errorf("tampered: main.js")
 	})
 
-	if err := svc.Reload(); err != nil {
+	if err := svc.Reload(context.Background()); err != nil {
 		t.Fatalf("Reload: %v", err)
 	}
 
@@ -1007,4 +1013,456 @@ func TestServiceIntegrityCheckerExcludesFromIndexOnReload(t *testing.T) {
 	if paths, ok := index["reloadrefusedcmd"]; ok {
 		t.Fatalf("expected refused plugin command NOT in index after reload, but found: %v", paths)
 	}
+}
+
+// --- Integrity Cache Tests ---
+
+func TestServiceReloadCallsIntegrityCheckerOncePerPlugin(t *testing.T) {
+	skipIfNoBun(t)
+	t.Parallel()
+
+	root := t.TempDir()
+
+	// Create a tool-handler plugin — it will be checked in loadToolHandlerPlugins
+	// AND in filterManifests (index generation), so without caching the checker
+	// would be called twice.
+	writePlugin(t, root, "test", "cached-handler", "tool-handler", `module.exports = {
+  name: "cached-handler",
+  commands: ["cachedcmd"],
+  detect: function(output) { return output.includes("cachedcmd"); }
+};`)
+
+	// Create a pipeline-cleaner plugin — checked in loadPipelinePlugins
+	// AND in filterManifests, so also 2x without caching.
+	writePlugin(t, root, "test", "cached-cleaner", "pipeline-cleaner", `module.exports = {
+  name: "cached-cleaner",
+  commands: ["cachedclean"],
+  transform: function(input) { return input; }
+};`)
+
+	var mu sync.Mutex
+	callCounts := make(map[string]int)
+
+	svc := plugins.NewService(root)
+	svc.SetIntegrityChecker(func(namespace, slug, pluginDir string) error {
+		mu.Lock()
+		callCounts[namespace+"/"+slug]++
+		mu.Unlock()
+		return nil
+	})
+
+	// Use Reload() which calls all three load paths sequentially.
+	// Need Start() first to initialize runtime.
+	if err := svc.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(context.Background())
+
+	// Reset counts after Start (which also calls the checker).
+	mu.Lock()
+	callCounts = make(map[string]int)
+	mu.Unlock()
+
+	if err := svc.Reload(context.Background()); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Verify both plugins were checked exactly once.
+	if callCounts["test/cached-handler"] != 1 {
+		t.Errorf("expected handler checked once, got %d", callCounts["test/cached-handler"])
+	}
+	if callCounts["test/cached-cleaner"] != 1 {
+		t.Errorf("expected cleaner checked once, got %d", callCounts["test/cached-cleaner"])
+	}
+
+	// Verify plugins were actually loaded (not just checked).
+	if _, ok := svc.ToolHandlerPluginFor("cachedcmd"); !ok {
+		t.Error("expected tool handler loaded after Reload with caching")
+	}
+	if _, ok := svc.PipelinePluginFor("cachedclean"); !ok {
+		t.Error("expected pipeline plugin loaded after Reload with caching")
+	}
+}
+
+func TestServiceStartCallsIntegrityCheckerOncePerPlugin(t *testing.T) {
+	skipIfNoBun(t)
+	t.Parallel()
+
+	root := t.TempDir()
+
+	// Create a tool-handler plugin — checked in loadToolHandlerPlugins
+	// AND filterManifests during Start(), so without caching the checker
+	// would be called twice.
+	writePlugin(t, root, "test", "start-handler", "tool-handler", `module.exports = {
+  name: "start-handler",
+  commands: ["startcmd"],
+  detect: function(output) { return output.includes("startcmd"); }
+};`)
+
+	// Create a pipeline-cleaner plugin — checked in loadPipelinePlugins
+	// AND filterManifests, so also 2x without caching.
+	writePlugin(t, root, "test", "start-cleaner", "pipeline-cleaner", `module.exports = {
+  name: "start-cleaner",
+  commands: ["startclean"],
+  transform: function(input) { return input; }
+};`)
+
+	var mu sync.Mutex
+	callCounts := make(map[string]int)
+
+	svc := plugins.NewService(root)
+	svc.SetIntegrityChecker(func(namespace, slug, pluginDir string) error {
+		mu.Lock()
+		callCounts[namespace+"/"+slug]++
+		mu.Unlock()
+		return nil
+	})
+
+	if err := svc.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(context.Background())
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Verify both plugins were checked exactly once.
+	if callCounts["test/start-handler"] != 1 {
+		t.Errorf("expected handler checked once during Start, got %d", callCounts["test/start-handler"])
+	}
+	if callCounts["test/start-cleaner"] != 1 {
+		t.Errorf("expected cleaner checked once during Start, got %d", callCounts["test/start-cleaner"])
+	}
+
+	// Verify plugins were actually loaded (not just checked).
+	if _, ok := svc.ToolHandlerPluginFor("startcmd"); !ok {
+		t.Error("expected tool handler loaded after Start with caching")
+	}
+	if _, ok := svc.PipelinePluginFor("startclean"); !ok {
+		t.Error("expected pipeline plugin loaded after Start with caching")
+	}
+}
+
+func TestServiceSecondReloadReinvokesIntegrityChecker(t *testing.T) {
+	skipIfNoBun(t)
+	t.Parallel()
+
+	root := t.TempDir()
+	writePlugin(t, root, "test", "reload-cache", "tool-handler", `module.exports = {
+  name: "reload-cache",
+  commands: ["reloadcachecmd"],
+  detect: function(output) { return output.includes("reloadcachecmd"); }
+};`)
+	writePlugin(t, root, "test", "reload-cache-cleaner", "pipeline-cleaner", `module.exports = {
+  name: "reload-cache-cleaner",
+  commands: ["reloadcacheclean"],
+  transform: function(input) { return input; }
+};`)
+
+	var mu sync.Mutex
+	callCounts := make(map[string]int)
+
+	svc := plugins.NewService(root)
+	svc.SetIntegrityChecker(func(namespace, slug, pluginDir string) error {
+		mu.Lock()
+		callCounts[namespace+"/"+slug]++
+		mu.Unlock()
+		return nil
+	})
+
+	if err := svc.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(context.Background())
+
+	// First reload.
+	mu.Lock()
+	callCounts = make(map[string]int)
+	mu.Unlock()
+
+	if err := svc.Reload(context.Background()); err != nil {
+		t.Fatalf("Reload 1: %v", err)
+	}
+
+	mu.Lock()
+	firstHandler := callCounts["test/reload-cache"]
+	firstCleaner := callCounts["test/reload-cache-cleaner"]
+	callCounts = make(map[string]int)
+	mu.Unlock()
+
+	if firstHandler != 1 {
+		t.Errorf("first reload: expected 1 handler integrity call, got %d", firstHandler)
+	}
+	if firstCleaner != 1 {
+		t.Errorf("first reload: expected 1 cleaner integrity call, got %d", firstCleaner)
+	}
+
+	// Second reload — cache must be discarded, checker called again for both types.
+	if err := svc.Reload(context.Background()); err != nil {
+		t.Fatalf("Reload 2: %v", err)
+	}
+
+	mu.Lock()
+	secondHandler := callCounts["test/reload-cache"]
+	secondCleaner := callCounts["test/reload-cache-cleaner"]
+	mu.Unlock()
+
+	if secondHandler != 1 {
+		t.Errorf("second reload: expected 1 handler integrity call (cache discarded), got %d", secondHandler)
+	}
+	if secondCleaner != 1 {
+		t.Errorf("second reload: expected 1 cleaner integrity call (cache discarded), got %d", secondCleaner)
+	}
+}
+
+func TestServiceReloadWithNilIntegrityCheckerSucceeds(t *testing.T) {
+	skipIfNoBun(t)
+	t.Parallel()
+
+	root := t.TempDir()
+	writePlugin(t, root, "test", "nil-reload", "tool-handler", `module.exports = {
+  name: "nil-reload",
+  commands: ["nilreloadcmd"],
+  detect: function(output) { return output.includes("nilreloadcmd"); }
+};`)
+
+	svc := plugins.NewService(root)
+	// Do NOT set IntegrityChecker — cachedChecker should return nil.
+	if err := svc.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(context.Background())
+
+	// Reload with nil integrity checker — should succeed without errors.
+	if err := svc.Reload(context.Background()); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+
+	// Plugin should still be loaded after Reload.
+	if _, ok := svc.ToolHandlerPluginFor("nilreloadcmd"); !ok {
+		t.Fatal("expected tool handler loaded after Reload with nil integrity checker")
+	}
+}
+
+func TestServiceReloadCachedIntegrityErrorRefusesAcrossAllPaths(t *testing.T) {
+	skipIfNoBun(t)
+	t.Parallel()
+
+	root := t.TempDir()
+
+	// Create a tool-handler plugin — it is checked in loadToolHandlerPlugins
+	// AND filterManifests. With caching, the error should be computed once
+	// and the cached error should refuse the plugin in both paths.
+	writePlugin(t, root, "test", "err-cached", "tool-handler", `module.exports = {
+  name: "err-cached",
+  commands: ["errcachedcmd"],
+  detect: function(output) { return output.includes("errcachedcmd"); }
+};`)
+
+	// Create a pipeline-cleaner plugin — checked in loadPipelinePlugins
+	// AND filterManifests. Verifies cached error propagates through the
+	// pipeline-cleaner path too (not just tool-handler).
+	writePlugin(t, root, "test", "err-cached-cleaner", "pipeline-cleaner", `module.exports = {
+  name: "err-cached-cleaner",
+  commands: ["errcachedclean"],
+  transform: function(input) { return input; }
+};`)
+
+	var mu sync.Mutex
+	callCount := 0
+
+	svc := plugins.NewService(root)
+	svc.SetIntegrityChecker(func(namespace, slug, pluginDir string) error {
+		mu.Lock()
+		callCount++
+		mu.Unlock()
+		return fmt.Errorf("tampered: main.js")
+	})
+
+	if err := svc.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(context.Background())
+
+	// Reset counts after Start.
+	mu.Lock()
+	callCount = 0
+	mu.Unlock()
+
+	if err := svc.Reload(context.Background()); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Checker must have been called once per plugin (cached for subsequent paths).
+	if callCount != 2 {
+		t.Errorf("expected integrityChecker called twice (once per plugin, cached error), got %d", callCount)
+	}
+
+	// Tool handler must be refused from loading (via cached error).
+	if _, ok := svc.ToolHandlerPluginFor("errcachedcmd"); ok {
+		t.Error("expected tool handler REFUSED via cached integrity error")
+	}
+
+	// Pipeline cleaner must also be refused (via cached error in loadPipelinePlugins path).
+	if _, ok := svc.PipelinePluginFor("errcachedclean"); ok {
+		t.Error("expected pipeline cleaner REFUSED via cached integrity error")
+	}
+
+	// Both plugins must be excluded from the index (via cached error in filterManifests).
+	indexPath := filepath.Join(root, "plugins", "handlers_index.json")
+	index, err := toolhandlers.LoadIndex(indexPath)
+	if err != nil {
+		t.Fatalf("LoadIndex: %v", err)
+	}
+	if paths, ok := index["errcachedcmd"]; ok {
+		t.Errorf("expected refused tool handler NOT in index via cached error, but found: %v", paths)
+	}
+}
+
+func TestServiceGenerateIndexDoesNotCacheIntegrityChecks(t *testing.T) {
+	skipIfNoBun(t)
+	t.Parallel()
+
+	root := t.TempDir()
+	writePlugin(t, root, "test", "idx-nocache", "tool-handler", `module.exports = {
+  name: "idx-nocache",
+  commands: ["idxnocachecmd"],
+  detect: function(output) { return output.includes("idxnocachecmd"); }
+};`)
+
+	var mu sync.Mutex
+	callCount := 0
+
+	svc := plugins.NewService(root)
+	svc.SetIntegrityChecker(func(namespace, slug, pluginDir string) error {
+		mu.Lock()
+		callCount++
+		mu.Unlock()
+		return nil
+	})
+
+	if err := svc.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(context.Background())
+
+	// Reset counts after Start.
+	mu.Lock()
+	callCount = 0
+	mu.Unlock()
+
+	// GenerateIndex is a standalone public method that intentionally uses
+	// s.integrityChecker directly (not cachedChecker). Each call should
+	// independently invoke the checker.
+	if err := svc.GenerateIndex(); err != nil {
+		t.Fatalf("GenerateIndex 1: %v", err)
+	}
+
+	mu.Lock()
+	first := callCount
+	mu.Unlock()
+
+	if first != 1 {
+		t.Errorf("expected 1 integrity call from first GenerateIndex, got %d", first)
+	}
+
+	if err := svc.GenerateIndex(); err != nil {
+		t.Fatalf("GenerateIndex 2: %v", err)
+	}
+
+	mu.Lock()
+	total := callCount
+	mu.Unlock()
+
+	if total != 2 {
+		t.Errorf("expected 2 total integrity calls from two GenerateIndex calls (no caching), got %d", total)
+	}
+}
+
+// --- Benchmark ---
+
+func BenchmarkServiceReloadIntegrityCache(b *testing.B) {
+	if !jsrunner.IsAvailable() {
+		bunPath, err := exec.LookPath("bun")
+		if err != nil {
+			b.Skip("JS runtime not available")
+		}
+		b.Setenv("NUPI_JS_RUNTIME", bunPath)
+	}
+
+	root := b.TempDir()
+	// Pad scripts to ~5KB to better approximate real plugin file sizes,
+	// making SHA-256 hashing measurable relative to cache overhead.
+	pad := strings.Repeat("// padding to simulate realistic plugin file size\n", 100)
+	for i := 0; i < 5; i++ {
+		slug := fmt.Sprintf("bench-handler-%d", i)
+		cmd := fmt.Sprintf("benchcmd%d", i)
+		writePlugin(b, root, "bench", slug, "tool-handler", fmt.Sprintf(`%s
+module.exports = {
+  name: "%s",
+  commands: ["%s"],
+  detect: function(output) { return output.includes("%s"); }
+};`, pad, slug, cmd, cmd))
+	}
+	for i := 0; i < 3; i++ {
+		slug := fmt.Sprintf("bench-cleaner-%d", i)
+		cmd := fmt.Sprintf("benchclean%d", i)
+		writePlugin(b, root, "bench", slug, "pipeline-cleaner", fmt.Sprintf(`%s
+module.exports = {
+  name: "%s",
+  commands: ["%s"],
+  transform: function(input) { return input; }
+};`, pad, slug, cmd))
+	}
+
+	svc := plugins.NewService(root)
+	svc.SetIntegrityChecker(func(namespace, slug, pluginDir string) error {
+		// Read and hash actual plugin file to simulate real integrity verification.
+		data, err := os.ReadFile(filepath.Join(pluginDir, "main.js"))
+		if err != nil {
+			return err
+		}
+		_ = sha256.Sum256(data)
+		return nil
+	})
+
+	if err := svc.Start(context.Background()); err != nil {
+		b.Fatalf("Start: %v", err)
+	}
+	defer svc.Shutdown(context.Background())
+
+	b.Run("cached", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			if err := svc.Reload(context.Background()); err != nil {
+				b.Fatalf("Reload: %v", err)
+			}
+		}
+	})
+
+	b.Run("uncached", func(b *testing.B) {
+		// Simulates pre-cache behavior: three independent public calls,
+		// each performing its own manifest discovery AND integrity checks.
+		// NOTE: This measures the combined effect of triple manifest discovery
+		// plus triple integrity hashing. The "cached" sub-benchmark above does
+		// a single manifest discovery plus cached hashing. The difference
+		// therefore overstates the cache-only benefit — use for relative
+		// comparison, not absolute cache savings measurement.
+		for i := 0; i < b.N; i++ {
+			if err := svc.LoadPipelinePlugins(); err != nil {
+				b.Fatalf("LoadPipelinePlugins: %v", err)
+			}
+			if err := svc.LoadToolHandlerPlugins(); err != nil {
+				b.Fatalf("LoadToolHandlerPlugins: %v", err)
+			}
+			if err := svc.GenerateIndex(); err != nil {
+				b.Fatalf("GenerateIndex: %v", err)
+			}
+		}
+	})
 }

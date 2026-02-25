@@ -340,7 +340,7 @@ func (d *daemonService) ReloadPlugins(ctx context.Context, _ *apiv1.ReloadPlugin
 		return nil, status.Error(codes.Unavailable, "plugin reloader unavailable")
 	}
 
-	if err := d.api.pluginReloader.Reload(); err != nil {
+	if err := d.api.pluginReloader.Reload(ctx); err != nil {
 		return nil, status.Errorf(codes.Internal, "reload plugins: %v", err)
 	}
 

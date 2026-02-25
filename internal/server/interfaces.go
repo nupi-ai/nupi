@@ -43,7 +43,7 @@ type AdaptersController interface {
 
 // PluginReloader reloads all plugin indices (pipeline cleaners, tool handlers, index).
 type PluginReloader interface {
-	Reload() error
+	Reload(ctx context.Context) error
 }
 
 // Compile-time interface satisfaction assertions.
