@@ -1241,7 +1241,6 @@ func TestShutdownStartResetsShuttingDown(t *testing.T) {
 	}
 }
 
-
 func TestValidEventTypesSyncWithPromptTemplates(t *testing.T) {
 	templates := store.DefaultPromptTemplates()
 
@@ -1250,20 +1249,7 @@ func TestValidEventTypesSyncWithPromptTemplates(t *testing.T) {
 			t.Errorf("template key %q missing from validEventTypes", key)
 		}
 	}
-	// TODO(epic-18.3): Remove this skip set once prompt templates are created
-	// for journal_compaction and conversation_compaction in Story 18.3.
-	pendingTemplates := map[string]bool{
-		constants.PromptEventJournalCompaction:      true,
-		constants.PromptEventConversationCompaction: true,
-	}
 	for key := range validEventTypes {
-		if pendingTemplates[key] {
-			// Fail-safe: if template now exists, the skip set is stale.
-			if _, ok := templates[key]; ok {
-				t.Errorf("template %q now exists in DefaultPromptTemplates — remove from pendingTemplates skip set", key)
-			}
-			continue
-		}
 		if _, ok := templates[key]; !ok {
 			t.Errorf("validEventTypes key %q missing from DefaultPromptTemplates", key)
 		}

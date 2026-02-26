@@ -29,7 +29,7 @@ type flushState struct {
 func (s *Service) consumeFlushReplies(ctx context.Context) {
 	eventbus.Consume(ctx, s.flushReplySub, nil, func(reply eventbus.ConversationReplyEvent) {
 		// Only process memory_flush replies.
-		if reply.Metadata[constants.MetadataKeyEventType] != constants.PromptEventMemoryFlush {
+		if reply.Metadata[constants.MetadataKeyEventType] != "memory_flush" {
 			return
 		}
 		s.handleFlushReply(ctx, reply)

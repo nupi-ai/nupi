@@ -10,21 +10,20 @@ import (
 	"github.com/nupi-ai/nupi/internal/constants"
 )
 
-//go:embed prompts/*.txt
+//go:embed prompts/*.md
 var promptTemplatesFS embed.FS
 
 var defaultPromptTemplates map[string]string
 
 func init() {
 	defaultPromptTemplates = map[string]string{
-		constants.PromptEventUserIntent:     mustReadPrompt("prompts/user_intent.txt"),
-		constants.PromptEventSessionOutput:  mustReadPrompt("prompts/session_output.txt"),
-		constants.PromptEventHistorySummary: mustReadPrompt("prompts/history_summary.txt"),
-		constants.PromptEventClarification:  mustReadPrompt("prompts/clarification.txt"),
-		constants.PromptEventMemoryFlush:    mustReadPrompt("prompts/memory_flush.txt"),
-		constants.PromptEventSessionSlug:    mustReadPrompt("prompts/session_slug.txt"),
-		constants.PromptEventOnboarding:     mustReadPrompt("prompts/onboarding.txt"),
-		constants.PromptEventHeartbeat:      mustReadPrompt("prompts/heartbeat.txt"),
+		constants.PromptEventUserIntent:              mustReadPrompt("prompts/user_intent.md"),
+		constants.PromptEventSessionOutput:           mustReadPrompt("prompts/session_output.md"),
+		constants.PromptEventClarification:           mustReadPrompt("prompts/clarification.md"),
+		constants.PromptEventOnboarding:              mustReadPrompt("prompts/onboarding.md"),
+		constants.PromptEventHeartbeat:               mustReadPrompt("prompts/heartbeat.md"),
+		constants.PromptEventJournalCompaction:       mustReadPrompt("prompts/journal_compaction.md"),
+		constants.PromptEventConversationCompaction:  mustReadPrompt("prompts/conversation_compaction.md"),
 	}
 }
 
@@ -47,14 +46,13 @@ func DefaultPromptTemplates() map[string]string {
 // promptEventDescriptions maps event types to human-readable descriptions.
 // This is the single source of truth for event type descriptions.
 var promptEventDescriptions = map[string]string{
-	constants.PromptEventUserIntent:     "Interprets user voice/text commands",
-	constants.PromptEventSessionOutput:  "Analyzes terminal output for notifications",
-	constants.PromptEventHistorySummary: "Summarizes conversation history",
-	constants.PromptEventClarification:  "Handles follow-up responses",
-	constants.PromptEventMemoryFlush:    "Saves important context before conversation compaction",
-	constants.PromptEventSessionSlug:    "Generates a session slug and summary on session close",
-	constants.PromptEventOnboarding:     "First-time setup conversation with a new user",
-	constants.PromptEventHeartbeat:      "Executes scheduled background heartbeat tasks",
+	constants.PromptEventUserIntent:              "Interprets user voice/text commands",
+	constants.PromptEventSessionOutput:           "Analyzes terminal output for notifications",
+	constants.PromptEventClarification:           "Handles follow-up responses",
+	constants.PromptEventOnboarding:              "First-time setup conversation with a new user",
+	constants.PromptEventHeartbeat:               "Executes scheduled background heartbeat tasks",
+	constants.PromptEventJournalCompaction:       "Summarizes session journal for compaction",
+	constants.PromptEventConversationCompaction:  "Summarizes conversation history for compaction",
 }
 
 // PromptEventDescriptions returns a copy of the event type descriptions.

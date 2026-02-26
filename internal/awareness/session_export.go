@@ -38,7 +38,7 @@ var multiHyphenRe = regexp.MustCompile(`-{2,}`)
 func (s *Service) consumeExportReplies(ctx context.Context) {
 	eventbus.Consume(ctx, s.exportReplySub, nil, func(reply eventbus.ConversationReplyEvent) {
 		// Only process session_slug replies.
-		if reply.Metadata[constants.MetadataKeyEventType] != constants.PromptEventSessionSlug {
+		if reply.Metadata[constants.MetadataKeyEventType] != "session_slug" {
 			return
 		}
 		s.handleExportReply(ctx, reply)

@@ -176,14 +176,17 @@ func (a *NAPAdapter) ResolveIntent(ctx context.Context, req IntentRequest) (*Int
 	// Convert available sessions
 	for _, session := range req.AvailableSessions {
 		grpcReq.AvailableSessions = append(grpcReq.AvailableSessions, &napv1.SessionInfo{
-			Id:        session.ID,
-			Command:   session.Command,
-			Args:      session.Args,
-			WorkDir:   session.WorkDir,
-			Tool:      session.Tool,
-			Status:    session.Status,
-			StartTime: mapper.ToProtoTimestampChecked(session.StartTime),
-			Metadata:  maputil.Clone(session.Metadata),
+			Id:         session.ID,
+			Command:    session.Command,
+			Args:       session.Args,
+			WorkDir:    session.WorkDir,
+			Tool:       session.Tool,
+			Status:     session.Status,
+			StartTime:  mapper.ToProtoTimestampChecked(session.StartTime),
+			Metadata:   maputil.Clone(session.Metadata),
+			IdleState:  session.IdleState,
+			WaitingFor: session.WaitingFor,
+			IdleSince:  mapper.ToProtoTimestampChecked(session.IdleSince),
 		})
 	}
 
@@ -280,8 +283,10 @@ func eventTypeToProto(et EventType, adapterID string) napv1.EventType {
 		return napv1.EventType_EVENT_TYPE_SCHEDULED_TASK
 	case EventTypeOnboarding:
 		return napv1.EventType_EVENT_TYPE_ONBOARDING
-	// TODO(epic-18.3): Add cases for EventTypeJournalCompaction and
-	// EventTypeConversationCompaction when proto enum values are added.
+	case EventTypeJournalCompaction:
+		return napv1.EventType_EVENT_TYPE_JOURNAL_COMPACTION
+	case EventTypeConversationCompaction:
+		return napv1.EventType_EVENT_TYPE_CONVERSATION_COMPACTION
 	default:
 		log.Printf("[NAPAdapter] %s: unmapped event type %q → EVENT_TYPE_UNSPECIFIED", adapterID, et)
 		return napv1.EventType_EVENT_TYPE_UNSPECIFIED
