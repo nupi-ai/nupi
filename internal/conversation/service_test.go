@@ -779,19 +779,19 @@ func TestSummaryTrigger(t *testing.T) {
 		})
 	}
 
-	// Expect the user_intent prompts (5 of them) plus one history_summary prompt
+	// Expect the user_intent prompts (5 of them) plus one conversation_compaction prompt
 	var summaryPrompt *eventbus.ConversationPromptEvent
 	deadline := time.After(2 * time.Second)
 	for {
 		select {
 		case env := <-promptSub.C():
 			prompt := env.Payload
-			if prompt.Metadata[constants.MetadataKeyEventType] == constants.PromptEventHistorySummary {
+			if prompt.Metadata[constants.MetadataKeyEventType] == constants.PromptEventConversationCompaction {
 				summaryPrompt = &prompt
 			}
 		case <-deadline:
 			if summaryPrompt == nil {
-				t.Fatal("timeout waiting for history_summary prompt")
+				t.Fatal("timeout waiting for conversation_compaction prompt")
 			}
 		}
 		if summaryPrompt != nil {
@@ -846,7 +846,7 @@ func TestSummaryReplyReplacesTurns(t *testing.T) {
 		SessionID: "summary-replace",
 		PromptID:  promptID,
 		Text:      "Summary: user discussed turns 0-2",
-		Metadata:  map[string]string{constants.MetadataKeyEventType: constants.PromptEventHistorySummary},
+		Metadata:  map[string]string{constants.MetadataKeyEventType: constants.PromptEventConversationCompaction},
 	})
 
 	// Verify history was replaced
@@ -1021,7 +1021,7 @@ func TestSummaryPromptIDMismatch(t *testing.T) {
 		SessionID: "mismatch",
 		PromptID:  "wrong-prompt-id",
 		Text:      "bogus summary",
-		Metadata:  map[string]string{constants.MetadataKeyEventType: constants.PromptEventHistorySummary},
+		Metadata:  map[string]string{constants.MetadataKeyEventType: constants.PromptEventConversationCompaction},
 	})
 
 	// History should be unchanged (6 turns)
@@ -1250,7 +1250,20 @@ func TestValidEventTypesSyncWithPromptTemplates(t *testing.T) {
 			t.Errorf("template key %q missing from validEventTypes", key)
 		}
 	}
+	// TODO(epic-18.3): Remove this skip set once prompt templates are created
+	// for journal_compaction and conversation_compaction in Story 18.3.
+	pendingTemplates := map[string]bool{
+		constants.PromptEventJournalCompaction:      true,
+		constants.PromptEventConversationCompaction: true,
+	}
 	for key := range validEventTypes {
+		if pendingTemplates[key] {
+			// Fail-safe: if template now exists, the skip set is stale.
+			if _, ok := templates[key]; ok {
+				t.Errorf("template %q now exists in DefaultPromptTemplates — remove from pendingTemplates skip set", key)
+			}
+			continue
+		}
 		if _, ok := templates[key]; !ok {
 			t.Errorf("validEventTypes key %q missing from DefaultPromptTemplates", key)
 		}

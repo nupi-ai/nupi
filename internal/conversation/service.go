@@ -503,9 +503,7 @@ func (s *Service) requestSummary(sessionID string) {
 	s.proceedWithSummary(sessionID, oldest, batchSize)
 }
 
-// proceedWithSummary sends the history_summary prompt to the AI adapter.
-// TODO(epic-18.2): Story 18.2 removes EventTypeHistorySummary — this method
-// must be updated to use the replacement event type or removed entirely.
+// proceedWithSummary sends a conversation_compaction prompt to the AI adapter.
 func (s *Service) proceedWithSummary(sessionID string, oldest []eventbus.ConversationTurn, batchSize int) {
 	if len(oldest) == 0 {
 		return
@@ -545,18 +543,18 @@ func (s *Service) proceedWithSummary(sessionID string, oldest []eventbus.Convers
 			Text:   promptText, // Serialized text as fallback for adapters without prompt engine
 			At:     now,
 			Meta: map[string]string{
-				constants.MetadataKeyEventType: constants.PromptEventHistorySummary,
+				constants.MetadataKeyEventType: constants.PromptEventConversationCompaction,
 			},
 		},
 		Metadata: map[string]string{
-			constants.MetadataKeyEventType: constants.PromptEventHistorySummary,
+			constants.MetadataKeyEventType: constants.PromptEventConversationCompaction,
 		},
 	}
 
 	eventbus.Publish(context.Background(), s.bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, prompt)
 }
 
-// handleSummaryReply processes an AI reply to a history_summary prompt,
+// handleSummaryReply processes an AI reply to a conversation_compaction prompt,
 // replacing the oldest N turns with a single summary turn.
 func (s *Service) handleSummaryReply(sessionID string, msg eventbus.ConversationReplyEvent) {
 	s.cancelDetachCleanup(sessionID)
@@ -714,8 +712,8 @@ func (s *Service) handleReplyMessage(ts time.Time, msg eventbus.ConversationRepl
 		ts = time.Now().UTC()
 	}
 
-	// Intercept history_summary replies before normal processing
-	if msg.Metadata[constants.MetadataKeyEventType] == constants.PromptEventHistorySummary && msg.SessionID != "" {
+	// Intercept conversation_compaction replies before normal processing
+	if msg.Metadata[constants.MetadataKeyEventType] == constants.PromptEventConversationCompaction && msg.SessionID != "" {
 		s.handleSummaryReply(msg.SessionID, msg)
 		return
 	}

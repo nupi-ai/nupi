@@ -101,21 +101,20 @@ func TestGetToolsForEventTypeEmptyMapping(t *testing.T) {
 	// Register a tool
 	reg.Register(newMockHandler("memory_search", "Search memory"))
 
-	// history_summary and clarification have empty mappings — should return empty (non-nil) slice
-	defs := reg.GetToolsForEventType(EventTypeHistorySummary)
-	if len(defs) != 0 {
-		t.Fatalf("Expected 0 tools for history_summary, got %d", len(defs))
-	}
-
-	defs = reg.GetToolsForEventType(EventTypeClarification)
+	// clarification and compaction events have empty mappings — should return empty (non-nil) slice
+	defs := reg.GetToolsForEventType(EventTypeClarification)
 	if len(defs) != 0 {
 		t.Fatalf("Expected 0 tools for clarification, got %d", len(defs))
 	}
 
-	// session_slug also has empty mapping
-	defs = reg.GetToolsForEventType(EventTypeSessionSlug)
+	defs = reg.GetToolsForEventType(EventTypeJournalCompaction)
 	if len(defs) != 0 {
-		t.Fatalf("Expected 0 tools for session_slug, got %d", len(defs))
+		t.Fatalf("Expected 0 tools for journal_compaction, got %d", len(defs))
+	}
+
+	defs = reg.GetToolsForEventType(EventTypeConversationCompaction)
+	if len(defs) != 0 {
+		t.Fatalf("Expected 0 tools for conversation_compaction, got %d", len(defs))
 	}
 }
 
@@ -152,13 +151,10 @@ func TestGetToolsFutureEventTypes(t *testing.T) {
 	reg.Register(newMockHandler("core_memory_update", "Update core"))
 	reg.Register(newMockHandler("onboarding_complete", "Complete onboarding"))
 
-	// memory_flush should return only memory_write
-	defs := reg.GetToolsForEventType(EventTypeMemoryFlush)
-	if len(defs) != 1 {
-		t.Fatalf("Expected 1 tool for memory_flush, got %d", len(defs))
-	}
-	if defs[0].Name != "memory_write" {
-		t.Fatalf("Expected memory_write for memory_flush, got %s", defs[0].Name)
+	// journal_compaction has empty mapping — should return empty slice
+	defs := reg.GetToolsForEventType(EventTypeJournalCompaction)
+	if len(defs) != 0 {
+		t.Fatalf("Expected 0 tools for journal_compaction, got %d", len(defs))
 	}
 
 	// heartbeat should return memory_search and memory_write
@@ -299,7 +295,7 @@ func TestConcurrentRegisterAndGet(t *testing.T) {
 	}
 
 	// Concurrent reads across different event types
-	eventTypes := []EventType{EventTypeUserIntent, EventTypeSessionOutput, EventTypeHistorySummary, EventTypeMemoryFlush}
+	eventTypes := []EventType{EventTypeUserIntent, EventTypeSessionOutput, EventTypeJournalCompaction, EventTypeConversationCompaction}
 	for i := 0; i < 10; i++ {
 		wg.Add(1)
 		go func(idx int) {
@@ -426,13 +422,13 @@ func TestGetToolsForEventTypeDistinguishesUnknownFromEmpty(t *testing.T) {
 	reg := NewToolRegistry()
 	reg.Register(newMockHandler("memory_search", "Search memory"))
 
-	// Known event type with empty mapping (history_summary) returns empty slice
-	defs := reg.GetToolsForEventType(EventTypeHistorySummary)
+	// Known event type with empty mapping (journal_compaction) returns empty slice
+	defs := reg.GetToolsForEventType(EventTypeJournalCompaction)
 	if defs == nil {
 		t.Fatal("Expected non-nil empty slice for known event type with empty mapping")
 	}
 	if len(defs) != 0 {
-		t.Fatalf("Expected 0 tools for history_summary, got %d", len(defs))
+		t.Fatalf("Expected 0 tools for journal_compaction, got %d", len(defs))
 	}
 
 	// Unknown event type returns nil
@@ -488,19 +484,16 @@ func TestRegisteredAwarenessToolsEventTypeFiltering(t *testing.T) {
 		}
 	}
 
-	// memory_flush should return only memory_write.
-	defs = reg.GetToolsForEventType(EventTypeMemoryFlush)
-	if len(defs) != 1 {
-		t.Fatalf("Expected 1 tool for memory_flush, got %d", len(defs))
-	}
-	if defs[0].Name != "memory_write" {
-		t.Fatalf("Expected memory_write for memory_flush, got %s", defs[0].Name)
+	// journal_compaction should return empty.
+	defs = reg.GetToolsForEventType(EventTypeJournalCompaction)
+	if len(defs) != 0 {
+		t.Fatalf("Expected 0 tools for journal_compaction, got %d", len(defs))
 	}
 
-	// history_summary should return empty.
-	defs = reg.GetToolsForEventType(EventTypeHistorySummary)
+	// conversation_compaction should return empty.
+	defs = reg.GetToolsForEventType(EventTypeConversationCompaction)
 	if len(defs) != 0 {
-		t.Fatalf("Expected 0 tools for history_summary, got %d", len(defs))
+		t.Fatalf("Expected 0 tools for conversation_compaction, got %d", len(defs))
 	}
 
 	// session_output should return only memory_search.

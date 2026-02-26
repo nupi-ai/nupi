@@ -14,12 +14,14 @@ func TestEventTypeToProto(t *testing.T) {
 	}{
 		{EventTypeUserIntent, napv1.EventType_EVENT_TYPE_USER_INTENT},
 		{EventTypeSessionOutput, napv1.EventType_EVENT_TYPE_SESSION_OUTPUT},
-		{EventTypeHistorySummary, napv1.EventType_EVENT_TYPE_HISTORY_SUMMARY},
 		{EventTypeClarification, napv1.EventType_EVENT_TYPE_CLARIFICATION},
-		{EventTypeMemoryFlush, napv1.EventType_EVENT_TYPE_MEMORY_FLUSH},
 		{EventTypeHeartbeat, napv1.EventType_EVENT_TYPE_SCHEDULED_TASK},
-		{EventTypeSessionSlug, napv1.EventType_EVENT_TYPE_SESSION_SLUG},
 		{EventTypeOnboarding, napv1.EventType_EVENT_TYPE_ONBOARDING},
+		// TODO(epic-18.3): Update expected values below to real proto enums
+		// (EVENT_TYPE_JOURNAL_COMPACTION, EVENT_TYPE_CONVERSATION_COMPACTION)
+		// when proto enum values are added in ai.proto.
+		{EventTypeJournalCompaction, napv1.EventType_EVENT_TYPE_UNSPECIFIED},
+		{EventTypeConversationCompaction, napv1.EventType_EVENT_TYPE_UNSPECIFIED},
 		{"unknown_type", napv1.EventType_EVENT_TYPE_UNSPECIFIED},
 		{"", napv1.EventType_EVENT_TYPE_UNSPECIFIED},
 	}
@@ -30,7 +32,7 @@ func TestEventTypeToProto(t *testing.T) {
 			name = "(empty)"
 		}
 		t.Run(fmt.Sprintf("eventType=%s", name), func(t *testing.T) {
-			got := eventTypeToProto(tt.input)
+			got := eventTypeToProto(tt.input, "test-adapter")
 			if got != tt.want {
 				t.Errorf("eventTypeToProto(%q) = %v, want %v", tt.input, got, tt.want)
 			}

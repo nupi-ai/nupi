@@ -32,8 +32,9 @@ edited to customize how Nupi interacts with AI adapters.
 Available templates:
   - user_intent: Interprets user voice/text commands
   - session_output: Analyzes terminal output for notifications
-  - history_summary: Summarizes conversation history
   - clarification: Handles follow-up responses
+  - onboarding: First-time user setup conversation
+  - heartbeat: Periodic background heartbeat tasks
 
 Templates use Go text/template syntax. The marker "---USER---" separates the
 system prompt from the user prompt.`,

@@ -90,8 +90,8 @@ func TestNoOverrideForNonUserIntentEvents(t *testing.T) {
 	)
 
 	for _, et := range []string{
-		constants.PromptEventMemoryFlush,
-		constants.PromptEventSessionSlug,
+		constants.PromptEventJournalCompaction,
+		constants.PromptEventConversationCompaction,
 		constants.PromptEventSessionOutput,
 		string(EventTypeHeartbeat),
 	} {

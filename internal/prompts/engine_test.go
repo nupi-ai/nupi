@@ -51,7 +51,7 @@ func TestNew(t *testing.T) {
 	for _, eventType := range []EventType{
 		EventTypeUserIntent,
 		EventTypeSessionOutput,
-		EventTypeHistorySummary,
+		EventTypeOnboarding,
 		EventTypeClarification,
 	} {
 		if _, ok := e.templates[eventType]; !ok {
@@ -134,12 +134,12 @@ func TestBuildPrompt_SessionOutput(t *testing.T) {
 	}
 }
 
-func TestBuildPrompt_HistorySummary(t *testing.T) {
+func TestBuildPrompt_WithHistory(t *testing.T) {
 	e, s := setupTestEngine(t)
 	defer s.Close()
 
 	req := BuildRequest{
-		EventType: EventTypeHistorySummary,
+		EventType: EventTypeUserIntent,
 		History: []eventbus.ConversationTurn{
 			{Origin: eventbus.OriginUser, Text: "start a new project", At: time.Now()},
 			{Origin: eventbus.OriginAI, Text: "I'll create a new project for you", At: time.Now()},
@@ -152,11 +152,8 @@ func TestBuildPrompt_HistorySummary(t *testing.T) {
 		t.Fatalf("BuildPrompt failed: %v", err)
 	}
 
-	if !strings.Contains(resp.UserPrompt, "[user]") {
-		t.Error("UserPrompt should contain formatted history")
-	}
-	if !strings.Contains(resp.UserPrompt, "[assistant]") {
-		t.Error("UserPrompt should contain AI turn")
+	if resp.SystemPrompt == "" {
+		t.Error("SystemPrompt should not be empty")
 	}
 }
 

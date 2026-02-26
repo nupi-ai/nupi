@@ -24,23 +24,20 @@ const (
 	// EventTypeSessionOutput is for analyzing session output.
 	EventTypeSessionOutput EventType = constants.PromptEventSessionOutput
 
-	// EventTypeHistorySummary is for summarizing conversation history.
-	EventTypeHistorySummary EventType = constants.PromptEventHistorySummary
-
 	// EventTypeClarification is for handling user responses to clarification requests.
 	EventTypeClarification EventType = constants.PromptEventClarification
-
-	// EventTypeMemoryFlush is for extracting important context before conversation compaction.
-	EventTypeMemoryFlush EventType = constants.PromptEventMemoryFlush
-
-	// EventTypeSessionSlug is for generating a session slug and summary on session close.
-	EventTypeSessionSlug EventType = constants.PromptEventSessionSlug
 
 	// EventTypeOnboarding is for the first-time user setup conversation.
 	EventTypeOnboarding EventType = constants.PromptEventOnboarding
 
 	// EventTypeHeartbeat is for periodic background heartbeat tasks.
 	EventTypeHeartbeat EventType = constants.PromptEventHeartbeat
+
+	// EventTypeJournalCompaction requests summarizing session journal for compaction.
+	EventTypeJournalCompaction EventType = constants.PromptEventJournalCompaction
+
+	// EventTypeConversationCompaction requests summarizing conversation history for compaction.
+	EventTypeConversationCompaction EventType = constants.PromptEventConversationCompaction
 )
 
 // SessionInfo provides context about an available session.

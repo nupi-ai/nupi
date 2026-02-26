@@ -121,7 +121,7 @@ func (a *NAPAdapter) ResolveIntent(ctx context.Context, req IntentRequest) (*Int
 		SessionId:             req.SessionID,
 		Transcript:            req.Transcript,
 		Metadata:              maputil.Clone(req.Metadata),
-		EventType:             eventTypeToProto(req.EventType),
+		EventType:             eventTypeToProto(req.EventType, a.adapterID),
 		CurrentTool:           req.CurrentTool,
 		SessionOutput:         req.SessionOutput,
 		ClarificationQuestion: req.ClarificationQuestion,
@@ -268,25 +268,22 @@ func contentOriginToProto(origin eventbus.ContentOrigin) napv1.ContentOrigin {
 }
 
 // eventTypeToProto converts EventType to proto enum.
-func eventTypeToProto(et EventType) napv1.EventType {
+func eventTypeToProto(et EventType, adapterID string) napv1.EventType {
 	switch et {
 	case EventTypeUserIntent:
 		return napv1.EventType_EVENT_TYPE_USER_INTENT
 	case EventTypeSessionOutput:
 		return napv1.EventType_EVENT_TYPE_SESSION_OUTPUT
-	case EventTypeHistorySummary:
-		return napv1.EventType_EVENT_TYPE_HISTORY_SUMMARY
 	case EventTypeClarification:
 		return napv1.EventType_EVENT_TYPE_CLARIFICATION
-	case EventTypeMemoryFlush:
-		return napv1.EventType_EVENT_TYPE_MEMORY_FLUSH
 	case EventTypeHeartbeat:
 		return napv1.EventType_EVENT_TYPE_SCHEDULED_TASK
-	case EventTypeSessionSlug:
-		return napv1.EventType_EVENT_TYPE_SESSION_SLUG
 	case EventTypeOnboarding:
 		return napv1.EventType_EVENT_TYPE_ONBOARDING
+	// TODO(epic-18.3): Add cases for EventTypeJournalCompaction and
+	// EventTypeConversationCompaction when proto enum values are added.
 	default:
+		log.Printf("[NAPAdapter] %s: unmapped event type %q → EVENT_TYPE_UNSPECIFIED", adapterID, et)
 		return napv1.EventType_EVENT_TYPE_UNSPECIFIED
 	}
 }
