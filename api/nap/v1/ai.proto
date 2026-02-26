@@ -21,12 +21,14 @@ enum EventType {
   EVENT_TYPE_UNSPECIFIED = 0;
   EVENT_TYPE_USER_INTENT = 1;      // Default: interpret user voice/text
   EVENT_TYPE_SESSION_OUTPUT = 2;   // Analyze notable terminal output
-  EVENT_TYPE_HISTORY_SUMMARY = 3;  // Summarize conversation history
+  // 3 freed (was HISTORY_SUMMARY)
   EVENT_TYPE_CLARIFICATION = 4;    // Handle user response to clarification
-  EVENT_TYPE_MEMORY_FLUSH = 5;     // Save memories before conversation compaction
+  // 5 freed (was MEMORY_FLUSH)
   EVENT_TYPE_SCHEDULED_TASK = 6;   // Periodic background tasks
-  EVENT_TYPE_SESSION_SLUG = 7;     // Generate session file names
-  EVENT_TYPE_ONBOARDING = 8;       // First-time user setup
+  // 7 freed (was SESSION_SLUG)
+  EVENT_TYPE_ONBOARDING = 8;                  // First-time user setup
+  EVENT_TYPE_JOURNAL_COMPACTION = 9;          // Summarize session journal activity
+  EVENT_TYPE_CONVERSATION_COMPACTION = 10;    // Summarize conversation history
 }
 
 // ContentOrigin identifies who produced a conversation turn.
@@ -48,6 +50,9 @@ message SessionInfo {
   string status = 6;                    // Session status (running, detached, stopped)
   google.protobuf.Timestamp start_time = 7;
   map<string, string> metadata = 8;
+  string idle_state = 9;                    // Idle state descriptor
+  string waiting_for = 10;                  // What the session is waiting for
+  google.protobuf.Timestamp idle_since = 11; // When the session became idle
 }
 
 // ConversationTurn represents a single turn in conversation history.

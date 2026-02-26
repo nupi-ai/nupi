@@ -80,7 +80,7 @@ type TransportConfig struct {
 
 // PromptTemplate represents an AI prompt template stored in the database.
 type PromptTemplate struct {
-	EventType string // user_intent, session_output, history_summary, clarification
+	EventType string // user_intent, session_output, clarification, onboarding, heartbeat, journal_compaction, conversation_compaction
 	Content   string // Go text/template content
 	IsCustom  bool   // true if user modified (allows reset to defaults)
 	UpdatedAt string
@@ -88,11 +88,11 @@ type PromptTemplate struct {
 
 // PromptEventType constants for prompt templates.
 const (
-	PromptEventUserIntent     = constants.PromptEventUserIntent
-	PromptEventSessionOutput  = constants.PromptEventSessionOutput
-	PromptEventHistorySummary = constants.PromptEventHistorySummary
-	PromptEventClarification  = constants.PromptEventClarification
-	PromptEventMemoryFlush    = constants.PromptEventMemoryFlush
-	PromptEventSessionSlug    = constants.PromptEventSessionSlug
-	PromptEventOnboarding     = constants.PromptEventOnboarding
+	PromptEventUserIntent             = constants.PromptEventUserIntent
+	PromptEventSessionOutput          = constants.PromptEventSessionOutput
+	PromptEventClarification          = constants.PromptEventClarification
+	PromptEventOnboarding             = constants.PromptEventOnboarding
+	PromptEventHeartbeat              = constants.PromptEventHeartbeat
+	PromptEventJournalCompaction      = constants.PromptEventJournalCompaction
+	PromptEventConversationCompaction = constants.PromptEventConversationCompaction
 )

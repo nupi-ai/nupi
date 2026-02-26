@@ -853,7 +853,7 @@ func TestHandleExportReplyWithContent(t *testing.T) {
 		SessionID: "reply-session",
 		PromptID:  promptID,
 		Text:      "SLUG: docker-setup\n\nSUMMARY:\nUser configured Docker for local development.",
-		Metadata:  map[string]string{constants.MetadataKeyEventType: constants.PromptEventSessionSlug},
+		Metadata:  map[string]string{constants.MetadataKeyEventType: "session_slug"},
 	})
 
 	// Verify file was written in sessions/ directory.
@@ -917,7 +917,7 @@ func TestHandleExportReplyNoReply(t *testing.T) {
 		SessionID: "trivial-session",
 		PromptID:  promptID,
 		Text:      "NO_REPLY",
-		Metadata:  map[string]string{constants.MetadataKeyEventType: constants.PromptEventSessionSlug},
+		Metadata:  map[string]string{constants.MetadataKeyEventType: "session_slug"},
 	})
 
 	// Verify NO file was written.
@@ -961,7 +961,7 @@ func TestHandleExportReplyEmptySlugFallback(t *testing.T) {
 		SessionID: "empty-slug-session",
 		PromptID:  promptID,
 		Text:      "SLUG: !!!@@@\n\nSUMMARY:\nSome summary.",
-		Metadata:  map[string]string{constants.MetadataKeyEventType: constants.PromptEventSessionSlug},
+		Metadata:  map[string]string{constants.MetadataKeyEventType: "session_slug"},
 	})
 
 	// Verify a file was still written using fallback timestamp slug.
@@ -1214,7 +1214,7 @@ func TestExportReplyWriteEndToEnd(t *testing.T) {
 		SessionID: "e2e-export-session",
 		PromptID:  promptID,
 		Text:      "SLUG: staging-deploy\n\nSUMMARY:\nDeployed application to staging environment.",
-		Metadata:  map[string]string{constants.MetadataKeyEventType: constants.PromptEventSessionSlug},
+		Metadata:  map[string]string{constants.MetadataKeyEventType: "session_slug"},
 	})
 
 	// Poll until the consumer goroutine processes the event and writes the file.
@@ -1351,7 +1351,7 @@ func TestHandleExportReplyNoReply_CaseInsensitive(t *testing.T) {
 			SessionID: "noreply-export-ci",
 			PromptID:  promptID,
 			Text:      text,
-			Metadata:  map[string]string{constants.MetadataKeyEventType: constants.PromptEventSessionSlug},
+			Metadata:  map[string]string{constants.MetadataKeyEventType: "session_slug"},
 		})
 
 		// Verify no file was written (trivial session — no export).
@@ -1399,7 +1399,7 @@ func TestHandleExportReplyEmptyReplySessionID(t *testing.T) {
 		SessionID: "", // empty
 		PromptID:  promptID,
 		Text:      "SLUG: empty-sid-test\n\nSUMMARY:\nTest summary.",
-		Metadata:  map[string]string{constants.MetadataKeyEventType: constants.PromptEventSessionSlug},
+		Metadata:  map[string]string{constants.MetadataKeyEventType: "session_slug"},
 	})
 
 	sessionsDir := filepath.Join(dir, "awareness", "memory", "sessions")
@@ -1455,7 +1455,7 @@ func TestHandleExportReplySessionIDMismatch(t *testing.T) {
 		SessionID: "wrong-session",
 		PromptID:  promptID,
 		Text:      "SLUG: mismatch-test\n\nSUMMARY:\nMismatch summary.",
-		Metadata:  map[string]string{constants.MetadataKeyEventType: constants.PromptEventSessionSlug},
+		Metadata:  map[string]string{constants.MetadataKeyEventType: "session_slug"},
 	})
 
 	sessionsDir := filepath.Join(dir, "awareness", "memory", "sessions")
@@ -1558,7 +1558,7 @@ func TestHandleExportReplyDuplicate(t *testing.T) {
 		SessionID: "dup-session",
 		PromptID:  promptID,
 		Text:      "SLUG: dup-test\n\nSUMMARY:\nDuplicate test.",
-		Metadata:  map[string]string{constants.MetadataKeyEventType: constants.PromptEventSessionSlug},
+		Metadata:  map[string]string{constants.MetadataKeyEventType: "session_slug"},
 	}
 
 	// First reply — should write file and clean up pendingExport.

@@ -35,6 +35,8 @@ Available templates:
   - clarification: Handles follow-up responses
   - onboarding: First-time user setup conversation
   - heartbeat: Periodic background heartbeat tasks
+  - journal_compaction: Summarizes session journal for compaction
+  - conversation_compaction: Summarizes conversation history for compaction
 
 Templates use Go text/template syntax. The marker "---USER---" separates the
 system prompt from the user prompt.`,

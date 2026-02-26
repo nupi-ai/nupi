@@ -20,7 +20,7 @@ func TestDefaultPromptTemplatesNotEmpty(t *testing.T) {
 }
 
 func TestEmbeddedPromptFilesMatchTemplateKeys(t *testing.T) {
-	// Collect all .txt files from the embedded prompts/ directory.
+	// Collect all .md files from the embedded prompts/ directory.
 	entries, err := promptTemplatesFS.ReadDir("prompts")
 	if err != nil {
 		t.Fatalf("read embedded prompts dir: %v", err)
@@ -28,24 +28,24 @@ func TestEmbeddedPromptFilesMatchTemplateKeys(t *testing.T) {
 
 	fileKeys := make(map[string]struct{})
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".txt") {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
 			continue
 		}
-		key := strings.TrimSuffix(e.Name(), ".txt")
+		key := strings.TrimSuffix(e.Name(), ".md")
 		fileKeys[key] = struct{}{}
 	}
 
 	// Check: every template key has a corresponding file.
 	for key := range defaultPromptTemplates {
 		if _, ok := fileKeys[key]; !ok {
-			t.Errorf("template key %q has no matching prompts/%s.txt file", key, key)
+			t.Errorf("template key %q has no matching prompts/%s.md file", key, key)
 		}
 	}
 
 	// Check: every file has a corresponding template key.
 	for key := range fileKeys {
 		if _, ok := defaultPromptTemplates[key]; !ok {
-			t.Errorf("prompts/%s.txt exists but has no entry in defaultPromptTemplates", key)
+			t.Errorf("prompts/%s.md exists but has no entry in defaultPromptTemplates", key)
 		}
 	}
 
@@ -70,20 +70,54 @@ func TestPromptEventDescriptionsSyncWithTemplates(t *testing.T) {
 	}
 }
 
-func TestDefaultPromptTemplatesIncludesSessionSlug(t *testing.T) {
+func TestPromptEventTypesSyncWithDescriptions(t *testing.T) {
+	descriptions := PromptEventDescriptions()
+	typeSet := make(map[string]struct{}, len(constants.PromptEventTypes))
+	for _, et := range constants.PromptEventTypes {
+		typeSet[et] = struct{}{}
+	}
+
+	for _, et := range constants.PromptEventTypes {
+		if _, ok := descriptions[et]; !ok {
+			t.Errorf("PromptEventTypes entry %q has no entry in promptEventDescriptions", et)
+		}
+	}
+	for key := range descriptions {
+		if _, ok := typeSet[key]; !ok {
+			t.Errorf("promptEventDescriptions key %q missing from PromptEventTypes slice", key)
+		}
+	}
+	if len(constants.PromptEventTypes) != len(descriptions) {
+		t.Errorf("count mismatch: PromptEventTypes=%d vs promptEventDescriptions=%d",
+			len(constants.PromptEventTypes), len(descriptions))
+	}
+}
+
+func TestDefaultPromptTemplatesIncludesJournalCompaction(t *testing.T) {
 	templates := DefaultPromptTemplates()
-	content, ok := templates[constants.PromptEventSessionSlug]
+	content, ok := templates[constants.PromptEventJournalCompaction]
 	if !ok {
-		t.Fatal("expected session_slug key in DefaultPromptTemplates")
+		t.Fatal("expected journal_compaction key in DefaultPromptTemplates")
 	}
-	if !strings.Contains(content, "NO_REPLY") {
-		t.Error("session_slug template should mention NO_REPLY instruction")
+	if !strings.Contains(content, "journal") {
+		t.Error("journal_compaction template should mention journal")
 	}
-	if !strings.Contains(content, "SLUG:") {
-		t.Error("session_slug template should mention SLUG: format")
+	if !strings.Contains(content, "{{.transcript}}") {
+		t.Error("journal_compaction template should use {{.transcript}} placeholder")
 	}
-	if !strings.Contains(content, "{{.history}}") {
-		t.Error("session_slug template should use {{.history}} placeholder")
+}
+
+func TestDefaultPromptTemplatesIncludesConversationCompaction(t *testing.T) {
+	templates := DefaultPromptTemplates()
+	content, ok := templates[constants.PromptEventConversationCompaction]
+	if !ok {
+		t.Fatal("expected conversation_compaction key in DefaultPromptTemplates")
+	}
+	if !strings.Contains(content, "conversation") {
+		t.Error("conversation_compaction template should mention conversation")
+	}
+	if !strings.Contains(content, "{{.transcript}}") {
+		t.Error("conversation_compaction template should use {{.transcript}} placeholder")
 	}
 }
 
@@ -118,16 +152,3 @@ func TestDefaultPromptTemplatesIncludesHeartbeat(t *testing.T) {
 	}
 }
 
-func TestDefaultPromptTemplatesIncludesMemoryFlush(t *testing.T) {
-	templates := DefaultPromptTemplates()
-	content, ok := templates[constants.PromptEventMemoryFlush]
-	if !ok {
-		t.Fatal("expected memory_flush key in DefaultPromptTemplates")
-	}
-	if !strings.Contains(content, "NO_REPLY") {
-		t.Error("memory_flush template should mention NO_REPLY instruction")
-	}
-	if !strings.Contains(content, "{{.history}}") {
-		t.Error("memory_flush template should use {{.history}} placeholder")
-	}
-}
