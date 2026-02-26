@@ -27,14 +27,20 @@ const (
 
 // SessionInfo provides context about an available session.
 type SessionInfo struct {
-	ID        string            `json:"id"`
-	Command   string            `json:"command"`
-	Args      []string          `json:"args,omitempty"`
-	WorkDir   string            `json:"work_dir,omitempty"`
-	Tool      string            `json:"tool,omitempty"`
-	Status    string            `json:"status"`
-	StartTime time.Time         `json:"start_time"`
-	Metadata  map[string]string `json:"metadata,omitempty"`
+	ID         string            `json:"id"`
+	Command    string            `json:"command"`
+	Args       []string          `json:"args,omitempty"`
+	WorkDir    string            `json:"work_dir,omitempty"`
+	Tool       string            `json:"tool,omitempty"`
+	Status     string            `json:"status"`
+	StartTime  time.Time         `json:"start_time"`
+	Metadata   map[string]string `json:"metadata,omitempty"`
+	// IdleState, WaitingFor, IdleSince are populated by the session state
+	// tracker (Epic 22). Valid IdleState values will be defined as constants
+	// in that epic.
+	IdleState  string            `json:"idle_state,omitempty"`
+	WaitingFor string            `json:"waiting_for,omitempty"`
+	IdleSince  time.Time         `json:"idle_since,omitempty"`
 }
 
 // ToolDefinition describes a tool available to the AI for invocation.
@@ -94,18 +100,16 @@ const (
 	EventTypeUserIntent EventType = constants.PromptEventUserIntent
 	// EventTypeSessionOutput is for notable terminal output needing AI analysis.
 	EventTypeSessionOutput EventType = constants.PromptEventSessionOutput
-	// EventTypeHistorySummary requests summarizing conversation history.
-	EventTypeHistorySummary EventType = constants.PromptEventHistorySummary
 	// EventTypeClarification follows a previous clarification request.
 	EventTypeClarification EventType = constants.PromptEventClarification
-	// EventTypeMemoryFlush saves memories before conversation compaction.
-	EventTypeMemoryFlush EventType = constants.PromptEventMemoryFlush
 	// EventTypeHeartbeat is for periodic background heartbeat tasks.
 	EventTypeHeartbeat EventType = constants.PromptEventHeartbeat
-	// EventTypeSessionSlug generates session file names.
-	EventTypeSessionSlug EventType = constants.PromptEventSessionSlug
 	// EventTypeOnboarding is for first-time user setup.
 	EventTypeOnboarding EventType = constants.PromptEventOnboarding
+	// EventTypeJournalCompaction requests summarizing session journal for compaction.
+	EventTypeJournalCompaction EventType = constants.PromptEventJournalCompaction
+	// EventTypeConversationCompaction requests summarizing conversation history for compaction.
+	EventTypeConversationCompaction EventType = constants.PromptEventConversationCompaction
 )
 
 // IntentRequest contains the context sent to the AI adapter for intent resolution.
@@ -122,8 +126,8 @@ type IntentRequest struct {
 	// Transcript is the user's speech or text input.
 	Transcript string `json:"transcript"`
 
-	// ConversationHistory will be populated by JournalProvider / ConversationLogProvider
-	// once those context providers are implemented (Epic 19+). Currently always nil.
+	// ConversationHistory provides recent conversation context to the AI adapter.
+	// Currently always nil; will be populated once context providers are wired (Epic 20+).
 	ConversationHistory []eventbus.ConversationTurn `json:"conversation_history,omitempty"`
 
 	// AvailableSessions lists all sessions the user can interact with.
@@ -266,8 +270,8 @@ type PromptBuildRequest struct {
 	EventType             EventType
 	SessionID             string
 	Transcript            string
-	// History will be populated by JournalProvider / ConversationLogProvider
-	// once those context providers are implemented (Epic 19+). Currently always nil.
+	// History contains recent conversation turns for prompt context.
+	// Currently always nil; will be populated once context providers are wired (Epic 20+).
 	History []eventbus.ConversationTurn
 	AvailableSessions     []SessionInfo
 	CurrentTool           string
@@ -321,5 +325,31 @@ type OnboardingProvider interface {
 func WithOnboardingProvider(p OnboardingProvider) Option {
 	return func(s *Service) {
 		s.onboardingProvider = p
+	}
+}
+
+// JournalProvider supplies per-session journal context (summaries + raw tail)
+// for AI prompt injection. Implemented by the JournalService (Epic 20).
+type JournalProvider interface {
+	GetContext(sessionID string) (summaries string, raw string, err error)
+}
+
+// ConversationLogProvider supplies global conversation context (summaries + raw tail)
+// for AI prompt injection. Implemented by the ConversationLogService (Epic 21).
+type ConversationLogProvider interface {
+	GetContext() (summaries string, raw string, err error)
+}
+
+// WithJournalProvider sets the journal provider for session context injection.
+func WithJournalProvider(provider JournalProvider) Option {
+	return func(s *Service) {
+		s.journalProvider = provider
+	}
+}
+
+// WithConversationLogProvider sets the conversation log provider for dialog context injection.
+func WithConversationLogProvider(provider ConversationLogProvider) Option {
+	return func(s *Service) {
+		s.conversationLogProvider = provider
 	}
 }

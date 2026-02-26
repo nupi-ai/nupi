@@ -1,6 +1,8 @@
 package intentrouter
 
 import (
+	"log"
+
 	"github.com/nupi-ai/nupi/internal/prompts"
 )
 
@@ -40,19 +42,18 @@ func (a *PromptEngineAdapter) Build(req PromptBuildRequest) (*PromptBuildRespons
 		eventType = prompts.EventTypeUserIntent
 	case EventTypeSessionOutput:
 		eventType = prompts.EventTypeSessionOutput
-	case EventTypeHistorySummary:
-		eventType = prompts.EventTypeHistorySummary
 	case EventTypeClarification:
 		eventType = prompts.EventTypeClarification
-	case EventTypeMemoryFlush:
-		eventType = prompts.EventTypeMemoryFlush
-	case EventTypeSessionSlug:
-		eventType = prompts.EventTypeSessionSlug
 	case EventTypeOnboarding:
 		eventType = prompts.EventTypeOnboarding
 	case EventTypeHeartbeat:
 		eventType = prompts.EventTypeHeartbeat
+	case EventTypeJournalCompaction:
+		eventType = prompts.EventTypeJournalCompaction
+	case EventTypeConversationCompaction:
+		eventType = prompts.EventTypeConversationCompaction
 	default:
+		log.Printf("[PromptAdapter] unknown event type %q for session %q, defaulting to user_intent", req.EventType, req.SessionID)
 		eventType = prompts.EventTypeUserIntent
 	}
 

@@ -1815,14 +1815,14 @@ func TestToolLoopNoToolsForHistorySummary(t *testing.T) {
 
 	time.Sleep(50 * time.Millisecond)
 
-	// history_summary should get NO tools
+	// conversation_compaction should get NO tools
 	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
 		SessionID: "session-1",
 		PromptID:  "prompt-1",
 		NewMessage: eventbus.ConversationMessage{
 			Text: "summarize",
 		},
-		Metadata: map[string]string{constants.MetadataKeyEventType: constants.PromptEventHistorySummary},
+		Metadata: map[string]string{constants.MetadataKeyEventType: constants.PromptEventConversationCompaction},
 	})
 
 	select {
@@ -1832,7 +1832,7 @@ func TestToolLoopNoToolsForHistorySummary(t *testing.T) {
 	}
 
 	if len(capturedReq.AvailableTools) != 0 {
-		t.Fatalf("Expected 0 available tools for history_summary, got %d", len(capturedReq.AvailableTools))
+		t.Fatalf("Expected 0 available tools for conversation_compaction, got %d", len(capturedReq.AvailableTools))
 	}
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -2664,4 +2664,114 @@ func TestServiceHeartbeatEventWithEmptySessionID(t *testing.T) {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 	svc.Shutdown(shutdownCtx)
+}
+
+func TestWithJournalProviderOption(t *testing.T) {
+	bus := newTestBus(t)
+	defer bus.Shutdown()
+
+	svc := NewService(bus)
+	if svc.journalProvider != nil {
+		t.Fatal("Expected journalProvider to be nil initially")
+	}
+
+	provider := &stubJournalProvider{}
+	svc2 := NewService(bus, WithJournalProvider(provider))
+	if svc2.journalProvider == nil {
+		t.Fatal("Expected journalProvider to be set via WithJournalProvider option")
+	}
+}
+
+func TestWithConversationLogProviderOption(t *testing.T) {
+	bus := newTestBus(t)
+	defer bus.Shutdown()
+
+	svc := NewService(bus)
+	if svc.conversationLogProvider != nil {
+		t.Fatal("Expected conversationLogProvider to be nil initially")
+	}
+
+	provider := &stubConversationLogProvider{}
+	svc2 := NewService(bus, WithConversationLogProvider(provider))
+	if svc2.conversationLogProvider == nil {
+		t.Fatal("Expected conversationLogProvider to be set via WithConversationLogProvider option")
+	}
+}
+
+func TestBuildIntentRequest_CompactionEventTypes(t *testing.T) {
+	bus := eventbus.New()
+	defer bus.Shutdown()
+
+	var capturedReq IntentRequest
+	adapter := NewMockAdapter(WithMockCustomHandler(func(ctx context.Context, req IntentRequest) (*IntentResponse, error) {
+		capturedReq = req
+		return &IntentResponse{
+			PromptID: req.PromptID,
+			Actions:  []IntentAction{{Type: ActionNoop}},
+		}, nil
+	}))
+
+	svc := NewService(bus, WithAdapter(adapter))
+
+	replySub := eventbus.SubscribeTo(bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("test_reply"))
+	defer replySub.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	tests := []struct {
+		name      string
+		eventType string
+		wantType  EventType
+	}{
+		{"journal_compaction", constants.PromptEventJournalCompaction, EventTypeJournalCompaction},
+		{"conversation_compaction", constants.PromptEventConversationCompaction, EventTypeConversationCompaction},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+				SessionID: "session-1",
+				PromptID:  "prompt-" + tt.name,
+				NewMessage: eventbus.ConversationMessage{
+					Text: "test",
+				},
+				Metadata: map[string]string{constants.MetadataKeyEventType: tt.eventType},
+			})
+
+			select {
+			case <-replySub.C():
+			case <-time.After(2 * time.Second):
+				t.Fatal("Timeout waiting for reply")
+			}
+
+			if capturedReq.EventType != tt.wantType {
+				t.Errorf("Expected EventType %q, got %q", tt.wantType, capturedReq.EventType)
+			}
+		})
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	svc.Shutdown(shutdownCtx)
+}
+
+// stubJournalProvider is a minimal JournalProvider for option wiring tests.
+type stubJournalProvider struct{}
+
+func (s *stubJournalProvider) GetContext(sessionID string) (string, string, error) {
+	return "", "", nil
+}
+
+// stubConversationLogProvider is a minimal ConversationLogProvider for option wiring tests.
+type stubConversationLogProvider struct{}
+
+func (s *stubConversationLogProvider) GetContext() (string, string, error) {
+	return "", "", nil
 }

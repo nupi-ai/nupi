@@ -33,16 +33,14 @@ func NewToolRegistry() ToolRegistry {
 			EventTypeSessionOutput: {
 				"memory_search",
 			},
-			EventTypeHistorySummary: {},
-			EventTypeClarification:  {},
-
-			EventTypeMemoryFlush: {"memory_write"},
+			EventTypeClarification: {},
 			// NOTE: heartbeat.txt declares "You only have access to these tools:
 			// memory_search, memory_write." — if this list changes, update
 			// internal/config/store/prompts/heartbeat.txt to match.
 			EventTypeHeartbeat:  {"memory_search", "memory_write"},
-			EventTypeOnboarding: {"core_memory_update", "onboarding_complete"},
-			EventTypeSessionSlug: {},
+			EventTypeOnboarding:             {"core_memory_update", "onboarding_complete"},
+			EventTypeJournalCompaction:      {},
+			EventTypeConversationCompaction: {},
 		},
 	}
 	return r

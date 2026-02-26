@@ -61,8 +61,10 @@ type Service struct {
 	commandExecutor    CommandExecutor
 	promptEngine       PromptEngine
 	toolRegistry       ToolRegistry
-	coreMemoryProvider CoreMemoryProvider
-	onboardingProvider OnboardingProvider
+	coreMemoryProvider      CoreMemoryProvider
+	onboardingProvider      OnboardingProvider
+	journalProvider         JournalProvider
+	conversationLogProvider ConversationLogProvider
 
 	mu        sync.RWMutex
 	lifecycle eventbus.ServiceLifecycle
@@ -440,18 +442,20 @@ func (s *Service) buildIntentRequest(prompt eventbus.ConversationPromptEvent, pr
 		switch et {
 		case constants.PromptEventSessionOutput:
 			eventType = EventTypeSessionOutput
-		case constants.PromptEventHistorySummary:
-			eventType = EventTypeHistorySummary
 		case constants.PromptEventClarification:
 			eventType = EventTypeClarification
-		case constants.PromptEventMemoryFlush:
-			eventType = EventTypeMemoryFlush
 		case constants.PromptEventHeartbeat:
 			eventType = EventTypeHeartbeat
-		case constants.PromptEventSessionSlug:
-			eventType = EventTypeSessionSlug
 		case constants.PromptEventOnboarding:
 			eventType = EventTypeOnboarding
+		case constants.PromptEventJournalCompaction:
+			eventType = EventTypeJournalCompaction
+		case constants.PromptEventConversationCompaction:
+			eventType = EventTypeConversationCompaction
+		default:
+			if et != constants.PromptEventUserIntent {
+				log.Printf("[IntentRouter] unrecognized event type %q in prompt %s metadata, defaulting to user_intent", et, prompt.PromptID)
+			}
 		}
 	}
 

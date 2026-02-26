@@ -9,8 +9,10 @@ const (
 	PromptEventClarification  = "clarification"
 	PromptEventMemoryFlush    = "memory_flush"
 	PromptEventSessionSlug    = "session_slug"
-	PromptEventOnboarding     = "onboarding"
-	PromptEventHeartbeat      = "heartbeat"
+	PromptEventOnboarding              = "onboarding"
+	PromptEventHeartbeat               = "heartbeat"
+	PromptEventJournalCompaction       = "journal_compaction"
+	PromptEventConversationCompaction  = "conversation_compaction"
 )
 
 // Heartbeat field length limits shared between awareness tool handlers and CLI.
@@ -38,6 +40,10 @@ func ValidateHeartbeatName(name string) error {
 }
 
 // PromptEventTypes lists prompt event types accepted by configuration storage.
+// TODO(epic-18.3): Remove PromptEventHistorySummary, PromptEventMemoryFlush,
+// and PromptEventSessionSlug once config/store/seed.go and config/store/types.go
+// no longer reference them. Until then the config store accepts event types that
+// the intent router can no longer route — a known asymmetry.
 var PromptEventTypes = []string{
 	PromptEventUserIntent,
 	PromptEventSessionOutput,
@@ -47,4 +53,6 @@ var PromptEventTypes = []string{
 	PromptEventSessionSlug,
 	PromptEventOnboarding,
 	PromptEventHeartbeat,
+	PromptEventJournalCompaction,
+	PromptEventConversationCompaction,
 }
