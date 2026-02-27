@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,47 +15,13 @@ import (
 	"github.com/nupi-ai/nupi/internal/sanitize"
 )
 
-type summaryRequest struct {
-	promptID string
-	count    int // number of turns being summarized
-	firstAt  time.Time
-	timer    *time.Timer
-}
-
 type Option func(*Service)
-
-// WithHistoryLimit overrides the maximum number of stored turns per session.
-func WithHistoryLimit(limit int) Option {
-	return func(s *Service) {
-		if limit > 0 {
-			s.maxHistory = limit
-		}
-	}
-}
 
 // WithDetachTTL overrides the timeout after which detached sessions are purged.
 func WithDetachTTL(ttl time.Duration) Option {
 	return func(s *Service) {
 		if ttl >= 0 {
 			s.detachTTL = ttl
-		}
-	}
-}
-
-// WithSummaryThreshold overrides when history summarization triggers.
-func WithSummaryThreshold(threshold int) Option {
-	return func(s *Service) {
-		if threshold > 0 {
-			s.summaryThreshold = threshold
-		}
-	}
-}
-
-// WithSummaryBatchSize overrides how many oldest turns are summarized.
-func WithSummaryBatchSize(size int) Option {
-	return func(s *Service) {
-		if size > 0 {
-			s.summaryBatchSize = size
 		}
 	}
 }
@@ -73,23 +37,15 @@ func WithGlobalStore(store *GlobalStore) Option {
 type Service struct {
 	bus *eventbus.Bus
 
-	maxHistory  int
 	detachTTL   time.Duration
 	globalStore *GlobalStore
 
 	mu        sync.RWMutex
-	sessions  map[string][]eventbus.ConversationTurn
-	sessionAI map[string]bool // tracks whether session ever had an AI turn (survives FIFO trim)
 	detach    map[string]*time.Timer
 	toolCache map[string]string // sessionID -> current tool name
 
 	// Rate limiting for SESSION_OUTPUT events
 	lastSessionOutput sync.Map // sessionID -> time.Time
-
-	// History summarization
-	pendingSummary   sync.Map // sessionID -> *summaryRequest
-	summaryThreshold int      // trigger summarization when len(history) >= this
-	summaryBatchSize int      // number of oldest turns to summarize
 
 	shuttingDown atomic.Bool
 
@@ -97,18 +53,12 @@ type Service struct {
 	cleanedSub    *eventbus.TypedSubscription[eventbus.PipelineMessageEvent]
 	lifecycleSub  *eventbus.TypedSubscription[eventbus.SessionLifecycleEvent]
 	replySub      *eventbus.TypedSubscription[eventbus.ConversationReplyEvent]
-	bargeSub      *eventbus.TypedSubscription[eventbus.SpeechBargeInEvent]
 	toolSub       *eventbus.TypedSubscription[eventbus.SessionToolEvent]
 	toolChangeSub *eventbus.TypedSubscription[eventbus.SessionToolChangedEvent]
 }
 
 const (
-	defaultHistory   = 50
 	defaultDetachTTL = constants.Duration5Minutes
-
-	defaultSummaryThreshold = 35
-	defaultSummaryBatchSize = 20
-	summaryTimeout          = constants.Duration60Seconds
 
 	maxMetadataEntries    = sanitize.DefaultMetadataMaxEntries
 	maxMetadataKeyRunes   = sanitize.DefaultMetadataMaxKeyRunes
@@ -129,29 +79,13 @@ var conversationMetadataLimits = sanitize.MetadataLimits{
 // NewService creates a conversation service bound to the provided bus.
 func NewService(bus *eventbus.Bus, opts ...Option) *Service {
 	svc := &Service{
-		bus:              bus,
-		maxHistory:       defaultHistory,
-		detachTTL:        defaultDetachTTL,
-		summaryThreshold: defaultSummaryThreshold,
-		summaryBatchSize: defaultSummaryBatchSize,
-		sessions: make(map[string][]eventbus.ConversationTurn),
-		sessionAI:        make(map[string]bool),
-		detach:           make(map[string]*time.Timer),
-		toolCache:        make(map[string]string),
+		bus:       bus,
+		detachTTL: defaultDetachTTL,
+		detach:    make(map[string]*time.Timer),
+		toolCache: make(map[string]string),
 	}
 	for _, opt := range opts {
 		opt(svc)
-	}
-	// Ensure summaryThreshold <= maxHistory so FIFO truncation doesn't prevent triggering
-	if svc.summaryThreshold > svc.maxHistory {
-		svc.summaryThreshold = svc.maxHistory
-	}
-	// Ensure summaryBatchSize < summaryThreshold to prevent infinite summarization loops
-	if svc.summaryBatchSize >= svc.summaryThreshold {
-		svc.summaryBatchSize = svc.summaryThreshold / 2
-		if svc.summaryBatchSize < 1 {
-			svc.summaryBatchSize = 1
-		}
 	}
 	return svc
 }
@@ -171,14 +105,12 @@ func (s *Service) Start(ctx context.Context) error {
 	s.cleanedSub = eventbus.Subscribe[eventbus.PipelineMessageEvent](s.bus, eventbus.TopicPipelineCleaned, eventbus.WithSubscriptionName("conversation_pipeline"))
 	s.lifecycleSub = eventbus.Subscribe[eventbus.SessionLifecycleEvent](s.bus, eventbus.TopicSessionsLifecycle, eventbus.WithSubscriptionName("conversation_lifecycle"))
 	s.replySub = eventbus.Subscribe[eventbus.ConversationReplyEvent](s.bus, eventbus.TopicConversationReply, eventbus.WithSubscriptionName("conversation_reply"))
-	s.bargeSub = eventbus.Subscribe[eventbus.SpeechBargeInEvent](s.bus, eventbus.TopicSpeechBargeIn, eventbus.WithSubscriptionName("conversation_barge"))
 	s.toolSub = eventbus.Subscribe[eventbus.SessionToolEvent](s.bus, eventbus.TopicSessionsTool, eventbus.WithSubscriptionName("conversation_tool"))
 	s.toolChangeSub = eventbus.Subscribe[eventbus.SessionToolChangedEvent](s.bus, eventbus.TopicSessionsToolChanged, eventbus.WithSubscriptionName("conversation_tool_changed"))
-	s.lifecycle.AddSubscriptions(s.cleanedSub, s.lifecycleSub, s.replySub, s.bargeSub, s.toolSub, s.toolChangeSub)
+	s.lifecycle.AddSubscriptions(s.cleanedSub, s.lifecycleSub, s.replySub, s.toolSub, s.toolChangeSub)
 	s.lifecycle.Go(s.consumePipeline)
 	s.lifecycle.Go(s.consumeLifecycle)
 	s.lifecycle.Go(s.consumeReplies)
-	s.lifecycle.Go(s.consumeBarge)
 	s.lifecycle.Go(s.consumeToolEvents)
 	s.lifecycle.Go(s.consumeToolChangeEvents)
 	return nil
@@ -195,21 +127,12 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	// goroutines exit (matches awareness service shutdown pattern).
 	s.lifecycle.Stop()
 
-	// Stop all pending summary timers to prevent goroutine leaks
-	s.pendingSummary.Range(func(key, val any) bool {
-		if req, ok := val.(*summaryRequest); ok && req.timer != nil {
-			req.timer.Stop()
-		}
-		s.pendingSummary.Delete(key)
-		return true
-	})
-
 	return s.lifecycle.Wait(ctx)
 }
 
 func (s *Service) consumePipeline(ctx context.Context) {
 	eventbus.ConsumeEnvelope(ctx, s.cleanedSub, nil, func(env eventbus.TypedEnvelope[eventbus.PipelineMessageEvent]) {
-		s.handlePipelineMessage(env.Timestamp, env.Payload)
+		s.handlePipelineMessage(ctx, env.Timestamp, env.Payload)
 	})
 }
 
@@ -220,7 +143,6 @@ func (s *Service) consumeLifecycle(ctx context.Context) {
 			s.clearSession(msg.SessionID)
 		case eventbus.SessionStateDetached:
 			// Clear tool cache immediately to prevent stale current_tool injection
-			// (conversation history is still kept until detachTTL expires)
 			s.clearToolCache(msg.SessionID)
 			s.scheduleDetachCleanup(msg.SessionID)
 		case eventbus.SessionStateRunning, eventbus.SessionStateCreated:
@@ -231,12 +153,8 @@ func (s *Service) consumeLifecycle(ctx context.Context) {
 
 func (s *Service) consumeReplies(ctx context.Context) {
 	eventbus.ConsumeEnvelope(ctx, s.replySub, nil, func(env eventbus.TypedEnvelope[eventbus.ConversationReplyEvent]) {
-		s.handleReplyMessage(env.Timestamp, env.Payload)
+		s.handleReplyMessage(ctx, env.Timestamp, env.Payload)
 	})
-}
-
-func (s *Service) consumeBarge(ctx context.Context) {
-	eventbus.Consume(ctx, s.bargeSub, nil, s.handleBargeEvent)
 }
 
 func (s *Service) consumeToolEvents(ctx context.Context) {
@@ -260,7 +178,7 @@ func (s *Service) updateToolCache(sessionID, toolName string) {
 	s.mu.Unlock()
 }
 
-func (s *Service) handlePipelineMessage(ts time.Time, msg eventbus.PipelineMessageEvent) {
+func (s *Service) handlePipelineMessage(ctx context.Context, ts time.Time, msg eventbus.PipelineMessageEvent) {
 	if ts.IsZero() {
 		ts = time.Now().UTC()
 	}
@@ -268,7 +186,7 @@ func (s *Service) handlePipelineMessage(ts time.Time, msg eventbus.PipelineMessa
 	meta := sanitize.NewMetadataAccumulator(nil, conversationMetadataLimits)
 	meta.Merge(msg.Annotations)
 
-	// Determine event type BEFORE creating turn (to avoid mutating Meta after it's in history)
+	// Determine event type BEFORE creating turn
 	shouldTriggerAI := false
 	eventType := constants.PromptEventUserIntent
 
@@ -281,7 +199,6 @@ func (s *Service) handlePipelineMessage(ts time.Time, msg eventbus.PipelineMessa
 		eventType = constants.PromptEventSessionOutput
 	}
 
-	// Set event_type in meta BEFORE turn is added to history (prevents race condition)
 	if shouldTriggerAI || msg.Annotations[constants.MetadataKeyNotable] == constants.MetadataValueTrue {
 		meta.Merge(map[string]string{constants.MetadataKeyEventType: eventType})
 	}
@@ -293,13 +210,14 @@ func (s *Service) handlePipelineMessage(ts time.Time, msg eventbus.PipelineMessa
 		Meta:   meta.Result(),
 	}
 
-	// Handle sessionless ("bezpańskie") messages via GlobalStore
+	// Handle sessionless messages via GlobalStore
 	if msg.SessionID == "" {
 		if s.globalStore != nil {
 			contextSnapshot := s.globalStore.GetContext()
 			s.globalStore.AddTurn(turn)
+			s.publishTurn(ctx, "", turn)
 			if msg.Origin == eventbus.OriginUser {
-				s.publishPrompt("", contextSnapshot, turn)
+				s.publishPrompt(ctx, "", contextSnapshot, turn)
 			}
 		}
 		return
@@ -312,28 +230,11 @@ func (s *Service) handlePipelineMessage(ts time.Time, msg eventbus.PipelineMessa
 		shouldTriggerAI = s.shouldTriggerSessionOutput(msg.SessionID)
 	}
 
-	var contextSnapshot []eventbus.ConversationTurn
-
-	s.mu.Lock()
-	history := s.sessions[msg.SessionID]
-	contextSnapshot = append(contextSnapshot, history...)
-
-	history = append(history, turn)
-	sort.SliceStable(history, func(i, j int) bool { return history[i].At.Before(history[j].At) })
-	if len(history) > s.maxHistory {
-		history = history[len(history)-s.maxHistory:]
-	}
-	s.sessions[msg.SessionID] = history
-	historyLen := len(history)
-	s.mu.Unlock()
+	// Publish turn event for downstream consumers (Conversation Log Service)
+	s.publishTurn(ctx, msg.SessionID, turn)
 
 	if shouldTriggerAI {
-		s.publishPrompt(msg.SessionID, contextSnapshot, turn)
-	}
-
-	// Trigger history summarization if threshold reached
-	if historyLen >= s.summaryThreshold {
-		s.requestSummary(msg.SessionID)
+		s.publishPrompt(ctx, msg.SessionID, nil, turn)
 	}
 }
 
@@ -353,6 +254,12 @@ func (s *Service) shouldTriggerSessionOutput(sessionID string) bool {
 	return true
 }
 
+// ResetRateLimitForTesting overrides the rate limit timestamp for the given
+// session, allowing tests to verify rate limiting without real-time waits.
+func (s *Service) ResetRateLimitForTesting(sessionID string, t time.Time) {
+	s.lastSessionOutput.Store(sessionID, t)
+}
+
 // validEventTypes are the event types supported by the prompts engine.
 var validEventTypes = boolSet(constants.PromptEventTypes)
 
@@ -364,7 +271,21 @@ func boolSet(values []string) map[string]bool {
 	return set
 }
 
-func (s *Service) publishPrompt(sessionID string, ctxTurns []eventbus.ConversationTurn, newTurn eventbus.ConversationTurn) {
+// publishTurn publishes a ConversationTurnEvent on the event bus for downstream consumers.
+func (s *Service) publishTurn(ctx context.Context, sessionID string, turn eventbus.ConversationTurn) {
+	if s.bus == nil {
+		return
+	}
+	eventbus.Publish(ctx, s.bus, eventbus.Conversation.Turn, eventbus.SourceConversation, eventbus.ConversationTurnEvent{
+		SessionID: sessionID,
+		Turn:      turn,
+	})
+}
+
+// publishPrompt builds and publishes a ConversationPromptEvent.
+// ctxTurns is only populated for sessionless messages (GlobalStore context snapshot);
+// for session messages it is always nil (file-backed context deferred to Epic 21).
+func (s *Service) publishPrompt(ctx context.Context, sessionID string, ctxTurns []eventbus.ConversationTurn, newTurn eventbus.ConversationTurn) {
 	if s.bus == nil {
 		return
 	}
@@ -440,7 +361,7 @@ func (s *Service) publishPrompt(sessionID string, ctxTurns []eventbus.Conversati
 		Metadata: metadata,
 	}
 
-	eventbus.Publish(context.Background(), s.bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, prompt)
+	eventbus.Publish(ctx, s.bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, prompt)
 }
 
 func (s *Service) clearSession(sessionID string) {
@@ -449,8 +370,6 @@ func (s *Service) clearSession(sessionID string) {
 	}
 
 	s.mu.Lock()
-	delete(s.sessions, sessionID)
-	delete(s.sessionAI, sessionID)
 	delete(s.toolCache, sessionID)
 	if timer, ok := s.detach[sessionID]; ok {
 		timer.Stop()
@@ -460,163 +379,10 @@ func (s *Service) clearSession(sessionID string) {
 
 	// Clean up rate limiting entry to prevent memory leaks
 	s.lastSessionOutput.Delete(sessionID)
-
-	// Clean up pending summary state
-	if val, ok := s.pendingSummary.LoadAndDelete(sessionID); ok {
-		if req, ok := val.(*summaryRequest); ok && req.timer != nil {
-			req.timer.Stop()
-		}
-	}
-
 }
 
-// requestSummary triggers an async history summarization if the threshold is met
-// and no summary is already pending for the session.
-func (s *Service) requestSummary(sessionID string) {
-	if sessionID == "" || s.bus == nil {
-		return
-	}
-
-	// Idempotency: skip if a summary is already pending for this session.
-	if _, loaded := s.pendingSummary.Load(sessionID); loaded {
-		return
-	}
-
-	s.mu.RLock()
-	history := s.sessions[sessionID]
-	histLen := len(history)
-	if histLen < s.summaryThreshold {
-		s.mu.RUnlock()
-		return
-	}
-
-	batchSize := s.summaryBatchSize
-	if batchSize > histLen {
-		batchSize = histLen
-	}
-
-	// Copy the oldest N turns for serialization.
-	oldest := make([]eventbus.ConversationTurn, batchSize)
-	copy(oldest, history[:batchSize])
-	s.mu.RUnlock()
-
-	s.proceedWithSummary(sessionID, oldest, batchSize)
-}
-
-// proceedWithSummary sends a conversation_compaction prompt to the AI adapter.
-func (s *Service) proceedWithSummary(sessionID string, oldest []eventbus.ConversationTurn, batchSize int) {
-	if len(oldest) == 0 {
-		return
-	}
-
-	promptText := eventbus.SerializeTurns(oldest)
-	promptID := uuid.NewString()
-
-	req := &summaryRequest{
-		promptID: promptID,
-		count:    batchSize,
-		firstAt:  oldest[0].At,
-	}
-
-	// Set timer before storing so the struct is fully initialized before
-	// being exposed to other goroutines via the map (prevents data race
-	// on req.timer field detected by Go race detector).
-	req.timer = time.AfterFunc(summaryTimeout, func() {
-		if s.shuttingDown.Load() {
-			return
-		}
-		s.pendingSummary.Delete(sessionID)
-	})
-
-	// Atomically store only if no other goroutine stored first.
-	if _, loaded := s.pendingSummary.LoadOrStore(sessionID, req); loaded {
-		req.timer.Stop()
-		return
-	}
-
-	now := time.Now().UTC()
-	prompt := eventbus.ConversationPromptEvent{
-		SessionID: sessionID,
-		PromptID:  promptID,
-		NewMessage: eventbus.ConversationMessage{
-			Origin: eventbus.OriginSystem,
-			Text:   promptText, // Serialized text as fallback for adapters without prompt engine
-			At:     now,
-			Meta: map[string]string{
-				constants.MetadataKeyEventType: constants.PromptEventConversationCompaction,
-			},
-		},
-		Metadata: map[string]string{
-			constants.MetadataKeyEventType: constants.PromptEventConversationCompaction,
-		},
-	}
-
-	eventbus.Publish(context.Background(), s.bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, prompt)
-}
-
-// handleSummaryReply processes an AI reply to a conversation_compaction prompt,
-// replacing the oldest N turns with a single summary turn.
-func (s *Service) handleSummaryReply(sessionID string, msg eventbus.ConversationReplyEvent) {
-	s.cancelDetachCleanup(sessionID)
-
-	val, ok := s.pendingSummary.LoadAndDelete(sessionID)
-	if !ok {
-		return // No pending summary for this session
-	}
-	req, ok := val.(*summaryRequest)
-	if !ok {
-		return
-	}
-
-	// Cancel the timeout timer
-	if req.timer != nil {
-		req.timer.Stop()
-	}
-
-	// Verify PromptID matches to reject stale replies
-	if msg.PromptID != req.promptID {
-		return
-	}
-
-	s.mu.Lock()
-	history := s.sessions[sessionID]
-	if len(history) >= req.count {
-		// Verify the history hasn't shifted during the flush wait. If FIFO
-		// truncation moved the oldest turns, the first turn's timestamp won't
-		// match what was captured at requestSummary time. Skip replacement to
-		// avoid replacing turns that differ from what the AI actually summarized.
-		if !history[0].At.Equal(req.firstAt) {
-			s.mu.Unlock()
-			return
-		}
-
-		// Use the timestamp of the first summarized turn to preserve chronological
-		// ordering. Using time.Now() would cause the summary to sort after the
-		// remaining turns on the next sort.SliceStable call.
-		summaryAt := history[0].At
-
-		summaryTurn := eventbus.ConversationTurn{
-			Origin: eventbus.OriginSystem,
-			Text:   msg.Text,
-			At:     summaryAt,
-			Meta: map[string]string{
-				constants.MetadataKeySummarized:     constants.MetadataValueTrue,
-				constants.MetadataKeyOriginalLength: strconv.Itoa(req.count),
-			},
-		}
-
-		// Replace the oldest N turns with the summary turn
-		remaining := history[req.count:]
-		newHistory := make([]eventbus.ConversationTurn, 0, 1+len(remaining))
-		newHistory = append(newHistory, summaryTurn)
-		newHistory = append(newHistory, remaining...)
-		s.sessions[sessionID] = newHistory
-	}
-	s.mu.Unlock()
-}
-
-// clearToolCache removes just the tool cache for a session without affecting
-// conversation history. Called on detach to prevent stale current_tool injection.
+// clearToolCache removes just the tool cache for a session.
+// Called on detach to prevent stale current_tool injection.
 func (s *Service) clearToolCache(sessionID string) {
 	if sessionID == "" {
 		return
@@ -659,36 +425,16 @@ func (s *Service) cancelDetachCleanup(sessionID string) {
 	s.mu.Unlock()
 }
 
-// Context returns a snapshot of the stored conversation turns for the session.
+// Context returns a stub — RAM history has been removed. Returns nil.
+// The file-backed implementation will be provided by Conversation Log Service (Epic 21).
 func (s *Service) Context(sessionID string) []eventbus.ConversationTurn {
-	_, turns := s.Slice(sessionID, 0, 0)
-	return turns
+	return nil
 }
 
-// Slice returns a paginated view over the stored conversation turns.
+// Slice returns a stub — RAM history has been removed. Returns (0, nil).
+// The file-backed implementation will be provided by Conversation Log Service (Epic 21).
 func (s *Service) Slice(sessionID string, offset, limit int) (int, []eventbus.ConversationTurn) {
-	s.mu.RLock()
-	history := s.sessions[sessionID]
-	total := len(history)
-
-	if offset < 0 {
-		offset = 0
-	}
-	if offset > total {
-		offset = total
-	}
-
-	end := total
-	if limit > 0 && offset+limit < end {
-		end = offset + limit
-	}
-
-	window := history[offset:end]
-	out := make([]eventbus.ConversationTurn, len(window))
-	copy(out, window)
-	s.mu.RUnlock()
-
-	return total, out
+	return 0, nil
 }
 
 // GlobalContext returns a snapshot of the global (sessionless) conversation turns.
@@ -707,15 +453,17 @@ func (s *Service) GlobalSlice(offset, limit int) (int, []eventbus.ConversationTu
 	return s.globalStore.Slice(offset, limit)
 }
 
-func (s *Service) handleReplyMessage(ts time.Time, msg eventbus.ConversationReplyEvent) {
+func (s *Service) handleReplyMessage(ctx context.Context, ts time.Time, msg eventbus.ConversationReplyEvent) {
 	if ts.IsZero() {
 		ts = time.Now().UTC()
 	}
 
-	// Intercept conversation_compaction replies before normal processing
-	if msg.Metadata[constants.MetadataKeyEventType] == constants.PromptEventConversationCompaction && msg.SessionID != "" {
-		s.handleSummaryReply(msg.SessionID, msg)
-		return
+	// Intercept compaction replies — internal AI tasks, NOT dialog turns
+	eventType := msg.Metadata[constants.MetadataKeyEventType]
+	switch eventType {
+	case constants.PromptEventConversationCompaction,
+		constants.PromptEventJournalCompaction:
+		return // Do not publish turn, do not add to dialog
 	}
 
 	meta := sanitize.NewMetadataAccumulator(msg.Metadata, conversationMetadataLimits)
@@ -744,56 +492,18 @@ func (s *Service) handleReplyMessage(ts time.Time, msg eventbus.ConversationRepl
 	}
 	turn.Meta = meta.Result()
 
-	// Handle sessionless ("bezpańskie") replies via GlobalStore
+	// Handle sessionless replies via GlobalStore
 	if msg.SessionID == "" {
 		if s.globalStore != nil {
 			s.globalStore.AddTurn(turn)
+			s.publishTurn(ctx, "", turn)
 		}
 		return
 	}
 
 	s.cancelDetachCleanup(msg.SessionID)
 
-	s.mu.Lock()
-	history := s.sessions[msg.SessionID]
-	history = append(history, turn)
-	sort.SliceStable(history, func(i, j int) bool { return history[i].At.Before(history[j].At) })
-	if len(history) > s.maxHistory {
-		history = history[len(history)-s.maxHistory:]
-	}
-	s.sessions[msg.SessionID] = history
-	s.sessionAI[msg.SessionID] = true
-	s.mu.Unlock()
+	// Publish turn event for downstream consumers (Conversation Log Service)
+	s.publishTurn(ctx, msg.SessionID, turn)
 }
 
-func (s *Service) handleBargeEvent(event eventbus.SpeechBargeInEvent) {
-	if event.SessionID == "" {
-		return
-	}
-
-	s.mu.Lock()
-	history := s.sessions[event.SessionID]
-	for i := len(history) - 1; i >= 0; i-- {
-		turn := history[i]
-		if turn.Origin != eventbus.OriginAI {
-			continue
-		}
-		meta := make(map[string]string, len(turn.Meta)+3)
-		for k, v := range turn.Meta {
-			meta[k] = v
-		}
-		meta[constants.MetadataKeyBargeIn] = constants.MetadataValueTrue
-		meta[constants.MetadataKeyBargeInReason] = event.Reason
-		if !event.Timestamp.IsZero() {
-			meta[constants.MetadataKeyBargeInTimestamp] = event.Timestamp.Format(time.RFC3339Nano)
-		}
-		for k, v := range event.Metadata {
-			meta[constants.MetadataKeyBargePrefix+k] = v
-		}
-		turn.Meta = meta
-		history[i] = turn
-		s.sessions[event.SessionID] = history
-		break
-	}
-	s.mu.Unlock()
-}

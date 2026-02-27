@@ -98,7 +98,6 @@ func TestVoicePipelineEndToEndWithBarge(t *testing.T) {
 	pipelineSvc := contentpipeline.NewService(bus, nil)
 
 	conversationSvc := conversation.NewService(bus,
-		conversation.WithHistoryLimit(8),
 		conversation.WithDetachTTL(5*time.Second),
 	)
 
@@ -228,9 +227,9 @@ func TestVoicePipelineEndToEndWithBarge(t *testing.T) {
 		t.Fatalf("unexpected barge_in_reason: %s", finalPlayback.Metadata[constants.MetadataKeyBargeInReason])
 	}
 
-	waitForConversationMeta(t, conversationSvc, sessionID, time.Second, func(meta map[string]string) bool {
-		return meta[constants.MetadataKeyBargeIn] == "true" && meta[constants.MetadataKeyBargeInReason] == "manual"
-	})
+	// NOTE: waitForConversationMeta removed — Context() no longer returns RAM
+	// history (Story 19.2 refactoring). Barge metadata is verified above via
+	// the playback event assertions.
 }
 
 type startStopper interface {
@@ -383,7 +382,7 @@ func TestAudioIngressToSTTGRPCPipeline(t *testing.T) {
 		stt.WithRetryDelays(10*time.Millisecond, 50*time.Millisecond),
 	)
 	pipelineSvc := contentpipeline.NewService(bus, nil)
-	conversationSvc := conversation.NewService(bus, conversation.WithHistoryLimit(8), conversation.WithDetachTTL(time.Second))
+	conversationSvc := conversation.NewService(bus, conversation.WithDetachTTL(time.Second))
 
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -602,24 +601,6 @@ func publishVADUntilBarge(t *testing.T, bus *eventbus.Bus, bargeSub *eventbus.Ty
 	}
 }
 
-func waitForConversationMeta(t *testing.T, svc *conversation.Service, sessionID string, timeout time.Duration, predicate func(map[string]string) bool) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for {
-		turns := svc.Context(sessionID)
-		if len(turns) >= 2 {
-			meta := turns[len(turns)-1].Meta
-			if predicate(meta) {
-				return
-			}
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("conversation metadata not updated within %s", timeout)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-}
-
 func pcmBuffer(amplitude int16, samples int) []byte {
 	buf := make([]byte, samples*2)
 	for i := 0; i < samples; i++ {
@@ -721,7 +702,6 @@ func TestFullVoicePipelineEndToEnd(t *testing.T) {
 	)
 	pipelineSvc := contentpipeline.NewService(bus, nil)
 	conversationSvc := conversation.NewService(bus,
-		conversation.WithHistoryLimit(8),
 		conversation.WithDetachTTL(5*time.Second),
 	)
 	intentSvc := intentrouter.NewService(bus,
@@ -878,7 +858,6 @@ func TestFullVoicePipelineNoopAction(t *testing.T) {
 	)
 	pipelineSvc := contentpipeline.NewService(bus, nil)
 	conversationSvc := conversation.NewService(bus,
-		conversation.WithHistoryLimit(8),
 		conversation.WithDetachTTL(5*time.Second),
 	)
 	intentSvc := intentrouter.NewService(bus,
@@ -997,7 +976,6 @@ func TestVoicePipelineEventOrdering(t *testing.T) {
 	)
 	pipelineSvc := contentpipeline.NewService(bus, nil)
 	conversationSvc := conversation.NewService(bus,
-		conversation.WithHistoryLimit(8),
 		conversation.WithDetachTTL(5*time.Second),
 	)
 	intentSvc := intentrouter.NewService(bus,
@@ -1451,7 +1429,6 @@ func TestGRPCSTTAndTTSNAPPipeline(t *testing.T) {
 	)
 	pipelineSvc := contentpipeline.NewService(bus, nil)
 	conversationSvc := conversation.NewService(bus,
-		conversation.WithHistoryLimit(8),
 		conversation.WithDetachTTL(5*time.Second),
 	)
 	intentSvc := intentrouter.NewService(bus,
@@ -1650,7 +1627,6 @@ func TestVoicePipelineTTSAdapterError(t *testing.T) {
 	)
 	pipelineSvc := contentpipeline.NewService(bus, nil)
 	conversationSvc := conversation.NewService(bus,
-		conversation.WithHistoryLimit(8),
 		conversation.WithDetachTTL(5*time.Second),
 	)
 	intentSvc := intentrouter.NewService(bus, intentrouter.WithAdapter(aiAdapter))
@@ -1766,7 +1742,6 @@ func TestVoicePipelineGoroutineLifecycle(t *testing.T) {
 	)
 	pipelineSvc := contentpipeline.NewService(bus, nil)
 	conversationSvc := conversation.NewService(bus,
-		conversation.WithHistoryLimit(8),
 		conversation.WithDetachTTL(5*time.Second),
 	)
 	intentSvc := intentrouter.NewService(bus, intentrouter.WithAdapter(aiAdapter))
@@ -1866,7 +1841,6 @@ func TestVoicePipelinePayloadIntegrity(t *testing.T) {
 	)
 	pipelineSvc := contentpipeline.NewService(bus, nil)
 	conversationSvc := conversation.NewService(bus,
-		conversation.WithHistoryLimit(8),
 		conversation.WithDetachTTL(5*time.Second),
 	)
 	intentSvc := intentrouter.NewService(bus, intentrouter.WithAdapter(aiAdapter))
@@ -2137,7 +2111,6 @@ func TestVoicePipelineBargeInDuringTTSStreaming(t *testing.T) {
 	)
 	pipelineSvc := contentpipeline.NewService(bus, nil)
 	conversationSvc := conversation.NewService(bus,
-		conversation.WithHistoryLimit(8),
 		conversation.WithDetachTTL(5*time.Second),
 	)
 	intentSvc := intentrouter.NewService(bus,
@@ -2282,7 +2255,6 @@ func TestVoicePipelineBargeInRecovery(t *testing.T) {
 	)
 	pipelineSvc := contentpipeline.NewService(bus, nil)
 	conversationSvc := conversation.NewService(bus,
-		conversation.WithHistoryLimit(8),
 		conversation.WithDetachTTL(5*time.Second),
 	)
 	intentSvc := intentrouter.NewService(bus,
@@ -2440,7 +2412,6 @@ func TestVoicePipelineBargeInCooldown(t *testing.T) {
 	)
 	pipelineSvc := contentpipeline.NewService(bus, nil)
 	conversationSvc := conversation.NewService(bus,
-		conversation.WithHistoryLimit(8),
 		conversation.WithDetachTTL(5*time.Second),
 	)
 	intentSvc := intentrouter.NewService(bus,
@@ -2572,7 +2543,6 @@ func TestVoicePipelineBargeInQuietPeriod(t *testing.T) {
 	)
 	pipelineSvc := contentpipeline.NewService(bus, nil)
 	conversationSvc := conversation.NewService(bus,
-		conversation.WithHistoryLimit(8),
 		conversation.WithDetachTTL(5*time.Second),
 	)
 	intentSvc := intentrouter.NewService(bus,
@@ -2734,7 +2704,6 @@ func TestVoiceFallbackServicesStartWithoutAdapters(t *testing.T) {
 	egressSvc := egress.New(bus) // default factory → ErrFactoryUnavailable
 	pipelineSvc := contentpipeline.NewService(bus, nil)
 	conversationSvc := conversation.NewService(bus,
-		conversation.WithHistoryLimit(8),
 		conversation.WithDetachTTL(5*time.Second),
 	)
 
@@ -2801,7 +2770,6 @@ func TestVoiceFallbackEgressDropsWithoutTTS(t *testing.T) {
 	// Wire conversation + egress with default factory (no TTS adapter).
 	pipelineSvc := contentpipeline.NewService(bus, nil)
 	conversationSvc := conversation.NewService(bus,
-		conversation.WithHistoryLimit(8),
 		conversation.WithDetachTTL(5*time.Second),
 	)
 	egressSvc := egress.New(bus) // default factory → ErrFactoryUnavailable
@@ -2977,7 +2945,6 @@ func TestVoiceFallbackBargeInertWithoutVAD(t *testing.T) {
 	)
 	pipelineSvc := contentpipeline.NewService(bus, nil)
 	conversationSvc := conversation.NewService(bus,
-		conversation.WithHistoryLimit(8),
 		conversation.WithDetachTTL(5*time.Second),
 	)
 
@@ -3071,7 +3038,6 @@ func TestVoiceFallbackEgressBuffersWithAdapterFactory(t *testing.T) {
 
 	pipelineSvc := contentpipeline.NewService(bus, nil)
 	conversationSvc := conversation.NewService(bus,
-		conversation.WithHistoryLimit(8),
 		conversation.WithDetachTTL(5*time.Second),
 	)
 	// Real adapter factory backed by config store (same wiring as daemon.go:119).
@@ -3348,7 +3314,6 @@ func TestVADDrivenVoiceLoop(t *testing.T) {
 	)
 	pipelineSvc := contentpipeline.NewService(bus, nil)
 	conversationSvc := conversation.NewService(bus,
-		conversation.WithHistoryLimit(8),
 		conversation.WithDetachTTL(5*time.Second),
 	)
 	intentSvc := intentrouter.NewService(bus,
@@ -3604,7 +3569,6 @@ func TestVADBargeInDuringPlayback(t *testing.T) {
 	)
 	pipelineSvc := contentpipeline.NewService(bus, nil)
 	conversationSvc := conversation.NewService(bus,
-		conversation.WithHistoryLimit(8),
 		conversation.WithDetachTTL(5*time.Second),
 	)
 	intentSvc := intentrouter.NewService(bus,
@@ -3755,7 +3719,6 @@ func TestVADMultiSessionIsolation(t *testing.T) {
 	)
 	pipelineSvc := contentpipeline.NewService(bus, nil)
 	conversationSvc := conversation.NewService(bus,
-		conversation.WithHistoryLimit(8),
 		conversation.WithDetachTTL(5*time.Second),
 	)
 	intentSvc := intentrouter.NewService(bus,

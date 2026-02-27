@@ -66,10 +66,16 @@ func TestPipelineToConversationIntegration(t *testing.T) {
 
 	bus := eventbus.New()
 	pipelineSvc := contentpipeline.NewService(bus, pluginSvc)
-	conversationSvc := conversation.NewService(bus, conversation.WithHistoryLimit(10), conversation.WithDetachTTL(200*time.Millisecond))
+	conversationSvc := conversation.NewService(bus, conversation.WithDetachTTL(200*time.Millisecond))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// Subscribe to conversation.prompt to verify pipeline→conversation flow.
+	// Context() no longer returns RAM history (Story 19.2 refactoring),
+	// so we verify via the published ConversationPromptEvent instead.
+	promptSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Prompt, eventbus.WithSubscriptionName("test_prompt"))
+	defer promptSub.Close()
 
 	if err := pipelineSvc.Start(ctx); err != nil {
 		t.Fatalf("start content pipeline: %v", err)
@@ -88,26 +94,25 @@ func TestPipelineToConversationIntegration(t *testing.T) {
 		Origin:    eventbus.OriginUser,
 	})
 
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		turns := conversationSvc.Context("integration-session")
-		if len(turns) == 1 {
-			turn := turns[0]
-			if turn.Text != "PIPELINE -> CONVERSATION TEST" {
-				t.Fatalf("unexpected conversation text: %q", turn.Text)
-			}
-			if turn.Origin != eventbus.OriginUser {
-				t.Fatalf("unexpected origin: %s", turn.Origin)
-			}
-			if turn.Meta[constants.MetadataKeyCleaned] != "true" {
-				t.Fatalf("expected cleaned annotation, got %+v", turn.Meta)
-			}
-			break
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	select {
+	case env, ok := <-promptSub.C():
+		if !ok {
+			t.Fatal("prompt subscription closed")
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("conversation history not updated, turns=%d", len(turns))
+		prompt := env.Payload
+		if prompt.NewMessage.Text != "PIPELINE -> CONVERSATION TEST" {
+			t.Fatalf("unexpected conversation text: %q", prompt.NewMessage.Text)
 		}
-		time.Sleep(10 * time.Millisecond)
+		if prompt.NewMessage.Origin != eventbus.OriginUser {
+			t.Fatalf("unexpected origin: %s", prompt.NewMessage.Origin)
+		}
+		if prompt.NewMessage.Meta[constants.MetadataKeyCleaned] != "true" {
+			t.Fatalf("expected cleaned annotation, got %+v", prompt.NewMessage.Meta)
+		}
+	case <-timer.C:
+		t.Fatal("timeout waiting for conversation prompt event")
 	}
 }
 
