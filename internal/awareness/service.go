@@ -13,7 +13,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 	"unicode/utf8"
 
 	"github.com/nupi-ai/nupi/internal/eventbus"
@@ -33,15 +32,8 @@ type Service struct {
 	indexer           *Indexer
 	embeddingProvider EmbeddingProvider
 
-	flushReplySub *eventbus.TypedSubscription[eventbus.ConversationReplyEvent]
-	pendingFlush  sync.Map // promptID → *flushState
-	memoryWriteMu sync.Mutex // serializes all memory file writes (flush, daily, topic)
-
-	exportReplySub *eventbus.TypedSubscription[eventbus.ConversationReplyEvent]
-	pendingExport  sync.Map // promptID → *exportState
-	slugTimeout    time.Duration
-	exportWriteMu  sync.Mutex // serializes session export file writes
-	coreWriteMu    sync.Mutex // serializes core memory file writes in UpdateCoreMemory
+	memoryWriteMu sync.Mutex // serializes memory file writes (conversations, topics)
+	coreWriteMu   sync.Mutex // serializes core memory file writes in UpdateCoreMemory
 
 	heartbeatStore InsertHeartbeatStore
 
@@ -76,14 +68,6 @@ func (s *Service) SetEventBus(bus *eventbus.Bus) {
 // SetEmbeddingProvider wires the embedding provider for vector search.
 func (s *Service) SetEmbeddingProvider(provider EmbeddingProvider) {
 	s.embeddingProvider = provider
-}
-
-// SetSlugTimeout overrides the default timeout for session slug generation.
-// Must be called before Start.
-func (s *Service) SetSlugTimeout(timeout time.Duration) {
-	if timeout > 0 {
-		s.slugTimeout = timeout
-	}
 }
 
 // Start initializes the awareness service: ensures directory structure exists,
@@ -126,17 +110,9 @@ func (s *Service) Start(ctx context.Context) error {
 	if s.bus != nil {
 		s.lifecycle.Start(ctx)
 
-		s.flushReplySub = eventbus.Subscribe[eventbus.ConversationReplyEvent](s.bus, eventbus.TopicConversationReply, eventbus.WithSubscriptionName("awareness_flush_reply"))
-		s.exportReplySub = eventbus.Subscribe[eventbus.ConversationReplyEvent](s.bus, eventbus.TopicConversationReply, eventbus.WithSubscriptionName("awareness_export_reply"))
 		s.lifecycleSub = eventbus.Subscribe[eventbus.SessionLifecycleEvent](s.bus, eventbus.TopicSessionsLifecycle, eventbus.WithSubscriptionName("awareness_lifecycle"))
 
-		if s.slugTimeout == 0 {
-			s.slugTimeout = defaultSlugTimeout
-		}
-
-		s.lifecycle.AddSubscriptions(s.flushReplySub, s.exportReplySub, s.lifecycleSub)
-		s.lifecycle.Go(s.consumeFlushReplies)
-		s.lifecycle.Go(s.consumeExportReplies)
+		s.lifecycle.AddSubscriptions(s.lifecycleSub)
 		s.lifecycle.Go(s.consumeLifecycleEvents)
 
 		if s.heartbeatStore != nil {
@@ -155,18 +131,14 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	// and publishes to a draining bus after Shutdown returns.
 	s.shuttingDown.Store(true)
 
-	// Close flush subscriptions first to unblock consumer goroutines.
-	// This must happen BEFORE closing the indexer so that in-flight
-	// handleFlushReply calls (which may call writeFlushContent → indexer.Sync)
-	// finish before the indexer is closed.
+	// Stop consumer goroutines before closing the indexer.
 	s.lifecycle.Stop()
 
 	if err := s.lifecycle.Wait(ctx); err != nil {
 		return err
 	}
 
-	// Close the indexer after goroutines have stopped to prevent
-	// data races on s.indexer between writeFlushContent and Shutdown.
+	// Close the indexer after goroutines have stopped.
 	if s.indexer != nil {
 		if err := s.indexer.Close(); err != nil {
 			log.Printf("[Awareness] WARNING: close indexer: %v", err)
@@ -394,10 +366,14 @@ func (s *Service) ensureDirectories() error {
 	dirs := []string{
 		s.awarenessDir,
 		filepath.Join(s.awarenessDir, "memory"),
-		filepath.Join(s.awarenessDir, "memory", "daily"),
+		filepath.Join(s.awarenessDir, "memory", "journals"),
+		filepath.Join(s.awarenessDir, "memory", "journals", "archives"),
+		filepath.Join(s.awarenessDir, "memory", "journals", "logs"),
+		filepath.Join(s.awarenessDir, "memory", "conversations"),
+		filepath.Join(s.awarenessDir, "memory", "conversations", "archives"),
+		filepath.Join(s.awarenessDir, "memory", "conversations", "logs"),
 		filepath.Join(s.awarenessDir, "memory", "topics"),
 		filepath.Join(s.awarenessDir, "memory", "projects"),
-		filepath.Join(s.awarenessDir, "memory", "sessions"),
 	}
 
 	for _, dir := range dirs {
@@ -408,8 +384,8 @@ func (s *Service) ensureDirectories() error {
 
 	// Clean up stale .tmp files from interrupted atomic writes.
 	// These can remain if the process crashes between os.WriteFile and os.Rename.
-	// Covers both top-level (daily/, topics/, sessions/) and project-scoped
-	// (projects/<slug>/daily/, projects/<slug>/topics/) directories.
+	// Covers both top-level (journals/, conversations/, topics/) and project-scoped
+	// (projects/<slug>/conversations/, projects/<slug>/topics/) directories.
 	cleanTmp := func(dir string) {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
@@ -430,7 +406,7 @@ func (s *Service) ensureDirectories() error {
 	// Clean awareness root dir (.tmp from core memory atomic writes).
 	cleanTmp(s.awarenessDir)
 
-	for _, subdir := range []string{"daily", "topics", "sessions"} {
+	for _, subdir := range []string{"journals", "conversations", "topics"} {
 		cleanTmp(filepath.Join(s.awarenessDir, "memory", subdir))
 	}
 
@@ -440,7 +416,7 @@ func (s *Service) ensureDirectories() error {
 	if err == nil {
 		for _, pe := range projectEntries {
 			if pe.IsDir() {
-				for _, subdir := range []string{"daily", "topics"} {
+				for _, subdir := range []string{"journals", "conversations", "topics"} {
 					cleanTmp(filepath.Join(projectsDir, pe.Name(), subdir))
 				}
 			}

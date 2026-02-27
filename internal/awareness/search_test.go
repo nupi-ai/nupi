@@ -15,19 +15,19 @@ func setupSearchIndex(t *testing.T) (*Indexer, context.Context) {
 	dir := t.TempDir()
 
 	// Create directory structure with files.
-	for _, sub := range []string{"daily", "topics", "projects/nupi/sessions", "projects/nupi/daily"} {
+	for _, sub := range []string{"conversations", "topics", "projects/nupi/journals", "projects/nupi/conversations"} {
 		if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
 
 	files := map[string]string{
-		"daily/2026-02-19.md":                   "## Morning\n\nReviewed database migration plan.\n\n## Afternoon\n\nImplemented FTS5 indexer for memory search.",
-		"daily/2026-02-18.md":                   "## Work\n\nSet up awareness service scaffold.",
-		"topics/golang.md":                      "## Go Tips\n\nUse context for cancellation. Use t.TempDir for tests.",
-		"topics/databases.md":                   "## SQLite\n\nFTS5 provides full-text search. Use WAL mode for concurrency.\n\n## PostgreSQL\n\nGood for production workloads.",
-		"projects/nupi/sessions/2026-02-19.md":  "## Session\n\nDiscussed architecture for the awareness memory system.",
-		"projects/nupi/daily/2026-02-19.md":     "## Nupi Daily\n\nWorked on archival memory indexer implementation.",
+		"conversations/2026-02-19.md":                   "## Morning\n\nReviewed database migration plan.\n\n## Afternoon\n\nImplemented FTS5 indexer for memory search.",
+		"conversations/2026-02-18.md":                   "## Work\n\nSet up awareness service scaffold.",
+		"topics/golang.md":                              "## Go Tips\n\nUse context for cancellation. Use t.TempDir for tests.",
+		"topics/databases.md":                           "## SQLite\n\nFTS5 provides full-text search. Use WAL mode for concurrency.\n\n## PostgreSQL\n\nGood for production workloads.",
+		"projects/nupi/journals/2026-02-19.md":          "## Journal\n\nDiscussed architecture for the awareness memory system.",
+		"projects/nupi/conversations/2026-02-19.md":     "## Nupi Conversation\n\nWorked on archival memory indexer implementation.",
 	}
 
 	for relPath, content := range files {
@@ -65,9 +65,9 @@ func TestSearchFTSBasic(t *testing.T) {
 		t.Fatal("expected at least 1 result for 'database migration'")
 	}
 
-	// First result should be the daily log mentioning database migration.
-	if results[0].Path != "daily/2026-02-19.md" {
-		t.Errorf("expected top result from daily/2026-02-19.md, got %q", results[0].Path)
+	// First result should be the conversation log mentioning database migration.
+	if results[0].Path != "conversations/2026-02-19.md" {
+		t.Errorf("expected top result from conversations/2026-02-19.md, got %q", results[0].Path)
 	}
 }
 
@@ -316,8 +316,8 @@ func TestSearchFTSSpecialCharacters(t *testing.T) {
 
 func TestSearchFTSPerformance(t *testing.T) {
 	dir := t.TempDir()
-	dailyDir := filepath.Join(dir, "daily")
-	if err := os.MkdirAll(dailyDir, 0o755); err != nil {
+	convDir := filepath.Join(dir, "conversations")
+	if err := os.MkdirAll(convDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -328,7 +328,7 @@ func TestSearchFTSPerformance(t *testing.T) {
 			"## Details\n\nPerformance testing of FTS5 full-text search with many documents.\n\n"+
 			"## Notes\n\nAdditional content for chunk %d generation and indexing validation.", i, i, i)
 		filename := fmt.Sprintf("2026-01-%03d.md", i)
-		if err := os.WriteFile(filepath.Join(dailyDir, filename), []byte(content), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(convDir, filename), []byte(content), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -381,17 +381,17 @@ func setupSearchIndexWithEmbeddings(t *testing.T) (*Indexer, context.Context) {
 	t.Helper()
 	dir := t.TempDir()
 
-	for _, sub := range []string{"daily", "topics", "projects/nupi/sessions"} {
+	for _, sub := range []string{"conversations", "topics", "projects/nupi/journals"} {
 		if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
 
 	files := map[string]string{
-		"daily/2026-02-19.md":                  "## Morning\n\nReviewed database migration plan.\n\n## Afternoon\n\nImplemented FTS5 indexer for memory search.",
-		"topics/golang.md":                     "## Go Tips\n\nUse context for cancellation. Use t.TempDir for tests.",
-		"topics/databases.md":                  "## SQLite\n\nFTS5 provides full-text search. Use WAL mode for concurrency.",
-		"projects/nupi/sessions/2026-02-19.md": "## Session\n\nDiscussed architecture for the awareness memory system.",
+		"conversations/2026-02-19.md":                  "## Morning\n\nReviewed database migration plan.\n\n## Afternoon\n\nImplemented FTS5 indexer for memory search.",
+		"topics/golang.md":                             "## Go Tips\n\nUse context for cancellation. Use t.TempDir for tests.",
+		"topics/databases.md":                          "## SQLite\n\nFTS5 provides full-text search. Use WAL mode for concurrency.",
+		"projects/nupi/journals/2026-02-19.md":         "## Journal\n\nDiscussed architecture for the awareness memory system.",
 	}
 
 	for relPath, content := range files {

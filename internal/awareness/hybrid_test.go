@@ -151,8 +151,8 @@ func TestIsEvergreenFileSOUL(t *testing.T) {
 }
 
 func TestIsEvergreenFileRegular(t *testing.T) {
-	if isEvergreenFile("daily/2026-02-19.md") {
-		t.Fatal("daily file should not be evergreen")
+	if isEvergreenFile("conversations/2026-02-19.md") {
+		t.Fatal("conversation file should not be evergreen")
 	}
 }
 

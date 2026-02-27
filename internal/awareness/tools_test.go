@@ -51,7 +51,7 @@ func writeMemoryFile(t *testing.T, svc *Service, relPath, content string) {
 func TestMemorySearchHandler(t *testing.T) {
 	svc, ctx := setupToolsService(t)
 
-	writeMemoryFile(t, svc, "daily/2026-02-20.md", "## Test\n\nUnique searchable content about awareness tools.")
+	writeMemoryFile(t, svc, "conversations/2026-02-20.md", "## Test\n\nUnique searchable content about awareness tools.")
 
 	// Sync the indexer so the file is indexed.
 	if err := svc.indexer.Sync(ctx); err != nil {
@@ -104,7 +104,7 @@ func TestMemorySearchHandlerEmptyQuery(t *testing.T) {
 func TestMemorySearchHandlerDefaultScope(t *testing.T) {
 	svc, ctx := setupToolsService(t)
 
-	writeMemoryFile(t, svc, "daily/2026-02-20.md", "## Test\n\nDefault scope unique searchable content.")
+	writeMemoryFile(t, svc, "conversations/2026-02-20.md", "## Test\n\nDefault scope unique searchable content.")
 	if err := svc.indexer.Sync(ctx); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestMemorySearchHandlerDateNormalization(t *testing.T) {
 	svc, ctx := setupToolsService(t)
 
 	today := time.Now().UTC().Format("2006-01-02")
-	writeMemoryFile(t, svc, "daily/"+today+".md", "## Test\n\nDate filter test content for normalization.")
+	writeMemoryFile(t, svc, "conversations/"+today+".md", "## Test\n\nDate filter test content for normalization.")
 	if err := svc.indexer.Sync(ctx); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
@@ -209,11 +209,11 @@ func TestMemoryGetHandler(t *testing.T) {
 	svc, ctx := setupToolsService(t)
 
 	expected := "# Test File\n\nThis is test content."
-	writeMemoryFile(t, svc, "daily/2026-02-20.md", expected)
+	writeMemoryFile(t, svc, "conversations/2026-02-20.md", expected)
 
 	getSpec := findSpec(t, svc.ToolSpecs(), "memory_get")
 
-	result, err := getSpec.Handler(ctx, json.RawMessage(`{"path": "daily/2026-02-20.md"}`))
+	result, err := getSpec.Handler(ctx, json.RawMessage(`{"path": "conversations/2026-02-20.md"}`))
 	if err != nil {
 		t.Fatalf("Handler error: %v", err)
 	}
@@ -226,8 +226,8 @@ func TestMemoryGetHandler(t *testing.T) {
 	if parsed["content"] != expected {
 		t.Fatalf("Expected content %q, got %q", expected, parsed["content"])
 	}
-	if parsed["path"] != "daily/2026-02-20.md" {
-		t.Fatalf("Expected path 'daily/2026-02-20.md', got %q", parsed["path"])
+	if parsed["path"] != "conversations/2026-02-20.md" {
+		t.Fatalf("Expected path 'conversations/2026-02-20.md', got %q", parsed["path"])
 	}
 }
 
@@ -282,7 +282,7 @@ func TestMemoryGetHandlerFileNotFound(t *testing.T) {
 
 	getSpec := findSpec(t, svc.ToolSpecs(), "memory_get")
 
-	_, err := getSpec.Handler(ctx, json.RawMessage(`{"path": "daily/nonexistent.md"}`))
+	_, err := getSpec.Handler(ctx, json.RawMessage(`{"path": "conversations/nonexistent.md"}`))
 	if err == nil {
 		t.Fatal("Expected error for nonexistent file")
 	}
@@ -291,12 +291,12 @@ func TestMemoryGetHandlerFileNotFound(t *testing.T) {
 	}
 }
 
-func TestMemoryWriteHandlerDaily(t *testing.T) {
+func TestMemoryWriteHandlerConversations(t *testing.T) {
 	svc, ctx := setupToolsService(t)
 
 	writeSpec := findSpec(t, svc.ToolSpecs(), "memory_write")
 
-	result, err := writeSpec.Handler(ctx, json.RawMessage(`{"content": "test daily entry", "type": "daily"}`))
+	result, err := writeSpec.Handler(ctx, json.RawMessage(`{"content": "test conversation entry", "type": "conversations"}`))
 	if err != nil {
 		t.Fatalf("Handler error: %v", err)
 	}
@@ -312,21 +312,21 @@ func TestMemoryWriteHandlerDaily(t *testing.T) {
 
 	// Verify the returned path matches expected relative path.
 	date := time.Now().UTC().Format("2006-01-02")
-	expectedPath := filepath.Join("daily", date+".md")
+	expectedPath := filepath.Join("conversations", date+".md")
 	if parsed["path"] != expectedPath {
 		t.Fatalf("Expected path %q, got %q", expectedPath, parsed["path"])
 	}
 
 	// Verify file was created.
-	dailyFile := filepath.Join(svc.awarenessDir, "memory", "daily", date+".md")
-	data, err := os.ReadFile(dailyFile)
+	convFile := filepath.Join(svc.awarenessDir, "memory", "conversations", date+".md")
+	data, err := os.ReadFile(convFile)
 	if err != nil {
-		t.Fatalf("Daily file not created: %v", err)
+		t.Fatalf("Conversation file not created: %v", err)
 	}
 
 	content := string(data)
-	if !strings.Contains(content, "test daily entry") {
-		t.Fatalf("Expected daily file to contain 'test daily entry', got %q", content)
+	if !strings.Contains(content, "test conversation entry") {
+		t.Fatalf("Expected conversation file to contain 'test conversation entry', got %q", content)
 	}
 	if !strings.Contains(content, "UTC") {
 		t.Fatalf("Expected timestamp header with UTC, got %q", content)
@@ -371,22 +371,22 @@ func TestMemoryWriteHandlerTopic(t *testing.T) {
 func TestMemoryWriteHandlerAppendExisting(t *testing.T) {
 	svc, ctx := setupToolsService(t)
 
-	// Write initial daily content.
+	// Write initial conversation content.
 	date := time.Now().UTC().Format("2006-01-02")
-	dailyDir := filepath.Join(svc.awarenessDir, "memory", "daily")
-	initialContent := "# Daily Log " + date + "\n\n## Initial Entry\n\nInitial content."
-	if err := os.WriteFile(filepath.Join(dailyDir, date+".md"), []byte(initialContent), 0o600); err != nil {
+	convDir := filepath.Join(svc.awarenessDir, "memory", "conversations")
+	initialContent := "# Conversation Log " + date + "\n\n## Initial Entry\n\nInitial content."
+	if err := os.WriteFile(filepath.Join(convDir, date+".md"), []byte(initialContent), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	writeSpec := findSpec(t, svc.ToolSpecs(), "memory_write")
 
-	_, err := writeSpec.Handler(ctx, json.RawMessage(`{"content": "appended content", "type": "daily"}`))
+	_, err := writeSpec.Handler(ctx, json.RawMessage(`{"content": "appended content", "type": "conversations"}`))
 	if err != nil {
 		t.Fatalf("Handler error: %v", err)
 	}
 
-	data, err := os.ReadFile(filepath.Join(dailyDir, date+".md"))
+	data, err := os.ReadFile(filepath.Join(convDir, date+".md"))
 	if err != nil {
 		t.Fatalf("Read file: %v", err)
 	}
@@ -405,7 +405,7 @@ func TestMemoryWriteHandlerProjectScoped(t *testing.T) {
 
 	writeSpec := findSpec(t, svc.ToolSpecs(), "memory_write")
 
-	result, err := writeSpec.Handler(ctx, json.RawMessage(`{"content": "project note", "type": "daily", "project_slug": "nupi"}`))
+	result, err := writeSpec.Handler(ctx, json.RawMessage(`{"content": "project note", "type": "conversations", "project_slug": "nupi"}`))
 	if err != nil {
 		t.Fatalf("Handler error: %v", err)
 	}
@@ -421,16 +421,16 @@ func TestMemoryWriteHandlerProjectScoped(t *testing.T) {
 
 	// Verify the returned path matches project-scoped relative path.
 	date := time.Now().UTC().Format("2006-01-02")
-	expectedPath := filepath.Join("projects", "nupi", "daily", date+".md")
+	expectedPath := filepath.Join("projects", "nupi", "conversations", date+".md")
 	if parsed["path"] != expectedPath {
 		t.Fatalf("Expected path %q, got %q", expectedPath, parsed["path"])
 	}
 
 	// Verify file was created in project-scoped path.
-	projectFile := filepath.Join(svc.awarenessDir, "memory", "projects", "nupi", "daily", date+".md")
+	projectFile := filepath.Join(svc.awarenessDir, "memory", "projects", "nupi", "conversations", date+".md")
 	data, err := os.ReadFile(projectFile)
 	if err != nil {
-		t.Fatalf("Project-scoped daily file not created: %v", err)
+		t.Fatalf("Project-scoped conversation file not created: %v", err)
 	}
 
 	if !strings.Contains(string(data), "project note") {

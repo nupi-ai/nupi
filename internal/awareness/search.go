@@ -25,7 +25,7 @@ type SearchResult struct {
 	ChunkIndex  int     // Chunk index within the file.
 	Snippet     string  // FTS5-generated snippet with highlighted matches.
 	Score       float64 // Relevance score (higher = more relevant). BM25 for FTS, cosine similarity for vector search.
-	FileType    string  // "daily", "topic", "session".
+	FileType    string  // "conversations", "journals", "topic", "unknown".
 	ProjectSlug string  // Project slug (empty for global).
 	Mtime       string  // File modification time (RFC 3339).
 }
