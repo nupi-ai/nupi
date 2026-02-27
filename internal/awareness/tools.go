@@ -173,7 +173,7 @@ func memoryGetSpec(s *Service) ToolSpec {
 		ParametersJSON: `{
   "type": "object",
   "properties": {
-    "path": {"type": "string", "description": "File path relative to memory directory (e.g., 'daily/2026-02-20.md', 'projects/nupi/topics/auth.md')"}
+    "path": {"type": "string", "description": "File path relative to memory directory (e.g., 'conversations/2026-02-20.md', 'projects/nupi/topics/auth.md')"}
   },
   "required": ["path"]
 }`,
@@ -268,7 +268,7 @@ type memoryWriteArgs struct {
 // WriteOptions configures a WriteMemory call.
 type WriteOptions struct {
 	Content     string
-	Type        string // "daily" or "topic"
+	Type        string // "conversations" or "topic" (journals are managed by RollingLog engine, not the write tool)
 	TopicName   string
 	ProjectSlug string
 }
@@ -276,12 +276,12 @@ type WriteOptions struct {
 func memoryWriteSpec(s *Service) ToolSpec {
 	return ToolSpec{
 		Name:        "memory_write",
-		Description: "Write or append content to memory. Use type 'daily' for date-based logs, 'topic' for named topic files. Content is appended to existing files.",
+		Description: "Write or append content to memory. Use type 'conversations' for date-based conversation logs, 'topic' for named topic files. Content is appended to existing files.",
 		ParametersJSON: `{
   "type": "object",
   "properties": {
     "content": {"type": "string", "description": "Content to write (markdown)"},
-    "type": {"type": "string", "enum": ["daily", "topic"], "description": "Target type: 'daily' for today's log, 'topic' for named topic"},
+    "type": {"type": "string", "enum": ["conversations", "topic"], "description": "Target type: 'conversations' for today's log, 'topic' for named topic"},
     "topic_name": {"type": "string", "description": "Topic filename (required when type='topic', e.g., 'project-decisions')"},
     "project_slug": {"type": "string", "description": "Project slug (empty for global memory)"}
   },
@@ -297,8 +297,8 @@ func memoryWriteSpec(s *Service) ToolSpec {
 				return nil, fmt.Errorf("content is required")
 			}
 
-			if a.Type != "daily" && a.Type != "topic" {
-				return nil, fmt.Errorf("type must be 'daily' or 'topic'")
+			if a.Type != "conversations" && a.Type != "topic" {
+				return nil, fmt.Errorf("type must be 'conversations' or 'topic'")
 			}
 
 			if a.Type == "topic" && strings.TrimSpace(a.TopicName) == "" {
@@ -343,15 +343,15 @@ func validatePathComponent(name, label string) error {
 	return nil
 }
 
-// WriteMemory writes or appends content to a daily log or topic file.
+// WriteMemory writes or appends content to a conversation log or topic file.
 // Returns the relative path (from memory/) of the written file.
 func (s *Service) WriteMemory(ctx context.Context, opts WriteOptions) (string, error) {
 	if strings.TrimSpace(opts.Content) == "" {
 		return "", fmt.Errorf("content is required")
 	}
 
-	if opts.Type != "daily" && opts.Type != "topic" {
-		return "", fmt.Errorf("type must be 'daily' or 'topic'")
+	if opts.Type != "conversations" && opts.Type != "topic" {
+		return "", fmt.Errorf("type must be 'conversations' or 'topic'")
 	}
 
 	if opts.Type == "topic" && strings.TrimSpace(opts.TopicName) == "" {
@@ -381,19 +381,19 @@ func (s *Service) WriteMemory(ctx context.Context, opts WriteOptions) (string, e
 	now := time.Now().UTC()
 
 	switch opts.Type {
-	case "daily":
+	case "conversations":
 		dir := memoryDir
 		relDir := ""
 		if opts.ProjectSlug != "" {
-			dir = filepath.Join(memoryDir, "projects", opts.ProjectSlug, "daily")
-			relDir = filepath.Join("projects", opts.ProjectSlug, "daily")
+			dir = filepath.Join(memoryDir, "projects", opts.ProjectSlug, "conversations")
+			relDir = filepath.Join("projects", opts.ProjectSlug, "conversations")
 		} else {
-			dir = filepath.Join(memoryDir, "daily")
-			relDir = "daily"
+			dir = filepath.Join(memoryDir, "conversations")
+			relDir = "conversations"
 		}
 
 		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return "", fmt.Errorf("create daily dir: %w", err)
+			return "", fmt.Errorf("create conversations dir: %w", err)
 		}
 
 		date := now.Format("2006-01-02")
@@ -409,9 +409,9 @@ func (s *Service) WriteMemory(ctx context.Context, opts WriteOptions) (string, e
 		if err == nil {
 			data = append(existing, []byte(section)...)
 		} else if errors.Is(err, os.ErrNotExist) {
-			data = []byte(fmt.Sprintf("# Daily Log %s%s", date, section))
+			data = []byte(fmt.Sprintf("# Conversation Log %s%s", date, section))
 		} else {
-			return "", fmt.Errorf("read existing daily file: %w", err)
+			return "", fmt.Errorf("read existing conversation file: %w", err)
 		}
 
 		// Atomic write.
@@ -422,7 +422,7 @@ func (s *Service) WriteMemory(ctx context.Context, opts WriteOptions) (string, e
 		}
 		if err := os.Rename(tmpPath, fullPath); err != nil {
 			os.Remove(tmpPath)
-			return "", fmt.Errorf("rename temp to daily file: %w", err)
+			return "", fmt.Errorf("rename temp to conversation file: %w", err)
 		}
 
 	case "topic":

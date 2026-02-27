@@ -479,11 +479,12 @@ func (ix *Indexer) loadIndexedFiles(ctx context.Context) (map[string]string, err
 // classifyFile determines the file type and project slug from a relative path.
 // Expected paths (relative to awareness/memory/):
 //
-//	daily/YYYY-MM-DD.md            → ("daily", "")
-//	topics/foo.md                  → ("topic", "")
-//	projects/<slug>/sessions/x.md  → ("session", "<slug>")
-//	projects/<slug>/daily/x.md     → ("daily", "<slug>")
-//	projects/<slug>/topics/x.md    → ("topic", "<slug>")
+//	conversations/YYYY-MM-DD.md            → ("conversations", "")
+//	journals/x.md                          → ("journals", "")
+//	topics/foo.md                          → ("topic", "")
+//	projects/<slug>/conversations/x.md     → ("conversations", "<slug>")
+//	projects/<slug>/journals/x.md          → ("journals", "<slug>")
+//	projects/<slug>/topics/x.md            → ("topic", "<slug>")
 func classifyFile(relPath string) (fileType, projectSlug string) {
 	parts := strings.Split(filepath.ToSlash(relPath), "/")
 	if len(parts) == 0 {
@@ -491,8 +492,10 @@ func classifyFile(relPath string) (fileType, projectSlug string) {
 	}
 
 	switch parts[0] {
-	case "daily":
-		return "daily", ""
+	case "conversations":
+		return "conversations", ""
+	case "journals":
+		return "journals", ""
 	case "topics":
 		return "topic", ""
 	case "projects":
@@ -501,10 +504,10 @@ func classifyFile(relPath string) (fileType, projectSlug string) {
 		}
 		slug := parts[1]
 		switch parts[2] {
-		case "sessions":
-			return "session", slug
-		case "daily":
-			return "daily", slug
+		case "conversations":
+			return "conversations", slug
+		case "journals":
+			return "journals", slug
 		case "topics":
 			return "topic", slug
 		default:

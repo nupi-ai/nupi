@@ -152,12 +152,12 @@ func TestVectorNorm(t *testing.T) {
 
 func TestIndexerSyncWithEmbeddings(t *testing.T) {
 	dir := t.TempDir()
-	dailyDir := filepath.Join(dir, "daily")
-	if err := os.MkdirAll(dailyDir, 0o755); err != nil {
+	convDir := filepath.Join(dir, "conversations")
+	if err := os.MkdirAll(convDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := os.WriteFile(filepath.Join(dailyDir, "test.md"), []byte("## Test\n\nSome content for embedding."), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(convDir, "test.md"), []byte("## Test\n\nSome content for embedding."), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -192,12 +192,12 @@ func TestIndexerSyncWithEmbeddings(t *testing.T) {
 
 func TestIndexerSyncWithoutProvider(t *testing.T) {
 	dir := t.TempDir()
-	dailyDir := filepath.Join(dir, "daily")
-	if err := os.MkdirAll(dailyDir, 0o755); err != nil {
+	convDir := filepath.Join(dir, "conversations")
+	if err := os.MkdirAll(convDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := os.WriteFile(filepath.Join(dailyDir, "test.md"), []byte("## Test\n\nFTS only."), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(convDir, "test.md"), []byte("## Test\n\nFTS only."), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -237,12 +237,12 @@ func TestIndexerSyncWithoutProvider(t *testing.T) {
 
 func TestIndexerFileDeleteClearsEmbeddings(t *testing.T) {
 	dir := t.TempDir()
-	dailyDir := filepath.Join(dir, "daily")
-	if err := os.MkdirAll(dailyDir, 0o755); err != nil {
+	convDir := filepath.Join(dir, "conversations")
+	if err := os.MkdirAll(convDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	filePath := filepath.Join(dailyDir, "test.md")
+	filePath := filepath.Join(convDir, "test.md")
 	if err := os.WriteFile(filePath, []byte("## Test\n\nContent to embed."), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +263,7 @@ func TestIndexerFileDeleteClearsEmbeddings(t *testing.T) {
 
 	// Verify embeddings exist.
 	var count int
-	row := ix.db.QueryRowContext(ctx, "SELECT count(*) FROM memory_embeddings WHERE path = 'daily/test.md'")
+	row := ix.db.QueryRowContext(ctx, "SELECT count(*) FROM memory_embeddings WHERE path = 'conversations/test.md'")
 	if err := row.Scan(&count); err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +278,7 @@ func TestIndexerFileDeleteClearsEmbeddings(t *testing.T) {
 	}
 
 	// Embeddings should be cleared.
-	row = ix.db.QueryRowContext(ctx, "SELECT count(*) FROM memory_embeddings WHERE path = 'daily/test.md'")
+	row = ix.db.QueryRowContext(ctx, "SELECT count(*) FROM memory_embeddings WHERE path = 'conversations/test.md'")
 	if err := row.Scan(&count); err != nil {
 		t.Fatal(err)
 	}
@@ -289,12 +289,12 @@ func TestIndexerFileDeleteClearsEmbeddings(t *testing.T) {
 
 func TestIndexerFileUpdateReEmbeds(t *testing.T) {
 	dir := t.TempDir()
-	dailyDir := filepath.Join(dir, "daily")
-	if err := os.MkdirAll(dailyDir, 0o755); err != nil {
+	convDir := filepath.Join(dir, "conversations")
+	if err := os.MkdirAll(convDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	filePath := filepath.Join(dailyDir, "test.md")
+	filePath := filepath.Join(convDir, "test.md")
 	if err := os.WriteFile(filePath, []byte("## V1\n\nOriginal."), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -335,7 +335,7 @@ func TestIndexerFileUpdateReEmbeds(t *testing.T) {
 
 	// Verify new embeddings stored (old ones replaced).
 	var count int
-	row := ix.db.QueryRowContext(ctx, "SELECT count(*) FROM memory_embeddings WHERE path = 'daily/test.md'")
+	row := ix.db.QueryRowContext(ctx, "SELECT count(*) FROM memory_embeddings WHERE path = 'conversations/test.md'")
 	if err := row.Scan(&count); err != nil {
 		t.Fatal(err)
 	}
@@ -346,11 +346,11 @@ func TestIndexerFileUpdateReEmbeds(t *testing.T) {
 
 func TestIndexerRebuildClearsEmbeddings(t *testing.T) {
 	dir := t.TempDir()
-	dailyDir := filepath.Join(dir, "daily")
-	if err := os.MkdirAll(dailyDir, 0o755); err != nil {
+	convDir := filepath.Join(dir, "conversations")
+	if err := os.MkdirAll(convDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dailyDir, "test.md"), []byte("## Test\n\nContent."), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(convDir, "test.md"), []byte("## Test\n\nContent."), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -390,11 +390,11 @@ func TestIndexerRebuildClearsEmbeddings(t *testing.T) {
 
 func TestBackfillMissingEmbeddings(t *testing.T) {
 	dir := t.TempDir()
-	dailyDir := filepath.Join(dir, "daily")
-	if err := os.MkdirAll(dailyDir, 0o755); err != nil {
+	convDir := filepath.Join(dir, "conversations")
+	if err := os.MkdirAll(convDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dailyDir, "test.md"), []byte("## Test\n\nContent for backfill."), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(convDir, "test.md"), []byte("## Test\n\nContent for backfill."), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -438,11 +438,11 @@ func TestBackfillMissingEmbeddings(t *testing.T) {
 
 func TestBackfillWithErrors(t *testing.T) {
 	dir := t.TempDir()
-	dailyDir := filepath.Join(dir, "daily")
-	if err := os.MkdirAll(dailyDir, 0o755); err != nil {
+	convDir := filepath.Join(dir, "conversations")
+	if err := os.MkdirAll(convDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dailyDir, "test.md"), []byte("## Test\n\nContent."), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(convDir, "test.md"), []byte("## Test\n\nContent."), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -477,11 +477,11 @@ func TestBackfillWithErrors(t *testing.T) {
 
 func TestBackfillNoOpWhenAllEmbedded(t *testing.T) {
 	dir := t.TempDir()
-	dailyDir := filepath.Join(dir, "daily")
-	if err := os.MkdirAll(dailyDir, 0o755); err != nil {
+	convDir := filepath.Join(dir, "conversations")
+	if err := os.MkdirAll(convDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dailyDir, "test.md"), []byte("## Test\n\nContent."), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(convDir, "test.md"), []byte("## Test\n\nContent."), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
