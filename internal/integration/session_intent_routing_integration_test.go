@@ -391,7 +391,6 @@ func TestProactiveIdleNotification(t *testing.T) {
 	executor := newRecordingCommandExecutor()
 
 	conversationSvc := conversation.NewService(bus,
-		conversation.WithHistoryLimit(8),
 		conversation.WithDetachTTL(5*time.Second),
 	)
 
@@ -463,7 +462,6 @@ func TestProactiveNotificationRateLimiting(t *testing.T) {
 	executor := newRecordingCommandExecutor()
 
 	conversationSvc := conversation.NewService(bus,
-		conversation.WithHistoryLimit(8),
 		conversation.WithDetachTTL(5*time.Second),
 	)
 
@@ -551,7 +549,6 @@ func TestProactiveNotificationIncludesContext(t *testing.T) {
 	executor := newRecordingCommandExecutor()
 
 	conversationSvc := conversation.NewService(bus,
-		conversation.WithHistoryLimit(8),
 		conversation.WithDetachTTL(5*time.Second),
 	)
 
@@ -594,14 +591,8 @@ func TestProactiveNotificationIncludesContext(t *testing.T) {
 	// Drain the speak event
 	waitForSpeak(t, speakSub, 2*time.Second)
 
-	// Wait for conversation history to be populated
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if len(conversationSvc.Context("sess-ctx")) > 0 {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	// NOTE: Context() no longer returns RAM history (Story 19.2 refactoring).
+	// The waitForReply/waitForSpeak calls above already synchronize event processing.
 
 	// Now: publish notable session output (triggers session_output flow)
 	// This is the first session_output for this session, so rate limiter allows it.
@@ -668,7 +659,6 @@ func TestSessionHistorySummarization(t *testing.T) {
 	executor := newRecordingCommandExecutor()
 
 	conversationSvc := conversation.NewService(bus,
-		conversation.WithHistoryLimit(50),
 		conversation.WithDetachTTL(5*time.Second),
 	)
 
@@ -706,14 +696,8 @@ func TestSessionHistorySummarization(t *testing.T) {
 		waitForSpeak(t, speakSub, 2*time.Second)
 	}
 
-	// Wait for conversation service to have recorded history
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if len(conversationSvc.Context("sess-hist")) >= 3 {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	// NOTE: Context() no longer returns RAM history (Story 19.2 refactoring).
+	// The waitForSpeak calls above already synchronize event processing.
 
 	// Now ask "what happened in session sess-hist" — also via pipeline flow
 	eventbus.Publish(ctx, bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{
@@ -759,7 +743,6 @@ func TestHistorySummarizationUsesCorrectSessionContext(t *testing.T) {
 	executor := newRecordingCommandExecutor()
 
 	conversationSvc := conversation.NewService(bus,
-		conversation.WithHistoryLimit(50),
 		conversation.WithDetachTTL(5*time.Second),
 	)
 
@@ -801,14 +784,8 @@ func TestHistorySummarizationUsesCorrectSessionContext(t *testing.T) {
 	})
 	waitForSpeak(t, speakSub, 2*time.Second)
 
-	// Wait for conversation service to record both
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if len(conversationSvc.Context("sess-one")) > 0 && len(conversationSvc.Context("sess-two")) > 0 {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	// NOTE: Context() no longer returns RAM history (Story 19.2 refactoring).
+	// The waitForSpeak calls above already synchronize event processing.
 
 	// Ask about sess-one specifically — via pipeline flow
 	eventbus.Publish(ctx, bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{
@@ -989,7 +966,6 @@ func TestSessionOutputForNonNotableEventsIgnored(t *testing.T) {
 	executor := newRecordingCommandExecutor()
 
 	conversationSvc := conversation.NewService(bus,
-		conversation.WithHistoryLimit(8),
 		conversation.WithDetachTTL(5*time.Second),
 	)
 

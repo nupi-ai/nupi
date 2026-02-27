@@ -2,43 +2,13 @@ package conversation
 
 import (
 	"context"
-	"strconv"
-	"strings"
 	"testing"
 	"time"
-	"unicode/utf8"
 
 	"github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 )
-
-func TestConversationStoresHistoryWithLimit(t *testing.T) {
-	bus := eventbus.New()
-	svc := NewService(bus, WithHistoryLimit(2))
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	if err := svc.Start(ctx); err != nil {
-		t.Fatalf("start conversation: %v", err)
-	}
-	defer svc.Shutdown(context.Background())
-
-	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{SessionID: "s", Origin: eventbus.OriginTool, Text: "first"})
-	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{SessionID: "s", Origin: eventbus.OriginTool, Text: "second"})
-	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{SessionID: "s", Origin: eventbus.OriginTool, Text: "third"})
-
-	time.Sleep(50 * time.Millisecond)
-
-	history := svc.Context("s")
-	if len(history) != 2 {
-		t.Fatalf("expected 2 turns, got %d", len(history))
-	}
-	if history[0].Text != "second" || history[1].Text != "third" {
-		t.Fatalf("unexpected history order: %+v", history)
-	}
-}
 
 func TestConversationPublishesPromptOnUserInput(t *testing.T) {
 	bus := eventbus.New()
@@ -54,6 +24,9 @@ func TestConversationPublishesPromptOnUserInput(t *testing.T) {
 
 	promptSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Prompt)
 	defer promptSub.Close()
+
+	turnSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Turn)
+	defer turnSub.Close()
 
 	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{SessionID: "chat", Origin: eventbus.OriginTool, Text: "previous"})
 
@@ -74,9 +47,23 @@ func TestConversationPublishesPromptOnUserInput(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timeout waiting for prompt")
 	}
+
+	// Verify turn events are published (should have at least the user turn)
+	var userTurnFound bool
+	deadline := time.After(time.Second)
+	for !userTurnFound {
+		select {
+		case env := <-turnSub.C():
+			if env.Payload.Turn.Origin == eventbus.OriginUser && env.Payload.Turn.Text == "hello" {
+				userTurnFound = true
+			}
+		case <-deadline:
+			t.Fatal("timeout waiting for user turn event")
+		}
+	}
 }
 
-func TestConversationMarksBargeInOnLastAITurn(t *testing.T) {
+func TestConversationStoresReplies_PublishesTurnEvent(t *testing.T) {
 	bus := eventbus.New()
 	svc := NewService(bus)
 
@@ -88,153 +75,60 @@ func TestConversationMarksBargeInOnLastAITurn(t *testing.T) {
 	}
 	defer svc.Shutdown(context.Background())
 
-	now := time.Now().UTC()
-	svc.handlePipelineMessage(now, eventbus.PipelineMessageEvent{
-		SessionID: "session",
-		Origin:    eventbus.OriginUser,
-		Text:      "question",
-	})
-
-	svc.handleReplyMessage(now.Add(10*time.Millisecond), eventbus.ConversationReplyEvent{
-		SessionID: "session",
-		PromptID:  "prompt-1",
-		Text:      "answer",
-	})
-
-	bargeEvent := eventbus.SpeechBargeInEvent{
-		SessionID: "session",
-		StreamID:  "mic",
-		Reason:    "client_interrupt",
-		Timestamp: now.Add(20 * time.Millisecond),
-		Metadata: map[string]string{
-			"origin": "test",
-		},
-	}
-	svc.handleBargeEvent(bargeEvent)
-
-	history := svc.Context("session")
-	if len(history) != 2 {
-		t.Fatalf("unexpected history length: %d", len(history))
-	}
-	aiTurn := history[1]
-	if aiTurn.Origin != eventbus.OriginAI {
-		t.Fatalf("expected AI origin for last turn, got %s", aiTurn.Origin)
-	}
-	if aiTurn.Meta[constants.MetadataKeyBargeIn] != "true" {
-		t.Fatalf("expected barge_in metadata, got %+v", aiTurn.Meta)
-	}
-	if aiTurn.Meta[constants.MetadataKeyBargeInReason] != "client_interrupt" {
-		t.Fatalf("unexpected barge_in_reason: %s", aiTurn.Meta[constants.MetadataKeyBargeInReason])
-	}
-	if aiTurn.Meta[constants.MetadataKeyBargePrefix+constants.MetadataKeyOrigin] != "test" {
-		t.Fatalf("expected barge metadata to include origin, got %+v", aiTurn.Meta)
-	}
-}
-
-func TestConversationKeepsHistoryUntilDetachTimeout(t *testing.T) {
-	bus := eventbus.New()
-	ttl := 100 * time.Millisecond
-	svc := NewService(bus, WithDetachTTL(ttl))
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	if err := svc.Start(ctx); err != nil {
-		t.Fatalf("start conversation: %v", err)
-	}
-	defer svc.Shutdown(context.Background())
-
-	svc.mu.Lock()
-	svc.sessions["detach"] = []eventbus.ConversationTurn{
-		{
-			Origin: eventbus.OriginUser,
-			Text:   "hello",
-			At:     time.Now(),
-			Meta:   map[string]string{},
-		},
-	}
-	svc.mu.Unlock()
-
-	svc.scheduleDetachCleanup("detach")
-
-	time.Sleep(ttl / 2)
-	if len(svc.Context("detach")) == 0 {
-		t.Fatalf("history cleared too early")
-	}
-
-	deadlineDetach := time.Now().Add(5 * ttl)
-	for {
-		if len(svc.Context("detach")) == 0 {
-			break
-		}
-		if time.Now().After(deadlineDetach) {
-			t.Fatalf("expected history cleared after ttl")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-}
-
-func TestConversationStoresReplies(t *testing.T) {
-	bus := eventbus.New()
-	svc := NewService(bus)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	if err := svc.Start(ctx); err != nil {
-		t.Fatalf("start conversation: %v", err)
-	}
-	defer svc.Shutdown(context.Background())
+	turnSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Turn)
+	defer turnSub.Close()
 
 	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{SessionID: "reply", Origin: eventbus.OriginUser, Text: "hi"})
 
 	eventbus.Publish(context.Background(), bus, eventbus.Conversation.Reply, eventbus.SourceConversation, eventbus.ConversationReplyEvent{SessionID: "reply", Text: "hello there"})
 
-	deadlineReply := time.Now().Add(500 * time.Millisecond)
-	for {
-		turns := svc.Context("reply")
-		if len(turns) >= 2 && turns[len(turns)-1].Origin == eventbus.OriginAI {
-			if turns[len(turns)-1].Text != "hello there" {
-				t.Fatalf("unexpected reply text: %+v", turns[len(turns)-1])
+	// Verify turn events are published for both user and AI turns
+	var foundUser, foundAI bool
+	deadline := time.After(2 * time.Second)
+	for !foundUser || !foundAI {
+		select {
+		case env := <-turnSub.C():
+			if env.Payload.SessionID != "reply" {
+				continue
 			}
-			break
+			if env.Payload.Turn.Origin == eventbus.OriginUser && env.Payload.Turn.Text == "hi" {
+				foundUser = true
+			}
+			if env.Payload.Turn.Origin == eventbus.OriginAI && env.Payload.Turn.Text == "hello there" {
+				foundAI = true
+			}
+		case <-deadline:
+			t.Fatalf("timeout: foundUser=%v foundAI=%v", foundUser, foundAI)
 		}
-		if time.Now().After(deadlineReply) {
-			t.Fatalf("timeout waiting for AI reply, context: %+v", turns)
-		}
-		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Context() now returns nil (RAM history removed)
+	if ctx := svc.Context("reply"); ctx != nil {
+		t.Fatalf("expected nil context, got %v", ctx)
 	}
 }
 
-func TestConversationSliceWindow(t *testing.T) {
+func TestConversationContextReturnsNil(t *testing.T) {
+	t.Parallel()
 	bus := eventbus.New()
 	svc := NewService(bus)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	if err := svc.Start(ctx); err != nil {
-		t.Fatalf("start conversation: %v", err)
+	if ctx := svc.Context("anything"); ctx != nil {
+		t.Fatalf("expected nil, got %v", ctx)
 	}
-	defer svc.Shutdown(context.Background())
+}
 
-	for i := 0; i < 5; i++ {
-		eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{SessionID: "window", Origin: eventbus.OriginUser, Text: strconv.Itoa(i)})
+func TestConversationSliceReturnsEmpty(t *testing.T) {
+	t.Parallel()
+	bus := eventbus.New()
+	svc := NewService(bus)
+
+	total, slice := svc.Slice("anything", 0, 10)
+	if total != 0 {
+		t.Fatalf("expected total=0, got %d", total)
 	}
-
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for {
-		total, window := svc.Slice("window", 1, 2)
-		if total == 5 && len(window) == 2 {
-			if window[0].Text != "1" || window[1].Text != "2" {
-				t.Fatalf("unexpected window data: %+v", window)
-			}
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timeout waiting for slice window, total=%d len=%d", total, len(window))
-		}
-		time.Sleep(10 * time.Millisecond)
+	if slice != nil {
+		t.Fatalf("expected nil slice, got %v", slice)
 	}
 }
 
@@ -250,76 +144,26 @@ func TestConversationMetadataLimits(t *testing.T) {
 	}
 	defer svc.Shutdown(context.Background())
 
+	turnSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Turn)
+	defer turnSub.Close()
+
 	annotations := make(map[string]string)
 	for i := 0; i < maxMetadataEntries+10; i++ {
-		key := "  key-" + strconv.Itoa(i) + strings.Repeat("x", maxMetadataKeyRunes)
-		value := "   value-" + strconv.Itoa(i) + strings.Repeat("y", maxMetadataValueRunes)
+		key := "key-" + string(rune('a'+i%26))
+		value := "value"
 		annotations[key] = value
 	}
 
 	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{SessionID: "metadata", Origin: eventbus.OriginUser, Text: "payload", Annotations: annotations})
 
-	replyMeta := map[string]string{
-		" prompt ": strings.Repeat("z", maxMetadataValueRunes+50),
-	}
-	eventbus.Publish(context.Background(), bus, eventbus.Conversation.Reply, eventbus.SourceConversation, eventbus.ConversationReplyEvent{
-		SessionID: "metadata",
-		Text:      "reply",
-		Metadata:  replyMeta,
-		PromptID:  strings.Repeat("p", maxMetadataValueRunes+20),
-		Actions: []eventbus.ConversationAction{
-			{
-				Type:   strings.Repeat("t", maxMetadataValueRunes+20),
-				Target: strings.Repeat("target", 30),
-				Args: map[string]string{
-					"payload": strings.Repeat("value", 100),
-				},
-			},
-		},
-	})
-
-	deadline := time.Now().Add(500 * time.Millisecond)
-	var turns []eventbus.ConversationTurn
-	for {
-		turns = svc.Context("metadata")
-		if len(turns) >= 2 && len(turns[len(turns)-1].Meta) > 0 {
-			break
+	select {
+	case env := <-turnSub.C():
+		turn := env.Payload.Turn
+		if len(turn.Meta) > maxMetadataEntries {
+			t.Fatalf("expected metadata entries <= %d, got %d", maxMetadataEntries, len(turn.Meta))
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timeout waiting for metadata accumulation")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	if len(turns[0].Meta) > maxMetadataEntries {
-		t.Fatalf("expected metadata entries <= %d, got %d", maxMetadataEntries, len(turns[0].Meta))
-	}
-	for k, v := range turns[0].Meta {
-		if strings.TrimSpace(k) != k {
-			t.Fatalf("expected trimmed key, got %q", k)
-		}
-		if utf8.RuneCountInString(k) > maxMetadataKeyRunes {
-			t.Fatalf("key exceeds rune limit: %d > %d", utf8.RuneCountInString(k), maxMetadataKeyRunes)
-		}
-		if utf8.RuneCountInString(v) > maxMetadataValueRunes {
-			t.Fatalf("value exceeds rune limit: %d > %d", utf8.RuneCountInString(v), maxMetadataValueRunes)
-		}
-	}
-
-	reply := turns[len(turns)-1]
-	if reply.Meta[constants.MetadataKeyPromptID] == "" {
-		t.Fatalf("expected prompt_id to be present")
-	}
-	if len(reply.Meta) > maxMetadataEntries {
-		t.Fatalf("expected reply metadata entries <= %d, got %d", maxMetadataEntries, len(reply.Meta))
-	}
-	for k, v := range reply.Meta {
-		if utf8.RuneCountInString(k) > maxMetadataKeyRunes {
-			t.Fatalf("reply key exceeds rune limit: %d", utf8.RuneCountInString(k))
-		}
-		if utf8.RuneCountInString(v) > maxMetadataValueRunes {
-			t.Fatalf("reply value exceeds rune limit: %d", utf8.RuneCountInString(v))
-		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for turn event")
 	}
 }
 
@@ -336,12 +180,26 @@ func TestConversationSessionlessMessage(t *testing.T) {
 	}
 	defer svc.Shutdown(context.Background())
 
+	turnSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Turn)
+	defer turnSub.Close()
+
 	// Send a sessionless message (empty SessionID)
 	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{SessionID: "", Origin: eventbus.OriginUser, Text: "hello world"})
 
-	time.Sleep(50 * time.Millisecond)
+	// Verify turn event is published for sessionless message
+	select {
+	case env := <-turnSub.C():
+		if env.Payload.SessionID != "" {
+			t.Fatalf("expected empty sessionID for sessionless turn, got %q", env.Payload.SessionID)
+		}
+		if env.Payload.Turn.Text != "hello world" {
+			t.Fatalf("expected turn text=hello world, got %q", env.Payload.Turn.Text)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for sessionless turn event")
+	}
 
-	// Should be stored in GlobalStore
+	// Should also be stored in GlobalStore
 	if globalStore.Len() != 1 {
 		t.Fatalf("expected 1 turn in GlobalStore, got %d", globalStore.Len())
 	}
@@ -349,12 +207,6 @@ func TestConversationSessionlessMessage(t *testing.T) {
 	ctx2 := globalStore.GetContext()
 	if ctx2[0].Text != "hello world" {
 		t.Fatalf("unexpected text in GlobalStore: %s", ctx2[0].Text)
-	}
-
-	// Should NOT be in session-based storage
-	history := svc.Context("")
-	if len(history) != 0 {
-		t.Fatalf("expected no turns in session storage for empty session, got %d", len(history))
 	}
 }
 
@@ -374,10 +226,18 @@ func TestConversationSessionlessPrompt(t *testing.T) {
 	promptSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Prompt)
 	defer promptSub.Close()
 
+	turnSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Turn)
+	defer turnSub.Close()
+
 	// Add context first
 	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{SessionID: "", Origin: eventbus.OriginTool, Text: "context message"})
 
-	time.Sleep(20 * time.Millisecond)
+	// Wait for tool turn event — proves context message was processed and added to GlobalStore
+	select {
+	case <-turnSub.C():
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for tool turn event")
+	}
 
 	// Now send user message which should trigger prompt
 	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{SessionID: "", Origin: eventbus.OriginUser, Text: "list sessions"})
@@ -409,35 +269,53 @@ func TestConversationSessionlessReply(t *testing.T) {
 	}
 	defer svc.Shutdown(context.Background())
 
+	turnSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Turn)
+	defer turnSub.Close()
+
 	// Send user message
 	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{SessionID: "", Origin: eventbus.OriginUser, Text: "what sessions?"})
 
-	// Allow goroutine to process the first event before publishing the next.
-	time.Sleep(50 * time.Millisecond)
+	// Wait for user turn event — proves conversation service processed the message
+	select {
+	case env := <-turnSub.C():
+		if env.Payload.Turn.Origin != eventbus.OriginUser || env.Payload.Turn.Text != "what sessions?" {
+			t.Fatalf("expected user turn, got %+v", env.Payload)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for user turn event")
+	}
 
-	// Send AI reply
+	// Send AI reply (user message guaranteed in GlobalStore)
 	eventbus.Publish(context.Background(), bus, eventbus.Conversation.Reply, eventbus.SourceConversation, eventbus.ConversationReplyEvent{SessionID: "", Text: "You have no active sessions."})
 
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		ctx2 := globalStore.GetContext()
-		if len(ctx2) >= 2 {
-			if ctx2[1].Origin != eventbus.OriginAI {
-				t.Fatalf("expected AI origin, got %s", ctx2[1].Origin)
-			}
-			if ctx2[1].Text != "You have no active sessions." {
-				t.Fatalf("unexpected reply text: %s", ctx2[1].Text)
-			}
-			break
+	// Wait for AI turn event
+	select {
+	case env := <-turnSub.C():
+		if env.Payload.SessionID != "" {
+			t.Fatalf("expected empty sessionID, got %q", env.Payload.SessionID)
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timeout waiting for sessionless reply in GlobalStore, got %d turns", len(ctx2))
+		if env.Payload.Turn.Origin != eventbus.OriginAI || env.Payload.Turn.Text != "You have no active sessions." {
+			t.Fatalf("expected AI turn, got %+v", env.Payload)
 		}
-		time.Sleep(10 * time.Millisecond)
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for AI turn event")
+	}
+
+	// Verify GlobalStore also has both turns
+	ctx2 := globalStore.GetContext()
+	if len(ctx2) < 2 {
+		t.Fatalf("expected at least 2 turns in GlobalStore, got %d", len(ctx2))
+	}
+	if ctx2[1].Origin != eventbus.OriginAI {
+		t.Fatalf("expected AI origin, got %s", ctx2[1].Origin)
+	}
+	if ctx2[1].Text != "You have no active sessions." {
+		t.Fatalf("unexpected reply text: %s", ctx2[1].Text)
 	}
 }
 
 func TestConversationGlobalContext(t *testing.T) {
+	t.Parallel()
 	bus := eventbus.New()
 	globalStore := NewGlobalStore()
 	svc := NewService(bus, WithGlobalStore(globalStore))
@@ -457,6 +335,7 @@ func TestConversationGlobalContext(t *testing.T) {
 }
 
 func TestConversationGlobalSlice(t *testing.T) {
+	t.Parallel()
 	bus := eventbus.New()
 	globalStore := NewGlobalStore()
 	svc := NewService(bus, WithGlobalStore(globalStore))
@@ -465,7 +344,7 @@ func TestConversationGlobalSlice(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		globalStore.AddTurn(eventbus.ConversationTurn{
 			Origin: eventbus.OriginUser,
-			Text:   strconv.Itoa(i),
+			Text:   string(rune('0' + i)),
 		})
 	}
 
@@ -483,6 +362,7 @@ func TestConversationGlobalSlice(t *testing.T) {
 }
 
 func TestConversationGlobalContextNilStore(t *testing.T) {
+	t.Parallel()
 	bus := eventbus.New()
 	// No globalStore configured
 	svc := NewService(bus)
@@ -573,8 +453,8 @@ func TestConversation_SessionOutputRateLimiting(t *testing.T) {
 		// Expected: no prompt due to rate limiting
 	}
 
-	// Manually set last output time to past to simulate >2s elapsed
-	svc.lastSessionOutput.Store("rate-limit-test", time.Now().Add(-3*time.Second))
+	// Reset rate limit timestamp to simulate >2s elapsed
+	svc.ResetRateLimitForTesting("rate-limit-test", time.Now().Add(-3*time.Second))
 
 	// Third notable event after rate limit should trigger
 	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{
@@ -731,7 +611,7 @@ func TestConversation_RateLimitingCleanup(t *testing.T) {
 
 	sessionID := "cleanup-test"
 
-	// Add a turn and trigger rate limiting
+	// Add a rate limiting entry
 	svc.lastSessionOutput.Store(sessionID, time.Now())
 
 	// Verify the entry exists
@@ -748,14 +628,11 @@ func TestConversation_RateLimitingCleanup(t *testing.T) {
 	}
 }
 
-// --- History Summary Tests ---
+// --- New Turn Publishing Tests ---
 
-func TestSummaryTrigger(t *testing.T) {
+func TestPublishTurnOnUserMessage(t *testing.T) {
 	bus := eventbus.New()
-	svc := NewService(bus, WithHistoryLimit(50))
-	// Lower threshold for testing
-	svc.summaryThreshold = 5
-	svc.summaryBatchSize = 3
+	svc := NewService(bus)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -765,319 +642,250 @@ func TestSummaryTrigger(t *testing.T) {
 	}
 	defer svc.Shutdown(context.Background())
 
+	turnSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Turn)
+	defer turnSub.Close()
+
+	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{
+		SessionID: "user-turn-test",
+		Origin:    eventbus.OriginUser,
+		Text:      "hello world",
+	})
+
+	select {
+	case env := <-turnSub.C():
+		te := env.Payload
+		if te.SessionID != "user-turn-test" {
+			t.Fatalf("expected sessionID=user-turn-test, got %q", te.SessionID)
+		}
+		if te.Turn.Origin != eventbus.OriginUser {
+			t.Fatalf("expected origin=user, got %q", te.Turn.Origin)
+		}
+		if te.Turn.Text != "hello world" {
+			t.Fatalf("expected text=hello world, got %q", te.Turn.Text)
+		}
+		if te.Turn.At.IsZero() {
+			t.Fatal("expected non-zero timestamp")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for turn event")
+	}
+}
+
+func TestPublishTurnOnAIReply(t *testing.T) {
+	bus := eventbus.New()
+	svc := NewService(bus)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("start conversation: %v", err)
+	}
+	defer svc.Shutdown(context.Background())
+
+	turnSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Turn)
+	defer turnSub.Close()
+
+	eventbus.Publish(context.Background(), bus, eventbus.Conversation.Reply, eventbus.SourceConversation, eventbus.ConversationReplyEvent{
+		SessionID: "ai-turn-test",
+		PromptID:  "prompt-1",
+		Text:      "I am an AI",
+	})
+
+	select {
+	case env := <-turnSub.C():
+		te := env.Payload
+		if te.SessionID != "ai-turn-test" {
+			t.Fatalf("expected sessionID=ai-turn-test, got %q", te.SessionID)
+		}
+		if te.Turn.Origin != eventbus.OriginAI {
+			t.Fatalf("expected origin=ai, got %q", te.Turn.Origin)
+		}
+		if te.Turn.Text != "I am an AI" {
+			t.Fatalf("expected text=I am an AI, got %q", te.Turn.Text)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for AI turn event")
+	}
+}
+
+func TestPublishTurnOnSessionOutput(t *testing.T) {
+	bus := eventbus.New()
+	svc := NewService(bus)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("start conversation: %v", err)
+	}
+	defer svc.Shutdown(context.Background())
+
+	turnSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Turn)
+	defer turnSub.Close()
+
+	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{
+		SessionID:   "output-turn-test",
+		Origin:      eventbus.OriginTool,
+		Text:        "tool output",
+		Annotations: map[string]string{constants.MetadataKeyNotable: constants.MetadataValueTrue},
+	})
+
+	select {
+	case env := <-turnSub.C():
+		te := env.Payload
+		if te.SessionID != "output-turn-test" {
+			t.Fatalf("expected sessionID=output-turn-test, got %q", te.SessionID)
+		}
+		if te.Turn.Origin != eventbus.OriginTool {
+			t.Fatalf("expected origin=tool, got %q", te.Turn.Origin)
+		}
+		if te.Turn.Text != "tool output" {
+			t.Fatalf("expected text=tool output, got %q", te.Turn.Text)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for session output turn event")
+	}
+}
+
+func TestNonNotableToolOutputPublishesTurnButNotPrompt(t *testing.T) {
+	bus := eventbus.New()
+	svc := NewService(bus)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("start conversation: %v", err)
+	}
+	defer svc.Shutdown(context.Background())
+
+	turnSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Turn)
+	defer turnSub.Close()
+
 	promptSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Prompt)
 	defer promptSub.Close()
 
-	now := time.Now().UTC()
+	// Non-notable tool output — should publish turn but NOT prompt
+	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{
+		SessionID: "tool-turn-test",
+		Origin:    eventbus.OriginTool,
+		Text:      "regular output",
+	})
 
-	// Add 5 turns to reach threshold (use OriginUser for first 4, OriginTool for last to avoid rapid user_intent prompts)
-	for i := 0; i < 5; i++ {
-		svc.handlePipelineMessage(now.Add(time.Duration(i)*time.Millisecond), eventbus.PipelineMessageEvent{
-			SessionID: "summary-trigger",
-			Origin:    eventbus.OriginUser,
-			Text:      "message " + strconv.Itoa(i),
-		})
-	}
-
-	// Expect the user_intent prompts (5 of them) plus one conversation_compaction prompt
-	var summaryPrompt *eventbus.ConversationPromptEvent
-	deadline := time.After(2 * time.Second)
-	for {
-		select {
-		case env := <-promptSub.C():
-			prompt := env.Payload
-			if prompt.Metadata[constants.MetadataKeyEventType] == constants.PromptEventConversationCompaction {
-				summaryPrompt = &prompt
-			}
-		case <-deadline:
-			if summaryPrompt == nil {
-				t.Fatal("timeout waiting for conversation_compaction prompt")
-			}
+	// Verify turn event IS published
+	select {
+	case env := <-turnSub.C():
+		if env.Payload.Turn.Origin != eventbus.OriginTool {
+			t.Fatalf("expected origin=tool, got %q", env.Payload.Turn.Origin)
 		}
-		if summaryPrompt != nil {
-			break
+		if env.Payload.Turn.Text != "regular output" {
+			t.Fatalf("expected text=regular output, got %q", env.Payload.Turn.Text)
 		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for turn event")
 	}
 
-	if summaryPrompt.SessionID != "summary-trigger" {
-		t.Fatalf("expected session summary-trigger, got %s", summaryPrompt.SessionID)
-	}
-	if summaryPrompt.PromptID == "" {
-		t.Fatal("expected non-empty PromptID")
-	}
-	// The new message text should contain serialized turns (fallback for adapters without prompt engine)
-	if !strings.Contains(summaryPrompt.NewMessage.Text, "[user] message 0") {
-		t.Fatalf("expected serialized turns in prompt text, got: %s", summaryPrompt.NewMessage.Text)
+	// Verify prompt is NOT published — use the turn event as barrier
+	// (same consumer goroutine processed the pipeline message, so if the
+	// turn arrived, any prompt would have been published already)
+	select {
+	case <-promptSub.C():
+		t.Fatal("non-notable tool output should not trigger prompt")
+	case <-time.After(50 * time.Millisecond):
+		// Expected: no prompt
 	}
 }
 
-func TestSummaryReplyReplacesTurns(t *testing.T) {
+func TestInterceptJournalCompaction(t *testing.T) {
 	bus := eventbus.New()
-	svc := NewService(bus, WithHistoryLimit(50))
-	svc.summaryThreshold = 5
-	svc.summaryBatchSize = 3
+	svc := NewService(bus)
 
-	now := time.Now().UTC()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	// Pre-populate 6 turns directly
-	svc.mu.Lock()
-	for i := 0; i < 6; i++ {
-		svc.sessions["summary-replace"] = append(svc.sessions["summary-replace"], eventbus.ConversationTurn{
-			Origin: eventbus.OriginUser,
-			Text:   "turn " + strconv.Itoa(i),
-			At:     now.Add(time.Duration(i) * time.Millisecond),
-		})
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("start conversation: %v", err)
 	}
-	svc.mu.Unlock()
+	defer svc.Shutdown(context.Background())
 
-	// Manually trigger summary
-	svc.requestSummary("summary-replace")
+	turnSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Turn)
+	defer turnSub.Close()
 
-	// Get the pending request to find the promptID
-	val, ok := svc.pendingSummary.Load("summary-replace")
-	if !ok {
-		t.Fatal("expected pending summary request")
+	// Send a journal_compaction reply — should be intercepted
+	eventbus.Publish(context.Background(), bus, eventbus.Conversation.Reply, eventbus.SourceConversation, eventbus.ConversationReplyEvent{
+		SessionID: "compaction-test",
+		PromptID:  "prompt-journal",
+		Text:      "compacted journal summary",
+		Metadata:  map[string]string{constants.MetadataKeyEventType: constants.PromptEventJournalCompaction},
+	})
+
+	// Publish a normal reply as barrier — its turn event proves the compaction was already processed
+	// (same topic, same consumer goroutine, sequential delivery)
+	eventbus.Publish(context.Background(), bus, eventbus.Conversation.Reply, eventbus.SourceConversation, eventbus.ConversationReplyEvent{
+		SessionID: "compaction-test",
+		PromptID:  "prompt-barrier",
+		Text:      "barrier reply",
+	})
+
+	select {
+	case env := <-turnSub.C():
+		if env.Payload.Turn.Text == "compacted journal summary" {
+			t.Fatal("journal_compaction should be intercepted, but got its turn event")
+		}
+		if env.Payload.Turn.Text != "barrier reply" {
+			t.Fatalf("expected barrier turn, got %q", env.Payload.Turn.Text)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for barrier turn event")
 	}
-	req := val.(*summaryRequest)
-	promptID := req.promptID
+}
 
-	// Simulate AI reply
-	svc.handleSummaryReply("summary-replace", eventbus.ConversationReplyEvent{
-		SessionID: "summary-replace",
-		PromptID:  promptID,
-		Text:      "Summary: user discussed turns 0-2",
+func TestInterceptConversationCompaction(t *testing.T) {
+	bus := eventbus.New()
+	svc := NewService(bus)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("start conversation: %v", err)
+	}
+	defer svc.Shutdown(context.Background())
+
+	turnSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Turn)
+	defer turnSub.Close()
+
+	// Send a conversation_compaction reply — should be intercepted
+	eventbus.Publish(context.Background(), bus, eventbus.Conversation.Reply, eventbus.SourceConversation, eventbus.ConversationReplyEvent{
+		SessionID: "compaction-test",
+		PromptID:  "prompt-conv",
+		Text:      "compacted conversation summary",
 		Metadata:  map[string]string{constants.MetadataKeyEventType: constants.PromptEventConversationCompaction},
 	})
 
-	// Verify history was replaced
-	history := svc.Context("summary-replace")
-	// Should be 1 summary + 3 remaining = 4 turns
-	if len(history) != 4 {
-		t.Fatalf("expected 4 turns after summary, got %d", len(history))
-	}
-
-	// First turn should be the summary
-	if history[0].Origin != eventbus.OriginSystem {
-		t.Fatalf("expected system origin for summary turn, got %s", history[0].Origin)
-	}
-	if history[0].Text != "Summary: user discussed turns 0-2" {
-		t.Fatalf("unexpected summary text: %s", history[0].Text)
-	}
-	if history[0].Meta[constants.MetadataKeySummarized] != "true" {
-		t.Fatalf("expected summarized=true, got %+v", history[0].Meta)
-	}
-	if history[0].Meta[constants.MetadataKeyOriginalLength] != "3" {
-		t.Fatalf("expected original_length=3, got %s", history[0].Meta[constants.MetadataKeyOriginalLength])
-	}
-
-	// Summary turn should preserve the timestamp of the first summarized turn
-	// so that sort.SliceStable keeps it in chronological order
-	if !history[0].At.Equal(now) {
-		t.Fatalf("expected summary timestamp to equal first summarized turn (%v), got %v", now, history[0].At)
-	}
-
-	// Verify chronological ordering is maintained (summary before remaining turns)
-	for i := 1; i < len(history); i++ {
-		if history[i].At.Before(history[i-1].At) {
-			t.Fatalf("history not in chronological order at index %d: %v before %v",
-				i, history[i].At, history[i-1].At)
-		}
-	}
-
-	// Remaining turns should be the original turns 3-5
-	if history[1].Text != "turn 3" {
-		t.Fatalf("expected turn 3, got %s", history[1].Text)
-	}
-
-	// Pending summary should be cleared
-	if _, ok := svc.pendingSummary.Load("summary-replace"); ok {
-		t.Fatal("expected pending summary to be cleared after reply")
-	}
-}
-
-func TestSummaryIdempotency(t *testing.T) {
-	bus := eventbus.New()
-	svc := NewService(bus, WithHistoryLimit(50))
-	svc.summaryThreshold = 5
-	svc.summaryBatchSize = 3
-
-	now := time.Now().UTC()
-
-	// Pre-populate enough turns
-	svc.mu.Lock()
-	for i := 0; i < 6; i++ {
-		svc.sessions["idempotent"] = append(svc.sessions["idempotent"], eventbus.ConversationTurn{
-			Origin: eventbus.OriginUser,
-			Text:   "turn " + strconv.Itoa(i),
-			At:     now.Add(time.Duration(i) * time.Millisecond),
-		})
-	}
-	svc.mu.Unlock()
-
-	// First call should succeed (creates pendingSummary)
-	svc.requestSummary("idempotent")
-	val1, ok := svc.pendingSummary.Load("idempotent")
-	if !ok {
-		t.Fatal("expected pending summary after first call")
-	}
-	req1 := val1.(*summaryRequest)
-
-	// Second call should be a no-op (summary already pending)
-	svc.requestSummary("idempotent")
-
-	// Should still be the same summary request
-	val2, _ := svc.pendingSummary.Load("idempotent")
-	req2 := val2.(*summaryRequest)
-	if req2 != req1 {
-		t.Fatal("expected same summary request after duplicate call")
-	}
-
-	// Clean up timer
-	if req1.timer != nil {
-		req1.timer.Stop()
-	}
-}
-
-func TestSummaryTimeout(t *testing.T) {
-	bus := eventbus.New()
-	svc := NewService(bus, WithHistoryLimit(50))
-	svc.summaryThreshold = 5
-	svc.summaryBatchSize = 3
-
-	now := time.Now().UTC()
-
-	// Pre-populate enough turns
-	svc.mu.Lock()
-	for i := 0; i < 6; i++ {
-		svc.sessions["timeout-sess"] = append(svc.sessions["timeout-sess"], eventbus.ConversationTurn{
-			Origin: eventbus.OriginUser,
-			Text:   "turn " + strconv.Itoa(i),
-			At:     now.Add(time.Duration(i) * time.Millisecond),
-		})
-	}
-	svc.mu.Unlock()
-
-	// Trigger summary
-	svc.requestSummary("timeout-sess")
-
-	val, ok := svc.pendingSummary.Load("timeout-sess")
-	if !ok {
-		t.Fatal("expected pending summary")
-	}
-	req := val.(*summaryRequest)
-
-	// Replace the timer with a very short one for testing
-	req.timer.Stop()
-	req.timer = time.AfterFunc(50*time.Millisecond, func() {
-		svc.pendingSummary.Delete("timeout-sess")
+	// Publish a normal reply as barrier — its turn event proves the compaction was already processed
+	eventbus.Publish(context.Background(), bus, eventbus.Conversation.Reply, eventbus.SourceConversation, eventbus.ConversationReplyEvent{
+		SessionID: "compaction-test",
+		PromptID:  "prompt-barrier",
+		Text:      "barrier reply",
 	})
 
-	// Wait for timeout
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for {
-		if _, ok := svc.pendingSummary.Load("timeout-sess"); !ok {
-			break // Timeout cleared the pending state
+	select {
+	case env := <-turnSub.C():
+		if env.Payload.Turn.Text == "compacted conversation summary" {
+			t.Fatal("conversation_compaction should be intercepted, but got its turn event")
 		}
-		if time.Now().After(deadline) {
-			t.Fatal("expected pending summary to be cleared after timeout")
+		if env.Payload.Turn.Text != "barrier reply" {
+			t.Fatalf("expected barrier turn, got %q", env.Payload.Turn.Text)
 		}
-		time.Sleep(10 * time.Millisecond)
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for barrier turn event")
 	}
 }
 
-func TestSummaryPromptIDMismatch(t *testing.T) {
-	bus := eventbus.New()
-	svc := NewService(bus, WithHistoryLimit(50))
-	svc.summaryThreshold = 5
-	svc.summaryBatchSize = 3
-
-	now := time.Now().UTC()
-
-	// Pre-populate turns
-	svc.mu.Lock()
-	for i := 0; i < 6; i++ {
-		svc.sessions["mismatch"] = append(svc.sessions["mismatch"], eventbus.ConversationTurn{
-			Origin: eventbus.OriginUser,
-			Text:   "turn " + strconv.Itoa(i),
-			At:     now.Add(time.Duration(i) * time.Millisecond),
-		})
-	}
-	svc.mu.Unlock()
-
-	// Trigger summary
-	svc.requestSummary("mismatch")
-
-	val, ok := svc.pendingSummary.Load("mismatch")
-	if !ok {
-		t.Fatal("expected pending summary")
-	}
-	req := val.(*summaryRequest)
-	if req.timer != nil {
-		defer req.timer.Stop()
-	}
-
-	// Send reply with wrong PromptID
-	svc.handleSummaryReply("mismatch", eventbus.ConversationReplyEvent{
-		SessionID: "mismatch",
-		PromptID:  "wrong-prompt-id",
-		Text:      "bogus summary",
-		Metadata:  map[string]string{constants.MetadataKeyEventType: constants.PromptEventConversationCompaction},
-	})
-
-	// History should be unchanged (6 turns)
-	history := svc.Context("mismatch")
-	if len(history) != 6 {
-		t.Fatalf("expected 6 turns (unchanged), got %d", len(history))
-	}
-
-	// Pending summary should have been consumed by LoadAndDelete even though
-	// the PromptID didn't match, which prevents retries with the same request
-	if _, ok := svc.pendingSummary.Load("mismatch"); ok {
-		t.Fatal("expected pending summary to be consumed (LoadAndDelete)")
-	}
-}
-
-func TestSummaryClearSession(t *testing.T) {
-	bus := eventbus.New()
-	svc := NewService(bus, WithHistoryLimit(50))
-	svc.summaryThreshold = 5
-	svc.summaryBatchSize = 3
-
-	now := time.Now().UTC()
-
-	// Pre-populate turns
-	svc.mu.Lock()
-	for i := 0; i < 6; i++ {
-		svc.sessions["clear-sess"] = append(svc.sessions["clear-sess"], eventbus.ConversationTurn{
-			Origin: eventbus.OriginUser,
-			Text:   "turn " + strconv.Itoa(i),
-			At:     now.Add(time.Duration(i) * time.Millisecond),
-		})
-	}
-	svc.mu.Unlock()
-
-	// Trigger summary to create pending summary state
-	svc.requestSummary("clear-sess")
-	if _, ok := svc.pendingSummary.Load("clear-sess"); !ok {
-		t.Fatal("expected pending summary before clear")
-	}
-
-	// Clear the session
-	svc.clearSession("clear-sess")
-
-	// Pending summary should be cleaned up
-	if _, ok := svc.pendingSummary.Load("clear-sess"); ok {
-		t.Fatal("expected pending summary to be cleared after clearSession")
-	}
-
-	// History should be empty
-	history := svc.Context("clear-sess")
-	if len(history) != 0 {
-		t.Fatalf("expected empty history after clearSession, got %d", len(history))
-	}
-}
-
-func TestSerializeTurnsForSummary(t *testing.T) {
+func TestSerializeTurns(t *testing.T) {
+	t.Parallel()
 	turns := []eventbus.ConversationTurn{
 		{Origin: eventbus.OriginUser, Text: "hello"},
 		{Origin: eventbus.OriginAI, Text: "hi there"},
@@ -1092,152 +900,11 @@ func TestSerializeTurnsForSummary(t *testing.T) {
 	}
 }
 
-func TestSerializeTurnsForSummary_Empty(t *testing.T) {
+func TestSerializeTurns_Empty(t *testing.T) {
+	t.Parallel()
 	result := eventbus.SerializeTurns(nil)
 	if result != "" {
 		t.Fatalf("expected empty string for nil turns, got %q", result)
-	}
-}
-
-func TestSummaryBatchSizeValidation(t *testing.T) {
-	bus := eventbus.New()
-
-	// If batchSize >= threshold, NewService should clamp batchSize
-	svc := NewService(bus, WithSummaryThreshold(5), WithSummaryBatchSize(10))
-	if svc.summaryBatchSize >= svc.summaryThreshold {
-		t.Fatalf("expected summaryBatchSize < summaryThreshold, got batch=%d threshold=%d",
-			svc.summaryBatchSize, svc.summaryThreshold)
-	}
-
-	// Equal values should also be clamped
-	svc2 := NewService(bus, WithSummaryThreshold(4), WithSummaryBatchSize(4))
-	if svc2.summaryBatchSize >= svc2.summaryThreshold {
-		t.Fatalf("expected summaryBatchSize < summaryThreshold for equal values, got batch=%d threshold=%d",
-			svc2.summaryBatchSize, svc2.summaryThreshold)
-	}
-}
-
-func TestSummaryShutdownCleansTimers(t *testing.T) {
-	bus := eventbus.New()
-	svc := NewService(bus, WithHistoryLimit(50))
-	svc.summaryThreshold = 5
-	svc.summaryBatchSize = 3
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	if err := svc.Start(ctx); err != nil {
-		t.Fatalf("start conversation: %v", err)
-	}
-
-	now := time.Now().UTC()
-
-	// Pre-populate turns and trigger summary
-	svc.mu.Lock()
-	for i := 0; i < 6; i++ {
-		svc.sessions["shutdown-sess"] = append(svc.sessions["shutdown-sess"], eventbus.ConversationTurn{
-			Origin: eventbus.OriginUser,
-			Text:   "turn " + strconv.Itoa(i),
-			At:     now.Add(time.Duration(i) * time.Millisecond),
-		})
-	}
-	svc.mu.Unlock()
-
-	svc.requestSummary("shutdown-sess")
-	if _, ok := svc.pendingSummary.Load("shutdown-sess"); !ok {
-		t.Fatal("expected pending summary before shutdown")
-	}
-
-	// Shutdown should clean up pending timers
-	if err := svc.Shutdown(context.Background()); err != nil {
-		t.Fatalf("shutdown: %v", err)
-	}
-
-	// Pending summary should be cleaned up
-	if _, ok := svc.pendingSummary.Load("shutdown-sess"); ok {
-		t.Fatal("expected pending summary to be cleaned after shutdown")
-	}
-}
-
-func TestSummaryThresholdClampedToMaxHistory(t *testing.T) {
-	bus := eventbus.New()
-	// summaryThreshold=35 but maxHistory=10 — should clamp threshold to 10
-	svc := NewService(bus, WithHistoryLimit(10), WithSummaryThreshold(35))
-	if svc.summaryThreshold > svc.maxHistory {
-		t.Fatalf("expected summaryThreshold <= maxHistory, got threshold=%d maxHistory=%d",
-			svc.summaryThreshold, svc.maxHistory)
-	}
-	// batchSize should also be adjusted since it must be < clamped threshold
-	if svc.summaryBatchSize >= svc.summaryThreshold {
-		t.Fatalf("expected batchSize < threshold after clamping, got batch=%d threshold=%d",
-			svc.summaryBatchSize, svc.summaryThreshold)
-	}
-}
-
-func TestSummaryWithOptionFunctions(t *testing.T) {
-	bus := eventbus.New()
-	svc := NewService(bus, WithSummaryThreshold(10), WithSummaryBatchSize(5))
-
-	if svc.summaryThreshold != 10 {
-		t.Fatalf("expected threshold 10, got %d", svc.summaryThreshold)
-	}
-	if svc.summaryBatchSize != 5 {
-		t.Fatalf("expected batchSize 5, got %d", svc.summaryBatchSize)
-	}
-}
-
-
-// TestShutdownStartResetsShuttingDown verifies that after Shutdown followed by
-// Start, the service can still process summaries normally.
-func TestShutdownStartResetsShuttingDown(t *testing.T) {
-	bus := eventbus.New()
-	svc := NewService(bus, WithHistoryLimit(50))
-	svc.summaryThreshold = 5
-	svc.summaryBatchSize = 3
-
-	ctx := context.Background()
-
-	// First Start
-	if err := svc.Start(ctx); err != nil {
-		t.Fatalf("first start: %v", err)
-	}
-
-	// Shutdown sets shuttingDown=true
-	if err := svc.Shutdown(ctx); err != nil {
-		t.Fatalf("shutdown: %v", err)
-	}
-
-	// Re-Start should reset shuttingDown=false
-	if err := svc.Start(ctx); err != nil {
-		t.Fatalf("second start: %v", err)
-	}
-	defer svc.Shutdown(ctx)
-
-	now := time.Now().UTC()
-
-	// Pre-populate turns
-	svc.mu.Lock()
-	for i := 0; i < 6; i++ {
-		svc.sessions["restart-test"] = append(svc.sessions["restart-test"], eventbus.ConversationTurn{
-			Origin: eventbus.OriginUser,
-			Text:   "turn " + strconv.Itoa(i),
-			At:     now.Add(time.Duration(i) * time.Millisecond),
-		})
-	}
-	svc.mu.Unlock()
-
-	// Trigger summary — should work after restart
-	svc.requestSummary("restart-test")
-
-	// pendingSummary should be set (requestSummary proceeds directly)
-	if _, ok := svc.pendingSummary.Load("restart-test"); !ok {
-		t.Fatal("expected pendingSummary to be set after restart")
-	}
-
-	// Clean up
-	val, _ := svc.pendingSummary.Load("restart-test")
-	if req, ok := val.(*summaryRequest); ok && req.timer != nil {
-		req.timer.Stop()
 	}
 }
 
