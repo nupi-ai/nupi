@@ -318,7 +318,12 @@ func (r *RollingLog) CommitArchival(n int) error {
 //
 // Archive uses O_APPEND for race-safe concurrent writes. Multiple RollingLog
 // instances may safely archive to the same path concurrently.
-func (r *RollingLog) Archive(archivePath string, summaries []string) error {
+// Archive writes summaries to an append-only archive file named {date}.md
+// under archivePath. The date parameter controls the filename (format
+// "2006-01-02"), allowing callers to use a deterministic clock for testability
+// and eliminating the previous inconsistency where the caller's timestamp
+// could diverge from an internally-generated one at midnight boundaries.
+func (r *RollingLog) Archive(archivePath string, summaries []string, date string) error {
 	if len(summaries) == 0 {
 		return nil
 	}
@@ -333,7 +338,6 @@ func (r *RollingLog) Archive(archivePath string, summaries []string) error {
 		return fmt.Errorf("create archive dir: %w", err)
 	}
 
-	date := time.Now().UTC().Format("2006-01-02")
 	filename := filepath.Join(archivePath, date+".md")
 
 	content := "\n\n" + strings.Join(summaries, "\n\n") + "\n"

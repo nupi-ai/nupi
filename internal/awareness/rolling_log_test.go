@@ -592,11 +592,10 @@ func TestArchive(t *testing.T) {
 			"### [summary] 14:45\nSecond summary.",
 		}
 
-		if err := rl.Archive(archivePath, summaries); err != nil {
+		date := time.Now().UTC().Format("2006-01-02")
+		if err := rl.Archive(archivePath, summaries, date); err != nil {
 			t.Fatalf("Archive() error = %v", err)
 		}
-
-		date := time.Now().UTC().Format("2006-01-02")
 		archiveFile := filepath.Join(archivePath, date+".md")
 		data, err := os.ReadFile(archiveFile)
 		if err != nil {
@@ -622,17 +621,17 @@ func TestArchive(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		date := time.Now().UTC().Format("2006-01-02")
+
 		// First archive.
-		if err := rl.Archive(archivePath, []string{"First batch."}); err != nil {
+		if err := rl.Archive(archivePath, []string{"First batch."}, date); err != nil {
 			t.Fatal(err)
 		}
 
 		// Second archive — should append.
-		if err := rl.Archive(archivePath, []string{"Second batch."}); err != nil {
+		if err := rl.Archive(archivePath, []string{"Second batch."}, date); err != nil {
 			t.Fatal(err)
 		}
-
-		date := time.Now().UTC().Format("2006-01-02")
 		data, err := os.ReadFile(filepath.Join(archivePath, date+".md"))
 		if err != nil {
 			t.Fatal(err)
@@ -654,7 +653,7 @@ func TestArchive(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if err := rl.Archive(archivePath, nil); err != nil {
+		if err := rl.Archive(archivePath, nil, "2026-02-28"); err != nil {
 			t.Fatalf("Archive(nil) should be noop, got error = %v", err)
 		}
 
@@ -671,7 +670,7 @@ func TestArchive(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = rl.Archive("", []string{"### Summary"})
+		err = rl.Archive("", []string{"### Summary"}, "2026-02-28")
 		if err == nil {
 			t.Fatal("Archive should reject empty archivePath")
 		}
@@ -684,7 +683,7 @@ func TestArchive(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = rl.Archive("relative/archives", []string{"### Summary"})
+		err = rl.Archive("relative/archives", []string{"### Summary"}, "2026-02-28")
 		if err == nil {
 			t.Fatal("Archive should reject relative archivePath")
 		}
@@ -1589,7 +1588,8 @@ func TestArchiveWorkflowAfterReload(t *testing.T) {
 	if len(older) == 0 {
 		t.Fatal("expected OlderSummaries to return entries after reload")
 	}
-	if err := rl2.Archive(archivePath, older); err != nil {
+	date := time.Now().UTC().Format("2006-01-02")
+	if err := rl2.Archive(archivePath, older, date); err != nil {
 		t.Fatalf("Archive() error = %v", err)
 	}
 	if err := rl2.CommitArchival(len(older)); err != nil {
@@ -1602,7 +1602,6 @@ func TestArchiveWorkflowAfterReload(t *testing.T) {
 	}
 
 	// Verify archive file exists with content.
-	date := time.Now().UTC().Format("2006-01-02")
 	data, err := os.ReadFile(filepath.Join(archivePath, date+".md"))
 	if err != nil {
 		t.Fatalf("archive file not created: %v", err)
@@ -1763,7 +1762,7 @@ func TestConcurrentMutations(t *testing.T) {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
-			_ = rl.Archive(archivePath, []string{fmt.Sprintf("### Archive %d", n)})
+			_ = rl.Archive(archivePath, []string{fmt.Sprintf("### Archive %d", n)}, "2026-02-28")
 		}(i)
 	}
 

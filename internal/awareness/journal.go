@@ -6,11 +6,13 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 )
 
@@ -20,26 +22,48 @@ const maxEntryTextBytes = 64 * 1024
 
 // shutdownGraceTimeout is the maximum time Shutdown waits for consumer
 // goroutines to exit when the caller's context has already expired. 5 seconds
-// is sufficient for the three consumer goroutines to drain their event channels
+// is sufficient for consumer goroutines to drain their event channels
 // and complete any in-flight file I/O.
 const shutdownGraceTimeout = 5 * time.Second
 
+// minFinalizationTailSize is the minimum raw tail size (in bytes) to trigger
+// a finalization compaction when a session is stopped.
+const minFinalizationTailSize = 1000
+
+// timestampRe extracts HH:MM:SS timestamps from rolling log entries.
+var timestampRe = regexp.MustCompile(`(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d`)
+
+// pendingCompaction tracks an in-flight compaction request awaiting AI reply.
+// The rl field retains a reference to the session's RollingLog so that the
+// reply handler can write the summary even after the session has been removed
+// from activeLogs (finalization compaction on session stop).
+type pendingCompaction struct {
+	sessionID string
+	rl        *RollingLog
+	startTime string // first timestamp from older half (for summary header)
+	endTime   string // last timestamp from older half (for summary header)
+}
+
 // JournalService captures per-session CLI output into rolling-log journals.
-// It subscribes to pipeline cleaned, session lifecycle, and tool changed events
-// to maintain a live journal file per active session. Implements runtime.Service.
+// It subscribes to pipeline cleaned, session lifecycle, tool changed, and
+// conversation reply events to maintain a live journal file per active session,
+// with automatic compaction and archival. Implements runtime.Service.
 type JournalService struct {
 	bus      *eventbus.Bus
 	basePath string // absolute path to journals/ directory
 
-	activeLogs     sync.Map // sessionID -> *RollingLog
-	toolCache      sync.Map // sessionID -> string (current tool name)
-	logDirsCreated sync.Map // sessionID -> bool (log dir created)
-	logFiles       sync.Map // sessionID -> *logFileEntry (cached daily log file handle)
-	logFileMus     sync.Map // sessionID -> *sync.Mutex — per-session serialization of getLogFile + WriteString
+	activeLogs          sync.Map // sessionID -> *RollingLog
+	toolCache           sync.Map // sessionID -> string (current tool name)
+	logDirsCreated      sync.Map // sessionID -> bool (log dir created)
+	logFiles            sync.Map // sessionID -> *logFileEntry (cached daily log file handle)
+	logFileMus          sync.Map // sessionID -> *sync.Mutex — per-session serialization of getLogFile + WriteString
+	pendingCompactions  sync.Map // promptID -> *pendingCompaction
+	compactionInFlight  sync.Map // sessionID -> bool — dedup guard, at most one in-flight compaction per session
 
 	cleanedSub     *eventbus.TypedSubscription[eventbus.PipelineMessageEvent]
 	lifecycleSub   *eventbus.TypedSubscription[eventbus.SessionLifecycleEvent]
 	toolChangedSub *eventbus.TypedSubscription[eventbus.SessionToolChangedEvent]
+	replySub       *eventbus.TypedSubscription[eventbus.ConversationReplyEvent]
 
 	lifecycle eventbus.ServiceLifecycle
 	started  atomic.Bool
@@ -59,7 +83,12 @@ type logFileEntry struct {
 // NewJournalService creates a JournalService writing journals under basePath.
 // basePath must be an absolute path to the journals directory
 // (e.g., "{instanceDir}/awareness/memory/journals").
+// Panics if basePath is not absolute — a relative basePath would cause
+// RollingLog.Archive() to fail at runtime with a confusing error.
 func NewJournalService(bus *eventbus.Bus, basePath string) *JournalService {
+	if !filepath.IsAbs(basePath) {
+		panic(fmt.Sprintf("awareness: NewJournalService requires absolute basePath, got: %q", basePath))
+	}
 	return &JournalService{
 		bus:      bus,
 		basePath: basePath,
@@ -82,12 +111,14 @@ func (j *JournalService) Start(ctx context.Context) error {
 	j.cleanedSub = eventbus.SubscribeTo(j.bus, eventbus.Pipeline.Cleaned, eventbus.WithSubscriptionName("journal_pipeline"))
 	j.lifecycleSub = eventbus.SubscribeTo(j.bus, eventbus.Sessions.Lifecycle, eventbus.WithSubscriptionName("journal_lifecycle"))
 	j.toolChangedSub = eventbus.SubscribeTo(j.bus, eventbus.Sessions.ToolChanged, eventbus.WithSubscriptionName("journal_tool_changed"))
+	j.replySub = eventbus.SubscribeTo(j.bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("journal_compaction_reply"))
 
-	j.lifecycle.AddSubscriptions(j.cleanedSub, j.lifecycleSub, j.toolChangedSub)
+	j.lifecycle.AddSubscriptions(j.cleanedSub, j.lifecycleSub, j.toolChangedSub, j.replySub)
 
 	j.lifecycle.Go(j.consumePipeline)
 	j.lifecycle.Go(j.consumeLifecycle)
 	j.lifecycle.Go(j.consumeToolChanged)
+	j.lifecycle.Go(j.consumeCompactionReply)
 
 	j.started.Store(true)
 	return nil
@@ -96,8 +127,12 @@ func (j *JournalService) Start(ctx context.Context) error {
 // Shutdown stops consumer goroutines and closes all cached log file handles.
 // Sessions that never sent a stopped event (e.g., daemon shutting down while
 // sessions are still active) have their file descriptors cleaned up here.
+// Safe to call without a preceding Start() — returns nil immediately.
 func (j *JournalService) Shutdown(ctx context.Context) error {
 	if j.bus == nil {
+		return nil
+	}
+	if !j.started.Load() {
 		return nil
 	}
 	j.lifecycle.Stop()
@@ -113,6 +148,10 @@ func (j *JournalService) Shutdown(ctx context.Context) error {
 		}
 		cancel()
 	}
+	// Mark as stopped FIRST — prevents writeLogEntry / handleOutput from
+	// creating new file handles after the cleanup loops below (defense-in-
+	// depth; consumer goroutines should already be drained by lifecycle.Wait).
+	j.started.Store(false)
 	// Clear activeLogs before closing file handles. If any consumer goroutine
 	// survived the grace timeout, its next writeLogEntry call will see the
 	// session as gone (activeLogs guard) and skip the write — preventing it
@@ -129,13 +168,38 @@ func (j *JournalService) Shutdown(ctx context.Context) error {
 		sessionID := key.(string)
 		mu := j.sessionLogMu(sessionID)
 		mu.Lock()
-		value.(*logFileEntry).file.Close()
+		if err := value.(*logFileEntry).file.Close(); err != nil {
+			j.logFunc("[Journal] WARN: close log file for session %s during shutdown: %v", sessionID, err)
+		}
 		j.logFiles.Delete(key)
 		j.logFileMus.Delete(key)
 		mu.Unlock()
 		return true
 	})
-	j.started.Store(false)
+	// Clear compaction tracking maps. Stale entries from the previous
+	// lifecycle would permanently block compaction for reused session IDs
+	// if the service is restarted via Start().
+	j.pendingCompactions.Range(func(key, _ any) bool {
+		j.pendingCompactions.Delete(key)
+		return true
+	})
+	j.compactionInFlight.Range(func(key, _ any) bool {
+		j.compactionInFlight.Delete(key)
+		return true
+	})
+	// Clear session metadata caches. Stale logDirsCreated entries would skip
+	// MkdirAll on restart if the logs directory was removed externally between
+	// cycles, causing writeLogEntry to fail with "no such file or directory".
+	// Stale toolCache entries would inject wrong tool names into [session_start]
+	// entries for reused session IDs.
+	j.logDirsCreated.Range(func(key, _ any) bool {
+		j.logDirsCreated.Delete(key)
+		return true
+	})
+	j.toolCache.Range(func(key, _ any) bool {
+		j.toolCache.Delete(key)
+		return true
+	})
 	return waitErr
 }
 
@@ -185,6 +249,14 @@ func (j *JournalService) handleSessionCreated(event eventbus.SessionLifecycleEve
 		return // Don't store a broken journal — prevents unbounded error log storms from subsequent events.
 	}
 
+	// TODO(Epic 20): No ShouldCompact() check here. On daemon restart with a
+	// pre-existing near-threshold journal, this single [session_start] entry
+	// (~100 bytes) won't trigger compaction. The next handleOutput call will.
+	// Adding ShouldCompact here causes a data race with tests that modify
+	// compactionThreshold directly on the RollingLog after creation. Fix
+	// requires exposing a compaction threshold option on NewRollingLog or
+	// NewJournalService instead of direct field mutation.
+
 	// Store in activeLogs only after successful persist. A journal that can't
 	// write its first entry would cause an error on every subsequent event.
 	j.activeLogs.Store(event.SessionID, rl)
@@ -201,35 +273,43 @@ func (j *JournalService) handleSessionStopped(event eventbus.SessionLifecycleEve
 		return
 	}
 
-	// Write a persistent [session_stop] entry before removing the journal.
-	// SessionID is an internal UUID, not user input — no sanitization needed
-	// (unlike Label, Reason, and tool names which may contain arbitrary text).
 	v, ok := j.activeLogs.Load(event.SessionID)
 	if !ok {
+		// No active journal for this session — nothing to finalize or clean up.
+		// This happens when the stopped event arrives before the created event
+		// (cross-goroutine race) or for sessions that failed journal creation.
 		j.logFunc("[Journal] WARN: stopped event for session %s but no active journal (likely race with created event)", event.SessionID)
+		return
 	}
-	if ok {
-		rl := v.(*RollingLog)
-		now := j.nowFunc()
-		entry := fmt.Sprintf("%s [session_stop] Session: %s", now.Format("15:04:05"), event.SessionID)
-		if event.ExitCode != nil {
-			// ExitCode is *int — %d formatting is injection-safe, no sanitization needed.
-			entry += fmt.Sprintf(", ExitCode: %d", *event.ExitCode)
-		}
-		if event.Reason != "" {
-			entry += fmt.Sprintf(", Reason: %s", sanitizeForRollingLog(event.Reason))
-		}
-		if err := rl.AppendRaw(entry); err != nil {
-			j.logFunc("[Journal] ERROR: write session stop for %s: %v", event.SessionID, err)
-		}
-		if err := j.writeLogEntry(event.SessionID, entry, now); err != nil {
-			j.logFunc("[Journal] ERROR: write session stop log for %s: %v", event.SessionID, err)
-		}
+	rl := v.(*RollingLog)
+
+	// Finalization compaction: trigger before writing [session_stop] so the
+	// stop entry always stays in the raw tail (never gets compacted into a
+	// summary). The compaction reply handler resolves by promptID (not
+	// activeLogs), so it can handle the reply even after the session is
+	// removed from activeLogs below.
+	if rl.ShouldCompact() && rl.RawTailSize() > minFinalizationTailSize {
+		j.triggerCompaction(event.SessionID, rl)
 	}
 
-	// TODO(Story 20.2): Before removing, trigger last compaction of remaining
-	// raw tail if significant content exists (ShouldCompact). This requires the
-	// AI compaction pipeline which is out of scope for Story 20.1.
+	// Write a persistent [session_stop] entry after any finalization compaction.
+	// SessionID is an internal UUID, not user input — no sanitization needed
+	// (unlike Label, Reason, and tool names which may contain arbitrary text).
+	now := j.nowFunc()
+	entry := fmt.Sprintf("%s [session_stop] Session: %s", now.Format("15:04:05"), event.SessionID)
+	if event.ExitCode != nil {
+		// ExitCode is *int — %d formatting is injection-safe, no sanitization needed.
+		entry += fmt.Sprintf(", ExitCode: %d", *event.ExitCode)
+	}
+	if event.Reason != "" {
+		entry += fmt.Sprintf(", Reason: %s", sanitizeForRollingLog(event.Reason))
+	}
+	if err := rl.AppendRaw(entry); err != nil {
+		j.logFunc("[Journal] ERROR: write session stop for %s: %v", event.SessionID, err)
+	}
+	if err := j.writeLogEntry(event.SessionID, entry, now); err != nil {
+		j.logFunc("[Journal] ERROR: write session stop log for %s: %v", event.SessionID, err)
+	}
 
 	// Remove from active map FIRST — prevents late pipeline/tool events from
 	// creating orphan file handles in writeLogEntry. The per-session mutex in
@@ -239,6 +319,7 @@ func (j *JournalService) handleSessionStopped(event eventbus.SessionLifecycleEve
 	j.activeLogs.Delete(event.SessionID)
 	j.toolCache.Delete(event.SessionID)
 	j.logDirsCreated.Delete(event.SessionID)
+	j.compactionInFlight.Delete(event.SessionID)
 
 	// Close cached log file handle AFTER removing from active map.
 	j.closeLogFile(event.SessionID)
@@ -286,6 +367,8 @@ func (j *JournalService) handleOutput(event eventbus.PipelineMessageEvent) {
 	// Sanitize first (normalize line endings, collapse triple newlines, strip XML
 	// tags), then truncate. This order ensures truncation doesn't split a CRLF pair
 	// leaving an orphan \r that sanitization would otherwise have cleaned.
+	// origLen captures pre-sanitization size for the truncation annotation,
+	// giving the user visibility into the original payload size.
 	origLen := len(event.Text)
 	text := sanitizeForRollingLog(event.Text)
 	if len(text) > maxEntryTextBytes {
@@ -302,6 +385,11 @@ func (j *JournalService) handleOutput(event eventbus.PipelineMessageEvent) {
 
 	if err := rl.AppendRaw(entry); err != nil {
 		j.logFunc("[Journal] ERROR: append raw for session %s: %v", event.SessionID, err)
+	}
+
+	// Check if compaction is needed after appending.
+	if rl.ShouldCompact() {
+		j.triggerCompaction(event.SessionID, rl)
 	}
 
 	// Also write to the append-only log file using controlled time.
@@ -343,6 +431,12 @@ func (j *JournalService) handleToolChanged(event eventbus.SessionToolChangedEven
 	if err := rl.AppendRaw(entry); err != nil {
 		j.logFunc("[Journal] ERROR: append tool change for session %s: %v", event.SessionID, err)
 	}
+
+	// Check if compaction is needed after appending (same as handleOutput).
+	if rl.ShouldCompact() {
+		j.triggerCompaction(event.SessionID, rl)
+	}
+
 	if err := j.writeLogEntry(event.SessionID, entry, ts); err != nil {
 		j.logFunc("[Journal] ERROR: write tool change log for session %s: %v", event.SessionID, err)
 	}
@@ -399,7 +493,9 @@ func (j *JournalService) getLogFile(sessionID, logsPath, date string) (*os.File,
 			return entry.file, nil
 		}
 		// Date rollover — close old file.
-		entry.file.Close()
+		if err := entry.file.Close(); err != nil {
+			j.logFunc("[Journal] WARN: close stale log file for session %s (date rollover): %v", sessionID, err)
+		}
 		j.logFiles.Delete(sessionID)
 	}
 
@@ -433,7 +529,9 @@ func (j *JournalService) closeLogFile(sessionID string) {
 	mu := j.sessionLogMu(sessionID)
 	mu.Lock()
 	if v, ok := j.logFiles.LoadAndDelete(sessionID); ok {
-		v.(*logFileEntry).file.Close()
+		if err := v.(*logFileEntry).file.Close(); err != nil {
+			j.logFunc("[Journal] WARN: close log file for session %s: %v", sessionID, err)
+		}
 	}
 	j.logFileMus.Delete(sessionID)
 	mu.Unlock()
@@ -460,15 +558,225 @@ func (j *JournalService) GetContext(sessionID string) (summaries string, raw str
 	return rl.GetContext()
 }
 
+// triggerCompaction extracts the older half of a session's raw tail and
+// publishes a ConversationPromptEvent for AI summarization. The promptID is
+// stored in pendingCompactions so the reply handler can match it.
+func (j *JournalService) triggerCompaction(sessionID string, rl *RollingLog) {
+	// Skip if a compaction for this session is already in flight. Without this
+	// guard, a non-responsive AI adapter would cause unbounded growth of the
+	// pendingCompactions map as each ShouldCompact() == true generates a new entry.
+	if _, loaded := j.compactionInFlight.LoadOrStore(sessionID, true); loaded {
+		return
+	}
+
+	olderHalf, err := rl.OlderHalf()
+	if err != nil {
+		j.compactionInFlight.Delete(sessionID)
+		j.logFunc("[Journal] ERROR: extract older half for session %s: %v", sessionID, err)
+		return
+	}
+	if olderHalf == "" {
+		j.compactionInFlight.Delete(sessionID)
+		return
+	}
+
+	// Extract start/end timestamps from the older half text.
+	startTime, endTime := extractTimeRange(olderHalf)
+
+	promptID := fmt.Sprintf("journal-compact-%s-%d", sessionID, j.nowFunc().UnixNano())
+
+	j.pendingCompactions.Store(promptID, &pendingCompaction{
+		sessionID: sessionID,
+		rl:        rl,
+		startTime: startTime,
+		endTime:   endTime,
+	})
+
+	// context.Background() is intentional: the compaction prompt must be
+	// delivered even if the service is shutting down, so we don't propagate
+	// the lifecycle context which may already be canceled.
+	eventbus.Publish(context.Background(), j.bus, eventbus.Conversation.Prompt, eventbus.SourceAwareness,
+		eventbus.ConversationPromptEvent{
+			SessionID: sessionID,
+			PromptID:  promptID,
+			NewMessage: eventbus.ConversationMessage{
+				Origin: eventbus.OriginSystem,
+				Text:   olderHalf,
+			},
+			Metadata: map[string]string{
+				constants.MetadataKeyEventType: constants.PromptEventJournalCompaction,
+			},
+		})
+}
+
+// consumeCompactionReply handles AI-generated summaries for compaction requests.
+func (j *JournalService) consumeCompactionReply(ctx context.Context) {
+	eventbus.Consume(ctx, j.replySub, nil, func(event eventbus.ConversationReplyEvent) {
+		j.handleCompactionReply(event)
+	})
+}
+
+// handleCompactionReply processes a ConversationReplyEvent if it matches a
+// pending compaction. It formats the summary with a header, calls AppendSummary,
+// and triggers archival if needed.
+func (j *JournalService) handleCompactionReply(event eventbus.ConversationReplyEvent) {
+	if event.PromptID == "" {
+		return
+	}
+
+	v, ok := j.pendingCompactions.LoadAndDelete(event.PromptID)
+	if !ok {
+		return // Not a compaction reply — belongs to another consumer.
+	}
+	pc := v.(*pendingCompaction)
+	j.compactionInFlight.Delete(pc.sessionID)
+
+	// Use the retained RollingLog reference from pendingCompaction. This
+	// handles both the normal case (session still active) and the finalization
+	// case (session removed from activeLogs during stop — the retained
+	// reference allows writing the summary regardless, preventing data loss).
+	rl := pc.rl
+
+	// Guard: if the AI returned an empty reply (error, content filter, empty
+	// response), skip AppendSummary. The older half raw entries were already
+	// deleted by OlderHalf() in triggerCompaction — writing a header-only
+	// summary with no content would be meaningless. Log a warning so the
+	// data loss is visible in diagnostics.
+	if strings.TrimSpace(event.Text) == "" {
+		j.logFunc("[Journal] WARN: empty compaction reply for session %s (promptID=%s) — raw entries already compacted, skipping summary", pc.sessionID, event.PromptID)
+		return
+	}
+
+	// Sanitize AI reply text before building the summary. AI-generated text
+	// may contain "\n\n### " (markdown headers that would split the summary
+	// into multiple entries on reload), format delimiter tags, or triple
+	// newlines that corrupt round-trip parsing.
+	sanitizedText := sanitizeForSummary(event.Text)
+
+	// Format with a proper "### " header for AppendSummary.
+	header := fmt.Sprintf("### [summary] %s – %s", pc.startTime, pc.endTime)
+	formattedSummary := header + "\n" + sanitizedText
+
+	if err := rl.AppendSummary(formattedSummary); err != nil {
+		j.logFunc("[Journal] ERROR: append summary for session %s: %v", pc.sessionID, err)
+		return
+	}
+
+	// After adding a summary, check if archival is needed.
+	if rl.ShouldArchive() {
+		j.triggerArchival(pc.sessionID, rl)
+	}
+}
+
+// triggerArchival moves older summaries to an archive file and triggers FTS5
+// re-indexing via AwarenessSyncEvent.
+//
+// IMPORTANT: This method must only be called from handleCompactionReply (which
+// runs in the single consumeCompactionReply goroutine). The OlderSummaries →
+// Archive → CommitArchival sequence is NOT thread-safe: OlderSummaries takes
+// an RLock and returns a slice that becomes stale if another goroutine calls
+// CommitArchival or AppendSummary concurrently (see rolling_log.go TOCTOU
+// warning). The single-goroutine guarantee serializes all archival calls.
+func (j *JournalService) triggerArchival(sessionID string, rl *RollingLog) {
+	summaries := rl.OlderSummaries()
+	if len(summaries) == 0 {
+		return
+	}
+
+	archivePath := filepath.Join(j.basePath, "archives", sessionID)
+	archiveDate := j.nowFunc().Format("2006-01-02")
+
+	if err := rl.Archive(archivePath, summaries, archiveDate); err != nil {
+		j.logFunc("[Journal] ERROR: archive summaries for session %s: %v", sessionID, err)
+		return
+	}
+	// NOTE: If CommitArchival fails (e.g., disk full on atomic rename), the
+	// summaries remain in live state while also persisted in the archive file.
+	// On the next ShouldArchive() → OlderSummaries() cycle, the same summaries
+	// will be re-archived (appended again via O_APPEND), creating duplicates.
+	// This is acceptable: the failure scenario is rare (requires a transient
+	// disk error between Archive and CommitArchival), and duplicate summaries
+	// in FTS5 search results are harmless (same content, slightly redundant).
+	if err := rl.CommitArchival(len(summaries)); err != nil {
+		j.logFunc("[Journal] ERROR: commit archival for session %s: %v", sessionID, err)
+		return
+	}
+
+	archiveFile := filepath.Join(archivePath, archiveDate+".md")
+	// context.Background() is intentional: the sync event must be delivered
+	// even during shutdown, so we don't propagate the lifecycle context.
+	eventbus.Publish(context.Background(), j.bus, eventbus.Memory.Sync, eventbus.SourceAwareness,
+		eventbus.AwarenessSyncEvent{
+			FilePath: archiveFile,
+			SyncType: "created",
+		})
+
+	j.logFunc("[Journal] INFO: archived %d summaries for session %s → %s", len(summaries), sessionID, archiveFile)
+}
+
+// extractTimeRange finds the first and last HH:MM:SS timestamps in text.
+func extractTimeRange(text string) (start, end string) {
+	matches := timestampRe.FindAllString(text, -1)
+	if len(matches) == 0 {
+		return "??:??:??", "??:??:??"
+	}
+	return matches[0], matches[len(matches)-1]
+}
+
+// sanitizeForSummary cleans AI-generated summary text so it can safely pass
+// through RollingLog.AppendSummary. Specifically:
+//   - Strips format delimiter tags (would corrupt file parsing on reload)
+//   - Strips leading "### " if the AI reply starts with it (would create a
+//     confusing double-header when prepended with the [summary] header)
+//   - Replaces "\n\n### " with "\n\n#### " (would split into multiple entries)
+//   - Collapses 3+ consecutive newlines into double newlines
+func sanitizeForSummary(text string) string {
+	// Normalize CR line endings from AI adapters (same as sanitizeForRollingLog).
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	// Strip format delimiter tags.
+	text = strings.ReplaceAll(text, tagSummariesOpen, "")
+	text = strings.ReplaceAll(text, tagSummariesClose, "")
+	text = strings.ReplaceAll(text, tagRawOpen, "")
+	text = strings.ReplaceAll(text, tagRawClose, "")
+	// Strip leading "### " if the AI starts its reply with a markdown H3
+	// header. The caller prepends its own "### [summary] ..." header, so a
+	// leading "### " in the reply body creates a confusing double-header.
+	if strings.HasPrefix(text, "### ") {
+		text = "#### " + text[4:]
+	}
+	// Downgrade "### " headers preceded by a blank line to "#### " so they
+	// don't split the summary into multiple entries on file reload.
+	text = strings.ReplaceAll(text, "\n\n### ", "\n\n#### ")
+	return collapseExcessiveNewlines(text)
+}
+
 // sanitizeForRollingLog cleans text so it can safely pass through
-// RollingLog.AppendRaw without being rejected. Collapses triple-or-more
-// newlines (the entry delimiter) into double newlines, and strips any
-// embedded file-format XML delimiter tags.
+// RollingLog.AppendRaw without being rejected. Strips file-format delimiter
+// tags and collapses triple-or-more newlines (the entry delimiter) into
+// double newlines. Operation order matches sanitizeForSummary:
+// 1. Normalize CR line endings
+// 2. Strip format delimiter tags (may introduce new newline sequences)
+// 3. Collapse 3+ consecutive newlines
 func sanitizeForRollingLog(text string) string {
 	// Normalize CR line endings from CLI tool output.
 	text = strings.ReplaceAll(text, "\r\n", "\n")
 	text = strings.ReplaceAll(text, "\r", "\n")
-	// Collapse runs of 3+ newlines into 2 (single pass, O(n)).
+	// Remove file-format delimiter tags that would corrupt parsing.
+	// Done before newline collapsing so that tag removal doesn't create
+	// new triple-newline sequences that go uncollapsed.
+	text = strings.ReplaceAll(text, tagSummariesOpen, "")
+	text = strings.ReplaceAll(text, tagSummariesClose, "")
+	text = strings.ReplaceAll(text, tagRawOpen, "")
+	text = strings.ReplaceAll(text, tagRawClose, "")
+	return collapseExcessiveNewlines(text)
+}
+
+// collapseExcessiveNewlines replaces runs of 3 or more consecutive newlines
+// with exactly 2 newlines. Single pass, O(n). Used by both sanitizeForSummary
+// and sanitizeForRollingLog to prevent entry delimiter injection (the rolling
+// log format uses "\n\n\n" as the entry separator).
+func collapseExcessiveNewlines(text string) string {
 	var b strings.Builder
 	b.Grow(len(text))
 	nlCount := 0
@@ -483,11 +791,5 @@ func sanitizeForRollingLog(text string) string {
 			b.WriteByte(text[i])
 		}
 	}
-	text = b.String()
-	// Remove file-format delimiter tags that would corrupt parsing.
-	text = strings.ReplaceAll(text, tagSummariesOpen, "")
-	text = strings.ReplaceAll(text, tagSummariesClose, "")
-	text = strings.ReplaceAll(text, tagRawOpen, "")
-	text = strings.ReplaceAll(text, tagRawClose, "")
-	return text
+	return b.String()
 }

@@ -608,9 +608,9 @@ func TestDaemonIntegrityCheckerAllowsManualInstall(t *testing.T) {
 		t.Errorf("expected 'no integrity checksums' log for manual install, got:\n%s", logOutput)
 	}
 
-	// Verify the plugin was included in the index (not silently skipped).
-	if !strings.Contains(logOutput, "1 valid") {
-		t.Errorf("expected manual-install plugin to appear in index as valid, got:\n%s", logOutput)
+	// Verify the plugin was loaded (not silently skipped).
+	if !strings.Contains(logOutput, "Loaded 1 pipeline cleaner plugins") {
+		t.Errorf("expected manual-install plugin to be loaded as pipeline cleaner, got:\n%s", logOutput)
 	}
 }
 

@@ -247,6 +247,15 @@ func New(opts Options) (*Daemon, error) {
 		return nil, err
 	}
 
+	// Journal service — per-session rolling logs with compaction and archival.
+	journalService := awareness.NewJournalService(bus, filepath.Join(paths.Home, "awareness", "memory", "journals"))
+
+	if err := host.Register("journal", func(ctx context.Context) (daemonruntime.Service, error) {
+		return journalService, nil
+	}); err != nil {
+		return nil, err
+	}
+
 	// Prompts engine for building AI prompts - loads from SQLite store
 	// Default templates are seeded in store.Open, so they're already available
 	promptsEngine := prompts.New(opts.Store)
@@ -282,6 +291,7 @@ func New(opts Options) (*Daemon, error) {
 		intentrouter.WithCoreMemoryProvider(awarenessService),
 		intentrouter.WithOnboardingProvider(awarenessService),
 		intentrouter.WithToolRegistry(toolRegistry),
+		intentrouter.WithJournalProvider(journalService),
 	)
 
 	if err := host.Register("intent_router", func(ctx context.Context) (daemonruntime.Service, error) {
