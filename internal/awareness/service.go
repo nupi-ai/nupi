@@ -32,7 +32,7 @@ type Service struct {
 	indexer           *Indexer
 	embeddingProvider EmbeddingProvider
 
-	memoryWriteMu sync.Mutex // serializes memory file writes (conversations, topics)
+	memoryWriteMu sync.Mutex // serializes tool-initiated memory file writes (conversations, topics)
 	coreWriteMu   sync.Mutex // serializes core memory file writes in UpdateCoreMemory
 
 	heartbeatStore InsertHeartbeatStore
@@ -110,7 +110,7 @@ func (s *Service) Start(ctx context.Context) error {
 	if s.bus != nil {
 		s.lifecycle.Start(ctx)
 
-		s.lifecycleSub = eventbus.Subscribe[eventbus.SessionLifecycleEvent](s.bus, eventbus.TopicSessionsLifecycle, eventbus.WithSubscriptionName("awareness_lifecycle"))
+		s.lifecycleSub = eventbus.SubscribeTo(s.bus, eventbus.Sessions.Lifecycle, eventbus.WithSubscriptionName("awareness_lifecycle"))
 
 		s.lifecycle.AddSubscriptions(s.lifecycleSub)
 		s.lifecycle.Go(s.consumeLifecycleEvents)

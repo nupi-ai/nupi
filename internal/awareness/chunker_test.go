@@ -157,7 +157,7 @@ Remember to update docs.`
 		t.Fatalf("expected at least 2 chunks, got %d", len(chunks))
 	}
 
-	// First chunk should contain daily log content.
+	// First chunk should contain the morning log content.
 	if !strings.Contains(chunks[0].Content, "Morning") {
 		t.Error("first chunk should contain 'Morning'")
 	}
