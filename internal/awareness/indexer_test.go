@@ -248,6 +248,13 @@ func TestIndexerFileTypeExtraction(t *testing.T) {
 		{"projects/nupi/topics/architecture.md", "topic", "nupi"},
 		{"projects/nupi", "unknown", ""},
 		{"unknown.md", "unknown", ""},
+		// logs/ and archives/ paths still classify under parent type,
+		// but Sync() skips these directories entirely via filepath.SkipDir.
+		{"journals/logs/session1/2026-02-27.md", "journals", ""},
+		{"journals/archives/session1.md", "journals", ""},
+		{"conversations/logs/session1/2026-02-27.md", "conversations", ""},
+		{"conversations/archives/2026-02-27.md", "conversations", ""},
+		{"projects/nupi/journals/logs/s1/2026-02-27.md", "journals", "nupi"},
 	}
 
 	for _, tt := range tests {
@@ -260,6 +267,117 @@ func TestIndexerFileTypeExtraction(t *testing.T) {
 				t.Errorf("classifyFile(%q) project = %q, want %q", tt.relPath, gotProject, tt.wantProject)
 			}
 		})
+	}
+}
+
+func TestSyncSkipsLogsAndArchives(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create files that SHOULD be indexed.
+	convDir := filepath.Join(dir, "conversations")
+	journalsDir := filepath.Join(dir, "journals")
+	if err := os.MkdirAll(convDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(journalsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(convDir, "2026-02-27.md"), []byte("Indexed conversation."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(journalsDir, "session1.md"), []byte("Indexed journal."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create files in logs/ and archives/ under journals/ and conversations/
+	// that must NOT be indexed — including project-scoped paths.
+	for _, sub := range []string{
+		filepath.Join("journals", "logs", "session1"),
+		filepath.Join("journals", "archives"),
+		filepath.Join("conversations", "logs", "session1"),
+		filepath.Join("conversations", "archives"),
+		filepath.Join("projects", "myapp", "journals", "logs", "session1"),
+		filepath.Join("projects", "myapp", "conversations", "archives"),
+	} {
+		d := filepath.Join(dir, sub)
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "2026-02-27.md"), []byte("Raw log that must not be indexed."), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Create a logs/ directory under an unrelated parent — this SHOULD be indexed
+	// (SkipDir only applies to journals/ and conversations/ children).
+	otherLogs := filepath.Join(dir, "projects", "logs")
+	if err := os.MkdirAll(otherLogs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(otherLogs, "note.md"), []byte("Should be indexed."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ix := NewIndexer(dir)
+	ctx := context.Background()
+
+	if err := ix.Open(ctx); err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer ix.Close()
+
+	if err := ix.Sync(ctx); err != nil {
+		t.Fatalf("Sync failed: %v", err)
+	}
+
+	// 2 top-level files + 1 file under projects/logs/ = 3 indexed files.
+	var count int
+	row := ix.db.QueryRowContext(ctx, "SELECT count(*) FROM memory_files")
+	if err := row.Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 3 {
+		// Show which files were indexed to aid debugging.
+		rows, _ := ix.db.QueryContext(ctx, "SELECT path FROM memory_files ORDER BY path")
+		defer rows.Close()
+		var paths []string
+		for rows.Next() {
+			var p string
+			rows.Scan(&p)
+			paths = append(paths, p)
+		}
+		t.Fatalf("expected 3 indexed files, got %d: %v", count, paths)
+	}
+
+	// Verify no files from journals/logs, journals/archives, conversations/logs,
+	// conversations/archives appear — including project-scoped paths.
+	// The projects/logs/ file (not under journals/ or conversations/) SHOULD be indexed.
+	for _, forbidden := range []string{
+		"journals/logs",
+		"journals/archives",
+		"conversations/logs",
+		"conversations/archives",
+		"projects/myapp/journals/logs",
+		"projects/myapp/conversations/archives",
+	} {
+		var n int
+		row := ix.db.QueryRowContext(ctx, "SELECT count(*) FROM memory_files WHERE path LIKE '%"+forbidden+"%'")
+		if err := row.Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n != 0 {
+			t.Errorf("expected 0 files from %s/, got %d", forbidden, n)
+		}
+	}
+
+	// Verify the projects/logs/ file IS indexed (not accidentally excluded).
+	var projectLogsCount int
+	row = ix.db.QueryRowContext(ctx, "SELECT count(*) FROM memory_files WHERE path LIKE '%projects/logs%'")
+	if err := row.Scan(&projectLogsCount); err != nil {
+		t.Fatal(err)
+	}
+	if projectLogsCount != 1 {
+		t.Errorf("expected projects/logs/note.md to be indexed, got count: %d", projectLogsCount)
 	}
 }
 

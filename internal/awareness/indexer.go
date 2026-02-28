@@ -250,7 +250,18 @@ func (ix *Indexer) Sync(ctx context.Context) error {
 			return nil // Skip this entry, continue walking.
 		}
 		if d.IsDir() {
-			// Skip the index.db file directory entries but keep walking.
+			// Skip logs/ and archives/ subtrees under journals/ or conversations/ —
+			// these contain raw append-only output and archived summaries that must
+			// not be indexed by FTS5. Only skip when the parent is journals or
+			// conversations to avoid accidentally excluding legitimate directories
+			// elsewhere in the memory tree.
+			name := d.Name()
+			if name == "logs" || name == "archives" {
+				parent := filepath.Base(filepath.Dir(path))
+				if parent == "journals" || parent == "conversations" {
+					return filepath.SkipDir
+				}
+			}
 			return nil
 		}
 		if filepath.Ext(path) != ".md" {
