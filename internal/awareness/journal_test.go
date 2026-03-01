@@ -1598,6 +1598,23 @@ func waitForNoPendingCompactions(t *testing.T, svc *JournalService, timeout time
 	t.Fatal("timeout waiting for pending compactions to clear")
 }
 
+// waitForNoCompactionInFlight waits until compactionInFlight is cleared for a session.
+// With defer-based cleanup in handleCompactionReply, compactionInFlight clears
+// AFTER all work (AppendSummary + triggerArchival), which is later than
+// pendingCompactions.LoadAndDelete. Tests that check compactionInFlight after
+// waitForNoPendingCompactions must use this helper instead of an immediate Load.
+func waitForNoCompactionInFlight(t *testing.T, svc *JournalService, sessionID string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, ok := svc.compactionInFlight.Load(sessionID); !ok {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timeout waiting for compactionInFlight to clear for session %s", sessionID)
+}
+
 func TestCompactionTrigger(t *testing.T) {
 	t.Parallel()
 	svc, bus, _ := newTestJournal(t)
@@ -1676,7 +1693,7 @@ func TestCompactionReplyHandling(t *testing.T) {
 	v, _ := svc.activeLogs.Load(sessionID)
 	rl := v.(*RollingLog)
 	promptID := "journal-compact-test-compact-reply-12345"
-	svc.pendingCompactions.Store(promptID, &pendingCompaction{
+	svc.pendingCompactions.Store(promptID, &journalPendingCompaction{
 		sessionID: sessionID,
 		rl:        rl,
 		startTime: "10:00:00",
@@ -1741,7 +1758,7 @@ func TestArchivalTrigger(t *testing.T) {
 
 	// Now trigger a compaction reply that adds one more summary, pushing past archival threshold.
 	promptID := "journal-compact-archival-test-99999"
-	svc.pendingCompactions.Store(promptID, &pendingCompaction{
+	svc.pendingCompactions.Store(promptID, &journalPendingCompaction{
 		sessionID: sessionID,
 		rl:        rl,
 		startTime: "11:00:00",
@@ -1785,8 +1802,8 @@ func TestArchivalTrigger(t *testing.T) {
 	select {
 	case env := <-syncSub.C():
 		event := env.Payload
-		if event.SyncType != "created" {
-			t.Errorf("sync event SyncType = %s, want created", event.SyncType)
+		if event.SyncType != eventbus.SyncTypeCreated {
+			t.Errorf("sync event SyncType = %s, want %s", event.SyncType, eventbus.SyncTypeCreated)
 		}
 		if !strings.Contains(event.FilePath, "archives/"+sessionID) {
 			t.Errorf("sync event FilePath should point to archive, got: %s", event.FilePath)
@@ -1875,7 +1892,7 @@ func TestCompactionDuringSessionStop(t *testing.T) {
 	v, _ := svc.activeLogs.Load(sessionID)
 	rl := v.(*RollingLog)
 	promptID := "journal-compact-test-compact-during-stop-77777"
-	svc.pendingCompactions.Store(promptID, &pendingCompaction{
+	svc.pendingCompactions.Store(promptID, &journalPendingCompaction{
 		sessionID: sessionID,
 		rl:        rl,
 		startTime: "13:00:00",
@@ -1890,7 +1907,7 @@ func TestCompactionDuringSessionStop(t *testing.T) {
 	waitForNoJournal(t, svc, sessionID, 2*time.Second)
 
 	// Now deliver the compaction reply — session is already gone from activeLogs.
-	// The retained RollingLog reference in pendingCompaction allows the reply
+	// The retained RollingLog reference in journalPendingCompaction allows the reply
 	// handler to write the summary regardless (H1 fix: no data loss).
 	eventbus.Publish(ctx, bus, eventbus.Conversation.Reply, eventbus.SourceIntentRouter,
 		eventbus.ConversationReplyEvent{
@@ -1966,7 +1983,7 @@ func TestConcurrentCompactionAndAppend(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		svc.pendingCompactions.Store(concurrentPromptID, &pendingCompaction{
+		svc.pendingCompactions.Store(concurrentPromptID, &journalPendingCompaction{
 			sessionID: sessionID,
 			rl:        rl,
 			startTime: "14:00:00",
@@ -2148,10 +2165,9 @@ done:
 		})
 	waitForNoPendingCompactions(t, svc, 5*time.Second)
 
-	// After reply delivery, compactionInFlight must be cleared.
-	if _, ok := svc.compactionInFlight.Load(sessionID); ok {
-		t.Error("compactionInFlight should be cleared after reply delivery")
-	}
+	// After reply delivery, compactionInFlight must be cleared. With defer-based
+	// cleanup, clearing happens after AppendSummary completes — poll for it.
+	waitForNoCompactionInFlight(t, svc, sessionID, 5*time.Second)
 }
 
 func TestCompactionReplyWithNoTimestamps(t *testing.T) {
@@ -2174,7 +2190,7 @@ func TestCompactionReplyWithNoTimestamps(t *testing.T) {
 	v, _ := svc.activeLogs.Load(sessionID)
 	rl := v.(*RollingLog)
 	promptID := "journal-compact-no-ts-55555"
-	svc.pendingCompactions.Store(promptID, &pendingCompaction{
+	svc.pendingCompactions.Store(promptID, &journalPendingCompaction{
 		sessionID: sessionID,
 		rl:        rl,
 		startTime: "??:??:??",
@@ -2218,7 +2234,7 @@ func TestCompactionReplyWithMarkdownHeaders(t *testing.T) {
 	v, _ := svc.activeLogs.Load(sessionID)
 	rl := v.(*RollingLog)
 	promptID := "journal-compact-md-headers-11111"
-	svc.pendingCompactions.Store(promptID, &pendingCompaction{
+	svc.pendingCompactions.Store(promptID, &journalPendingCompaction{
 		sessionID: sessionID,
 		rl:        rl,
 		startTime: "17:00:00",
@@ -2264,7 +2280,7 @@ func TestCompactionReplyWithFormatDelimiters(t *testing.T) {
 	v, _ := svc.activeLogs.Load(sessionID)
 	rl := v.(*RollingLog)
 	promptID := "journal-compact-delim-22222"
-	svc.pendingCompactions.Store(promptID, &pendingCompaction{
+	svc.pendingCompactions.Store(promptID, &journalPendingCompaction{
 		sessionID: sessionID,
 		rl:        rl,
 		startTime: "18:00:00",
@@ -2299,8 +2315,8 @@ func TestShutdownClearsPendingMaps(t *testing.T) {
 
 	// Simulate stale entries from a previous lifecycle.
 	// rl is nil because this test only verifies map cleanup, not reply handling.
-	svc.pendingCompactions.Store("stale-prompt-1", &pendingCompaction{sessionID: "s1", rl: nil})
-	svc.pendingCompactions.Store("stale-prompt-2", &pendingCompaction{sessionID: "s2", rl: nil})
+	svc.pendingCompactions.Store("stale-prompt-1", &journalPendingCompaction{sessionID: "s1", rl: nil})
+	svc.pendingCompactions.Store("stale-prompt-2", &journalPendingCompaction{sessionID: "s2", rl: nil})
 	svc.compactionInFlight.Store("s1", true)
 	svc.logDirsCreated.Store("s1", true)
 	svc.logDirsCreated.Store("s2", true)
@@ -2408,7 +2424,7 @@ func TestCompactionReplyWithEmptyText(t *testing.T) {
 	v, _ := svc.activeLogs.Load(sessionID)
 	rl := v.(*RollingLog)
 	promptID := "journal-compact-empty-reply-33333"
-	svc.pendingCompactions.Store(promptID, &pendingCompaction{
+	svc.pendingCompactions.Store(promptID, &journalPendingCompaction{
 		sessionID: sessionID,
 		rl:        rl,
 		startTime: "19:00:00",
@@ -2470,7 +2486,7 @@ func TestCompactionReplyWithWhitespaceOnlyText(t *testing.T) {
 	v, _ := svc.activeLogs.Load(sessionID)
 	rl := v.(*RollingLog)
 	promptID := "journal-compact-ws-reply-44444"
-	svc.pendingCompactions.Store(promptID, &pendingCompaction{
+	svc.pendingCompactions.Store(promptID, &journalPendingCompaction{
 		sessionID: sessionID,
 		rl:        rl,
 		startTime: "20:00:00",
@@ -2526,7 +2542,7 @@ func TestCompactionReplyWithLeadingH3(t *testing.T) {
 	v, _ := svc.activeLogs.Load(sessionID)
 	rl := v.(*RollingLog)
 	promptID := "journal-compact-leading-h3-66666"
-	svc.pendingCompactions.Store(promptID, &pendingCompaction{
+	svc.pendingCompactions.Store(promptID, &journalPendingCompaction{
 		sessionID: sessionID,
 		rl:        rl,
 		startTime: "21:00:00",
@@ -2589,7 +2605,7 @@ func TestFinalizationCompactionSummaryPersisted(t *testing.T) {
 	}
 
 	// Stop the session — triggers finalization compaction which publishes
-	// ConversationPromptEvent and stores pendingCompaction with rl reference.
+	// ConversationPromptEvent and stores journalPendingCompaction with rl reference.
 	promptSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Prompt, eventbus.WithSubscriptionName("test_finalization_e2e_prompt"))
 	defer promptSub.Close()
 
@@ -2611,7 +2627,7 @@ func TestFinalizationCompactionSummaryPersisted(t *testing.T) {
 	waitForNoJournal(t, svc, sessionID, 2*time.Second)
 
 	// Deliver the AI summary reply — session is gone from activeLogs, but
-	// the retained RollingLog reference in pendingCompaction allows the write.
+	// the retained RollingLog reference in journalPendingCompaction allows the write.
 	eventbus.Publish(ctx, bus, eventbus.Conversation.Reply, eventbus.SourceIntentRouter,
 		eventbus.ConversationReplyEvent{
 			SessionID: sessionID,

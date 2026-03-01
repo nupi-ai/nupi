@@ -463,10 +463,24 @@ var Pairing = struct {
 	Claimed: NewTopicDef[PairingClaimedEvent](TopicPairingClaimed),
 }
 
+// SyncType identifies the kind of change for an awareness file sync event.
+type SyncType string
+
+// SyncType constants for AwarenessSyncEvent.
+const (
+	SyncTypeCreated SyncType = "created"
+	SyncTypeUpdated SyncType = "updated"
+	SyncTypeDeleted SyncType = "deleted"
+)
+
 // AwarenessSyncEvent notifies that an awareness file was created or updated.
+// FilePath is always an absolute path to the file on disk, regardless of the
+// publisher (indexer, journal archival, conversation log archival). Consumers
+// that need a relative path (e.g., for index key matching) must relativize it
+// against the memory directory.
 type AwarenessSyncEvent struct {
 	FilePath string
-	SyncType string // "created", "updated", "deleted"
+	SyncType SyncType
 }
 
 // Memory groups awareness/memory topic descriptors.

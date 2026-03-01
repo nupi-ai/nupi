@@ -325,10 +325,10 @@ func (ix *Indexer) Sync(ctx context.Context) error {
 
 		if isUpdate {
 			statsUpdated++
-			ix.publishSync(relPath, "updated")
+			ix.publishSync(relPath, eventbus.SyncTypeUpdated)
 		} else {
 			statsNew++
-			ix.publishSync(relPath, "created")
+			ix.publishSync(relPath, eventbus.SyncTypeCreated)
 		}
 	}
 
@@ -464,7 +464,7 @@ func (ix *Indexer) removeFile(ctx context.Context, relPath string) error {
 		return err
 	}
 
-	ix.publishSync(relPath, "deleted")
+	ix.publishSync(relPath, eventbus.SyncTypeDeleted)
 	return nil
 }
 
@@ -530,13 +530,15 @@ func classifyFile(relPath string) (fileType, projectSlug string) {
 }
 
 // publishSync sends an AwarenessSyncEvent on the event bus.
-func (ix *Indexer) publishSync(filePath, syncType string) {
+// relPath is relative to ix.memoryDir; it is converted to an absolute path
+// to match the AwarenessSyncEvent convention (all publishers use absolute paths).
+func (ix *Indexer) publishSync(relPath string, syncType eventbus.SyncType) {
 	if ix.bus == nil {
 		return
 	}
 	eventbus.Publish(context.Background(), ix.bus, eventbus.Memory.Sync, eventbus.SourceAwareness,
 		eventbus.AwarenessSyncEvent{
-			FilePath: filePath,
+			FilePath: filepath.Join(ix.memoryDir, filepath.FromSlash(relPath)),
 			SyncType: syncType,
 		})
 }

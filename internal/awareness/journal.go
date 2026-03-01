@@ -33,11 +33,14 @@ const minFinalizationTailSize = 1000
 // timestampRe extracts HH:MM:SS timestamps from rolling log entries.
 var timestampRe = regexp.MustCompile(`(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d`)
 
-// pendingCompaction tracks an in-flight compaction request awaiting AI reply.
-// The rl field retains a reference to the session's RollingLog so that the
-// reply handler can write the summary even after the session has been removed
-// from activeLogs (finalization compaction on session stop).
-type pendingCompaction struct {
+// journalPendingCompaction tracks an in-flight compaction request awaiting AI
+// reply. The "journal" prefix disambiguates from convPendingCompaction in
+// conversation_log.go (both types live in the awareness package but track
+// different compaction pipelines). The rl field retains a reference to the
+// session's RollingLog so that the reply handler can write the summary even
+// after the session has been removed from activeLogs (finalization compaction
+// on session stop).
+type journalPendingCompaction struct {
 	sessionID string
 	rl        *RollingLog
 	startTime string // first timestamp from older half (for summary header)
@@ -57,8 +60,9 @@ type JournalService struct {
 	logDirsCreated      sync.Map // sessionID -> bool (log dir created)
 	logFiles            sync.Map // sessionID -> *logFileEntry (cached daily log file handle)
 	logFileMus          sync.Map // sessionID -> *sync.Mutex — per-session serialization of getLogFile + WriteString
-	pendingCompactions  sync.Map // promptID -> *pendingCompaction
-	compactionInFlight  sync.Map // sessionID -> bool — dedup guard, at most one in-flight compaction per session
+	pendingCompactions   sync.Map // promptID -> *journalPendingCompaction
+	compactionInFlight   sync.Map // sessionID -> bool — dedup guard, at most one in-flight compaction per session
+	compactionStartedAt  sync.Map // sessionID -> int64 (UnixNano timestamp of when compaction was triggered)
 
 	cleanedSub     *eventbus.TypedSubscription[eventbus.PipelineMessageEvent]
 	lifecycleSub   *eventbus.TypedSubscription[eventbus.SessionLifecycleEvent]
@@ -72,6 +76,10 @@ type JournalService struct {
 	nowFunc func() time.Time
 	// logFunc logs errors. Defaults to log.Printf. Overridden in tests.
 	logFunc func(format string, args ...any)
+	// staleTimeout is the duration after which an in-flight compaction is
+	// considered stale. Defaults to defaultStaleCompactionTimeout. Overridden
+	// in tests for faster stale-detection verification.
+	staleTimeout time.Duration
 }
 
 // logFileEntry caches an open file handle for a session's daily log file.
@@ -90,10 +98,11 @@ func NewJournalService(bus *eventbus.Bus, basePath string) *JournalService {
 		panic(fmt.Sprintf("awareness: NewJournalService requires absolute basePath, got: %q", basePath))
 	}
 	return &JournalService{
-		bus:      bus,
-		basePath: basePath,
-		nowFunc:  func() time.Time { return time.Now().UTC() },
-		logFunc:  log.Printf,
+		bus:          bus,
+		basePath:     basePath,
+		nowFunc:      func() time.Time { return time.Now().UTC() },
+		logFunc:      log.Printf,
+		staleTimeout: defaultStaleCompactionTimeout,
 	}
 }
 
@@ -179,12 +188,25 @@ func (j *JournalService) Shutdown(ctx context.Context) error {
 	// Clear compaction tracking maps. Stale entries from the previous
 	// lifecycle would permanently block compaction for reused session IDs
 	// if the service is restarted via Start().
-	j.pendingCompactions.Range(func(key, _ any) bool {
+	// WARNING: Each dropped entry represents data loss — OlderHalf() already
+	// deleted the raw entries, but the AI summary was never written back.
+	droppedCompactions := 0
+	j.pendingCompactions.Range(func(key, v any) bool {
+		pc := v.(*journalPendingCompaction)
+		j.logFunc("[Journal] WARN: dropping unresolved compaction (promptID=%s, session=%s) during shutdown — raw entries were compacted but summary was never received", key, pc.sessionID)
 		j.pendingCompactions.Delete(key)
+		droppedCompactions++
 		return true
 	})
+	if droppedCompactions > 0 {
+		j.logFunc("[Journal] WARN: dropped %d unresolved compaction(s) during shutdown — potential data loss", droppedCompactions)
+	}
 	j.compactionInFlight.Range(func(key, _ any) bool {
 		j.compactionInFlight.Delete(key)
+		return true
+	})
+	j.compactionStartedAt.Range(func(key, _ any) bool {
+		j.compactionStartedAt.Delete(key)
 		return true
 	})
 	// Clear session metadata caches. Stale logDirsCreated entries would skip
@@ -320,6 +342,7 @@ func (j *JournalService) handleSessionStopped(event eventbus.SessionLifecycleEve
 	j.toolCache.Delete(event.SessionID)
 	j.logDirsCreated.Delete(event.SessionID)
 	j.compactionInFlight.Delete(event.SessionID)
+	j.compactionStartedAt.Delete(event.SessionID)
 
 	// Close cached log file handle AFTER removing from active map.
 	j.closeLogFile(event.SessionID)
@@ -484,6 +507,30 @@ func (j *JournalService) writeLogEntry(sessionID, entry string, ts time.Time) er
 	return nil
 }
 
+// writeFallbackLogEntry writes directly to a session's daily log file without
+// checking activeLogs. Used by handleCompactionReply's AppendSummary failure
+// path, which intentionally runs even after the session has been stopped
+// (replies MUST be processed because OlderHalf already deleted the raw entries).
+// The regular writeLogEntry checks activeLogs and would silently discard the
+// fallback after session stop.
+func (j *JournalService) writeFallbackLogEntry(sessionID, entry string, ts time.Time) error {
+	logsPath := filepath.Join(j.basePath, "logs", sessionID)
+	if err := os.MkdirAll(logsPath, 0o755); err != nil {
+		return fmt.Errorf("create logs dir: %w", err)
+	}
+	date := ts.Format("2006-01-02")
+	filename := filepath.Join(logsPath, date+".md")
+	f, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("open fallback log file: %w", err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString(entry + "\n"); err != nil {
+		return fmt.Errorf("write fallback log: %w", err)
+	}
+	return nil
+}
+
 // getLogFile returns a cached file handle for the session's daily log. If the
 // date has rolled over, the old handle is closed and a new one opened.
 func (j *JournalService) getLogFile(sessionID, logsPath, date string) (*os.File, error) {
@@ -566,8 +613,14 @@ func (j *JournalService) triggerCompaction(sessionID string, rl *RollingLog) {
 	// guard, a non-responsive AI adapter would cause unbounded growth of the
 	// pendingCompactions map as each ShouldCompact() == true generates a new entry.
 	if _, loaded := j.compactionInFlight.LoadOrStore(sessionID, true); loaded {
-		return
+		j.checkStaleCompaction(sessionID)
+		// After clearing stale state, retry the guard. If checkStaleCompaction
+		// cleared compactionInFlight, LoadOrStore succeeds and we proceed.
+		if _, loaded := j.compactionInFlight.LoadOrStore(sessionID, true); loaded {
+			return
+		}
 	}
+	j.compactionStartedAt.Store(sessionID, time.Now().UnixNano())
 
 	olderHalf, err := rl.OlderHalf()
 	if err != nil {
@@ -583,9 +636,13 @@ func (j *JournalService) triggerCompaction(sessionID string, rl *RollingLog) {
 	// Extract start/end timestamps from the older half text.
 	startTime, endTime := extractTimeRange(olderHalf)
 
-	promptID := fmt.Sprintf("journal-compact-%s-%d", sessionID, j.nowFunc().UnixNano())
+	// Use time.Now() (not nowFunc) for promptID uniqueness. nowFunc is
+	// overridden to a fixed time in tests for deterministic archive dates;
+	// using it here would produce duplicate promptIDs across multiple
+	// compactions within the same test.
+	promptID := fmt.Sprintf("journal-compact-%s-%d", sessionID, time.Now().UnixNano())
 
-	j.pendingCompactions.Store(promptID, &pendingCompaction{
+	j.pendingCompactions.Store(promptID, &journalPendingCompaction{
 		sessionID: sessionID,
 		rl:        rl,
 		startTime: startTime,
@@ -607,6 +664,38 @@ func (j *JournalService) triggerCompaction(sessionID string, rl *RollingLog) {
 				constants.MetadataKeyEventType: constants.PromptEventJournalCompaction,
 			},
 		})
+	j.logFunc("[Journal] INFO: compaction triggered (session=%s, promptID=%s, range=%s–%s)", sessionID, promptID, startTime, endTime)
+}
+
+// checkStaleCompaction detects and clears per-session compaction state that has
+// been in-flight for longer than staleCompactionTimeout. See the
+// ConversationLogService.checkStaleCompaction doc comment for rationale.
+func (j *JournalService) checkStaleCompaction(sessionID string) {
+	v, ok := j.compactionStartedAt.Load(sessionID)
+	if !ok {
+		return
+	}
+	startedAt := v.(int64)
+	if startedAt == 0 {
+		return
+	}
+	age := time.Since(time.Unix(0, startedAt))
+	if age < j.staleTimeout {
+		return
+	}
+
+	j.logFunc("[Journal] WARN: compaction for session %s has been in-flight for %v (threshold %v) — clearing stale state to unblock pipeline", sessionID, age, j.staleTimeout)
+	// Find and drop the stale pending compaction entry for this session.
+	j.pendingCompactions.Range(func(key, value any) bool {
+		pc := value.(*journalPendingCompaction)
+		if pc.sessionID == sessionID {
+			j.logFunc("[Journal] WARN: dropping stale compaction (promptID=%s, session=%s, range=%s–%s) — raw entries were compacted but summary was never received", key, pc.sessionID, pc.startTime, pc.endTime)
+			j.pendingCompactions.Delete(key)
+		}
+		return true
+	})
+	j.compactionInFlight.Delete(sessionID)
+	j.compactionStartedAt.Delete(sessionID)
 }
 
 // consumeCompactionReply handles AI-generated summaries for compaction requests.
@@ -628,14 +717,25 @@ func (j *JournalService) handleCompactionReply(event eventbus.ConversationReplyE
 	if !ok {
 		return // Not a compaction reply — belongs to another consumer.
 	}
-	pc := v.(*pendingCompaction)
-	j.compactionInFlight.Delete(pc.sessionID)
+	pc := v.(*journalPendingCompaction)
+	// Defer clearing the guard so new compactions for this session are blocked
+	// until ALL work (AppendSummary + triggerArchival) completes. Clearing
+	// early would allow a new triggerCompaction from consumePipeline while
+	// this reply is still being finalized, wasting AI adapter calls.
+	defer func() {
+		j.compactionInFlight.Delete(pc.sessionID)
+		j.compactionStartedAt.Delete(pc.sessionID)
+	}()
 
-	// Use the retained RollingLog reference from pendingCompaction. This
+	// Use the retained RollingLog reference from journalPendingCompaction. This
 	// handles both the normal case (session still active) and the finalization
 	// case (session removed from activeLogs during stop — the retained
 	// reference allows writing the summary regardless, preventing data loss).
 	rl := pc.rl
+	if rl == nil {
+		j.logFunc("[Journal] WARN: nil RollingLog in pending compaction (promptID=%s, session=%s) — cannot write summary", event.PromptID, pc.sessionID)
+		return
+	}
 
 	// Guard: if the AI returned an empty reply (error, content filter, empty
 	// response), skip AppendSummary. The older half raw entries were already
@@ -658,9 +758,20 @@ func (j *JournalService) handleCompactionReply(event eventbus.ConversationReplyE
 	formattedSummary := header + "\n" + sanitizedText
 
 	if err := rl.AppendSummary(formattedSummary); err != nil {
-		j.logFunc("[Journal] ERROR: append summary for session %s: %v", pc.sessionID, err)
+		j.logFunc("[Journal] ERROR: append summary for session %s (promptID=%s, range=%s–%s): %v", pc.sessionID, event.PromptID, pc.startTime, pc.endTime, err)
+		// Fallback: write the AI summary to the daily audit log so it is not
+		// permanently lost. OlderHalf() already deleted the raw entries; if the
+		// rolling log write also fails (e.g., disk full), this is the last
+		// chance to preserve the summarized content.
+		fallbackEntry := fmt.Sprintf("[compaction-fallback] %s\n%s", header, sanitizedText)
+		if fbErr := j.writeFallbackLogEntry(pc.sessionID, fallbackEntry, j.nowFunc()); fbErr != nil {
+			j.logFunc("[Journal] ERROR: fallback audit log write also failed (session=%s, promptID=%s): %v", pc.sessionID, event.PromptID, fbErr)
+		} else {
+			j.logFunc("[Journal] INFO: AI summary saved to audit log as fallback (session=%s, promptID=%s)", pc.sessionID, event.PromptID)
+		}
 		return
 	}
+	j.logFunc("[Journal] INFO: compaction reply processed (session=%s, promptID=%s, range=%s–%s)", pc.sessionID, event.PromptID, pc.startTime, pc.endTime)
 
 	// After adding a summary, check if archival is needed.
 	if rl.ShouldArchive() {
@@ -685,6 +796,11 @@ func (j *JournalService) triggerArchival(sessionID string, rl *RollingLog) {
 
 	archivePath := filepath.Join(j.basePath, "archives", sessionID)
 	archiveDate := j.nowFunc().Format("2006-01-02")
+	archiveFile := filepath.Join(archivePath, archiveDate+".md")
+
+	// Check existence BEFORE Archive() writes/appends to determine correct SyncType.
+	_, statErr := os.Stat(archiveFile)
+	archiveExisted := statErr == nil
 
 	if err := rl.Archive(archivePath, summaries, archiveDate); err != nil {
 		j.logFunc("[Journal] ERROR: archive summaries for session %s: %v", sessionID, err)
@@ -702,13 +818,16 @@ func (j *JournalService) triggerArchival(sessionID string, rl *RollingLog) {
 		return
 	}
 
-	archiveFile := filepath.Join(archivePath, archiveDate+".md")
+	syncType := eventbus.SyncTypeCreated
+	if archiveExisted {
+		syncType = eventbus.SyncTypeUpdated
+	}
 	// context.Background() is intentional: the sync event must be delivered
 	// even during shutdown, so we don't propagate the lifecycle context.
 	eventbus.Publish(context.Background(), j.bus, eventbus.Memory.Sync, eventbus.SourceAwareness,
 		eventbus.AwarenessSyncEvent{
 			FilePath: archiveFile,
-			SyncType: "created",
+			SyncType: syncType,
 		})
 
 	j.logFunc("[Journal] INFO: archived %d summaries for session %s → %s", len(summaries), sessionID, archiveFile)

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/runtime"
 )
@@ -711,5 +712,1294 @@ func TestConvLogNilBusStartAndShutdown(t *testing.T) {
 	}
 	if err := svc.Shutdown(context.Background()); err != nil {
 		t.Fatalf("Shutdown with nil bus should return nil: %v", err)
+	}
+}
+
+// --- Story 21.2: Compaction, Archival, and Daemon Wiring Tests ---
+
+// waitForConvPendingCompaction waits until a pending compaction entry appears.
+func waitForConvPendingCompaction(t *testing.T, svc *ConversationLogService, timeout time.Duration) string {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		var foundKey string
+		svc.pendingCompactions.Range(func(key, _ any) bool {
+			foundKey = key.(string)
+			return false
+		})
+		if foundKey != "" {
+			return foundKey
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("timeout waiting for pending compaction")
+	return ""
+}
+
+// waitForConvNoPendingCompactions waits until all pending compactions are resolved.
+func waitForConvNoPendingCompactions(t *testing.T, svc *ConversationLogService, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		count := 0
+		svc.pendingCompactions.Range(func(_, _ any) bool {
+			count++
+			return true
+		})
+		if count == 0 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("timeout waiting for pending compactions to clear")
+}
+
+// waitForConvNoCompactionInFlight waits until compactionInFlight is cleared.
+// With defer-based cleanup in handleCompactionReply, compactionInFlight clears
+// AFTER all work (AppendSummary + triggerArchival), which is later than
+// pendingCompactions.LoadAndDelete.
+func waitForConvNoCompactionInFlight(t *testing.T, svc *ConversationLogService, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if !svc.compactionInFlight.Load() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("timeout waiting for compactionInFlight to clear")
+}
+
+// waitForConvSummaryEntry waits until GetContext summaries contain the expected string.
+func waitForConvSummaryEntry(t *testing.T, svc *ConversationLogService, expected string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		summaries, _, err := svc.GetContext()
+		if err == nil && strings.Contains(summaries, expected) {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	summaries, _, _ := svc.GetContext()
+	t.Fatalf("timeout waiting for summary containing %q, got: %q", expected, summaries)
+}
+
+func TestCompactionTriggerConvLog(t *testing.T) {
+	// AC#1: After AppendRaw in handleTurn, call ShouldCompact(). When true,
+	// publish ConversationPromptEvent with event_type="conversation_compaction".
+	t.Parallel()
+	svc, bus, _ := newTestConvLog(t)
+	fixedTime := time.Date(2026, 2, 28, 10, 0, 0, 0, time.UTC)
+	svc.nowFunc = func() time.Time { return fixedTime }
+	ctx := startConvLog(t, svc)
+
+	// Subscribe to Conversation.Prompt to verify the compaction event is published.
+	promptSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Prompt, eventbus.WithSubscriptionName("test_convlog_compact_prompt"))
+	defer promptSub.Close()
+
+	// Lower the compaction threshold for test speed.
+	rl := svc.rl.Load()
+	rl.compactionThreshold = 200
+
+	// Publish enough turns to exceed the threshold.
+	for i := range 10 {
+		publishTurn(ctx, bus, eventbus.OriginUser, fmt.Sprintf("compaction msg %d %s", i, strings.Repeat("x", 30)), fixedTime)
+	}
+
+	// Wait for a pending compaction entry to appear.
+	promptID := waitForConvPendingCompaction(t, svc, 5*time.Second)
+	if !strings.HasPrefix(promptID, "conversation-compact-") {
+		t.Errorf("unexpected promptID prefix: %s", promptID)
+	}
+
+	// Verify ConversationPromptEvent was published.
+	select {
+	case env := <-promptSub.C():
+		event := env.Payload
+		if event.PromptID != promptID {
+			t.Errorf("prompt event PromptID = %s, want %s", event.PromptID, promptID)
+		}
+		if event.Metadata[constants.MetadataKeyEventType] != constants.PromptEventConversationCompaction {
+			t.Errorf("prompt event metadata event_type = %s, want %s", event.Metadata[constants.MetadataKeyEventType], constants.PromptEventConversationCompaction)
+		}
+		if event.SessionID != "" {
+			t.Errorf("prompt event SessionID should be empty for conversation log, got: %q", event.SessionID)
+		}
+		if event.NewMessage.Text == "" {
+			t.Error("prompt event should contain older half text")
+		}
+		if event.NewMessage.Origin != eventbus.OriginSystem {
+			t.Errorf("prompt event Origin = %q, want %q (compaction is system-initiated)", event.NewMessage.Origin, eventbus.OriginSystem)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for ConversationPromptEvent")
+	}
+}
+
+func TestCompactionReplyHandlingConvLog(t *testing.T) {
+	// AC#2: Subscribe to Conversation.Reply, match PromptID, sanitize AI reply,
+	// format with ### [summary] HH:MM – HH:MM header, call AppendSummary.
+	t.Parallel()
+	svc, bus, _ := newTestConvLog(t)
+	fixedTime := time.Date(2026, 2, 28, 11, 0, 0, 0, time.UTC)
+	svc.nowFunc = func() time.Time { return fixedTime }
+	ctx := startConvLog(t, svc)
+
+	// Manually store a pending compaction entry (simulating triggerCompaction).
+	rl := svc.rl.Load()
+	promptID := "conversation-compact-12345"
+	svc.pendingCompactions.Store(promptID, &convPendingCompaction{
+		rl:        rl,
+		startTime: "10:00:00",
+		endTime:   "10:30:00",
+	})
+
+	// Publish a reply event with matching PromptID.
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Reply, eventbus.SourceIntentRouter,
+		eventbus.ConversationReplyEvent{
+			PromptID: promptID,
+			Text:     "User discussed project architecture and API design.",
+		})
+
+	// Wait for the summary to be appended.
+	waitForConvSummaryEntry(t, svc, "User discussed project architecture", 5*time.Second)
+
+	// Verify the summary has the proper header format.
+	summaries, _, _ := svc.GetContext()
+	if !strings.Contains(summaries, "### [summary] 10:00:00 – 10:30:00") {
+		t.Errorf("summary should have header with time range, got: %q", summaries)
+	}
+
+	// Verify pending compaction was removed.
+	if _, ok := svc.pendingCompactions.Load(promptID); ok {
+		t.Error("pending compaction should be removed after reply handling")
+	}
+}
+
+func TestArchivalTriggerConvLog(t *testing.T) {
+	// AC#3, AC#4: After AppendSummary, call ShouldArchive(). When true, archive
+	// summaries and publish AwarenessSyncEvent.
+	t.Parallel()
+	svc, bus, base := newTestConvLog(t)
+	fixedTime := time.Date(2026, 2, 28, 12, 0, 0, 0, time.UTC)
+	svc.nowFunc = func() time.Time { return fixedTime }
+	ctx := startConvLog(t, svc)
+
+	// Lower the summary budget to make archival trigger quickly.
+	rl := svc.rl.Load()
+	rl.summaryBudget = 100
+
+	// Inject summaries to exceed the budget.
+	for i := range 5 {
+		summary := fmt.Sprintf("### [summary] 10:0%d:00 – 10:0%d:30\nSummary block %d with enough text to exceed budget. %s",
+			i, i, i, strings.Repeat("y", 30))
+		if err := rl.AppendSummary(summary); err != nil {
+			t.Fatalf("inject summary %d: %v", i, err)
+		}
+	}
+
+	// Subscribe to awareness sync to verify FTS5 indexing event.
+	syncSub := eventbus.SubscribeTo(bus, eventbus.Memory.Sync, eventbus.WithSubscriptionName("test_convlog_archival_sync"))
+	defer syncSub.Close()
+
+	// Trigger a compaction reply that adds one more summary, pushing past archival.
+	promptID := "conversation-compact-archival-99999"
+	svc.pendingCompactions.Store(promptID, &convPendingCompaction{
+		rl:        rl,
+		startTime: "11:00:00",
+		endTime:   "11:30:00",
+	})
+
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Reply, eventbus.SourceIntentRouter,
+		eventbus.ConversationReplyEvent{
+			PromptID: promptID,
+			Text:     "Final summary that triggers archival with sufficient text.",
+		})
+
+	// Wait for pending compaction to be resolved.
+	waitForConvNoPendingCompactions(t, svc, 5*time.Second)
+
+	// Verify archive file was created — simpler path than journal (no session-id subdirectory).
+	archiveDir := filepath.Join(base, "archives")
+	expectedArchiveFile := filepath.Join(archiveDir, "2026-02-28.md")
+	var archiveData []byte
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		d, readErr := os.ReadFile(expectedArchiveFile)
+		if readErr == nil && len(d) > 0 {
+			archiveData = d
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if len(archiveData) == 0 {
+		t.Fatalf("archive file %s should exist with content", expectedArchiveFile)
+	}
+	if !strings.Contains(string(archiveData), "[summary]") {
+		t.Errorf("archive file should contain summaries, got: %q", string(archiveData))
+	}
+
+	// Verify AwarenessSyncEvent was published.
+	select {
+	case env := <-syncSub.C():
+		event := env.Payload
+		if event.SyncType != eventbus.SyncTypeCreated {
+			t.Errorf("sync event SyncType = %s, want %s", event.SyncType, eventbus.SyncTypeCreated)
+		}
+		if !strings.Contains(event.FilePath, "archives/2026-02-28.md") {
+			t.Errorf("sync event FilePath should point to archive, got: %s", event.FilePath)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for AwarenessSyncEvent after archival")
+	}
+
+	// Wait for compactionInFlight to clear (defer-based cleanup completes after archival).
+	waitForConvNoCompactionInFlight(t, svc, 5*time.Second)
+
+	// Verify archived summaries were removed from live state (CommitArchival worked).
+	summaries, _, err := svc.GetContext()
+	if err != nil {
+		t.Fatalf("GetContext after archival: %v", err)
+	}
+	// The 5 injected summaries (blocks 0-4) should have been archived. Only the
+	// final reply summary ("Final summary that triggers archival...") should remain
+	// in live state (it was added AFTER the archival threshold check).
+	for i := range 5 {
+		marker := fmt.Sprintf("Summary block %d", i)
+		if strings.Contains(summaries, marker) {
+			t.Errorf("archived summary %q should not be in live state after archival", marker)
+		}
+	}
+	if !strings.Contains(summaries, "Final summary that triggers archival") {
+		t.Errorf("last summary should remain in live state, got: %q", summaries)
+	}
+}
+
+func TestArchivalSyncTypeUpdatedConvLog(t *testing.T) {
+	// Verify that when an archive file already exists (same-day second archival),
+	// triggerArchival publishes SyncTypeUpdated instead of SyncTypeCreated.
+	t.Parallel()
+	svc, bus, base := newTestConvLog(t)
+	fixedTime := time.Date(2026, 2, 28, 12, 30, 0, 0, time.UTC)
+	svc.nowFunc = func() time.Time { return fixedTime }
+	ctx := startConvLog(t, svc)
+
+	rl := svc.rl.Load()
+	rl.summaryBudget = 100
+
+	// Pre-create the archive file so it already exists when triggerArchival runs.
+	archiveDir := filepath.Join(base, "archives")
+	if err := os.MkdirAll(archiveDir, 0o755); err != nil {
+		t.Fatalf("create archive dir: %v", err)
+	}
+	existingArchive := filepath.Join(archiveDir, "2026-02-28.md")
+	if err := os.WriteFile(existingArchive, []byte("### [summary] 09:00:00 – 09:30:00\nPrevious summary.\n"), 0o600); err != nil {
+		t.Fatalf("create existing archive: %v", err)
+	}
+
+	// Inject summaries to exceed the budget.
+	for i := range 5 {
+		summary := fmt.Sprintf("### [summary] 11:0%d:00 – 11:0%d:30\nUpdate summary block %d. %s",
+			i, i, i, strings.Repeat("z", 30))
+		if err := rl.AppendSummary(summary); err != nil {
+			t.Fatalf("inject summary %d: %v", i, err)
+		}
+	}
+
+	// Subscribe to awareness sync.
+	syncSub := eventbus.SubscribeTo(bus, eventbus.Memory.Sync, eventbus.WithSubscriptionName("test_convlog_archival_updated"))
+	defer syncSub.Close()
+
+	// Trigger compaction reply → archival.
+	promptID := "conversation-compact-updated-88888"
+	svc.pendingCompactions.Store(promptID, &convPendingCompaction{
+		rl:        rl,
+		startTime: "12:00:00",
+		endTime:   "12:30:00",
+	})
+
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Reply, eventbus.SourceIntentRouter,
+		eventbus.ConversationReplyEvent{
+			PromptID: promptID,
+			Text:     "Summary triggering archival into existing file.",
+		})
+
+	waitForConvNoPendingCompactions(t, svc, 5*time.Second)
+
+	// Verify SyncTypeUpdated (not Created) because archive file pre-existed.
+	select {
+	case env := <-syncSub.C():
+		event := env.Payload
+		if event.SyncType != eventbus.SyncTypeUpdated {
+			t.Errorf("sync event SyncType = %s, want %s (archive file pre-existed)", event.SyncType, eventbus.SyncTypeUpdated)
+		}
+		if !strings.Contains(event.FilePath, "archives/2026-02-28.md") {
+			t.Errorf("sync event FilePath should point to archive, got: %s", event.FilePath)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for AwarenessSyncEvent after archival")
+	}
+
+	// Verify the existing content was preserved (O_APPEND) and new summaries appended.
+	data, err := os.ReadFile(existingArchive)
+	if err != nil {
+		t.Fatalf("read archive: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "Previous summary.") {
+		t.Error("existing archive content should be preserved")
+	}
+	if !strings.Contains(content, "Update summary block") {
+		t.Error("new summaries should be appended to existing archive")
+	}
+}
+
+func TestCompactionEmptyReplyConvLog(t *testing.T) {
+	// AC#7: Verify empty/whitespace AI reply doesn't call AppendSummary.
+	t.Parallel()
+	svc, bus, _ := newTestConvLog(t)
+	fixedTime := time.Date(2026, 2, 28, 13, 0, 0, 0, time.UTC)
+	svc.nowFunc = func() time.Time { return fixedTime }
+
+	var mu sync.Mutex
+	var logMsgs []string
+	svc.logFunc = func(format string, args ...any) {
+		mu.Lock()
+		logMsgs = append(logMsgs, fmt.Sprintf(format, args...))
+		mu.Unlock()
+	}
+	ctx := startConvLog(t, svc)
+
+	rl := svc.rl.Load()
+	promptID := "conversation-compact-empty-reply"
+	svc.pendingCompactions.Store(promptID, &convPendingCompaction{
+		rl:        rl,
+		startTime: "12:00:00",
+		endTime:   "12:30:00",
+	})
+	svc.compactionInFlight.Store(true)
+
+	// Publish empty reply.
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Reply, eventbus.SourceIntentRouter,
+		eventbus.ConversationReplyEvent{
+			PromptID: promptID,
+			Text:     "",
+		})
+
+	// Wait for pending to be resolved.
+	waitForConvNoPendingCompactions(t, svc, 5*time.Second)
+
+	// compactionInFlight should be cleared. With defer-based cleanup, poll for it.
+	waitForConvNoCompactionInFlight(t, svc, 5*time.Second)
+
+	// Summaries should be empty (AppendSummary was NOT called).
+	summaries, _, _ := svc.GetContext()
+	if summaries != "" {
+		t.Errorf("empty reply should not add summary, got: %q", summaries)
+	}
+
+	// A warning should have been logged.
+	mu.Lock()
+	var foundWarn bool
+	for _, msg := range logMsgs {
+		if strings.Contains(msg, "WARN") && strings.Contains(msg, "empty compaction reply") {
+			foundWarn = true
+		}
+	}
+	mu.Unlock()
+	if !foundWarn {
+		t.Error("expected warning log for empty compaction reply")
+	}
+}
+
+func TestCompactionInFlightDedupConvLog(t *testing.T) {
+	// AC#1: compactionInFlight atomic.Bool prevents concurrent compactions.
+	t.Parallel()
+	svc, bus, _ := newTestConvLog(t)
+	fixedTime := time.Date(2026, 2, 28, 14, 0, 0, 0, time.UTC)
+	ctx := startConvLog(t, svc)
+
+	// Subscribe to Conversation.Prompt to count compaction events.
+	promptSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Prompt, eventbus.WithSubscriptionName("test_convlog_dedup"))
+	defer promptSub.Close()
+
+	// Lower threshold.
+	rl := svc.rl.Load()
+	rl.compactionThreshold = 200
+
+	// Publish enough to trigger one compaction.
+	for i := range 10 {
+		publishTurn(ctx, bus, eventbus.OriginUser, fmt.Sprintf("dedup msg %d %s", i, strings.Repeat("x", 30)), fixedTime)
+	}
+
+	// Wait for first compaction.
+	waitForConvPendingCompaction(t, svc, 5*time.Second)
+
+	// compactionInFlight should be set.
+	if !svc.compactionInFlight.Load() {
+		t.Fatal("compactionInFlight should be true after first compaction")
+	}
+
+	// Publish more data that would trigger another compaction — should be blocked.
+	for i := range 10 {
+		publishTurn(ctx, bus, eventbus.OriginUser, fmt.Sprintf("extra msg %d %s", i, strings.Repeat("z", 30)), fixedTime)
+	}
+
+	// Wait a bit for potential second compaction prompt.
+	time.Sleep(200 * time.Millisecond)
+
+	// Drain prompt channel — should have exactly 1 compaction prompt.
+	compactionCount := 0
+	for {
+		select {
+		case env := <-promptSub.C():
+			if env.Payload.Metadata[constants.MetadataKeyEventType] == constants.PromptEventConversationCompaction {
+				compactionCount++
+			}
+		default:
+			goto done
+		}
+	}
+done:
+	if compactionCount != 1 {
+		t.Errorf("expected exactly 1 compaction prompt (dedup), got %d", compactionCount)
+	}
+}
+
+func TestConcurrentCompactionAndTurnAppendConvLog(t *testing.T) {
+	// AC#7: Race detector safety with concurrent turns and compaction replies.
+	t.Parallel()
+	svc, bus, _ := newTestConvLog(t)
+	fixedTime := time.Date(2026, 2, 28, 15, 0, 0, 0, time.UTC)
+	ctx := startConvLog(t, svc)
+
+	rl := svc.rl.Load()
+
+	// Concurrently publish turns and compaction replies.
+	var wg sync.WaitGroup
+
+	// Goroutine 1: Publish turns.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 20; i++ {
+			publishTurn(ctx, bus, eventbus.OriginUser, fmt.Sprintf("concurrent msg %d", i), fixedTime)
+		}
+	}()
+
+	// Goroutine 2: Inject and resolve compaction replies.
+	// Set compactionInFlight before each injection so handleCompactionReply's
+	// defer-based cleanup (Store(false)) exercises the real race path with
+	// concurrent triggerCompaction attempts from Goroutine 1.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 5; i++ {
+			promptID := fmt.Sprintf("conversation-compact-race-%d", i)
+			svc.compactionInFlight.Store(true)
+			svc.pendingCompactions.Store(promptID, &convPendingCompaction{
+				rl:        rl,
+				startTime: "10:00:00",
+				endTime:   "10:30:00",
+			})
+			eventbus.Publish(ctx, bus, eventbus.Conversation.Reply, eventbus.SourceIntentRouter,
+				eventbus.ConversationReplyEvent{
+					PromptID: promptID,
+					Text:     fmt.Sprintf("Summary for race iteration %d", i),
+				})
+		}
+	}()
+
+	wg.Wait()
+
+	// Wait for all turns to appear.
+	for i := 0; i < 20; i++ {
+		waitForRawContent(t, svc, fmt.Sprintf("concurrent msg %d", i), 5*time.Second)
+	}
+
+	// Wait for all compaction replies to be processed.
+	waitForConvNoPendingCompactions(t, svc, 5*time.Second)
+	waitForConvNoCompactionInFlight(t, svc, 5*time.Second)
+
+	// Verify at least some summaries were written (not silently dropped).
+	summaries, _, err := svc.GetContext()
+	if err != nil {
+		t.Fatalf("GetContext: %v", err)
+	}
+	summaryCount := strings.Count(summaries, "[summary]")
+	if summaryCount == 0 {
+		t.Error("expected at least one summary from concurrent compaction replies, got 0")
+	}
+}
+
+func TestShutdownClearsPendingMapsConvLog(t *testing.T) {
+	// AC#7: Verify pendingCompactions and compactionInFlight are cleared on shutdown.
+	t.Parallel()
+	svc, bus, _ := newTestConvLog(t)
+	fixedTime := time.Date(2026, 2, 28, 16, 0, 0, 0, time.UTC)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	publishTurn(ctx, bus, eventbus.OriginUser, "before shutdown", fixedTime)
+	waitForRawContent(t, svc, "[user] before shutdown", 2*time.Second)
+
+	// Simulate a pending compaction entry.
+	rl := svc.rl.Load()
+	svc.pendingCompactions.Store("conversation-compact-stale-123", &convPendingCompaction{
+		rl:        rl,
+		startTime: "15:00:00",
+		endTime:   "15:30:00",
+	})
+	svc.compactionInFlight.Store(true)
+
+	cancel()
+	if err := svc.Shutdown(context.Background()); err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+
+	// Verify maps are cleared.
+	count := 0
+	svc.pendingCompactions.Range(func(_, _ any) bool {
+		count++
+		return true
+	})
+	if count != 0 {
+		t.Errorf("pendingCompactions should be empty after shutdown, has %d entries", count)
+	}
+	if svc.compactionInFlight.Load() {
+		t.Error("compactionInFlight should be false after shutdown")
+	}
+}
+
+func TestRestartWithPendingCompactionConvLog(t *testing.T) {
+	// AC#7: Verify that Shutdown with an in-flight compaction logs a data
+	// loss warning, and a subsequent Start cycle works correctly without
+	// stale compaction state blocking new compactions.
+	t.Parallel()
+	svc, bus, _ := newTestConvLog(t)
+	fixedTime := time.Date(2026, 2, 28, 20, 0, 0, 0, time.UTC)
+	svc.nowFunc = func() time.Time { return fixedTime }
+
+	var mu sync.Mutex
+	var logMsgs []string
+	svc.logFunc = func(format string, args ...any) {
+		mu.Lock()
+		logMsgs = append(logMsgs, fmt.Sprintf(format, args...))
+		mu.Unlock()
+	}
+
+	// Cycle 1: Start, trigger compaction, shutdown WITHOUT resolving it.
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	if err := svc.Start(ctx1); err != nil {
+		t.Fatalf("start cycle 1: %v", err)
+	}
+
+	// Add some raw data.
+	publishTurn(ctx1, bus, eventbus.OriginUser, "restart compaction test", fixedTime)
+	waitForRawContent(t, svc, "[user] restart compaction test", 2*time.Second)
+
+	// Inject a pending compaction (simulating in-flight).
+	rl := svc.rl.Load()
+	svc.pendingCompactions.Store("conversation-compact-stale-restart", &convPendingCompaction{
+		rl:        rl,
+		startTime: "19:00:00",
+		endTime:   "19:30:00",
+	})
+	svc.compactionInFlight.Store(true)
+
+	cancel1()
+	if err := svc.Shutdown(context.Background()); err != nil {
+		t.Fatalf("shutdown cycle 1: %v", err)
+	}
+
+	// Verify data loss warning was logged.
+	mu.Lock()
+	var foundWarn bool
+	for _, msg := range logMsgs {
+		if strings.Contains(msg, "WARN") && strings.Contains(msg, "dropping unresolved compaction") {
+			foundWarn = true
+		}
+	}
+	mu.Unlock()
+	if !foundWarn {
+		t.Error("expected data loss warning for dropped compaction during shutdown")
+	}
+
+	// Verify stale state is cleared.
+	if svc.compactionInFlight.Load() {
+		t.Error("compactionInFlight should be cleared after shutdown")
+	}
+
+	// Cycle 2: Restart — should work cleanly, no stale state.
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	t.Cleanup(func() {
+		cancel2()
+		_ = svc.Shutdown(context.Background())
+	})
+	if err := svc.Start(ctx2); err != nil {
+		t.Fatalf("start cycle 2: %v", err)
+	}
+
+	// Verify cycle 1 raw data persisted.
+	_, raw, err := svc.GetContext()
+	if err != nil {
+		t.Fatalf("GetContext cycle 2: %v", err)
+	}
+	if !strings.Contains(raw, "[user] restart compaction test") {
+		t.Errorf("cycle 1 data lost after restart, got: %q", raw)
+	}
+
+	// Verify compaction can fire again (not blocked by stale state).
+	rl2 := svc.rl.Load()
+	rl2.compactionThreshold = 100
+
+	for i := range 5 {
+		publishTurn(ctx2, bus, eventbus.OriginUser, fmt.Sprintf("post-restart msg %d %s", i, strings.Repeat("x", 30)), fixedTime)
+	}
+
+	// If stale compactionInFlight blocked this, no pending compaction would appear.
+	promptID := waitForConvPendingCompaction(t, svc, 5*time.Second)
+	if !strings.HasPrefix(promptID, "conversation-compact-") {
+		t.Errorf("unexpected promptID after restart: %s", promptID)
+	}
+}
+
+func TestCompactionOlderHalfEmptyReturnConvLog(t *testing.T) {
+	// AC#7: Verify compactionInFlight cleared on empty OlderHalf().
+	// When raw tail is below threshold but ShouldCompact returns true
+	// transiently (e.g., concurrent append), OlderHalf may return empty.
+	t.Parallel()
+	svc, _, _ := newTestConvLog(t)
+	fixedTime := time.Date(2026, 2, 28, 17, 0, 0, 0, time.UTC)
+	svc.nowFunc = func() time.Time { return fixedTime }
+	_ = startConvLog(t, svc)
+
+	rl := svc.rl.Load()
+
+	// Set compactionInFlight directly (simulating the guard would be acquired).
+	// triggerCompaction will try CompareAndSwap(false, true) so we can't set it first.
+	// Instead, just call triggerCompaction on a log with no raw content.
+	svc.triggerCompaction(rl)
+
+	// OlderHalf on empty log returns "" — compactionInFlight should be cleared.
+	if svc.compactionInFlight.Load() {
+		t.Error("compactionInFlight should be false after empty OlderHalf")
+	}
+
+	// No pending compaction should exist.
+	count := 0
+	svc.pendingCompactions.Range(func(_, _ any) bool {
+		count++
+		return true
+	})
+	if count != 0 {
+		t.Errorf("pendingCompactions should be empty, has %d entries", count)
+	}
+}
+
+func TestTriggerArchivalNilRLConvLog(t *testing.T) {
+	// Verify that triggerArchival returns early (no panic) when rl is nil.
+	// Exercises the defensive nil guard added in R1/H2.
+	t.Parallel()
+	svc, _, base := newTestConvLog(t)
+	_ = startConvLog(t, svc)
+
+	// Call triggerArchival with nil — should return without error or panic.
+	svc.triggerArchival(nil)
+
+	// Verify no archive directory was created.
+	archiveDir := filepath.Join(base, "archives")
+	if _, err := os.Stat(archiveDir); err == nil {
+		t.Error("archives directory should not be created when rl is nil")
+	}
+}
+
+func TestCompactionReplyWithMarkdownHeadersConvLog(t *testing.T) {
+	// AC#7: Verify sanitizeForSummary downgrades `### ` headers in AI reply.
+	t.Parallel()
+	svc, bus, _ := newTestConvLog(t)
+	fixedTime := time.Date(2026, 2, 28, 18, 0, 0, 0, time.UTC)
+	svc.nowFunc = func() time.Time { return fixedTime }
+	ctx := startConvLog(t, svc)
+
+	rl := svc.rl.Load()
+	promptID := "conversation-compact-headers-test"
+	svc.pendingCompactions.Store(promptID, &convPendingCompaction{
+		rl:        rl,
+		startTime: "17:00:00",
+		endTime:   "17:30:00",
+	})
+
+	// AI reply contains ### headers that would split the summary on reload.
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Reply, eventbus.SourceIntentRouter,
+		eventbus.ConversationReplyEvent{
+			PromptID: promptID,
+			Text:     "First part of summary.\n\n### Architecture\nSecond part about architecture.",
+		})
+
+	waitForConvSummaryEntry(t, svc, "First part of summary", 5*time.Second)
+
+	summaries, _, _ := svc.GetContext()
+	// The "### Architecture" should be downgraded to "#### Architecture".
+	if strings.Contains(summaries, "\n\n### Architecture") {
+		t.Errorf("### headers in AI reply should be downgraded to ####, got: %q", summaries)
+	}
+	if !strings.Contains(summaries, "#### Architecture") {
+		t.Errorf("expected downgraded #### header, got: %q", summaries)
+	}
+}
+
+func TestConversationLogServiceLifecycle(t *testing.T) {
+	// Verify ConversationLogService Start/Shutdown/GetContext lifecycle works
+	// correctly on a fresh instance. Interface compatibility (AC#5, AC#6) is
+	// validated by the compile-time assertion in
+	// internal/intentrouter/conversation_log_provider_test.go.
+	t.Parallel()
+	bus := eventbus.New()
+	base := filepath.Join(t.TempDir(), "conversations")
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		t.Fatalf("create dir: %v", err)
+	}
+
+	svc := NewConversationLogService(bus, base)
+
+	// Verify Start/Shutdown cycle works.
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	// Verify GetContext works after Start.
+	summaries, raw, err := svc.GetContext()
+	if err != nil {
+		t.Fatalf("GetContext: %v", err)
+	}
+	if summaries != "" || raw != "" {
+		t.Errorf("expected empty context on fresh service, got summaries=%q raw=%q", summaries, raw)
+	}
+
+	cancel()
+	if err := svc.Shutdown(context.Background()); err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+}
+
+func TestCompactionWhitespaceOnlyReplyConvLog(t *testing.T) {
+	// Verify whitespace-only AI reply is treated the same as empty.
+	t.Parallel()
+	svc, bus, _ := newTestConvLog(t)
+	fixedTime := time.Date(2026, 2, 28, 19, 0, 0, 0, time.UTC)
+	svc.nowFunc = func() time.Time { return fixedTime }
+	ctx := startConvLog(t, svc)
+
+	rl := svc.rl.Load()
+	promptID := "conversation-compact-whitespace"
+	svc.pendingCompactions.Store(promptID, &convPendingCompaction{
+		rl:        rl,
+		startTime: "18:00:00",
+		endTime:   "18:30:00",
+	})
+	svc.compactionInFlight.Store(true)
+
+	// Publish whitespace-only reply.
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Reply, eventbus.SourceIntentRouter,
+		eventbus.ConversationReplyEvent{
+			PromptID: promptID,
+			Text:     "   \n\n\t  ",
+		})
+
+	waitForConvNoPendingCompactions(t, svc, 5*time.Second)
+
+	// compactionInFlight should be cleared. With defer-based cleanup, poll for it.
+	waitForConvNoCompactionInFlight(t, svc, 5*time.Second)
+
+	summaries, _, _ := svc.GetContext()
+	if summaries != "" {
+		t.Errorf("whitespace reply should not add summary, got: %q", summaries)
+	}
+}
+
+func TestHandleCompactionReplyNilRLConvLog(t *testing.T) {
+	// Verify that handleCompactionReply returns early (no panic) when the
+	// retained RollingLog in convPendingCompaction is nil (R4/M3 guard).
+	t.Parallel()
+	svc, bus, _ := newTestConvLog(t)
+	fixedTime := time.Date(2026, 2, 28, 21, 0, 0, 0, time.UTC)
+	svc.nowFunc = func() time.Time { return fixedTime }
+
+	var mu sync.Mutex
+	var logMsgs []string
+	svc.logFunc = func(format string, args ...any) {
+		mu.Lock()
+		logMsgs = append(logMsgs, fmt.Sprintf(format, args...))
+		mu.Unlock()
+	}
+	ctx := startConvLog(t, svc)
+
+	// Store a pending compaction with nil rl (defensive scenario).
+	promptID := "conversation-compact-nil-rl-test"
+	svc.pendingCompactions.Store(promptID, &convPendingCompaction{
+		rl:        nil,
+		startTime: "20:00:00",
+		endTime:   "20:30:00",
+	})
+	svc.compactionInFlight.Store(true)
+
+	// Publish a reply — should not panic, should log warning.
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Reply, eventbus.SourceIntentRouter,
+		eventbus.ConversationReplyEvent{
+			PromptID: promptID,
+			Text:     "Summary that cannot be written because rl is nil.",
+		})
+
+	// Wait for pending to be resolved.
+	waitForConvNoPendingCompactions(t, svc, 5*time.Second)
+	waitForConvNoCompactionInFlight(t, svc, 5*time.Second)
+
+	// Verify warning was logged.
+	mu.Lock()
+	var foundWarn bool
+	for _, msg := range logMsgs {
+		if strings.Contains(msg, "WARN") && strings.Contains(msg, "nil RollingLog") {
+			foundWarn = true
+		}
+	}
+	mu.Unlock()
+	if !foundWarn {
+		t.Error("expected warning log for nil RollingLog in pending compaction")
+	}
+
+	// Verify no summary was added (no crash means the guard worked).
+	summaries, _, _ := svc.GetContext()
+	if summaries != "" {
+		t.Errorf("nil rl should not add summary, got: %q", summaries)
+	}
+}
+
+func TestCompactionOlderHalfErrorConvLog(t *testing.T) {
+	// M1: Verify compactionInFlight is cleared when OlderHalf() returns an error
+	// (e.g., disk write failure during persist). Exercises the error path at
+	// conversation_log.go triggerCompaction.
+	t.Parallel()
+	if os.Getuid() == 0 {
+		t.Skip("chmod 0o555 does not restrict root — skipping on root")
+	}
+
+	// Create a ConversationLogService with a custom base path. We'll make the
+	// directory read-only after adding raw entries so that OlderHalf's
+	// persistToFile (which creates a .tmp file) fails.
+	bus := eventbus.New()
+	base := filepath.Join(t.TempDir(), "conversations")
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		t.Fatalf("create dir: %v", err)
+	}
+	svc := NewConversationLogService(bus, base)
+
+	var mu sync.Mutex
+	var logMsgs []string
+	svc.logFunc = func(format string, args ...any) {
+		mu.Lock()
+		logMsgs = append(logMsgs, fmt.Sprintf(format, args...))
+		mu.Unlock()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() {
+		// Restore write permission before cleanup to allow temp dir removal.
+		os.Chmod(base, 0o755)
+		cancel()
+		_ = svc.Shutdown(context.Background())
+	})
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	rl := svc.rl.Load()
+
+	// Add enough raw entries so OlderHalf has something to extract.
+	for i := 0; i < 4; i++ {
+		if err := rl.AppendRaw(fmt.Sprintf("entry-%d", i)); err != nil {
+			t.Fatalf("append raw: %v", err)
+		}
+	}
+
+	// Make the base directory read-only so persistToFile cannot create the
+	// .tmp file. This forces OlderHalf to return an error.
+	if err := os.Chmod(base, 0o555); err != nil {
+		t.Fatalf("chmod dir: %v", err)
+	}
+
+	// Call triggerCompaction — OlderHalf should fail, compactionInFlight should clear.
+	svc.triggerCompaction(rl)
+
+	if svc.compactionInFlight.Load() {
+		t.Error("compactionInFlight should be false after OlderHalf error")
+	}
+
+	// No pending compaction should exist.
+	count := 0
+	svc.pendingCompactions.Range(func(_, _ any) bool {
+		count++
+		return true
+	})
+	if count != 0 {
+		t.Errorf("pendingCompactions should be empty after OlderHalf error, has %d", count)
+	}
+
+	// Error should have been logged.
+	mu.Lock()
+	var foundErr bool
+	for _, msg := range logMsgs {
+		if strings.Contains(msg, "ERROR") && strings.Contains(msg, "extract older half") {
+			foundErr = true
+		}
+	}
+	mu.Unlock()
+	if !foundErr {
+		t.Error("expected error log for OlderHalf failure")
+	}
+
+	// Restore permissions for cleanup.
+	os.Chmod(base, 0o755)
+}
+
+func TestStaleCompactionReaperConvLog(t *testing.T) {
+	// H1: Verify that stale compaction state (in-flight > threshold) is
+	// automatically cleared when a new compaction attempt is blocked.
+	t.Parallel()
+	svc, _, _ := newTestConvLog(t)
+
+	var mu sync.Mutex
+	var logMsgs []string
+	svc.logFunc = func(format string, args ...any) {
+		mu.Lock()
+		logMsgs = append(logMsgs, fmt.Sprintf(format, args...))
+		mu.Unlock()
+	}
+	_ = startConvLog(t, svc)
+
+	rl := svc.rl.Load()
+
+	// Simulate a stale compaction: set compactionInFlight and a very old startedAt.
+	svc.compactionInFlight.Store(true)
+	// Set startedAt to 10 minutes ago (well past the 5-minute threshold).
+	staleTime := time.Now().Add(-10 * time.Minute).UnixNano()
+	svc.compactionStartedAt.Store(staleTime)
+	svc.pendingCompactions.Store("conversation-compact-stale-999", &convPendingCompaction{
+		rl:        rl,
+		startTime: "08:00:00",
+		endTime:   "08:30:00",
+	})
+
+	// Attempt a new compaction — should detect stale state and clear it.
+	svc.triggerCompaction(rl)
+
+	// After clearing stale state, compactionInFlight should be false.
+	// triggerCompaction returns immediately after checkStaleCompaction clears
+	// the stale state. If rl has no raw entries and triggerCompaction is retried,
+	// OlderHalf returns "" and clears compactionInFlight.
+	if svc.compactionInFlight.Load() {
+		t.Error("compactionInFlight should be false after stale reaper cleared it")
+	}
+
+	// The stale pending compaction should be removed.
+	if _, ok := svc.pendingCompactions.Load("conversation-compact-stale-999"); ok {
+		t.Error("stale pending compaction should have been cleared by reaper")
+	}
+
+	// Warning should have been logged.
+	mu.Lock()
+	var foundStaleWarn bool
+	for _, msg := range logMsgs {
+		if strings.Contains(msg, "WARN") && strings.Contains(msg, "in-flight for") {
+			foundStaleWarn = true
+		}
+	}
+	mu.Unlock()
+	if !foundStaleWarn {
+		t.Error("expected stale compaction warning log")
+	}
+}
+
+func TestAppendSummaryFailureFallbackConvLog(t *testing.T) {
+	// M2: Verify that when AppendSummary fails, the AI summary is written
+	// to the daily audit log as a fallback.
+	t.Parallel()
+
+	bus := eventbus.New()
+	base := filepath.Join(t.TempDir(), "conversations")
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		t.Fatalf("create dir: %v", err)
+	}
+	// Pre-create logs/ directory so writeLogEntry (fallback) can write even
+	// when the base directory is read-only.
+	logsDir := filepath.Join(base, "logs")
+	if err := os.MkdirAll(logsDir, 0o755); err != nil {
+		t.Fatalf("create logs dir: %v", err)
+	}
+	svc := NewConversationLogService(bus, base)
+	fixedTime := time.Date(2026, 2, 28, 22, 0, 0, 0, time.UTC)
+	svc.nowFunc = func() time.Time { return fixedTime }
+
+	var mu sync.Mutex
+	var logMsgs []string
+	svc.logFunc = func(format string, args ...any) {
+		mu.Lock()
+		logMsgs = append(logMsgs, fmt.Sprintf(format, args...))
+		mu.Unlock()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() {
+		os.Chmod(base, 0o755)
+		cancel()
+		_ = svc.Shutdown(context.Background())
+	})
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	// Write a turn to ensure the daily log file is opened and logDirCreated is set.
+	publishTurn(ctx, bus, eventbus.OriginUser, "setup turn", fixedTime)
+	waitForRawContent(t, svc, "[user] setup turn", 2*time.Second)
+	logFile := filepath.Join(logsDir, "2026-02-28.md")
+	waitForLogContent(t, logFile, "setup turn", 2*time.Second)
+
+	rl := svc.rl.Load()
+	promptID := "conversation-compact-fallback-test"
+	svc.pendingCompactions.Store(promptID, &convPendingCompaction{
+		rl:        rl,
+		startTime: "21:00:00",
+		endTime:   "21:30:00",
+	})
+
+	// Make base directory read-only so AppendSummary's persistToFile (which
+	// creates a .tmp file) fails. The logs/ directory is already created and
+	// the log file handle is already open, so the fallback writeLogEntry
+	// can still write.
+	if err := os.Chmod(base, 0o555); err != nil {
+		t.Fatalf("chmod dir: %v", err)
+	}
+
+	// Publish a reply — AppendSummary should fail, fallback should write to audit log.
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Reply, eventbus.SourceIntentRouter,
+		eventbus.ConversationReplyEvent{
+			PromptID: promptID,
+			Text:     "Summary that should fall back to audit log.",
+		})
+
+	// Wait for the pending compaction to be resolved.
+	waitForConvNoPendingCompactions(t, svc, 5*time.Second)
+	waitForConvNoCompactionInFlight(t, svc, 5*time.Second)
+
+	// Restore permissions before reading.
+	os.Chmod(base, 0o755)
+
+	// Verify the fallback was written to the daily audit log.
+	deadline := time.Now().Add(5 * time.Second)
+	var logData []byte
+	for time.Now().Before(deadline) {
+		d, err := os.ReadFile(logFile)
+		if err == nil && strings.Contains(string(d), "[compaction-fallback]") {
+			logData = d
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !strings.Contains(string(logData), "[compaction-fallback]") {
+		mu.Lock()
+		t.Errorf("expected fallback compaction entry in daily audit log, log messages: %v", logMsgs)
+		mu.Unlock()
+	}
+	if !strings.Contains(string(logData), "Summary that should fall back to audit log.") {
+		t.Error("expected AI summary text in fallback entry")
+	}
+}
+
+func TestHandleTurnAppendRawFailureSkipsCompaction(t *testing.T) {
+	// R6/M1: Verify that when AppendRaw fails (e.g., disk full), handleTurn
+	// does NOT call triggerCompaction. Compacting data that may not have
+	// persisted to disk risks silent data loss on restart.
+	t.Parallel()
+	if os.Getuid() == 0 {
+		t.Skip("chmod 0o555 does not restrict root — skipping on root")
+	}
+
+	bus := eventbus.New()
+	base := filepath.Join(t.TempDir(), "conversations")
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		t.Fatalf("create dir: %v", err)
+	}
+	svc := NewConversationLogService(bus, base)
+	fixedTime := time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC)
+	svc.nowFunc = func() time.Time { return fixedTime }
+
+	var mu sync.Mutex
+	var logMsgs []string
+	svc.logFunc = func(format string, args ...any) {
+		mu.Lock()
+		logMsgs = append(logMsgs, fmt.Sprintf(format, args...))
+		mu.Unlock()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() {
+		os.Chmod(base, 0o755)
+		cancel()
+		_ = svc.Shutdown(context.Background())
+	})
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	rl := svc.rl.Load()
+
+	// Add enough data to exceed the compaction threshold so the NEXT AppendRaw
+	// would trigger ShouldCompact() == true.
+	bigEntry := strings.Repeat("x", conversationCompactionThreshold+100)
+	if err := rl.AppendRaw(bigEntry); err != nil {
+		t.Fatalf("seed append: %v", err)
+	}
+
+	// Make directory read-only so the next AppendRaw (via handleTurn) fails
+	// on persistToFile.
+	if err := os.Chmod(base, 0o555); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+
+	// Simulate a turn — AppendRaw should fail, and triggerCompaction should NOT
+	// be called (no compaction event published, no compactionInFlight set).
+	publishTurn(ctx, bus, eventbus.OriginUser, "should-fail", fixedTime)
+
+	// Wait for the error to be logged.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		found := false
+		for _, msg := range logMsgs {
+			if strings.Contains(msg, "ERROR: append raw") {
+				found = true
+				break
+			}
+		}
+		mu.Unlock()
+		if found {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Verify compactionInFlight was NOT set (triggerCompaction was not called).
+	if svc.compactionInFlight.Load() {
+		t.Error("compactionInFlight should NOT be set when AppendRaw fails")
+	}
+
+	// Verify no compaction event was published by checking for "compaction triggered" log.
+	mu.Lock()
+	for _, msg := range logMsgs {
+		if strings.Contains(msg, "compaction triggered") {
+			t.Errorf("triggerCompaction should NOT be called after AppendRaw failure, but found log: %s", msg)
+		}
+	}
+	mu.Unlock()
+}
+
+func TestStaleCompactionReaperVsLateReplyConvLog(t *testing.T) {
+	// R6/M2: Verify behavior when checkStaleCompaction clears a pending entry
+	// and a reply for that promptID arrives shortly after. The reply should be
+	// silently dropped (promptID not found in pendingCompactions).
+	t.Parallel()
+
+	svc, bus, _ := newTestConvLog(t)
+	fixedTime := time.Date(2026, 3, 1, 11, 0, 0, 0, time.UTC)
+	svc.nowFunc = func() time.Time { return fixedTime }
+
+	var mu sync.Mutex
+	var logMsgs []string
+	svc.logFunc = func(format string, args ...any) {
+		mu.Lock()
+		logMsgs = append(logMsgs, fmt.Sprintf(format, args...))
+		mu.Unlock()
+	}
+
+	ctx := startConvLog(t, svc)
+
+	rl := svc.rl.Load()
+
+	// Manually inject a "stale" pending compaction that's old enough to be reaped.
+	promptID := "conversation-compact-stale-test"
+	svc.compactionInFlight.Store(true)
+	svc.compactionStartedAt.Store(time.Now().Add(-10 * time.Minute).UnixNano()) // 10 min ago = stale
+	svc.pendingCompactions.Store(promptID, &convPendingCompaction{
+		rl:        rl,
+		startTime: "10:00:00",
+		endTime:   "10:30:00",
+	})
+
+	// Trigger checkStaleCompaction by attempting a new compaction while one is in-flight.
+	// Since compactionInFlight is already true, triggerCompaction will call checkStaleCompaction.
+	svc.triggerCompaction(rl)
+
+	// After stale reaping, compactionInFlight should be false.
+	waitForConvNoCompactionInFlight(t, svc, 3*time.Second)
+
+	// Now publish a reply matching the reaped promptID — it should be silently dropped.
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Reply, eventbus.SourceIntentRouter,
+		eventbus.ConversationReplyEvent{
+			PromptID: promptID,
+			Text:     "Late reply for reaped compaction.",
+		})
+
+	// Publish a sentinel reply to ensure the late reply was processed first.
+	sentinelID := "sentinel-after-stale"
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Reply, eventbus.SourceIntentRouter,
+		eventbus.ConversationReplyEvent{
+			PromptID: sentinelID,
+			Text:     "sentinel",
+		})
+
+	// Wait briefly for both replies to be processed.
+	time.Sleep(200 * time.Millisecond)
+
+	// Verify: no AppendSummary was called for the stale promptID — the summary
+	// section should be empty (only raw turns from the service start).
+	summaries, _, err := svc.GetContext()
+	if err != nil {
+		t.Fatalf("GetContext: %v", err)
+	}
+	if strings.Contains(summaries, "Late reply for reaped compaction") {
+		t.Error("stale compaction reply should have been dropped, but summary was written")
+	}
+}
+
+func TestHandleTurnWithNilRL(t *testing.T) {
+	// Verify that handleTurn still writes to the daily audit log when rl is nil
+	// (e.g., during a race with Shutdown). The audit log should capture all
+	// turns regardless of rolling log state.
+	t.Parallel()
+	svc, bus, base := newTestConvLog(t)
+	fixedTime := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	ctx := startConvLog(t, svc)
+
+	// Force rl to nil to simulate the race window.
+	svc.rl.Store(nil)
+
+	publishTurn(ctx, bus, eventbus.OriginUser, "turn during nil rl", fixedTime)
+
+	// Wait for the audit log entry to appear — writeLogEntry runs before rl check.
+	logFile := filepath.Join(base, "logs", "2026-03-01.md")
+	waitForLogContent(t, logFile, "12:00:00 [user] turn during nil rl", 2*time.Second)
+
+	// GetContext should return empty (rl is nil).
+	summaries, raw, err := svc.GetContext()
+	if err != nil {
+		t.Fatalf("GetContext: %v", err)
+	}
+	if summaries != "" || raw != "" {
+		t.Errorf("expected empty context with nil rl, got summaries=%q raw=%q", summaries, raw)
 	}
 }

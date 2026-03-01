@@ -256,6 +256,15 @@ func New(opts Options) (*Daemon, error) {
 		return nil, err
 	}
 
+	// Conversation log service — global conversation rolling log with compaction and archival.
+	convLogService := awareness.NewConversationLogService(bus, filepath.Join(paths.Home, "awareness", "memory", "conversations"))
+
+	if err := host.Register("conversation-log", func(ctx context.Context) (daemonruntime.Service, error) {
+		return convLogService, nil
+	}); err != nil {
+		return nil, err
+	}
+
 	// Prompts engine for building AI prompts - loads from SQLite store
 	// Default templates are seeded in store.Open, so they're already available
 	promptsEngine := prompts.New(opts.Store)
@@ -292,6 +301,7 @@ func New(opts Options) (*Daemon, error) {
 		intentrouter.WithOnboardingProvider(awarenessService),
 		intentrouter.WithToolRegistry(toolRegistry),
 		intentrouter.WithJournalProvider(journalService),
+		intentrouter.WithConversationLogProvider(convLogService),
 	)
 
 	if err := host.Register("intent_router", func(ctx context.Context) (daemonruntime.Service, error) {
