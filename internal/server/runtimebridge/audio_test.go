@@ -14,6 +14,7 @@ import (
 
 	"github.com/nupi-ai/nupi/internal/audio/egress"
 	"github.com/nupi-ai/nupi/internal/audio/ingress"
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/pty"
 	"github.com/nupi-ai/nupi/internal/server"
@@ -345,32 +346,7 @@ func (sb *syncBuffer) String() string {
 }
 
 func TestCommandExecutorOriginLogging(t *testing.T) {
-	// Skip if PTY is not available.
-	p := pty.New()
-	err := p.Start(pty.StartOptions{Command: "/bin/sh", Args: []string{"-c", "sleep 5"}})
-	if err != nil {
-		msg := err.Error()
-		if strings.Contains(msg, "operation not permitted") ||
-			strings.Contains(msg, "permission denied") ||
-			strings.Contains(msg, "no such file or directory") {
-			t.Skipf("PTY not available: %v", err)
-		}
-		t.Fatalf("PTY start: %v", err)
-	}
-	defer p.Stop(100 * time.Millisecond)
-
-	t.Setenv("HOME", t.TempDir())
-	mgr := session.NewManager()
-
-	sess, err := mgr.CreateSession(pty.StartOptions{
-		Command: "/bin/sh",
-		Args:    []string{"-c", "sleep 5"},
-		Rows:    24,
-		Cols:    80,
-	}, false)
-	if err != nil {
-		t.Fatalf("create session: %v", err)
-	}
+	mgr, sess := createTestSessionWithPTY(t)
 
 	var logBuf syncBuffer
 	logger := log.New(&logBuf, "", 0)
@@ -423,4 +399,175 @@ func (s *stubSynth) Speak(ctx context.Context, req egress.SpeakRequest) ([]egres
 
 func (s *stubSynth) Close(ctx context.Context) ([]egress.SynthesisChunk, error) {
 	return nil, nil
+}
+
+// createTestSessionWithPTY creates a session manager and a long-running PTY session.
+// Skips the test if PTY is not available in the current environment.
+func createTestSessionWithPTY(t *testing.T) (*session.Manager, *session.Session) {
+	t.Helper()
+	// Lightweight probe: use exit 0 instead of sleep to avoid leaving orphan processes.
+	p := pty.New()
+	err := p.Start(pty.StartOptions{Command: "/bin/sh", Args: []string{"-c", "exit 0"}})
+	if err != nil {
+		msg := err.Error()
+		if strings.Contains(msg, "operation not permitted") ||
+			strings.Contains(msg, "permission denied") ||
+			strings.Contains(msg, "no such file or directory") {
+			t.Skipf("PTY not available: %v", err)
+		}
+		t.Fatalf("PTY start: %v", err)
+	}
+	p.Stop(100 * time.Millisecond)
+
+	t.Setenv("HOME", t.TempDir())
+	mgr := session.NewManager()
+	sess, err := mgr.CreateSession(pty.StartOptions{
+		Command: "/bin/sh",
+		Args:    []string{"-c", "sleep 30"},
+		Rows:    24,
+		Cols:    80,
+	}, false)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	t.Cleanup(func() {
+		mgr.KillSession(sess.ID)
+	})
+	return mgr, sess
+}
+
+// mockIdleEntry holds a single session's idle state for testing.
+type mockIdleEntry struct {
+	isIdle     bool
+	waitingFor string
+	since      time.Time
+}
+
+// mockIdleStateProvider implements idleStateProvider for testing.
+type mockIdleStateProvider struct {
+	states map[string]mockIdleEntry
+}
+
+func (m *mockIdleStateProvider) GetIdleState(sessionID string) (isIdle bool, waitingFor string, since time.Time) {
+	if m == nil || m.states == nil {
+		return false, "", time.Time{}
+	}
+	s, ok := m.states[sessionID]
+	if !ok {
+		return false, "", time.Time{}
+	}
+	return s.isIdle, s.waitingFor, s.since
+}
+
+func TestSessionProviderAdapterPopulatesIdleFields(t *testing.T) {
+	mgr, sess := createTestSessionWithPTY(t)
+
+	idleSince := time.Now().Add(-10 * time.Second)
+	mock := &mockIdleStateProvider{
+		states: map[string]mockIdleEntry{
+			sess.ID: {isIdle: true, waitingFor: "user_input", since: idleSince},
+		},
+	}
+
+	provider := SessionProvider(mgr, mock)
+
+	// Test GetSessionInfo
+	info, ok := provider.GetSessionInfo(sess.ID)
+	if !ok {
+		t.Fatal("expected session to be found")
+	}
+	if info.IdleState != constants.SessionIdleStateIdle {
+		t.Fatalf("expected IdleState=%q, got %q", constants.SessionIdleStateIdle, info.IdleState)
+	}
+	if info.WaitingFor != "user_input" {
+		t.Fatalf("expected WaitingFor=user_input, got %q", info.WaitingFor)
+	}
+	if !info.IdleSince.Equal(idleSince) {
+		t.Fatalf("expected IdleSince=%v, got %v", idleSince, info.IdleSince)
+	}
+
+	// Test ListSessionInfos
+	infos := provider.ListSessionInfos()
+	found := false
+	for _, si := range infos {
+		if si.ID == sess.ID {
+			found = true
+			if si.IdleState != constants.SessionIdleStateIdle {
+				t.Fatalf("ListSessionInfos: expected IdleState=%q, got %q", constants.SessionIdleStateIdle, si.IdleState)
+			}
+			if si.WaitingFor != "user_input" {
+				t.Fatalf("ListSessionInfos: expected WaitingFor=user_input, got %q", si.WaitingFor)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("ListSessionInfos: session not found")
+	}
+}
+
+func TestSessionProviderAdapterEmptyIdleFields(t *testing.T) {
+	mgr, sess := createTestSessionWithPTY(t)
+
+	// Provider with no idle state for any session
+	mock := &mockIdleStateProvider{
+		states: map[string]mockIdleEntry{},
+	}
+
+	provider := SessionProvider(mgr, mock)
+
+	info, ok := provider.GetSessionInfo(sess.ID)
+	if !ok {
+		t.Fatal("expected session to be found")
+	}
+	if info.IdleState != "" {
+		t.Fatalf("expected empty IdleState, got %q", info.IdleState)
+	}
+	if info.WaitingFor != "" {
+		t.Fatalf("expected empty WaitingFor, got %q", info.WaitingFor)
+	}
+	if !info.IdleSince.IsZero() {
+		t.Fatalf("expected zero IdleSince, got %v", info.IdleSince)
+	}
+
+	// Verify ListSessionInfos also returns empty idle fields
+	infos := provider.ListSessionInfos()
+	for _, si := range infos {
+		if si.ID == sess.ID {
+			if si.IdleState != "" {
+				t.Fatalf("ListSessionInfos: expected empty IdleState, got %q", si.IdleState)
+			}
+			if si.WaitingFor != "" {
+				t.Fatalf("ListSessionInfos: expected empty WaitingFor, got %q", si.WaitingFor)
+			}
+			if !si.IdleSince.IsZero() {
+				t.Fatalf("ListSessionInfos: expected zero IdleSince, got %v", si.IdleSince)
+			}
+		}
+	}
+
+	// Also test with nil idleProvider — GetSessionInfo path
+	nilProvider := SessionProvider(mgr, nil)
+	info2, ok := nilProvider.GetSessionInfo(sess.ID)
+	if !ok {
+		t.Fatal("expected session to be found with nil provider")
+	}
+	if info2.IdleState != "" {
+		t.Fatalf("expected empty IdleState with nil provider, got %q", info2.IdleState)
+	}
+
+	// Also test with nil idleProvider — ListSessionInfos path
+	nilInfos := nilProvider.ListSessionInfos()
+	for _, si := range nilInfos {
+		if si.ID == sess.ID {
+			if si.IdleState != "" {
+				t.Fatalf("ListSessionInfos nil provider: expected empty IdleState, got %q", si.IdleState)
+			}
+			if si.WaitingFor != "" {
+				t.Fatalf("ListSessionInfos nil provider: expected empty WaitingFor, got %q", si.WaitingFor)
+			}
+			if !si.IdleSince.IsZero() {
+				t.Fatalf("ListSessionInfos nil provider: expected zero IdleSince, got %v", si.IdleSince)
+			}
+		}
+	}
 }

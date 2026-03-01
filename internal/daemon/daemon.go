@@ -294,7 +294,7 @@ func New(opts Options) (*Daemon, error) {
 	// Starts in passive mode (no adapter) - real AI adapter will be set via
 	// SetAdapter() when configured through adapter manager/config store
 	intentRouterService := intentrouter.NewService(bus,
-		intentrouter.WithSessionProvider(runtimebridge.SessionProvider(sessionManager)),
+		intentrouter.WithSessionProvider(runtimebridge.SessionProvider(sessionManager, pipelineService)),
 		intentrouter.WithCommandExecutor(commandExecutor),
 		intentrouter.WithPromptEngine(promptEngineAdapter),
 		intentrouter.WithCoreMemoryProvider(awarenessService),

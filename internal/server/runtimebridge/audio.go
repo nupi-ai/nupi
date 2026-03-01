@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/nupi-ai/nupi/internal/audio/egress"
 	"github.com/nupi-ai/nupi/internal/audio/ingress"
+	"github.com/nupi-ai/nupi/internal/constants"
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/intentrouter"
 	"github.com/nupi-ai/nupi/internal/plugins"
@@ -83,16 +85,25 @@ func PluginReloaderProvider(service *plugins.Service) server.PluginReloader {
 	return service // plugins.Service already implements Reload() error
 }
 
+// idleStateProvider provides access to per-session idle state tracked by the content pipeline.
+// Implemented by *contentpipeline.Service; compile-time validation via daemon.go wiring
+// (explicit var _ assertion omitted to avoid import cycle).
+type idleStateProvider interface {
+	GetIdleState(sessionID string) (isIdle bool, waitingFor string, since time.Time)
+}
+
 // SessionProvider wraps session.Manager for the intentrouter.SessionProvider interface.
-func SessionProvider(manager *session.Manager) intentrouter.SessionProvider {
+// The optional idleProvider populates idle-state fields in SessionInfo.
+func SessionProvider(manager *session.Manager, idleProvider idleStateProvider) intentrouter.SessionProvider {
 	if manager == nil {
 		return nil
 	}
-	return &sessionProviderAdapter{manager: manager}
+	return &sessionProviderAdapter{manager: manager, idleProvider: idleProvider}
 }
 
 type sessionProviderAdapter struct {
-	manager *session.Manager
+	manager      *session.Manager
+	idleProvider idleStateProvider
 }
 
 func (a *sessionProviderAdapter) ListSessionInfos() []intentrouter.SessionInfo {
@@ -108,6 +119,7 @@ func (a *sessionProviderAdapter) ListSessionInfos() []intentrouter.SessionInfo {
 			Status:    string(s.CurrentStatus()),
 			StartTime: s.StartTime,
 		}
+		a.populateIdleState(&infos[i])
 	}
 	return infos
 }
@@ -117,7 +129,7 @@ func (a *sessionProviderAdapter) GetSessionInfo(sessionID string) (intentrouter.
 	if err != nil {
 		return intentrouter.SessionInfo{}, false
 	}
-	return intentrouter.SessionInfo{
+	info := intentrouter.SessionInfo{
 		ID:        s.ID,
 		Command:   s.Command,
 		Args:      s.Args,
@@ -125,7 +137,21 @@ func (a *sessionProviderAdapter) GetSessionInfo(sessionID string) (intentrouter.
 		Tool:      s.GetDetectedTool(),
 		Status:    string(s.CurrentStatus()),
 		StartTime: s.StartTime,
-	}, true
+	}
+	a.populateIdleState(&info)
+	return info, true
+}
+
+func (a *sessionProviderAdapter) populateIdleState(info *intentrouter.SessionInfo) {
+	if a.idleProvider == nil {
+		return
+	}
+	isIdle, waitingFor, since := a.idleProvider.GetIdleState(info.ID)
+	if isIdle {
+		info.IdleState = constants.SessionIdleStateIdle
+		info.WaitingFor = waitingFor
+		info.IdleSince = since
+	}
 }
 
 func (a *sessionProviderAdapter) ValidateSession(sessionID string) error {

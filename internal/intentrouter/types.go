@@ -35,9 +35,8 @@ type SessionInfo struct {
 	Status     string            `json:"status"`
 	StartTime  time.Time         `json:"start_time"`
 	Metadata   map[string]string `json:"metadata,omitempty"`
-	// IdleState, WaitingFor, IdleSince are populated by the session state
-	// tracker (Epic 22). Valid IdleState values will be defined as constants
-	// in that epic.
+	// IdleState, WaitingFor, IdleSince are populated by the content pipeline
+	// idle tracking via runtimebridge. See constants.SessionIdleStateIdle.
 	IdleState  string            `json:"idle_state,omitempty"`
 	WaitingFor string            `json:"waiting_for,omitempty"`
 	IdleSince  time.Time         `json:"idle_since,omitempty"`

@@ -18,6 +18,14 @@ import (
 	maputil "github.com/nupi-ai/nupi/internal/util/maps"
 )
 
+// sessionIdleState stores per-session idle state for external query.
+// Presence in the idleStates map indicates the session is idle;
+// removal indicates it is not.
+type sessionIdleState struct {
+	waitingFor string
+	since      time.Time
+}
+
 // Service transforms session output through optional pipeline plugins and
 // republishes cleaned messages on the event bus.
 type Service struct {
@@ -35,6 +43,10 @@ type Service struct {
 	// When a tool changes, we need to preserve the Sequence/Mode from the last
 	// output event to ensure proper ordering in the conversation
 	lastSeenBySession sync.Map // sessionID -> lastSeenMeta
+
+	// Persisted idle state per session, queryable via GetIdleState.
+	// Safe for concurrent reads (GetIdleState) and writes (flushAndProcess).
+	idleStates sync.Map // sessionID -> sessionIdleState
 
 	lifecycle eventbus.ServiceLifecycle
 
@@ -126,13 +138,17 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		return true
 	})
 
-	// Clear all buffers and metadata
+	// Clear all buffers, idle states, and metadata
 	s.buffers.Range(func(key, _ any) bool {
 		s.buffers.Delete(key)
 		return true
 	})
 	s.lastSeenBySession.Range(func(key, _ any) bool {
 		s.lastSeenBySession.Delete(key)
+		return true
+	})
+	s.idleStates.Range(func(key, _ any) bool {
+		s.idleStates.Delete(key)
 		return true
 	})
 
@@ -239,9 +255,11 @@ func (s *Service) handleSessionOutput(ctx context.Context, evt eventbus.SessionO
 		}
 	}
 
-	// Reset idle timer - will fire if no more output arrives
-	// Capture toolName/toolID in closure to freeze them for when timer fires
-	// Pass generation to detect race where new chunk arrives just as timer fires
+	// Reset idle timer — captures toolName/toolID and ctx in closure to freeze them.
+	// Timer-based idle sets waitingFor="" to distinguish from plugin-detected idle.
+	// Note: ctx comes from eventbus.Consume; if canceled during Shutdown, handler.Clean
+	// and handler.ExtractEvents may see a canceled context. This is benign: the stopped
+	// flag guards most callbacks, and publishPipelineMessage uses context.Background().
 	currentGen := buf.Generation()
 	s.resetIdleTimer(evt.SessionID, buf, currentGen, func() {
 		idleState := &toolhandlers.IdleState{
@@ -313,10 +331,12 @@ func (s *Service) cancelIdleTimer(sessionID string) {
 func (s *Service) flushOnToolChange(ctx context.Context, sessionID string, oldTool toolMetadata) {
 	val, ok := s.buffers.Load(sessionID)
 	if !ok {
+		s.idleStates.Delete(sessionID) // Clear stale idle state from previous tool
 		return
 	}
 	buf := val.(*OutputBuffer)
 	if buf.IsEmpty() {
+		s.idleStates.Delete(sessionID) // Clear stale idle state from previous tool
 		return
 	}
 
@@ -356,11 +376,26 @@ func (s *Service) flushOnToolChange(ctx context.Context, sessionID string, oldTo
 	s.flushAndProcess(ctx, sessionID, buf, handler, idleState, evt, oldTool.Name, oldTool.ID)
 }
 
-// cleanupSessionBuffer removes buffer, timer, and metadata for a session.
+// GetIdleState returns the current idle state for a session.
+// Returns (false, "", zero) if the session is not idle or unknown.
+func (s *Service) GetIdleState(sessionID string) (isIdle bool, waitingFor string, since time.Time) {
+	val, ok := s.idleStates.Load(sessionID)
+	if !ok {
+		return false, "", time.Time{}
+	}
+	state, ok := val.(sessionIdleState)
+	if !ok {
+		return false, "", time.Time{}
+	}
+	return true, state.waitingFor, state.since
+}
+
+// cleanupSessionBuffer removes buffer, timer, idle state, and metadata for a session.
 func (s *Service) cleanupSessionBuffer(sessionID string) {
 	s.cancelIdleTimer(sessionID)
 	s.buffers.Delete(sessionID)
 	s.lastSeenBySession.Delete(sessionID)
+	s.idleStates.Delete(sessionID)
 }
 
 // flushAndProcess flushes the buffer and processes the output.
@@ -371,6 +406,26 @@ func (s *Service) flushAndProcess(ctx context.Context, sessionID string, buf *Ou
 
 	// Flush buffer (returns text and overflow status)
 	text, wasOverflowed := buf.Flush()
+
+	// Persist idle state for external query via GetIdleState.
+	// Only genuine idle reasons (timeout, plugin-detected) are stored;
+	// tool_change is transient and skipped. Guard against cleanup race:
+	// if session buffer was removed, skip to avoid stale idle entries
+	// (but continue processing — text was already consumed by Flush).
+	// Residual TOCTOU: if cleanupSessionBuffer runs between buffers.Load
+	// and idleStates.Store, a stale entry may persist until Shutdown.
+	// The window is sub-microsecond and harmless (session is stopped).
+	if _, bufferActive := s.buffers.Load(sessionID); bufferActive {
+		if idleState != nil && idleState.IsIdle && idleState.Reason != "tool_change" {
+			s.idleStates.Store(sessionID, sessionIdleState{
+				waitingFor: idleState.WaitingFor,
+				since:      time.Now(),
+			})
+		} else {
+			s.idleStates.Delete(sessionID)
+		}
+	}
+
 	if text == "" {
 		return
 	}

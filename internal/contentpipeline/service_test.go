@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/jsrunner"
 	"github.com/nupi-ai/nupi/internal/plugins"
+	toolhandlers "github.com/nupi-ai/nupi/internal/plugins/tool_handlers"
 )
 
 // skipIfNoBun skips the test if the JS runtime is not available.
@@ -476,6 +478,359 @@ func TestIdleTimeoutAnnotation(t *testing.T) {
 	}
 }
 
+func TestGetIdleStateUnknownSession(t *testing.T) {
+	svc := NewService(eventbus.New(), nil)
+
+	isIdle, waitingFor, since := svc.GetIdleState("unknown-session")
+	if isIdle {
+		t.Fatal("expected isIdle=false for unknown session")
+	}
+	if waitingFor != "" {
+		t.Fatalf("expected empty waitingFor, got %q", waitingFor)
+	}
+	if !since.IsZero() {
+		t.Fatalf("expected zero time, got %v", since)
+	}
+}
+
+func TestIdleStateSetOnFlush(t *testing.T) {
+	bus := eventbus.New()
+	cp := NewService(bus, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := cp.Start(ctx); err != nil {
+		t.Fatalf("start pipeline: %v", err)
+	}
+	defer cp.Shutdown(context.Background())
+
+	cleanedSub := eventbus.SubscribeTo(bus, eventbus.Pipeline.Cleaned)
+	defer cleanedSub.Close()
+
+	// Write output — idle timer will fire and call flushAndProcess with idle state
+	eventbus.Publish(context.Background(), bus, eventbus.Sessions.Output, eventbus.SourceSessionManager, eventbus.SessionOutputEvent{
+		SessionID: "idle-track-session",
+		Sequence:  1,
+		Data:      []byte("waiting for input"),
+	})
+
+	// Wait for flush (idle timeout triggers flushAndProcess with IsIdle=true)
+	select {
+	case <-cleanedSub.C():
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for flush")
+	}
+
+	// After flush with idle state, GetIdleState should return true.
+	// Timer-based flush sets waitingFor="" (only plugin-detected idle has waitingFor).
+	isIdle, waitingFor, since := cp.GetIdleState("idle-track-session")
+	if !isIdle {
+		t.Fatal("expected isIdle=true after idle flush")
+	}
+	if waitingFor != "" {
+		t.Fatalf("expected empty waitingFor for timer-based idle, got %q", waitingFor)
+	}
+	if since.IsZero() {
+		t.Fatal("expected non-zero Since time")
+	}
+	if elapsed := time.Since(since); elapsed > 5*time.Second {
+		t.Fatalf("expected Since within last 5s, got %v ago", elapsed)
+	}
+}
+
+func TestIdleStateSetOnFlushWithWaitingFor(t *testing.T) {
+	cp := NewService(eventbus.New(), nil)
+
+	buf := NewOutputBuffer()
+	buf.Write([]byte("$ "))
+	cp.buffers.Store("plugin-idle-session", buf) // register so flushAndProcess guard passes
+	cp.flushAndProcess(context.Background(), "plugin-idle-session", buf, nil,
+		&toolhandlers.IdleState{IsIdle: true, WaitingFor: "user_input"},
+		eventbus.SessionOutputEvent{SessionID: "plugin-idle-session"}, "", "")
+
+	isIdle, waitingFor, since := cp.GetIdleState("plugin-idle-session")
+	if !isIdle {
+		t.Fatal("expected isIdle=true after flush with plugin-detected idle")
+	}
+	if waitingFor != "user_input" {
+		t.Fatalf("expected waitingFor=user_input, got %q", waitingFor)
+	}
+	if since.IsZero() {
+		t.Fatal("expected non-zero Since time")
+	}
+}
+
+func TestIdleStateClearedOnNonIdleFlush(t *testing.T) {
+	cp := NewService(eventbus.New(), nil)
+
+	// Manually store an idle state
+	cp.idleStates.Store("clear-session", sessionIdleState{
+		waitingFor: "user_input",
+		since:      time.Now(),
+	})
+
+	// Verify it's stored
+	isIdle, _, _ := cp.GetIdleState("clear-session")
+	if !isIdle {
+		t.Fatal("expected idle state to be stored")
+	}
+
+	// Create a buffer and call flushAndProcess with nil idleState (non-idle)
+	buf := NewOutputBuffer()
+	buf.Write([]byte("some output"))
+	cp.buffers.Store("clear-session", buf) // register so flushAndProcess guard passes
+	cp.flushAndProcess(context.Background(), "clear-session", buf, nil, nil, eventbus.SessionOutputEvent{
+		SessionID: "clear-session",
+	}, "", "")
+
+	// idle state should be cleared
+	isIdle, _, _ = cp.GetIdleState("clear-session")
+	if isIdle {
+		t.Fatal("expected idle state to be cleared after non-idle flush")
+	}
+}
+
+func TestIdleStateCleanedOnSessionStop(t *testing.T) {
+	bus := eventbus.New()
+	cp := NewService(bus, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := cp.Start(ctx); err != nil {
+		t.Fatalf("start pipeline: %v", err)
+	}
+	defer cp.Shutdown(context.Background())
+
+	// Manually store idle state
+	cp.idleStates.Store("stop-session", sessionIdleState{
+		waitingFor: "user_input",
+		since:      time.Now(),
+	})
+
+	// Publish SessionStateStopped lifecycle event
+	eventbus.Publish(context.Background(), bus, eventbus.Sessions.Lifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{
+		SessionID: "stop-session",
+		State:     eventbus.SessionStateStopped,
+	})
+
+	// Wait for cleanup to happen
+	waitForCondition(t, time.Second, func() bool {
+		isIdle, _, _ := cp.GetIdleState("stop-session")
+		return !isIdle
+	})
+}
+
+func TestIdleStateCleanedOnSessionCreated(t *testing.T) {
+	bus := eventbus.New()
+	cp := NewService(bus, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := cp.Start(ctx); err != nil {
+		t.Fatalf("start pipeline: %v", err)
+	}
+	defer cp.Shutdown(context.Background())
+
+	// Manually store idle state for a session being recreated
+	cp.idleStates.Store("recreate-session", sessionIdleState{
+		waitingFor: "user_input",
+		since:      time.Now(),
+	})
+
+	// Publish SessionStateCreated lifecycle event (session recreated)
+	eventbus.Publish(context.Background(), bus, eventbus.Sessions.Lifecycle, eventbus.SourceSessionManager, eventbus.SessionLifecycleEvent{
+		SessionID: "recreate-session",
+		State:     eventbus.SessionStateCreated,
+	})
+
+	// Wait for cleanup to happen
+	waitForCondition(t, time.Second, func() bool {
+		isIdle, _, _ := cp.GetIdleState("recreate-session")
+		return !isIdle
+	})
+}
+
+func TestShutdownClearsIdleStates(t *testing.T) {
+	bus := eventbus.New()
+	cp := NewService(bus, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := cp.Start(ctx); err != nil {
+		t.Fatalf("start pipeline: %v", err)
+	}
+
+	// Store idle states for multiple sessions
+	cp.idleStates.Store("session-a", sessionIdleState{waitingFor: "user_input", since: time.Now()})
+	cp.idleStates.Store("session-b", sessionIdleState{waitingFor: "confirmation", since: time.Now()})
+
+	// Shutdown should clear all idle states
+	if err := cp.Shutdown(context.Background()); err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+
+	// Verify all idle states are cleared
+	isIdle, _, _ := cp.GetIdleState("session-a")
+	if isIdle {
+		t.Fatal("expected session-a idle state to be cleared after shutdown")
+	}
+	isIdle, _, _ = cp.GetIdleState("session-b")
+	if isIdle {
+		t.Fatal("expected session-b idle state to be cleared after shutdown")
+	}
+}
+
+func TestFlushAndProcessPublishesWhenBufferRemovedByRace(t *testing.T) {
+	bus := eventbus.New()
+	cp := NewService(bus, nil)
+
+	cleanedSub := eventbus.SubscribeTo(bus, eventbus.Pipeline.Cleaned)
+	defer cleanedSub.Close()
+
+	buf := NewOutputBuffer()
+	buf.Write([]byte("output before cleanup"))
+	// Register then remove — simulates cleanup race between handleSessionOutput
+	// acquiring the buffer and flushAndProcess checking the guard.
+	cp.buffers.Store("race-session", buf)
+	cp.buffers.Delete("race-session")
+
+	cp.flushAndProcess(context.Background(), "race-session", buf, nil,
+		&toolhandlers.IdleState{IsIdle: true, WaitingFor: "user_input"},
+		eventbus.SessionOutputEvent{SessionID: "race-session"}, "", "")
+
+	// Pipeline message must still be published (text not dropped).
+	select {
+	case <-cleanedSub.C():
+	case <-time.After(time.Second):
+		t.Fatal("expected pipeline message to be published even after buffer cleanup race")
+	}
+
+	// Idle state must NOT be stored (guard prevented stale entry).
+	isIdle, _, _ := cp.GetIdleState("race-session")
+	if isIdle {
+		t.Fatal("expected idle state NOT to be stored when buffer was cleaned up")
+	}
+}
+
+func TestToolChangeWithEmptyBufferClearsIdleState(t *testing.T) {
+	bus := eventbus.New()
+	cp := NewService(bus, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := cp.Start(ctx); err != nil {
+		t.Fatalf("start pipeline: %v", err)
+	}
+	defer cp.Shutdown(context.Background())
+
+	// Store idle state from a previous tool (simulating tool A being idle)
+	cp.idleStates.Store("tool-empty-session", sessionIdleState{
+		waitingFor: "user_input",
+		since:      time.Now(),
+	})
+
+	// Register old tool — buffer exists but is empty (already flushed by timer)
+	cp.toolBySession.Store("tool-empty-session", toolMetadata{ID: "tool-a", Name: "Tool A"})
+	cp.buffers.Store("tool-empty-session", NewOutputBuffer()) // empty buffer
+
+	// Trigger tool change via event bus
+	eventbus.Publish(context.Background(), bus, eventbus.Sessions.Tool, eventbus.SourcePluginService, eventbus.SessionToolEvent{
+		SessionID: "tool-empty-session",
+		ToolID:    "tool-b",
+		ToolName:  "Tool B",
+	})
+
+	// Wait for tool change to be processed
+	waitForCondition(t, time.Second, func() bool {
+		val, ok := cp.toolBySession.Load("tool-empty-session")
+		if !ok {
+			return false
+		}
+		meta := val.(toolMetadata)
+		return meta.ID == "tool-b"
+	})
+
+	// Idle state from tool A must be cleared — tool changed
+	isIdle, _, _ := cp.GetIdleState("tool-empty-session")
+	if isIdle {
+		t.Fatal("expected idle state to be cleared after tool change with empty buffer")
+	}
+}
+
+func TestToolChangeWithNoBufferClearsIdleState(t *testing.T) {
+	bus := eventbus.New()
+	cp := NewService(bus, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := cp.Start(ctx); err != nil {
+		t.Fatalf("start pipeline: %v", err)
+	}
+	defer cp.Shutdown(context.Background())
+
+	// Store idle state but NO buffer for this session
+	cp.idleStates.Store("no-buf-session", sessionIdleState{
+		waitingFor: "confirmation",
+		since:      time.Now(),
+	})
+
+	// Register old tool without any buffer
+	cp.toolBySession.Store("no-buf-session", toolMetadata{ID: "tool-old", Name: "Old Tool"})
+
+	// Trigger tool change
+	eventbus.Publish(context.Background(), bus, eventbus.Sessions.Tool, eventbus.SourcePluginService, eventbus.SessionToolEvent{
+		SessionID: "no-buf-session",
+		ToolID:    "tool-new",
+		ToolName:  "New Tool",
+	})
+
+	// Wait for tool change to be processed
+	waitForCondition(t, time.Second, func() bool {
+		val, ok := cp.toolBySession.Load("no-buf-session")
+		if !ok {
+			return false
+		}
+		meta := val.(toolMetadata)
+		return meta.ID == "tool-new"
+	})
+
+	// Idle state must be cleared even without a buffer
+	isIdle, _, _ := cp.GetIdleState("no-buf-session")
+	if isIdle {
+		t.Fatal("expected idle state to be cleared after tool change with no buffer")
+	}
+}
+
+func TestToolChangeDoesNotStoreIdleState(t *testing.T) {
+	cp := NewService(eventbus.New(), nil)
+
+	// Manually store idle state (simulating a previous plugin-detected idle)
+	cp.idleStates.Store("tool-change-session", sessionIdleState{
+		waitingFor: "user_input",
+		since:      time.Now(),
+	})
+
+	// flushAndProcess with tool_change should clear (not store) idle state
+	buf := NewOutputBuffer()
+	buf.Write([]byte("output before tool change"))
+	cp.buffers.Store("tool-change-session", buf) // register so flushAndProcess guard passes
+	cp.flushAndProcess(context.Background(), "tool-change-session", buf, nil,
+		&toolhandlers.IdleState{IsIdle: true, Reason: "tool_change"},
+		eventbus.SessionOutputEvent{SessionID: "tool-change-session"}, "", "")
+
+	// tool_change should NOT appear as idle in GetIdleState
+	isIdle, _, _ := cp.GetIdleState("tool-change-session")
+	if isIdle {
+		t.Fatal("expected tool_change to NOT store idle state — tool transitions are transient, not real idle")
+	}
+}
+
 func TestEmptySessionIDIgnored(t *testing.T) {
 	// Test the guard directly without event bus for fully deterministic behavior
 	bus := eventbus.New()
@@ -508,4 +863,58 @@ func TestEmptySessionIDIgnored(t *testing.T) {
 	if metaExists {
 		t.Fatal("lastSeenMeta should not be stored for empty SessionID")
 	}
+}
+
+func TestGetIdleStateConcurrent(t *testing.T) {
+	cp := NewService(eventbus.New(), nil)
+
+	const goroutines = 10
+	const iterations = 200
+	sessionID := "concurrent-session"
+
+	// Pre-register a buffer so flushAndProcess guard passes
+	buf := NewOutputBuffer()
+	cp.buffers.Store(sessionID, buf)
+
+	var wg sync.WaitGroup
+
+	// Writers: alternate between storing and deleting idle state
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				if j%2 == 0 {
+					cp.idleStates.Store(sessionID, sessionIdleState{
+						waitingFor: "user_input",
+						since:      time.Now(),
+					})
+				} else {
+					cp.idleStates.Delete(sessionID)
+				}
+			}
+		}()
+	}
+
+	// Readers: call GetIdleState concurrently with writes
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				isIdle, waitingFor, since := cp.GetIdleState(sessionID)
+				if isIdle {
+					// When idle, waitingFor must be "user_input" (the only value we store)
+					if waitingFor != "user_input" {
+						t.Errorf("expected waitingFor=user_input when idle, got %q", waitingFor)
+					}
+					if since.IsZero() {
+						t.Error("expected non-zero since when idle")
+					}
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
 }
