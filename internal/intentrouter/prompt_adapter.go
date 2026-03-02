@@ -61,12 +61,15 @@ func (a *PromptEngineAdapter) Build(req PromptBuildRequest) (*PromptBuildRespons
 		EventType:             eventType,
 		SessionID:             req.SessionID,
 		Transcript:            req.Transcript,
-		History:               req.History,
 		AvailableSessions:     sessions,
 		CurrentTool:           req.CurrentTool,
 		SessionOutput:         req.SessionOutput,
 		ClarificationQuestion: req.ClarificationQuestion,
 		Metadata:              req.Metadata,
+		JournalSummaries:      req.JournalSummaries,
+		JournalRaw:            req.JournalRaw,
+		ConversationSummaries: req.ConversationSummaries,
+		ConversationRaw:       req.ConversationRaw,
 	}
 
 	resp, err := a.engine.BuildPrompt(buildReq)

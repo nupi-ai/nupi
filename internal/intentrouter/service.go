@@ -312,12 +312,16 @@ func (s *Service) consumeLifecycleEvents(ctx context.Context) {
 func (s *Service) handlePrompt(ctx context.Context, prompt eventbus.ConversationPromptEvent) {
 	s.mu.RLock()
 	adapter := s.adapter
-	sessionProvider := s.sessionProvider
 	commandExecutor := s.commandExecutor
-	promptEngine := s.promptEngine
 	toolRegistry := s.toolRegistry
-	coreMemoryProvider := s.coreMemoryProvider
-	onboardingProvider := s.onboardingProvider
+	pctx := promptContext{
+		sessionProvider:         s.sessionProvider,
+		promptEngine:            s.promptEngine,
+		coreMemoryProvider:      s.coreMemoryProvider,
+		onboardingProvider:      s.onboardingProvider,
+		journalProvider:         s.journalProvider,
+		conversationLogProvider: s.conversationLogProvider,
+	}
 	s.mu.RUnlock()
 
 	// Check if we have an adapter - publish error to bus so UI gets feedback
@@ -334,13 +338,13 @@ func (s *Service) handlePrompt(ctx context.Context, prompt eventbus.Conversation
 	}
 
 	// Build the intent request
-	req := s.buildIntentRequest(prompt, sessionProvider, promptEngine, onboardingProvider)
+	req := s.buildIntentRequest(prompt, pctx)
 
 	// Prepend core memory to system prompt (awareness injection).
 	// Wrapped in <core-memory> tag so headings inside don't conflict with
 	// the surrounding prompt template or other injected sections.
-	if coreMemoryProvider != nil {
-		if cm := coreMemoryProvider.CoreMemory(); cm != "" {
+	if pctx.coreMemoryProvider != nil {
+		if cm := pctx.coreMemoryProvider.CoreMemory(); cm != "" {
 			req.SystemPrompt = "<core-memory>\n" + cm + "\n</core-memory>\n\n" + req.SystemPrompt
 		}
 	}
@@ -348,7 +352,7 @@ func (s *Service) handlePrompt(ctx context.Context, prompt eventbus.Conversation
 	// Inject BOOTSTRAP.md content for onboarding events.
 	// Placed AFTER the prompt template (which references the ONBOARDING section).
 	if req.EventType == EventTypeOnboarding {
-		req.SystemPrompt = injectBootstrapContent(req.SystemPrompt, onboardingProvider)
+		req.SystemPrompt = injectBootstrapContent(req.SystemPrompt, pctx.onboardingProvider)
 	}
 
 	// Inject available tools filtered by event type
@@ -392,7 +396,7 @@ func (s *Service) handlePrompt(ctx context.Context, prompt eventbus.Conversation
 				}
 			}
 			// Final response — execute actions normally
-			s.executeActions(ctx, prompt, response, sessionProvider, commandExecutor, req.SessionID)
+			s.executeActions(ctx, prompt, response, pctx.sessionProvider, commandExecutor, req.SessionID)
 			return
 		}
 
@@ -435,7 +439,7 @@ func (s *Service) handlePrompt(ctx context.Context, prompt eventbus.Conversation
 	s.publishError(prompt.SessionID, prompt.PromptID, ErrMaxToolIterations)
 }
 
-func (s *Service) buildIntentRequest(prompt eventbus.ConversationPromptEvent, provider SessionProvider, engine PromptEngine, onboarding OnboardingProvider) IntentRequest {
+func (s *Service) buildIntentRequest(prompt eventbus.ConversationPromptEvent, pctx promptContext) IntentRequest {
 	// Determine event type from metadata
 	eventType := EventTypeUserIntent
 	if et, ok := prompt.Metadata[metadataKeyEventType]; ok {
@@ -461,12 +465,12 @@ func (s *Service) buildIntentRequest(prompt eventbus.ConversationPromptEvent, pr
 
 	// Override user_intent → onboarding when BOOTSTRAP.md exists AND this session
 	// holds (or can claim) the onboarding lock. Other sessions stay as user_intent.
-	if eventType == EventTypeUserIntent && onboarding != nil && onboarding.IsOnboardingSession(prompt.SessionID) {
+	if eventType == EventTypeUserIntent && pctx.onboardingProvider != nil && pctx.onboardingProvider.IsOnboardingSession(prompt.SessionID) {
 		eventType = EventTypeOnboarding
 	}
 
 	// Use smart session routing to determine target session
-	targetSession := s.selectTargetSession(prompt, provider)
+	targetSession := s.selectTargetSession(prompt, pctx.sessionProvider)
 
 	// Extract current tool: check metadata first, then our cache, then session provider
 	var currentTool string
@@ -477,8 +481,8 @@ func (s *Service) buildIntentRequest(prompt eventbus.ConversationPromptEvent, pr
 		currentTool = s.getToolFromCache(targetSession)
 	}
 	// Fallback to session provider if still empty
-	if currentTool == "" && provider != nil && targetSession != "" {
-		if info, found := provider.GetSessionInfo(targetSession); found {
+	if currentTool == "" && pctx.sessionProvider != nil && targetSession != "" {
+		if info, found := pctx.sessionProvider.GetSessionInfo(targetSession); found {
 			currentTool = info.Tool
 		}
 	}
@@ -489,7 +493,7 @@ func (s *Service) buildIntentRequest(prompt eventbus.ConversationPromptEvent, pr
 		EventType:   eventType,
 		Transcript:  prompt.NewMessage.Text,
 		CurrentTool: currentTool,
-		Metadata:    prompt.Metadata,
+		Metadata:    maputil.Clone(prompt.Metadata),
 	}
 
 	// Add smart routing hint to metadata
@@ -510,12 +514,47 @@ func (s *Service) buildIntentRequest(prompt eventbus.ConversationPromptEvent, pr
 	}
 
 	// Add available sessions if provider is configured
-	if provider != nil {
-		req.AvailableSessions = provider.ListSessionInfos()
+	if pctx.sessionProvider != nil {
+		req.AvailableSessions = pctx.sessionProvider.ListSessionInfos()
+	}
+
+	// Fetch context from awareness providers.
+	// Skip for event types whose templates don't use context fields:
+	// onboarding (bootstrap focus), heartbeat (background task),
+	// journal/conversation compaction (transcript already contains the data to compact).
+	var convSummaries, convRaw, journalSummaries, journalRaw string
+	if eventType != EventTypeOnboarding && eventType != EventTypeHeartbeat &&
+		eventType != EventTypeJournalCompaction && eventType != EventTypeConversationCompaction {
+
+		// Fetch concurrently — WaitGroup handles 0, 1, or 2 goroutines cleanly.
+		var wg sync.WaitGroup
+		if pctx.conversationLogProvider != nil {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				var err error
+				convSummaries, convRaw, err = pctx.conversationLogProvider.GetContext()
+				if err != nil {
+					log.Printf("[IntentRouter] Failed to get conversation context: %v", err)
+				}
+			}()
+		}
+		if pctx.journalProvider != nil && targetSession != "" {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				var err error
+				journalSummaries, journalRaw, err = pctx.journalProvider.GetContext(targetSession)
+				if err != nil {
+					log.Printf("[IntentRouter] Failed to get journal context for session %s: %v", targetSession, err)
+				}
+			}()
+		}
+		wg.Wait()
 	}
 
 	// Build prompts using the engine if available
-	if engine != nil {
+	if pctx.promptEngine != nil {
 		sessions := make([]SessionInfo, len(req.AvailableSessions))
 		copy(sessions, req.AvailableSessions)
 
@@ -523,15 +562,18 @@ func (s *Service) buildIntentRequest(prompt eventbus.ConversationPromptEvent, pr
 			EventType:             eventType,
 			SessionID:             targetSession, // Use smart-routed session, not original prompt.SessionID
 			Transcript:            prompt.NewMessage.Text,
-			History:               nil,
 			AvailableSessions:     sessions,
 			CurrentTool:           currentTool,
 			SessionOutput:         req.SessionOutput,
 			ClarificationQuestion: req.ClarificationQuestion,
 			Metadata:              prompt.Metadata,
+			JournalSummaries:      journalSummaries,
+			JournalRaw:            journalRaw,
+			ConversationSummaries: convSummaries,
+			ConversationRaw:       convRaw,
 		}
 
-		if resp, err := engine.Build(buildReq); err == nil && resp != nil {
+		if resp, err := pctx.promptEngine.Build(buildReq); err == nil && resp != nil {
 			req.SystemPrompt = resp.SystemPrompt
 			req.UserPrompt = resp.UserPrompt
 		} else if err != nil {
@@ -860,11 +902,17 @@ func hasToolUseAction(response *IntentResponse) bool {
 }
 
 func truncate(s string, maxLen int) string {
+	if maxLen <= 0 {
+		return s
+	}
 	runes := []rune(s)
 	if len(runes) <= maxLen {
 		return s
 	}
-	return string(runes[:maxLen]) + "..."
+	if maxLen <= 3 {
+		return string(runes[:maxLen])
+	}
+	return string(runes[:maxLen-3]) + "..."
 }
 
 // injectBootstrapContent appends BOOTSTRAP.md content wrapped in an

@@ -64,7 +64,23 @@ const (
 	MetadataKeyProgress              = "progress"
 	MetadataKeyLanguagePrefix        = "nupi.lang."
 	MetadataKeyBargePrefix           = "barge_"
+
+	// Template data keys for awareness context injection (Epic 22)
+	TemplateKeyJournalSummaries      = "journal_summaries"
+	TemplateKeyJournalRaw            = "journal_raw"
+	TemplateKeyConversationSummaries = "conversation_summaries"
+	TemplateKeyConversationRaw       = "conversation_raw"
 )
+
+// IsValidWaitingForValue reports whether v is a recognized waiting_for annotation value.
+func IsValidWaitingForValue(v string) bool {
+	switch v {
+	case PipelineWaitingForUserInput, PipelineWaitingForConfirmation, PipelineWaitingForChoice:
+		return true
+	default:
+		return false
+	}
+}
 
 const (
 	MetadataValueTrue = "true"

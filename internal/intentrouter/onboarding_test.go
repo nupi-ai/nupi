@@ -53,7 +53,7 @@ func TestOnboardingEventTypeOverride(t *testing.T) {
 		},
 	}
 
-	req := svc.buildIntentRequest(prompt, nil, nil, svc.onboardingProvider)
+	req := svc.buildIntentRequest(prompt, promptContext{onboardingProvider: svc.onboardingProvider})
 
 	if req.EventType != EventTypeOnboarding {
 		t.Fatalf("EventType = %q, want %q", req.EventType, EventTypeOnboarding)
@@ -77,7 +77,7 @@ func TestNoOverrideWhenNotOnboarding(t *testing.T) {
 		},
 	}
 
-	req := svc.buildIntentRequest(prompt, nil, nil, svc.onboardingProvider)
+	req := svc.buildIntentRequest(prompt, promptContext{onboardingProvider: svc.onboardingProvider})
 
 	if req.EventType != EventTypeUserIntent {
 		t.Fatalf("EventType = %q, want %q (no override when not onboarding)", req.EventType, EventTypeUserIntent)
@@ -107,7 +107,7 @@ func TestNoOverrideForNonUserIntentEvents(t *testing.T) {
 			},
 		}
 
-		req := svc.buildIntentRequest(prompt, nil, nil, svc.onboardingProvider)
+		req := svc.buildIntentRequest(prompt, promptContext{onboardingProvider: svc.onboardingProvider})
 
 		if req.EventType == EventTypeOnboarding {
 			t.Fatalf("event_type %q was overridden to onboarding, but only user_intent should be overridden", et)
@@ -278,7 +278,7 @@ func TestEmptySessionIDDoesNotGetOnboarding(t *testing.T) {
 		},
 	}
 
-	req := svc.buildIntentRequest(prompt, nil, nil, svc.onboardingProvider)
+	req := svc.buildIntentRequest(prompt, promptContext{onboardingProvider: svc.onboardingProvider})
 
 	if req.EventType != EventTypeUserIntent {
 		t.Fatalf("EventType = %q, want %q (empty session ID must not trigger onboarding)", req.EventType, EventTypeUserIntent)
@@ -411,7 +411,7 @@ func TestOnboardingSessionLockInBuildRequest(t *testing.T) {
 		},
 		Metadata: map[string]string{constants.MetadataKeyEventType: constants.PromptEventUserIntent},
 	}
-	reqA := svc.buildIntentRequest(promptA, nil, nil, svc.onboardingProvider)
+	reqA := svc.buildIntentRequest(promptA, promptContext{onboardingProvider: svc.onboardingProvider})
 	if reqA.EventType != EventTypeOnboarding {
 		t.Fatalf("session A: EventType = %q, want %q", reqA.EventType, EventTypeOnboarding)
 	}
@@ -426,7 +426,7 @@ func TestOnboardingSessionLockInBuildRequest(t *testing.T) {
 		},
 		Metadata: map[string]string{constants.MetadataKeyEventType: constants.PromptEventUserIntent},
 	}
-	reqB := svc.buildIntentRequest(promptB, nil, nil, svc.onboardingProvider)
+	reqB := svc.buildIntentRequest(promptB, promptContext{onboardingProvider: svc.onboardingProvider})
 	if reqB.EventType != EventTypeUserIntent {
 		t.Fatalf("session B: EventType = %q, want %q (should NOT get onboarding)", reqB.EventType, EventTypeUserIntent)
 	}
@@ -466,7 +466,7 @@ func TestRealAwarenessOnboardingIntegration(t *testing.T) {
 	}
 
 	// Phase 1: First prompt should be overridden to onboarding.
-	req1 := routerSvc.buildIntentRequest(makePrompt("sess-1"), nil, nil, routerSvc.onboardingProvider)
+	req1 := routerSvc.buildIntentRequest(makePrompt("sess-1"), promptContext{onboardingProvider: routerSvc.onboardingProvider})
 	if req1.EventType != EventTypeOnboarding {
 		t.Fatalf("phase 1: EventType = %q, want %q", req1.EventType, EventTypeOnboarding)
 	}
@@ -497,7 +497,7 @@ func TestRealAwarenessOnboardingIntegration(t *testing.T) {
 	}
 
 	// Phase 4: Next prompt should stay as user_intent (onboarding done).
-	req2 := routerSvc.buildIntentRequest(makePrompt("sess-1"), nil, nil, routerSvc.onboardingProvider)
+	req2 := routerSvc.buildIntentRequest(makePrompt("sess-1"), promptContext{onboardingProvider: routerSvc.onboardingProvider})
 	if req2.EventType != EventTypeUserIntent {
 		t.Fatalf("phase 4: EventType = %q, want %q (onboarding should be done)", req2.EventType, EventTypeUserIntent)
 	}

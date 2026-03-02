@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -728,9 +729,6 @@ func TestServiceContextPassedToAdapter(t *testing.T) {
 	if req.Transcript != "new message" {
 		t.Errorf("Expected transcript 'new message', got %s", req.Transcript)
 	}
-	if len(req.ConversationHistory) != 0 {
-		t.Errorf("Expected 0 history entries (Context field removed), got %d", len(req.ConversationHistory))
-	}
 	if len(req.AvailableSessions) != 2 {
 		t.Errorf("Expected 2 available sessions, got %d", len(req.AvailableSessions))
 	}
@@ -783,10 +781,12 @@ func TestTruncate(t *testing.T) {
 		expected string
 	}{
 		{"hello", 10, "hello"},
-		{"hello world", 5, "hello..."},
+		{"hello world", 5, "he..."},
 		{"", 5, ""},
 		{"abc", 3, "abc"},
-		{"abcd", 3, "abc..."},
+		{"abcd", 3, "abc"},
+		{"abcdef", 4, "a..."},
+		{"hello world", 0, "hello world"},
 	}
 
 	for _, tt := range tests {
@@ -2762,6 +2762,100 @@ func TestBuildIntentRequest_CompactionEventTypes(t *testing.T) {
 	svc.Shutdown(shutdownCtx)
 }
 
+func TestContextSkipGuardForNonUserEvents(t *testing.T) {
+	// Verifies that context providers are NOT called for event types whose
+	// templates don't use context fields (onboarding, heartbeat, compaction).
+	tests := []struct {
+		name      string
+		eventType string
+	}{
+		{"onboarding", constants.PromptEventOnboarding},
+		{"heartbeat", constants.PromptEventHeartbeat},
+		{"journal_compaction", constants.PromptEventJournalCompaction},
+		{"conversation_compaction", constants.PromptEventConversationCompaction},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bus := eventbus.New()
+			defer bus.Shutdown()
+
+			mockEngine := &MockPromptEngine{
+				systemPrompt: "system",
+				userPrompt:   "user",
+			}
+
+			convLog := &mockConversationLogProvider{
+				summaries: "should not be fetched",
+				raw:       "should not be fetched",
+			}
+			journal := &mockJournalProvider{
+				summaries: "should not be fetched",
+				raw:       "should not be fetched",
+			}
+
+			adapter := NewMockAdapter(
+				WithMockCustomHandler(func(ctx context.Context, req IntentRequest) (*IntentResponse, error) {
+					return &IntentResponse{
+						PromptID: req.PromptID,
+						Actions:  []IntentAction{{Type: ActionNoop}},
+					}, nil
+				}),
+			)
+
+			svc := NewService(bus,
+				WithAdapter(adapter),
+				WithPromptEngine(mockEngine),
+				WithConversationLogProvider(convLog),
+				WithJournalProvider(journal),
+			)
+
+			replySub := eventbus.SubscribeTo(bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("test_skip_"+tt.name))
+			defer replySub.Close()
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			if err := svc.Start(ctx); err != nil {
+				t.Fatalf("Start() failed: %v", err)
+			}
+
+			time.Sleep(50 * time.Millisecond)
+
+			eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+				SessionID: "session-1",
+				PromptID:  "prompt-skip-" + tt.name,
+				NewMessage: eventbus.ConversationMessage{
+					Origin: eventbus.OriginSystem,
+					Text:   "test",
+				},
+				Metadata: map[string]string{
+					constants.MetadataKeyEventType: tt.eventType,
+				},
+			})
+
+			select {
+			case <-replySub.C():
+			case <-time.After(2 * time.Second):
+				t.Fatal("Timeout waiting for reply")
+			}
+
+			if convLog.GetCallCount() != 0 {
+				t.Errorf("ConversationLogProvider.GetContext() should NOT be called for %s events, got %d calls",
+					tt.name, convLog.GetCallCount())
+			}
+			if journal.GetCallCount() != 0 {
+				t.Errorf("JournalProvider.GetContext() should NOT be called for %s events, got %d calls",
+					tt.name, journal.GetCallCount())
+			}
+
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer shutdownCancel()
+			svc.Shutdown(shutdownCtx)
+		})
+	}
+}
+
 // stubJournalProvider is a minimal JournalProvider for option wiring tests.
 type stubJournalProvider struct{}
 
@@ -2774,4 +2868,701 @@ type stubConversationLogProvider struct{}
 
 func (s *stubConversationLogProvider) GetContext() (string, string, error) {
 	return "", "", nil
+}
+
+// mockJournalProvider returns configured context for testing.
+type mockJournalProvider struct {
+	summaries string
+	raw       string
+	err       error
+	delay     time.Duration // artificial delay for concurrency testing
+	entered   chan struct{} // closed when GetContext begins (concurrency verification)
+	mu        sync.Mutex
+	lastID    string
+	callCount int
+}
+
+func (m *mockJournalProvider) GetContext(sessionID string) (string, string, error) {
+	if m.entered != nil {
+		select {
+		case <-m.entered:
+		default:
+			close(m.entered)
+		}
+	}
+	if m.delay > 0 {
+		time.Sleep(m.delay)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lastID = sessionID
+	m.callCount++
+	return m.summaries, m.raw, m.err
+}
+
+func (m *mockJournalProvider) GetCallCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.callCount
+}
+
+func (m *mockJournalProvider) GetLastID() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastID
+}
+
+// mockConversationLogProvider returns configured context for testing.
+type mockConversationLogProvider struct {
+	summaries string
+	raw       string
+	err       error
+	delay     time.Duration // artificial delay for concurrency testing
+	entered   chan struct{} // closed when GetContext begins (concurrency verification)
+	mu        sync.Mutex
+	callCount int
+}
+
+func (m *mockConversationLogProvider) GetContext() (string, string, error) {
+	if m.entered != nil {
+		select {
+		case <-m.entered:
+		default:
+			close(m.entered)
+		}
+	}
+	if m.delay > 0 {
+		time.Sleep(m.delay)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.callCount++
+	return m.summaries, m.raw, m.err
+}
+
+func (m *mockConversationLogProvider) GetCallCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.callCount
+}
+
+func TestBuildIntentRequestInjectsConversationContext(t *testing.T) {
+	bus := eventbus.New()
+	defer bus.Shutdown()
+
+	mockEngine := &MockPromptEngine{
+		systemPrompt: "system",
+		userPrompt:   "user",
+	}
+
+	convLog := &mockConversationLogProvider{
+		summaries: "Turn 1 summary\nTurn 2 summary",
+		raw:       "[user] hello\n[assistant] hi",
+	}
+
+	adapter := NewMockAdapter(
+		WithMockCustomHandler(func(ctx context.Context, req IntentRequest) (*IntentResponse, error) {
+			return &IntentResponse{
+				PromptID: req.PromptID,
+				Actions:  []IntentAction{{Type: ActionNoop}},
+			}, nil
+		}),
+	)
+
+	svc := NewService(bus,
+		WithAdapter(adapter),
+		WithPromptEngine(mockEngine),
+		WithConversationLogProvider(convLog),
+	)
+
+	replySub := eventbus.SubscribeTo(bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("test_reply"))
+	defer replySub.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+		SessionID: "session-1",
+		PromptID:  "prompt-1",
+		NewMessage: eventbus.ConversationMessage{
+			Origin: eventbus.OriginUser,
+			Text:   "hello",
+		},
+		Metadata: map[string]string{
+			constants.MetadataKeyEventType: constants.PromptEventUserIntent,
+		},
+	})
+
+	select {
+	case <-replySub.C():
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for reply")
+	}
+
+	req := mockEngine.GetLastRequest()
+	if req.ConversationSummaries != "Turn 1 summary\nTurn 2 summary" {
+		t.Errorf("expected ConversationSummaries, got %q", req.ConversationSummaries)
+	}
+	if req.ConversationRaw != "[user] hello\n[assistant] hi" {
+		t.Errorf("expected ConversationRaw, got %q", req.ConversationRaw)
+	}
+
+	if convLog.GetCallCount() == 0 {
+		t.Error("expected ConversationLogProvider.GetContext() to be called")
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	svc.Shutdown(shutdownCtx)
+}
+
+func TestBuildIntentRequestInjectsJournalContext(t *testing.T) {
+	bus := eventbus.New()
+	defer bus.Shutdown()
+
+	mockEngine := &MockPromptEngine{
+		systemPrompt: "system",
+		userPrompt:   "user",
+	}
+
+	journal := &mockJournalProvider{
+		summaries: "Session journal summary",
+		raw:       "raw journal output",
+	}
+
+	adapter := NewMockAdapter(
+		WithMockCustomHandler(func(ctx context.Context, req IntentRequest) (*IntentResponse, error) {
+			return &IntentResponse{
+				PromptID: req.PromptID,
+				Actions:  []IntentAction{{Type: ActionNoop}},
+			}, nil
+		}),
+	)
+
+	svc := NewService(bus,
+		WithAdapter(adapter),
+		WithPromptEngine(mockEngine),
+		WithJournalProvider(journal),
+	)
+
+	replySub := eventbus.SubscribeTo(bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("test_reply"))
+	defer replySub.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+		SessionID: "session-1",
+		PromptID:  "prompt-1",
+		NewMessage: eventbus.ConversationMessage{
+			Origin: eventbus.OriginUser,
+			Text:   "hello",
+		},
+		Metadata: map[string]string{
+			constants.MetadataKeyEventType: constants.PromptEventUserIntent,
+		},
+	})
+
+	select {
+	case <-replySub.C():
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for reply")
+	}
+
+	req := mockEngine.GetLastRequest()
+	if req.JournalSummaries != "Session journal summary" {
+		t.Errorf("expected JournalSummaries, got %q", req.JournalSummaries)
+	}
+	if req.JournalRaw != "raw journal output" {
+		t.Errorf("expected JournalRaw, got %q", req.JournalRaw)
+	}
+
+	if journal.GetCallCount() == 0 {
+		t.Error("expected JournalProvider.GetContext() to be called")
+	}
+	if lastID := journal.GetLastID(); lastID != "session-1" {
+		t.Errorf("expected JournalProvider called with sessionID=%q, got %q", "session-1", lastID)
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	svc.Shutdown(shutdownCtx)
+}
+
+func TestBuildIntentRequestNoJournalWithoutSession(t *testing.T) {
+	bus := eventbus.New()
+	defer bus.Shutdown()
+
+	mockEngine := &MockPromptEngine{
+		systemPrompt: "system",
+		userPrompt:   "user",
+	}
+
+	journal := &mockJournalProvider{
+		summaries: "should not appear",
+		raw:       "should not appear",
+	}
+
+	adapter := NewMockAdapter(
+		WithMockCustomHandler(func(ctx context.Context, req IntentRequest) (*IntentResponse, error) {
+			return &IntentResponse{
+				PromptID: req.PromptID,
+				Actions:  []IntentAction{{Type: ActionNoop}},
+			}, nil
+		}),
+	)
+
+	// No session provider → selectTargetSession returns "" → journal should NOT be fetched
+	svc := NewService(bus,
+		WithAdapter(adapter),
+		WithPromptEngine(mockEngine),
+		WithJournalProvider(journal),
+	)
+
+	replySub := eventbus.SubscribeTo(bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("test_reply"))
+	defer replySub.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Prompt with no SessionID and no session provider → targetSession will be ""
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+		SessionID: "",
+		PromptID:  "prompt-1",
+		NewMessage: eventbus.ConversationMessage{
+			Origin: eventbus.OriginUser,
+			Text:   "hello",
+		},
+		Metadata: map[string]string{
+			constants.MetadataKeyEventType: constants.PromptEventUserIntent,
+		},
+	})
+
+	select {
+	case <-replySub.C():
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for reply")
+	}
+
+	req := mockEngine.GetLastRequest()
+	if req.JournalSummaries != "" {
+		t.Errorf("expected empty JournalSummaries when no session, got %q", req.JournalSummaries)
+	}
+	if req.JournalRaw != "" {
+		t.Errorf("expected empty JournalRaw when no session, got %q", req.JournalRaw)
+	}
+
+	if journal.GetCallCount() != 0 {
+		t.Errorf("expected JournalProvider.GetContext() NOT to be called, got %d calls", journal.GetCallCount())
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	svc.Shutdown(shutdownCtx)
+}
+
+func TestBuildIntentRequestBothProvidersConcurrent(t *testing.T) {
+	bus := eventbus.New()
+	defer bus.Shutdown()
+
+	mockEngine := &MockPromptEngine{
+		systemPrompt: "system",
+		userPrompt:   "user",
+	}
+
+	// Both providers have a 100ms delay and an "entered" channel.
+	// If providers run sequentially, total time >= 200ms.
+	// If providers run concurrently (via WaitGroup), both enter before
+	// either finishes, and total time is ~100ms.
+	convLog := &mockConversationLogProvider{
+		summaries: "Conv summary line",
+		raw:       "[user] hello\n[assistant] hi",
+		delay:     100 * time.Millisecond,
+		entered:   make(chan struct{}),
+	}
+
+	journal := &mockJournalProvider{
+		summaries: "Journal summary line",
+		raw:       "$ ls\nfile1 file2",
+		delay:     100 * time.Millisecond,
+		entered:   make(chan struct{}),
+	}
+
+	adapter := NewMockAdapter(
+		WithMockCustomHandler(func(ctx context.Context, req IntentRequest) (*IntentResponse, error) {
+			return &IntentResponse{
+				PromptID: req.PromptID,
+				Actions:  []IntentAction{{Type: ActionNoop}},
+			}, nil
+		}),
+	)
+
+	mockSessions := &mockSessionProvider{
+		sessions: []SessionInfo{
+			{ID: "session-both", Command: "bash", Tool: "bash", Status: "running"},
+		},
+	}
+
+	svc := NewService(bus,
+		WithAdapter(adapter),
+		WithPromptEngine(mockEngine),
+		WithSessionProvider(mockSessions),
+		WithJournalProvider(journal),
+		WithConversationLogProvider(convLog),
+	)
+
+	replySub := eventbus.SubscribeTo(bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("test_reply"))
+	defer replySub.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	start := time.Now()
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+		SessionID: "session-both",
+		PromptID:  "prompt-both",
+		NewMessage: eventbus.ConversationMessage{
+			Origin: eventbus.OriginUser,
+			Text:   "hello",
+		},
+		Metadata: map[string]string{
+			constants.MetadataKeyEventType: constants.PromptEventUserIntent,
+		},
+	})
+
+	select {
+	case <-replySub.C():
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for reply")
+	}
+	elapsed := time.Since(start)
+
+	// Verify both providers were called and data is correct.
+	req := mockEngine.GetLastRequest()
+	if req.ConversationSummaries != "Conv summary line" {
+		t.Errorf("expected ConversationSummaries=%q, got %q", "Conv summary line", req.ConversationSummaries)
+	}
+	if req.ConversationRaw != "[user] hello\n[assistant] hi" {
+		t.Errorf("expected ConversationRaw=%q, got %q", "[user] hello\n[assistant] hi", req.ConversationRaw)
+	}
+	if req.JournalSummaries != "Journal summary line" {
+		t.Errorf("expected JournalSummaries=%q, got %q", "Journal summary line", req.JournalSummaries)
+	}
+	if req.JournalRaw != "$ ls\nfile1 file2" {
+		t.Errorf("expected JournalRaw=%q, got %q", "$ ls\nfile1 file2", req.JournalRaw)
+	}
+
+	if convLog.GetCallCount() == 0 {
+		t.Error("expected ConversationLogProvider.GetContext() to be called")
+	}
+	if journal.GetCallCount() == 0 {
+		t.Error("expected JournalProvider.GetContext() to be called")
+	}
+	if lastID := journal.GetLastID(); lastID != "session-both" {
+		t.Errorf("expected JournalProvider called with sessionID=%q, got %q", "session-both", lastID)
+	}
+
+	// Verify concurrency: both providers sleep 100ms.  Sequential would
+	// take >= 200ms.  With concurrent fetch the total should be ~100ms.
+	// Use a generous 180ms threshold to avoid CI flakiness.
+	if elapsed > 180*time.Millisecond {
+		t.Errorf("providers appear to be called sequentially: elapsed %v (expected < 180ms for concurrent fetch)", elapsed)
+	}
+
+	// Verify both entered before either finished (barrier check).
+	select {
+	case <-convLog.entered:
+	default:
+		t.Error("convLog.entered channel was not closed — provider may not have been called")
+	}
+	select {
+	case <-journal.entered:
+	default:
+		t.Error("journal.entered channel was not closed — provider may not have been called")
+	}
+
+	shutdownCtx2, shutdownCancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel2()
+	svc.Shutdown(shutdownCtx2)
+}
+
+func TestBuildIntentRequestHandlesProviderErrors(t *testing.T) {
+	bus := eventbus.New()
+	defer bus.Shutdown()
+
+	mockEngine := &MockPromptEngine{
+		systemPrompt: "system",
+		userPrompt:   "user",
+	}
+
+	// Both providers return errors
+	convLog := &mockConversationLogProvider{
+		err: fmt.Errorf("conversation db error"),
+	}
+	journal := &mockJournalProvider{
+		err: fmt.Errorf("journal db error"),
+	}
+
+	adapter := NewMockAdapter(
+		WithMockCustomHandler(func(ctx context.Context, req IntentRequest) (*IntentResponse, error) {
+			return &IntentResponse{
+				PromptID: req.PromptID,
+				Actions:  []IntentAction{{Type: ActionNoop}},
+			}, nil
+		}),
+	)
+
+	mockSessions := &mockSessionProvider{
+		sessions: []SessionInfo{
+			{ID: "session-err", Command: "bash", Tool: "bash", Status: "running"},
+		},
+	}
+
+	svc := NewService(bus,
+		WithAdapter(adapter),
+		WithPromptEngine(mockEngine),
+		WithSessionProvider(mockSessions),
+		WithConversationLogProvider(convLog),
+		WithJournalProvider(journal),
+	)
+
+	replySub := eventbus.SubscribeTo(bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("test_reply_err"))
+	defer replySub.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+		SessionID: "session-err",
+		PromptID:  "prompt-err",
+		NewMessage: eventbus.ConversationMessage{
+			Origin: eventbus.OriginUser,
+			Text:   "hello",
+		},
+		Metadata: map[string]string{
+			constants.MetadataKeyEventType: constants.PromptEventUserIntent,
+		},
+	})
+
+	select {
+	case <-replySub.C():
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for reply — provider errors should not block AI request")
+	}
+
+	// Verify graceful degradation: AI still gets a response with empty context
+	req := mockEngine.GetLastRequest()
+	if req.ConversationSummaries != "" {
+		t.Errorf("expected empty ConversationSummaries on error, got %q", req.ConversationSummaries)
+	}
+	if req.ConversationRaw != "" {
+		t.Errorf("expected empty ConversationRaw on error, got %q", req.ConversationRaw)
+	}
+	if req.JournalSummaries != "" {
+		t.Errorf("expected empty JournalSummaries on error, got %q", req.JournalSummaries)
+	}
+	if req.JournalRaw != "" {
+		t.Errorf("expected empty JournalRaw on error, got %q", req.JournalRaw)
+	}
+
+	// Both providers should still have been called
+	if convLog.GetCallCount() == 0 {
+		t.Error("expected ConversationLogProvider.GetContext() to be called even on error")
+	}
+	if journal.GetCallCount() == 0 {
+		t.Error("expected JournalProvider.GetContext() to be called even on error")
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	svc.Shutdown(shutdownCtx)
+}
+
+func TestBuildIntentRequestInjectsContextForSessionOutput(t *testing.T) {
+	bus := eventbus.New()
+	defer bus.Shutdown()
+
+	mockEngine := &MockPromptEngine{
+		systemPrompt: "system",
+		userPrompt:   "user",
+	}
+
+	convLog := &mockConversationLogProvider{
+		summaries: "session_output conv summary",
+		raw:       "[tool] npm ERR!",
+	}
+	journal := &mockJournalProvider{
+		summaries: "session_output journal summary",
+		raw:       "$ npm install",
+	}
+
+	adapter := NewMockAdapter(
+		WithMockCustomHandler(func(ctx context.Context, req IntentRequest) (*IntentResponse, error) {
+			return &IntentResponse{
+				PromptID: req.PromptID,
+				Actions:  []IntentAction{{Type: ActionNoop}},
+			}, nil
+		}),
+	)
+
+	svc := NewService(bus,
+		WithAdapter(adapter),
+		WithPromptEngine(mockEngine),
+		WithConversationLogProvider(convLog),
+		WithJournalProvider(journal),
+	)
+
+	replySub := eventbus.SubscribeTo(bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("test_reply"))
+	defer replySub.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+		SessionID: "session-1",
+		PromptID:  "prompt-so",
+		NewMessage: eventbus.ConversationMessage{
+			Origin: eventbus.OriginTool,
+			Text:   "npm ERR! code ENOENT",
+		},
+		Metadata: map[string]string{
+			constants.MetadataKeyEventType:     constants.PromptEventSessionOutput,
+			constants.MetadataKeySessionOutput: "npm ERR! code ENOENT",
+		},
+	})
+
+	select {
+	case <-replySub.C():
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for reply")
+	}
+
+	req := mockEngine.GetLastRequest()
+	if req.ConversationSummaries != "session_output conv summary" {
+		t.Errorf("expected ConversationSummaries for session_output event, got %q", req.ConversationSummaries)
+	}
+	if req.ConversationRaw != "[tool] npm ERR!" {
+		t.Errorf("expected ConversationRaw for session_output event, got %q", req.ConversationRaw)
+	}
+	if req.JournalSummaries != "session_output journal summary" {
+		t.Errorf("expected JournalSummaries for session_output event, got %q", req.JournalSummaries)
+	}
+	if req.JournalRaw != "$ npm install" {
+		t.Errorf("expected JournalRaw for session_output event, got %q", req.JournalRaw)
+	}
+
+	svc.Shutdown(context.Background())
+}
+
+func TestBuildIntentRequestInjectsContextForClarification(t *testing.T) {
+	bus := eventbus.New()
+	defer bus.Shutdown()
+
+	mockEngine := &MockPromptEngine{
+		systemPrompt: "system",
+		userPrompt:   "user",
+	}
+
+	convLog := &mockConversationLogProvider{
+		summaries: "clarification conv summary",
+		raw:       "[user] rm -rf /tmp\n[assistant] Are you sure?",
+	}
+	journal := &mockJournalProvider{
+		summaries: "clarification journal summary",
+		raw:       "$ ls /tmp",
+	}
+
+	adapter := NewMockAdapter(
+		WithMockCustomHandler(func(ctx context.Context, req IntentRequest) (*IntentResponse, error) {
+			return &IntentResponse{
+				PromptID: req.PromptID,
+				Actions:  []IntentAction{{Type: ActionNoop}},
+			}, nil
+		}),
+	)
+
+	svc := NewService(bus,
+		WithAdapter(adapter),
+		WithPromptEngine(mockEngine),
+		WithConversationLogProvider(convLog),
+		WithJournalProvider(journal),
+	)
+
+	replySub := eventbus.SubscribeTo(bus, eventbus.Conversation.Reply, eventbus.WithSubscriptionName("test_reply"))
+	defer replySub.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	eventbus.Publish(ctx, bus, eventbus.Conversation.Prompt, eventbus.SourceConversation, eventbus.ConversationPromptEvent{
+		SessionID: "session-1",
+		PromptID:  "prompt-clarify",
+		NewMessage: eventbus.ConversationMessage{
+			Origin: eventbus.OriginUser,
+			Text:   "yes, delete it",
+		},
+		Metadata: map[string]string{
+			constants.MetadataKeyEventType:             constants.PromptEventClarification,
+			constants.MetadataKeyClarificationQuestion: "Are you sure?",
+		},
+	})
+
+	select {
+	case <-replySub.C():
+	case <-time.After(2 * time.Second):
+		t.Fatal("Timeout waiting for reply")
+	}
+
+	req := mockEngine.GetLastRequest()
+	if req.ConversationSummaries != "clarification conv summary" {
+		t.Errorf("expected ConversationSummaries for clarification event, got %q", req.ConversationSummaries)
+	}
+	if req.ConversationRaw != "[user] rm -rf /tmp\n[assistant] Are you sure?" {
+		t.Errorf("expected ConversationRaw for clarification event, got %q", req.ConversationRaw)
+	}
+	if req.JournalSummaries != "clarification journal summary" {
+		t.Errorf("expected JournalSummaries for clarification event, got %q", req.JournalSummaries)
+	}
+
+	svc.Shutdown(context.Background())
 }

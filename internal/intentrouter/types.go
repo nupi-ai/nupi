@@ -125,10 +125,6 @@ type IntentRequest struct {
 	// Transcript is the user's speech or text input.
 	Transcript string `json:"transcript"`
 
-	// ConversationHistory provides recent conversation context to the AI adapter.
-	// Currently always nil; will be populated once context providers are wired (Epic 20+).
-	ConversationHistory []eventbus.ConversationTurn `json:"conversation_history,omitempty"`
-
 	// AvailableSessions lists all sessions the user can interact with.
 	AvailableSessions []SessionInfo `json:"available_sessions"`
 
@@ -269,14 +265,17 @@ type PromptBuildRequest struct {
 	EventType             EventType
 	SessionID             string
 	Transcript            string
-	// History contains recent conversation turns for prompt context.
-	// Currently always nil; will be populated once context providers are wired (Epic 20+).
-	History []eventbus.ConversationTurn
 	AvailableSessions     []SessionInfo
 	CurrentTool           string
 	SessionOutput         string
 	ClarificationQuestion string
 	Metadata              map[string]string
+
+	// Context from awareness providers (Epic 22)
+	JournalSummaries      string
+	JournalRaw            string
+	ConversationSummaries string
+	ConversationRaw       string
 }
 
 // PromptBuildResponse contains the generated prompts.
@@ -351,4 +350,14 @@ func WithConversationLogProvider(provider ConversationLogProvider) Option {
 	return func(s *Service) {
 		s.conversationLogProvider = provider
 	}
+}
+
+// promptContext holds provider snapshots read under RLock for a single handlePrompt call.
+type promptContext struct {
+	sessionProvider         SessionProvider
+	promptEngine            PromptEngine
+	coreMemoryProvider      CoreMemoryProvider
+	onboardingProvider      OnboardingProvider
+	journalProvider         JournalProvider
+	conversationLogProvider ConversationLogProvider
 }

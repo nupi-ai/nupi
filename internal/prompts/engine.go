@@ -11,7 +11,6 @@ import (
 
 	"github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/constants"
-	"github.com/nupi-ai/nupi/internal/eventbus"
 )
 
 // EventType describes the type of AI request.
@@ -61,9 +60,6 @@ type BuildRequest struct {
 	// Transcript is the user's speech or text input.
 	Transcript string
 
-	// History contains recent conversation turns for context.
-	History []eventbus.ConversationTurn
-
 	// AvailableSessions lists all sessions the user can interact with.
 	AvailableSessions []SessionInfo
 
@@ -78,6 +74,12 @@ type BuildRequest struct {
 
 	// Metadata contains additional context.
 	Metadata map[string]string
+
+	// Context from awareness providers (Epic 22)
+	JournalSummaries      string
+	JournalRaw            string
+	ConversationSummaries string
+	ConversationRaw       string
 }
 
 // BuildResponse contains the generated prompts.
@@ -161,7 +163,7 @@ func (e *Engine) BuildPrompt(req BuildRequest) (*BuildResponse, error) {
 		return nil, fmt.Errorf("prompts: template execution failed: %w", err)
 	}
 
-	parts := strings.SplitN(buf.String(), "---USER---", 2)
+	parts := strings.SplitN(buf.String(), promptDelimiter, 2)
 	systemPrompt := strings.TrimSpace(parts[0])
 	userPrompt := ""
 	if len(parts) > 1 {
@@ -232,22 +234,21 @@ func (e *Engine) buildTemplateData(req BuildRequest) map[string]any {
 	data := map[string]any{
 		constants.MetadataKeyEventType:     string(req.EventType),
 		constants.MetadataKeySessionID:     req.SessionID,
-		"transcript":                       req.Transcript,
+		"transcript":                       sanitizeDelimiter(req.Transcript),
 		constants.MetadataKeyCurrentTool:   req.CurrentTool,
-		constants.MetadataKeySessionOutput: req.SessionOutput,
-		"clarification_q":                  req.ClarificationQuestion,
+		constants.MetadataKeySessionOutput: sanitizeDelimiter(req.SessionOutput),
+		"clarification_q":                  sanitizeDelimiter(req.ClarificationQuestion),
 		"has_session":                      req.SessionID != "",
 		"has_tool":                         req.CurrentTool != "",
 		"metadata":                         nonNilMap(req.Metadata),
 	}
 
-	// Format history
-	var historyLines []string
-	for _, turn := range req.History {
-		historyLines = append(historyLines, fmt.Sprintf("[%s] %s", turn.Origin.Label(), turn.Text))
-	}
-	data["history"] = strings.Join(historyLines, "\n")
-	data["history_count"] = len(req.History)
+	// Context from awareness providers — sanitize the prompt delimiter
+	// to prevent injected content from splitting the system/user prompt.
+	data[constants.TemplateKeyJournalSummaries] = sanitizeDelimiter(req.JournalSummaries)
+	data[constants.TemplateKeyJournalRaw] = sanitizeDelimiter(req.JournalRaw)
+	data[constants.TemplateKeyConversationSummaries] = sanitizeDelimiter(req.ConversationSummaries)
+	data[constants.TemplateKeyConversationRaw] = sanitizeDelimiter(req.ConversationRaw)
 
 	// Format available sessions
 	var sessionLines []string
@@ -272,12 +273,30 @@ func nonNilMap(m map[string]string) map[string]string {
 	return m
 }
 
+// promptDelimiter is the sentinel string that separates system and user prompt
+// sections in rendered templates. Content from external sources (awareness
+// providers) is sanitized to prevent accidental or malicious splitting.
+const promptDelimiter = "---USER---"
+
+// sanitizeDelimiter strips the prompt delimiter from externally-sourced strings
+// to prevent prompt injection via context fields.
+func sanitizeDelimiter(s string) string {
+	return strings.ReplaceAll(s, promptDelimiter, "[DELIMITER_SANITIZED]")
+}
+
 var templateFuncs = template.FuncMap{
 	"truncate": func(maxLen int, s string) string {
-		if len(s) <= maxLen {
+		if maxLen <= 0 {
 			return s
 		}
-		return s[:maxLen] + "..."
+		runes := []rune(s)
+		if len(runes) <= maxLen {
+			return s
+		}
+		if maxLen <= 3 {
+			return string(runes[:maxLen])
+		}
+		return string(runes[:maxLen-3]) + "..."
 	},
 	"lower": strings.ToLower,
 	"upper": strings.ToUpper,

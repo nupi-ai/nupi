@@ -2,6 +2,7 @@ package conversation
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -149,7 +150,7 @@ func TestConversationMetadataLimits(t *testing.T) {
 
 	annotations := make(map[string]string)
 	for i := 0; i < maxMetadataEntries+10; i++ {
-		key := "key-" + string(rune('a'+i%26))
+		key := fmt.Sprintf("key-%04d", i)
 		value := "value"
 		annotations[key] = value
 	}
@@ -434,9 +435,13 @@ func TestConversation_SessionOutputRateLimiting(t *testing.T) {
 		if prompt.Metadata[constants.MetadataKeyEventType] != constants.PromptEventSessionOutput {
 			t.Fatalf("expected event_type=session_output, got %q", prompt.Metadata[constants.MetadataKeyEventType])
 		}
-	case <-time.After(500 * time.Millisecond):
+	case <-time.After(time.Second):
 		t.Fatal("timeout waiting for first prompt (should trigger)")
 	}
+
+	// Subscribe to turns AFTER first event to avoid catching stale turn events.
+	turnSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Turn)
+	defer turnSub.Close()
 
 	// Second notable event immediately after should be blocked (within 2s)
 	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{
@@ -446,10 +451,18 @@ func TestConversation_SessionOutputRateLimiting(t *testing.T) {
 		Annotations: map[string]string{constants.MetadataKeyNotable: constants.MetadataValueTrue},
 	})
 
+	// Use turn event as barrier: turn is always published even when prompt is rate-limited.
+	// Once we receive the turn, the prompt decision has already been made.
+	select {
+	case <-turnSub.C():
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for barrier turn event")
+	}
+	// Drain: prompt should NOT have been published
 	select {
 	case <-promptSub.C():
 		t.Fatal("second prompt should be blocked by rate limiting")
-	case <-time.After(200 * time.Millisecond):
+	default:
 		// Expected: no prompt due to rate limiting
 	}
 
@@ -470,7 +483,7 @@ func TestConversation_SessionOutputRateLimiting(t *testing.T) {
 		if prompt.NewMessage.Text != "third notable output" {
 			t.Fatalf("expected third output text, got %q", prompt.NewMessage.Text)
 		}
-	case <-time.After(500 * time.Millisecond):
+	case <-time.After(time.Second):
 		t.Fatal("timeout waiting for third prompt (should trigger after rate limit)")
 	}
 }
@@ -905,6 +918,195 @@ func TestSerializeTurns_Empty(t *testing.T) {
 	result := eventbus.SerializeTurns(nil)
 	if result != "" {
 		t.Fatalf("expected empty string for nil turns, got %q", result)
+	}
+}
+
+func TestRateLimitBypassForWaitingFor(t *testing.T) {
+	bus := eventbus.New()
+	svc := NewService(bus)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("start conversation: %v", err)
+	}
+	defer svc.Shutdown(context.Background())
+
+	promptSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Prompt)
+	defer promptSub.Close()
+
+	sessionID := "waiting-for-bypass-test"
+
+	// First notable event triggers normally
+	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{
+		SessionID:   sessionID,
+		Origin:      eventbus.OriginTool,
+		Text:        "first output",
+		Annotations: map[string]string{constants.MetadataKeyNotable: constants.MetadataValueTrue},
+	})
+
+	select {
+	case <-promptSub.C():
+		// OK — first prompt fired
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for first prompt")
+	}
+
+	// Subscribe to turns AFTER first event to avoid stale turn events
+	turnSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Turn)
+	defer turnSub.Close()
+
+	// Second event WITHOUT waiting_for should be rate-limited
+	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{
+		SessionID:   sessionID,
+		Origin:      eventbus.OriginTool,
+		Text:        "normal output",
+		Annotations: map[string]string{constants.MetadataKeyNotable: constants.MetadataValueTrue},
+	})
+
+	// Use turn as barrier — turn is always published even when prompt is rate-limited
+	select {
+	case <-turnSub.C():
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for barrier turn")
+	}
+	select {
+	case <-promptSub.C():
+		t.Fatal("should be rate-limited without waiting_for")
+	default:
+		// Expected: rate-limited
+	}
+
+	// Third event WITH waiting_for should bypass rate limit
+	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{
+		SessionID: sessionID,
+		Origin:    eventbus.OriginTool,
+		Text:      "tool waiting for input",
+		Annotations: map[string]string{
+			constants.MetadataKeyNotable:    constants.MetadataValueTrue,
+			constants.MetadataKeyWaitingFor: constants.PipelineWaitingForUserInput,
+		},
+	})
+
+	select {
+	case env := <-promptSub.C():
+		prompt := env.Payload
+		if prompt.Metadata[constants.MetadataKeyWaitingFor] != constants.PipelineWaitingForUserInput {
+			t.Errorf("expected waiting_for=%s, got %q", constants.PipelineWaitingForUserInput, prompt.Metadata[constants.MetadataKeyWaitingFor])
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for waiting_for bypass prompt — rate limit bypass not working")
+	}
+
+	// Fourth event: normal event immediately after bypass should still be rate-limited
+	// (verifies that the waiting_for bypass updated lastSessionOutput timestamp)
+	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{
+		SessionID:   sessionID,
+		Origin:      eventbus.OriginTool,
+		Text:        "normal output after bypass",
+		Annotations: map[string]string{constants.MetadataKeyNotable: constants.MetadataValueTrue},
+	})
+
+	// Use turn as barrier
+	select {
+	case <-turnSub.C():
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for barrier turn after bypass")
+	}
+	select {
+	case <-promptSub.C():
+		t.Fatal("should be rate-limited after waiting_for bypass (timestamp should have been updated)")
+	default:
+		// Expected: rate-limited because bypass updated the timestamp
+	}
+
+	// Fifth event: invalid waiting_for value should NOT bypass rate limit
+	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{
+		SessionID: sessionID,
+		Origin:    eventbus.OriginTool,
+		Text:      "output with invalid waiting_for",
+		Annotations: map[string]string{
+			constants.MetadataKeyNotable:    constants.MetadataValueTrue,
+			constants.MetadataKeyWaitingFor: "bogus_exploit_value",
+		},
+	})
+
+	// Use turn as barrier
+	select {
+	case <-turnSub.C():
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for barrier turn for invalid waiting_for event")
+	}
+	select {
+	case <-promptSub.C():
+		t.Fatal("invalid waiting_for value should NOT bypass rate limit")
+	default:
+		// Expected: rate-limited because "bogus_exploit_value" is not a valid waiting_for value
+	}
+}
+
+func TestConsecutiveWaitingForBypassThrottled(t *testing.T) {
+	bus := eventbus.New()
+	svc := NewService(bus)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := svc.Start(ctx); err != nil {
+		t.Fatalf("start conversation: %v", err)
+	}
+	defer svc.Shutdown(context.Background())
+
+	promptSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Prompt)
+	defer promptSub.Close()
+
+	sessionID := "rapid-waiting-for-test"
+
+	// First waiting_for event should bypass rate limit
+	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{
+		SessionID: sessionID,
+		Origin:    eventbus.OriginTool,
+		Text:      "waiting for input 1",
+		Annotations: map[string]string{
+			constants.MetadataKeyNotable:    constants.MetadataValueTrue,
+			constants.MetadataKeyWaitingFor: constants.PipelineWaitingForUserInput,
+		},
+	})
+
+	select {
+	case <-promptSub.C():
+		// OK — first waiting_for prompt fired
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for first waiting_for bypass prompt")
+	}
+
+	// Subscribe to turns AFTER first event
+	turnSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Turn)
+	defer turnSub.Close()
+
+	// Second waiting_for event immediately after should be throttled (within 500ms)
+	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{
+		SessionID: sessionID,
+		Origin:    eventbus.OriginTool,
+		Text:      "waiting for input 2",
+		Annotations: map[string]string{
+			constants.MetadataKeyNotable:    constants.MetadataValueTrue,
+			constants.MetadataKeyWaitingFor: constants.PipelineWaitingForUserInput,
+		},
+	})
+
+	// Use turn as barrier
+	select {
+	case <-turnSub.C():
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for barrier turn")
+	}
+	select {
+	case <-promptSub.C():
+		t.Fatal("consecutive waiting_for events should be throttled")
+	default:
+		// Expected: throttled
 	}
 }
 

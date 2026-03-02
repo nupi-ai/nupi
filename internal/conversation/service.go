@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -45,7 +46,8 @@ type Service struct {
 	toolCache map[string]string // sessionID -> current tool name
 
 	// Rate limiting for SESSION_OUTPUT events
-	lastSessionOutput sync.Map // sessionID -> time.Time
+	lastSessionOutput     sync.Map // sessionID -> time.Time
+	lastWaitingForBypass  sync.Map // sessionID -> time.Time
 
 	shuttingDown atomic.Bool
 
@@ -67,7 +69,16 @@ const (
 
 	// Rate limiting for SESSION_OUTPUT events
 	sessionOutputMinInterval = constants.Duration2Seconds
+
+	// Minimum interval between consecutive waiting_for bypass events
+	// for the same session. Prevents unbounded AI prompt fan-out from
+	// misbehaving tool handlers that rapidly emit waiting_for annotations.
+	waitingForBypassMinInterval = 500 * time.Millisecond
 )
+
+// nowFunc is the clock source used by rate limiting.  Tests can
+// override it via SetNowFuncForTesting to avoid timing dependencies.
+var nowFunc = time.Now
 
 var conversationMetadataLimits = sanitize.MetadataLimits{
 	MaxEntries:    maxMetadataEntries,
@@ -227,7 +238,14 @@ func (s *Service) handlePipelineMessage(ctx context.Context, ts time.Time, msg e
 
 	// Check rate limiting for session_output (needs sessionID, so done here)
 	if eventType == constants.PromptEventSessionOutput {
-		shouldTriggerAI = s.shouldTriggerSessionOutput(msg.SessionID)
+		if wf := msg.Annotations[constants.MetadataKeyWaitingFor]; wf != "" && constants.IsValidWaitingForValue(wf) {
+			shouldTriggerAI = s.shouldBypassForWaitingFor(msg.SessionID)
+		} else {
+			if wf != "" {
+				log.Printf("[Conversation] Unrecognized waiting_for value %q for session %s, falling back to rate limiting", wf, msg.SessionID)
+			}
+			shouldTriggerAI = s.shouldTriggerSessionOutput(msg.SessionID)
+		}
 	}
 
 	// Publish turn event for downstream consumers (Conversation Log Service)
@@ -240,7 +258,7 @@ func (s *Service) handlePipelineMessage(ctx context.Context, ts time.Time, msg e
 
 // shouldTriggerSessionOutput checks rate limiting for SESSION_OUTPUT events.
 func (s *Service) shouldTriggerSessionOutput(sessionID string) bool {
-	now := time.Now()
+	now := nowFunc()
 
 	if last, ok := s.lastSessionOutput.Load(sessionID); ok {
 		if lastTime, ok := last.(time.Time); ok {
@@ -254,10 +272,36 @@ func (s *Service) shouldTriggerSessionOutput(sessionID string) bool {
 	return true
 }
 
+// shouldBypassForWaitingFor decides whether a waiting_for event should
+// bypass the normal session output rate limit.  Consecutive waiting_for
+// events for the same session are throttled to waitingForBypassMinInterval
+// to prevent unbounded AI prompt fan-out from misbehaving tool handlers.
+func (s *Service) shouldBypassForWaitingFor(sessionID string) bool {
+	now := nowFunc()
+	if last, ok := s.lastWaitingForBypass.Load(sessionID); ok {
+		if lastTime, ok := last.(time.Time); ok && now.Sub(lastTime) < waitingForBypassMinInterval {
+			return false
+		}
+	}
+	s.lastWaitingForBypass.Store(sessionID, now)
+	s.lastSessionOutput.Store(sessionID, now)
+	return true
+}
+
 // ResetRateLimitForTesting overrides the rate limit timestamp for the given
 // session, allowing tests to verify rate limiting without real-time waits.
 func (s *Service) ResetRateLimitForTesting(sessionID string, t time.Time) {
 	s.lastSessionOutput.Store(sessionID, t)
+}
+
+// SetNowFuncForTesting overrides the clock source used by rate limiting.
+// Call with nil to restore the default (time.Now).
+func SetNowFuncForTesting(fn func() time.Time) {
+	if fn == nil {
+		nowFunc = time.Now
+	} else {
+		nowFunc = fn
+	}
 }
 
 // validEventTypes are the event types supported by the prompts engine.
@@ -377,8 +421,9 @@ func (s *Service) clearSession(sessionID string) {
 	}
 	s.mu.Unlock()
 
-	// Clean up rate limiting entry to prevent memory leaks
+	// Clean up rate limiting entries to prevent memory leaks
 	s.lastSessionOutput.Delete(sessionID)
+	s.lastWaitingForBypass.Delete(sessionID)
 }
 
 // clearToolCache removes just the tool cache for a session.

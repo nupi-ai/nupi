@@ -93,8 +93,8 @@ func (a *routingMockAdapter) ResolveIntent(_ context.Context, req intentrouter.I
 	}
 
 	// "what happened in session X" → summarize session history
-	// NOTE: ConversationHistory is always nil until JournalProvider/ConversationLogProvider
-	// are implemented (Epic 19+). This mock returns a generic summary.
+	// Context is injected through prompt templates (journal + conversation providers),
+	// not through IntentRequest. This mock returns a generic summary.
 	if strings.Contains(transcript, "what happened") && strings.Contains(transcript, "session") {
 		sessionRef := extractSessionRef(transcript, req.AvailableSessions)
 		summary := fmt.Sprintf("Session %s history: activity summary.", sessionRef)
@@ -195,6 +195,63 @@ func (a *routingMockAdapter) ResolveIntent(_ context.Context, req intentrouter.I
 			},
 		},
 	}, nil
+}
+
+// contextCapturingEngine is a mock PromptEngine that captures PromptBuildRequest
+// for assertions without requiring store.Open() or keychain access.
+type contextCapturingEngine struct {
+	mu       sync.Mutex
+	requests []intentrouter.PromptBuildRequest
+}
+
+func (e *contextCapturingEngine) Build(req intentrouter.PromptBuildRequest) (*intentrouter.PromptBuildResponse, error) {
+	e.mu.Lock()
+	e.requests = append(e.requests, req)
+	e.mu.Unlock()
+	return &intentrouter.PromptBuildResponse{
+		SystemPrompt: "mock system",
+		UserPrompt:   "mock user",
+	}, nil
+}
+
+func (e *contextCapturingEngine) lastRequest() (intentrouter.PromptBuildRequest, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if len(e.requests) == 0 {
+		return intentrouter.PromptBuildRequest{}, false
+	}
+	return e.requests[len(e.requests)-1], true
+}
+
+// mockJournalProvider returns configured context for integration testing.
+type mockJournalProvider struct {
+	summaries string
+	raw       string
+	mu        sync.Mutex
+	lastID    string
+}
+
+func (m *mockJournalProvider) GetContext(sessionID string) (string, string, error) {
+	m.mu.Lock()
+	m.lastID = sessionID
+	m.mu.Unlock()
+	return m.summaries, m.raw, nil
+}
+
+func (m *mockJournalProvider) GetLastID() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastID
+}
+
+// mockConversationLogProvider returns configured context for integration testing.
+type mockConversationLogProvider struct {
+	summaries string
+	raw       string
+}
+
+func (m *mockConversationLogProvider) GetContext() (string, string, error) {
+	return m.summaries, m.raw, nil
 }
 
 // routingTestSetup wraps intentRouterTestSetup with the routing-specific mock adapter.
@@ -424,7 +481,7 @@ func TestProactiveIdleNotification(t *testing.T) {
 		Annotations: map[string]string{
 			constants.MetadataKeyNotable:   constants.MetadataValueTrue,
 			constants.MetadataKeyIdleState: "prompt",
-			"event_title":                  "Build completed",
+			constants.MetadataKeyEventTitle: "Build completed",
 		},
 	})
 
@@ -496,7 +553,7 @@ func TestProactiveNotificationRateLimiting(t *testing.T) {
 			Annotations: map[string]string{
 				constants.MetadataKeyNotable:   constants.MetadataValueTrue,
 				constants.MetadataKeyIdleState: "prompt",
-				"event_title":                  fmt.Sprintf("Event %d", i+1),
+				constants.MetadataKeyEventTitle: fmt.Sprintf("Event %d", i+1),
 			},
 		})
 	}
@@ -603,7 +660,7 @@ func TestProactiveNotificationIncludesContext(t *testing.T) {
 		Annotations: map[string]string{
 			constants.MetadataKeyNotable:   constants.MetadataValueTrue,
 			constants.MetadataKeyIdleState: "prompt",
-			"event_title":                  "Compilation error",
+			constants.MetadataKeyEventTitle: "Compilation error",
 		},
 	})
 
@@ -633,7 +690,7 @@ func TestProactiveNotificationIncludesContext(t *testing.T) {
 	if !strings.Contains(sessionOutputReq.SessionOutput, "compilation failed") {
 		t.Errorf("expected SessionOutput to contain error text, got %q", sessionOutputReq.SessionOutput)
 	}
-	// ConversationHistory is nil until context providers are implemented (Epic 19+).
+	// Context flows through prompt templates, not IntentRequest fields.
 	// Verify adapter received a well-formed request with correct fields.
 	if sessionOutputReq.EventType != intentrouter.EventTypeSessionOutput {
 		t.Errorf("expected EventType=%s, got %s", intentrouter.EventTypeSessionOutput, sessionOutputReq.EventType)
@@ -714,7 +771,7 @@ func TestSessionHistorySummarization(t *testing.T) {
 		t.Errorf("expected speak to contain 'history' summary, got %q", speak.Text)
 	}
 
-	// ConversationHistory is nil until context providers are implemented (Epic 19+).
+	// Context flows through prompt templates, not IntentRequest fields.
 	// Verify the adapter received a well-formed request for the correct session.
 	req := adapter.LastRequest()
 	if req.SessionID != "sess-hist" {
@@ -799,7 +856,7 @@ func TestHistorySummarizationUsesCorrectSessionContext(t *testing.T) {
 		t.Errorf("expected speak to reference sess-one, got %q", speak.Text)
 	}
 
-	// ConversationHistory is nil until context providers are implemented (Epic 19+).
+	// Context flows through prompt templates, not IntentRequest fields.
 	// Verify the request was routed to the correct session (not sess-two).
 	req := adapter.LastRequest()
 	if req.SessionID != "sess-one" {
@@ -1010,7 +1067,7 @@ func TestSessionOutputForNonNotableEventsIgnored(t *testing.T) {
 		Annotations: map[string]string{
 			constants.MetadataKeyNotable:   constants.MetadataValueTrue,
 			constants.MetadataKeyIdleState: "prompt",
-			"event_title":                  "Build completed",
+			constants.MetadataKeyEventTitle: "Build completed",
 		},
 	})
 
@@ -1067,5 +1124,105 @@ func TestMultipleSessionsSameCommand(t *testing.T) {
 		if cmd.SessionID == "sess-monitor" {
 			t.Error("unexpected command sent to sess-monitor")
 		}
+	}
+}
+
+// --- Verify context injection flows end-to-end through prompt engine (L3 review finding) ---
+
+func TestSessionOutputPromptIncludesContextFields(t *testing.T) {
+	// End-to-end test: session_output event flows through conversation service →
+	// intent router → prompt engine, and the engine receives both journal and
+	// conversation context fields.
+	bus := eventbus.New()
+	defer bus.Shutdown()
+
+	adapter := newRoutingMockAdapter()
+	provider := newMutableSessionProvider(intentrouter.SessionInfo{
+		ID:      "sess-e2e",
+		Command: "bash",
+		Status:  "running",
+	})
+	executor := newRecordingCommandExecutor()
+	engine := &contextCapturingEngine{}
+
+	journalProv := &mockJournalProvider{
+		summaries: "Session started npm install",
+		raw:       "$ npm install\nnpm ERR!",
+	}
+	convLogProv := &mockConversationLogProvider{
+		summaries: "User asked to install deps",
+		raw:       "[user] install deps\n[assistant] Running npm install",
+	}
+
+	conversationSvc := conversation.NewService(bus,
+		conversation.WithDetachTTL(5*time.Second),
+	)
+
+	router := intentrouter.NewService(bus,
+		intentrouter.WithAdapter(adapter),
+		intentrouter.WithSessionProvider(provider),
+		intentrouter.WithCommandExecutor(executor),
+		intentrouter.WithPromptEngine(engine),
+		intentrouter.WithJournalProvider(journalProv),
+		intentrouter.WithConversationLogProvider(convLogProv),
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := conversationSvc.Start(ctx); err != nil {
+		t.Fatalf("start conversation service: %v", err)
+	}
+	defer conversationSvc.Shutdown(context.Background())
+
+	if err := router.Start(ctx); err != nil {
+		t.Fatalf("start intent router: %v", err)
+	}
+	defer router.Shutdown(context.Background())
+
+	speakSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Speak, eventbus.WithSubscriptionName("test_speak_e2e"))
+	defer speakSub.Close()
+
+	// Publish notable session output → triggers session_output AI prompt
+	eventbus.Publish(ctx, bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{
+		SessionID: "sess-e2e",
+		Origin:    eventbus.OriginTool,
+		Text:      "Error: compilation failed",
+		Annotations: map[string]string{
+			constants.MetadataKeyNotable: constants.MetadataValueTrue,
+		},
+	})
+
+	// Wait for speak notification
+	waitForSpeak(t, speakSub, 3*time.Second)
+
+	// Verify the prompt engine received context fields
+	req, ok := engine.lastRequest()
+	if !ok {
+		t.Fatal("prompt engine was never called")
+	}
+
+	if req.ConversationSummaries != "User asked to install deps" {
+		t.Errorf("expected ConversationSummaries from provider, got %q", req.ConversationSummaries)
+	}
+	if req.ConversationRaw != "[user] install deps\n[assistant] Running npm install" {
+		t.Errorf("expected ConversationRaw from provider, got %q", req.ConversationRaw)
+	}
+	if req.JournalSummaries != "Session started npm install" {
+		t.Errorf("expected JournalSummaries from provider, got %q", req.JournalSummaries)
+	}
+	if req.JournalRaw != "$ npm install\nnpm ERR!" {
+		t.Errorf("expected JournalRaw from provider, got %q", req.JournalRaw)
+	}
+	if req.EventType != intentrouter.EventTypeSessionOutput {
+		t.Errorf("expected EventType=session_output, got %s", req.EventType)
+	}
+	if req.SessionID != "sess-e2e" {
+		t.Errorf("expected SessionID=sess-e2e, got %q", req.SessionID)
+	}
+
+	// Verify journal provider was called with the correct sessionID
+	if lastID := journalProv.GetLastID(); lastID != "sess-e2e" {
+		t.Errorf("expected JournalProvider called with sessionID=%q, got %q", "sess-e2e", lastID)
 	}
 }

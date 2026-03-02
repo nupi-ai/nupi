@@ -21,23 +21,17 @@ enum EventType {
   EVENT_TYPE_UNSPECIFIED = 0;
   EVENT_TYPE_USER_INTENT = 1;      // Default: interpret user voice/text
   EVENT_TYPE_SESSION_OUTPUT = 2;   // Analyze notable terminal output
-  // 3 freed (was HISTORY_SUMMARY)
+  reserved 3; // was HISTORY_SUMMARY
+  reserved "EVENT_TYPE_HISTORY_SUMMARY";
   EVENT_TYPE_CLARIFICATION = 4;    // Handle user response to clarification
-  // 5 freed (was MEMORY_FLUSH)
+  reserved 5; // was MEMORY_FLUSH
+  reserved "EVENT_TYPE_MEMORY_FLUSH";
   EVENT_TYPE_SCHEDULED_TASK = 6;   // Periodic background tasks
-  // 7 freed (was SESSION_SLUG)
+  reserved 7; // was SESSION_SLUG
+  reserved "EVENT_TYPE_SESSION_SLUG";
   EVENT_TYPE_ONBOARDING = 8;                  // First-time user setup
   EVENT_TYPE_JOURNAL_COMPACTION = 9;          // Summarize session journal activity
   EVENT_TYPE_CONVERSATION_COMPACTION = 10;    // Summarize conversation history
-}
-
-// ContentOrigin identifies who produced a conversation turn.
-enum ContentOrigin {
-  CONTENT_ORIGIN_UNSPECIFIED = 0;
-  CONTENT_ORIGIN_USER = 1;    // User input (speech/text)
-  CONTENT_ORIGIN_AI = 2;      // AI response
-  CONTENT_ORIGIN_TOOL = 3;    // Tool/session output
-  CONTENT_ORIGIN_SYSTEM = 4;  // System message
 }
 
 // SessionInfo provides context about an available terminal session.
@@ -53,14 +47,6 @@ message SessionInfo {
   string idle_state = 9;                    // Idle state descriptor
   string waiting_for = 10;                  // What the session is waiting for
   google.protobuf.Timestamp idle_since = 11; // When the session became idle
-}
-
-// ConversationTurn represents a single turn in conversation history.
-message ConversationTurn {
-  ContentOrigin origin = 1;
-  string text = 2;
-  google.protobuf.Timestamp at = 3;
-  map<string, string> metadata = 4;
 }
 
 // ToolDefinition describes a tool available to the AI for invocation.
@@ -101,8 +87,8 @@ message ResolveIntentRequest {
   // transcript is the user's speech or text input to process.
   string transcript = 3;
 
-  // conversation_history contains recent conversation turns for context.
-  repeated ConversationTurn conversation_history = 4;
+  reserved 4;
+  reserved "conversation_history";
 
   // available_sessions lists all sessions the user can interact with.
   repeated SessionInfo available_sessions = 5;

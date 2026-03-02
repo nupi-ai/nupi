@@ -10,7 +10,6 @@ import (
 	napv1 "github.com/nupi-ai/nupi/api/nap/v1"
 	configstore "github.com/nupi-ai/nupi/internal/config/store"
 	"github.com/nupi-ai/nupi/internal/constants"
-	"github.com/nupi-ai/nupi/internal/eventbus"
 	"github.com/nupi-ai/nupi/internal/mapper"
 	"github.com/nupi-ai/nupi/internal/napdial"
 	maputil "github.com/nupi-ai/nupi/internal/util/maps"
@@ -138,16 +137,6 @@ func (a *NAPAdapter) ResolveIntent(ctx context.Context, req IntentRequest) (*Int
 		grpcReq.ConfigJson = string(configJSON)
 	}
 
-	// Convert conversation history
-	for _, turn := range req.ConversationHistory {
-		grpcReq.ConversationHistory = append(grpcReq.ConversationHistory, &napv1.ConversationTurn{
-			Origin:   contentOriginToProto(turn.Origin),
-			Text:     turn.Text,
-			At:       mapper.ToProtoTimestampChecked(turn.At),
-			Metadata: maputil.Clone(turn.Meta),
-		})
-	}
-
 	// Convert available tools
 	for _, td := range req.AvailableTools {
 		grpcReq.AvailableTools = append(grpcReq.AvailableTools, &napv1.ToolDefinition{
@@ -252,22 +241,6 @@ func (a *NAPAdapter) SetReady(ready bool) {
 	a.mu.Lock()
 	a.ready = ready
 	a.mu.Unlock()
-}
-
-// contentOriginToProto converts eventbus.ContentOrigin to proto enum.
-func contentOriginToProto(origin eventbus.ContentOrigin) napv1.ContentOrigin {
-	switch origin {
-	case eventbus.OriginUser:
-		return napv1.ContentOrigin_CONTENT_ORIGIN_USER
-	case eventbus.OriginAI:
-		return napv1.ContentOrigin_CONTENT_ORIGIN_AI
-	case eventbus.OriginTool:
-		return napv1.ContentOrigin_CONTENT_ORIGIN_TOOL
-	case eventbus.OriginSystem:
-		return napv1.ContentOrigin_CONTENT_ORIGIN_SYSTEM
-	default:
-		return napv1.ContentOrigin_CONTENT_ORIGIN_UNSPECIFIED
-	}
 }
 
 // eventTypeToProto converts EventType to proto enum.
