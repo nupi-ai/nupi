@@ -69,24 +69,22 @@ const maxGetFileBytes = 50 * 1024 // 50 KB
 // --- memory_search ---
 
 type memorySearchArgs struct {
-	Query       string `json:"query"`
-	Scope       string `json:"scope"`
-	ProjectSlug string `json:"project_slug"`
-	MaxResults  int    `json:"max_results"`
-	DateFrom    string `json:"date_from"`
-	DateTo      string `json:"date_to"`
+	Query      string `json:"query"`
+	Source     string `json:"source"`
+	MaxResults int    `json:"max_results"`
+	DateFrom   string `json:"date_from"`
+	DateTo     string `json:"date_to"`
 }
 
 func memorySearchSpec(s *Service) ToolSpec {
 	return ToolSpec{
 		Name:        "memory_search",
-		Description: "Search long-term memory. Scope: 'project' searches current project memory, 'global' searches non-project memory, 'all' searches everything. Returns ranked results with snippets.",
+		Description: "Search long-term memory. Source: 'conversations' searches dialogue archives, 'journals' searches CLI session archives, 'topics' searches topic notes, 'all' searches everything (default).",
 		ParametersJSON: `{
   "type": "object",
   "properties": {
     "query": {"type": "string", "description": "Search query"},
-    "scope": {"type": "string", "enum": ["project", "global", "all"], "default": "all", "description": "Search scope"},
-    "project_slug": {"type": "string", "description": "Project slug (required when scope='project')"},
+    "source": {"type": "string", "enum": ["conversations", "journals", "topics", "all"], "default": "all", "description": "Data source to search"},
     "max_results": {"type": "integer", "default": 5, "description": "Maximum results to return"},
     "date_from": {"type": "string", "description": "Start date filter (YYYY-MM-DD)"},
     "date_to": {"type": "string", "description": "End date filter (YYYY-MM-DD)"}
@@ -103,12 +101,12 @@ func memorySearchSpec(s *Service) ToolSpec {
 				return nil, fmt.Errorf("query is required")
 			}
 
-			scope := a.Scope
-			if scope == "" {
-				scope = "all"
+			source := a.Source
+			if source == "" {
+				source = "all"
 			}
-			if scope != "project" && scope != "global" && scope != "all" {
-				return nil, fmt.Errorf("scope must be 'project', 'global', or 'all'")
+			if _, _, err := resolveSourceFilter(source); err != nil {
+				return nil, fmt.Errorf("source must be 'conversations', 'journals', 'topics', or 'all'")
 			}
 
 			maxResults := a.MaxResults
@@ -120,12 +118,11 @@ func memorySearchSpec(s *Service) ToolSpec {
 			dateTo := normalizeDate(a.DateTo, true)
 
 			opts := SearchOptions{
-				Query:       a.Query,
-				Scope:       scope,
-				ProjectSlug: a.ProjectSlug,
-				MaxResults:  maxResults,
-				DateFrom:    dateFrom,
-				DateTo:      dateTo,
+				Query:      a.Query,
+				Source:     source,
+				MaxResults: maxResults,
+				DateFrom:   dateFrom,
+				DateTo:     dateTo,
 			}
 
 			results, err := s.SearchHybrid(ctx, a.Query, opts)

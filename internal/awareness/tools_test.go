@@ -60,7 +60,7 @@ func TestMemorySearchHandler(t *testing.T) {
 
 	searchSpec := findSpec(t, svc.ToolSpecs(), "memory_search")
 
-	result, err := searchSpec.Handler(ctx, json.RawMessage(`{"query": "searchable content", "scope": "all"}`))
+	result, err := searchSpec.Handler(ctx, json.RawMessage(`{"query": "searchable content", "source": "all"}`))
 	if err != nil {
 		t.Fatalf("Handler error: %v", err)
 	}
@@ -101,17 +101,17 @@ func TestMemorySearchHandlerEmptyQuery(t *testing.T) {
 	}
 }
 
-func TestMemorySearchHandlerDefaultScope(t *testing.T) {
+func TestMemorySearchHandlerDefaultSource(t *testing.T) {
 	svc, ctx := setupToolsService(t)
 
-	writeMemoryFile(t, svc, "conversations/2026-02-20.md", "## Test\n\nDefault scope unique searchable content.")
+	writeMemoryFile(t, svc, "conversations/2026-02-20.md", "## Test\n\nDefault source unique searchable content.")
 	if err := svc.indexer.Sync(ctx); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
 
 	searchSpec := findSpec(t, svc.ToolSpecs(), "memory_search")
 
-	// Call without scope — should default to "all" and return the indexed file.
+	// Call without source — should default to "all" and return the indexed file.
 	result, err := searchSpec.Handler(ctx, json.RawMessage(`{"query": "unique searchable content"}`))
 	if err != nil {
 		t.Fatalf("Handler error: %v", err)
@@ -123,7 +123,7 @@ func TestMemorySearchHandlerDefaultScope(t *testing.T) {
 	}
 
 	if len(entries) == 0 {
-		t.Fatal("Expected at least 1 result with default scope='all', got 0")
+		t.Fatal("Expected at least 1 result with default source='all', got 0")
 	}
 
 	found := false
@@ -138,18 +138,117 @@ func TestMemorySearchHandlerDefaultScope(t *testing.T) {
 	}
 }
 
-func TestMemorySearchHandlerInvalidScope(t *testing.T) {
+func TestMemorySearchHandlerSourceConversations(t *testing.T) {
+	svc, ctx := setupToolsService(t)
+
+	writeMemoryFile(t, svc, "conversations/2026-02-20.md", "## Test\n\nConversation content about databases.")
+	writeMemoryFile(t, svc, "topics/golang.md", "## Go\n\nTopic content about databases.")
+	if err := svc.indexer.Sync(ctx); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+
+	searchSpec := findSpec(t, svc.ToolSpecs(), "memory_search")
+
+	result, err := searchSpec.Handler(ctx, json.RawMessage(`{"query": "databases", "source": "conversations"}`))
+	if err != nil {
+		t.Fatalf("Handler error: %v", err)
+	}
+
+	var entries []map[string]interface{}
+	if err := json.Unmarshal(result, &entries); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	if len(entries) == 0 {
+		t.Fatal("expected at least 1 result for source=conversations")
+	}
+
+	for _, entry := range entries {
+		ft, _ := entry["file_type"].(string)
+		if ft != "conversations" {
+			t.Errorf("source=conversations: expected file_type 'conversations', got %q", ft)
+		}
+	}
+}
+
+func TestMemorySearchHandlerSourceJournals(t *testing.T) {
+	svc, ctx := setupToolsService(t)
+
+	writeMemoryFile(t, svc, "journals/2026-02-20.md", "## Session\n\nJournal content about databases.")
+	writeMemoryFile(t, svc, "conversations/2026-02-20.md", "## Test\n\nConversation content about databases.")
+	if err := svc.indexer.Sync(ctx); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+
+	searchSpec := findSpec(t, svc.ToolSpecs(), "memory_search")
+
+	result, err := searchSpec.Handler(ctx, json.RawMessage(`{"query": "databases", "source": "journals"}`))
+	if err != nil {
+		t.Fatalf("Handler error: %v", err)
+	}
+
+	var entries []map[string]interface{}
+	if err := json.Unmarshal(result, &entries); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	if len(entries) == 0 {
+		t.Fatal("expected at least 1 result for source=journals")
+	}
+
+	for _, entry := range entries {
+		ft, _ := entry["file_type"].(string)
+		if ft != "journals" {
+			t.Errorf("source=journals: expected file_type 'journals', got %q", ft)
+		}
+	}
+}
+
+func TestMemorySearchHandlerSourceTopics(t *testing.T) {
+	svc, ctx := setupToolsService(t)
+
+	writeMemoryFile(t, svc, "conversations/2026-02-20.md", "## Test\n\nConversation content about databases.")
+	writeMemoryFile(t, svc, "topics/golang.md", "## Go\n\nTopic content about databases.")
+	if err := svc.indexer.Sync(ctx); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+
+	searchSpec := findSpec(t, svc.ToolSpecs(), "memory_search")
+
+	result, err := searchSpec.Handler(ctx, json.RawMessage(`{"query": "databases", "source": "topics"}`))
+	if err != nil {
+		t.Fatalf("Handler error: %v", err)
+	}
+
+	var entries []map[string]interface{}
+	if err := json.Unmarshal(result, &entries); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+
+	if len(entries) == 0 {
+		t.Fatal("expected at least 1 result for source=topics")
+	}
+
+	for _, entry := range entries {
+		ft, _ := entry["file_type"].(string)
+		if ft != "topic" {
+			t.Errorf("source=topics: expected file_type 'topic', got %q", ft)
+		}
+	}
+}
+
+func TestMemorySearchHandlerInvalidSource(t *testing.T) {
 	svc, ctx := setupToolsService(t)
 
 	searchSpec := findSpec(t, svc.ToolSpecs(), "memory_search")
 
-	_, err := searchSpec.Handler(ctx, json.RawMessage(`{"query": "test", "scope": "invalid"}`))
+	_, err := searchSpec.Handler(ctx, json.RawMessage(`{"query": "test", "source": "invalid"}`))
 	if err == nil {
-		t.Fatal("Expected error for invalid scope")
+		t.Fatal("Expected error for invalid source")
 	}
 
-	if !strings.Contains(err.Error(), "scope must be") {
-		t.Fatalf("Expected scope validation error, got %q", err.Error())
+	if !strings.Contains(err.Error(), "source must be") {
+		t.Fatalf("Expected source validation error, got %q", err.Error())
 	}
 }
 
@@ -166,7 +265,7 @@ func TestMemorySearchHandlerDateNormalization(t *testing.T) {
 
 	// Search with date_to=today (bare YYYY-MM-DD). Without normalization, the
 	// mtime (RFC3339Nano) would be excluded by raw string comparison.
-	args := fmt.Sprintf(`{"query": "normalization", "scope": "all", "date_to": "%s"}`, today)
+	args := fmt.Sprintf(`{"query": "normalization", "source": "all", "date_to": "%s"}`, today)
 	result, err := searchSpec.Handler(ctx, json.RawMessage(args))
 	if err != nil {
 		t.Fatalf("Handler error: %v", err)

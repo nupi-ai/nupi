@@ -11,23 +11,37 @@ import (
 
 // SearchOptions controls the FTS5 search query.
 type SearchOptions struct {
-	Query       string // Search query (required).
-	Scope       string // "project", "global", or "all" (default "all").
-	ProjectSlug string // Project slug for scope="project".
-	MaxResults  int    // Maximum results to return (default 10).
-	DateFrom    string // Inclusive lower bound (RFC 3339), optional.
-	DateTo      string // Inclusive upper bound (RFC 3339), optional.
+	Query      string // Search query (required).
+	Source     string // "conversations", "journals", "topics", or "all" (default "all"). Note: "topics" maps to file_type="topic" (singular) in the DB.
+	MaxResults int    // Maximum results to return (default 10).
+	DateFrom   string // Inclusive lower bound (RFC 3339), optional.
+	DateTo     string // Inclusive upper bound (RFC 3339), optional.
 }
 
 // SearchResult represents a single FTS5 search hit.
 type SearchResult struct {
-	Path        string  // File path relative to awareness/memory/.
-	ChunkIndex  int     // Chunk index within the file.
-	Snippet     string  // FTS5-generated snippet with highlighted matches.
-	Score       float64 // Relevance score (higher = more relevant). BM25 for FTS, cosine similarity for vector search.
-	FileType    string  // "conversations", "journals", "topic", "unknown".
-	ProjectSlug string  // Project slug (empty for global).
-	Mtime       string  // File modification time (RFC 3339).
+	Path       string  // File path relative to awareness/memory/.
+	ChunkIndex int     // Chunk index within the file.
+	Snippet    string  // FTS5-generated snippet with highlighted matches.
+	Score      float64 // Relevance score (higher = more relevant). BM25 for FTS, cosine similarity for vector search.
+	FileType   string  // "conversations", "journals", "topic", "unknown".
+	Mtime      string  // File modification time (RFC 3339).
+}
+
+// resolveSourceFilter maps a Source value to the corresponding file_type
+// column value and a boolean indicating whether filtering is needed.
+// Returns an error for invalid source values.
+func resolveSourceFilter(source string) (fileType string, filter bool, err error) {
+	switch source {
+	case "conversations", "journals":
+		return source, true, nil
+	case "topics":
+		return "topic", true, nil // DB stores singular "topic".
+	case "all", "":
+		return "", false, nil
+	default:
+		return "", false, fmt.Errorf("awareness: invalid source %q (valid: conversations, journals, topics, all)", source)
+	}
 }
 
 // SearchFTS performs a keyword search across the archival memory index using FTS5.
@@ -54,25 +68,20 @@ func (ix *Indexer) SearchFTS(ctx context.Context, opts SearchOptions) ([]SearchR
 		return nil, nil
 	}
 
-	// Build WHERE clause for scope and date filtering.
+	// Build WHERE clause for source and date filtering.
 	var conditions []string
 	var args []any
 
 	conditions = append(conditions, "memory_chunks MATCH ?")
 	args = append(args, ftsQuery)
 
-	switch opts.Scope {
-	case "project":
-		if opts.ProjectSlug == "" {
-			return nil, nil // No slug specified — no results for project scope.
-		}
-		conditions = append(conditions, "project_slug = ?")
-		args = append(args, opts.ProjectSlug)
-	case "global":
-		conditions = append(conditions, "project_slug = ?")
-		args = append(args, "")
-	default:
-		// "all" or empty — no scope filter.
+	ft, filter, err := resolveSourceFilter(opts.Source)
+	if err != nil {
+		return nil, err
+	}
+	if filter {
+		conditions = append(conditions, "file_type = ?")
+		args = append(args, ft)
 	}
 
 	if opts.DateFrom != "" {
@@ -88,7 +97,7 @@ func (ix *Indexer) SearchFTS(ctx context.Context, opts SearchOptions) ([]SearchR
 	args = append(args, maxResults)
 
 	sql := fmt.Sprintf(`SELECT path, chunk_idx, snippet(memory_chunks, 0, '', '', '...', 64),
-		-bm25(memory_chunks) as score, file_type, project_slug, mtime
+		-bm25(memory_chunks) as score, file_type, mtime
 		FROM memory_chunks
 		WHERE %s
 		ORDER BY bm25(memory_chunks)
@@ -103,7 +112,7 @@ func (ix *Indexer) SearchFTS(ctx context.Context, opts SearchOptions) ([]SearchR
 	var results []SearchResult
 	for rows.Next() {
 		var r SearchResult
-		if err := rows.Scan(&r.Path, &r.ChunkIndex, &r.Snippet, &r.Score, &r.FileType, &r.ProjectSlug, &r.Mtime); err != nil {
+		if err := rows.Scan(&r.Path, &r.ChunkIndex, &r.Snippet, &r.Score, &r.FileType, &r.Mtime); err != nil {
 			return nil, err
 		}
 		results = append(results, r)
@@ -130,22 +139,17 @@ func (ix *Indexer) SearchVector(ctx context.Context, queryVec []float32, opts Se
 		maxResults = 100
 	}
 
-	// Build query to load candidate embeddings with scope/date filtering via JOIN.
+	// Build query to load candidate embeddings with source/date filtering via JOIN.
 	var conditions []string
 	var args []any
 
-	conditions = append(conditions, "1=1") // base condition
-
-	switch opts.Scope {
-	case "project":
-		if opts.ProjectSlug == "" {
-			return nil, nil
-		}
-		conditions = append(conditions, "mc.project_slug = ?")
-		args = append(args, opts.ProjectSlug)
-	case "global":
-		conditions = append(conditions, "mc.project_slug = ?")
-		args = append(args, "")
+	ft, filter, err := resolveSourceFilter(opts.Source)
+	if err != nil {
+		return nil, err
+	}
+	if filter {
+		conditions = append(conditions, "mc.file_type = ?")
+		args = append(args, ft)
 	}
 
 	if opts.DateFrom != "" {
@@ -157,15 +161,20 @@ func (ix *Indexer) SearchVector(ctx context.Context, queryVec []float32, opts Se
 		args = append(args, opts.DateTo)
 	}
 
-	where := strings.Join(conditions, " AND ")
+	var where string
+	if len(conditions) > 0 {
+		where = "WHERE " + strings.Join(conditions, " AND ")
+	}
 
-	query := fmt.Sprintf(`SELECT me.path, me.chunk_idx, me.embedding, me.norm,
-		mc.content, mc.file_type, mc.project_slug, mc.mtime
+	baseSQL := `SELECT me.path, me.chunk_idx, me.embedding, me.norm,
+		mc.content, mc.file_type, mc.mtime
 		FROM memory_embeddings me
-		JOIN memory_chunks mc ON me.path = mc.path AND me.chunk_idx = mc.chunk_idx
-		WHERE %s`, where)
+		JOIN memory_chunks mc ON me.path = mc.path AND me.chunk_idx = mc.chunk_idx`
+	if where != "" {
+		baseSQL += " " + where
+	}
 
-	rows, err := ix.db.QueryContext(ctx, query, args...)
+	rows, err := ix.db.QueryContext(ctx, baseSQL, args...)
 	if err != nil {
 		return nil, fmt.Errorf("awareness: vector search: %w", err)
 	}
@@ -175,12 +184,12 @@ func (ix *Indexer) SearchVector(ctx context.Context, queryVec []float32, opts Se
 
 	for rows.Next() {
 		var (
-			path, content, fileType, projectSlug, mtime string
-			chunkIdx                                    int
-			embBlob                                     []byte
-			norm                                        float64
+			path, content, fileType, mtime string
+			chunkIdx                       int
+			embBlob                        []byte
+			norm                           float64
 		)
-		if err := rows.Scan(&path, &chunkIdx, &embBlob, &norm, &content, &fileType, &projectSlug, &mtime); err != nil {
+		if err := rows.Scan(&path, &chunkIdx, &embBlob, &norm, &content, &fileType, &mtime); err != nil {
 			return nil, err
 		}
 
@@ -195,13 +204,12 @@ func (ix *Indexer) SearchVector(ctx context.Context, queryVec []float32, opts Se
 		}
 
 		results = append(results, SearchResult{
-			Path:        path,
-			ChunkIndex:  chunkIdx,
-			Snippet:     snippet,
-			Score:       score,
-			FileType:    fileType,
-			ProjectSlug: projectSlug,
-			Mtime:       mtime,
+			Path:       path,
+			ChunkIndex: chunkIdx,
+			Snippet:    snippet,
+			Score:      score,
+			FileType:   fileType,
+			Mtime:      mtime,
 		})
 	}
 	if err := rows.Err(); err != nil {

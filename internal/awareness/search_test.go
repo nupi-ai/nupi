@@ -5,32 +5,39 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
 )
+
+// searchTestDirs lists subdirectories created for search test fixtures.
+var searchTestDirs = []string{"conversations", "journals", "topics", "projects/nupi/journals", "projects/nupi/conversations"}
+
+// searchTestFiles defines the shared test data for search-related tests.
+// Used by both setupSearchIndex (FTS-only) and setupSearchIndexWithEmbeddings (FTS+vector).
+var searchTestFiles = map[string]string{
+	"conversations/2026-02-19.md":               "## Morning\n\nReviewed database migration plan.\n\n## Afternoon\n\nImplemented FTS5 indexer for memory search.",
+	"conversations/2026-02-18.md":               "## Work\n\nSet up awareness service scaffold.",
+	"journals/2026-02-19.md":                    "## Session Log\n\nGlobal journal entry about memory indexing progress.",
+	"topics/golang.md":                          "## Go Tips\n\nUse context for cancellation. Use t.TempDir for tests. Memory management with Go GC.",
+	"topics/databases.md":                       "## SQLite\n\nFTS5 provides full-text search. Use WAL mode for concurrency.\n\n## PostgreSQL\n\nGood for production workloads.",
+	"projects/nupi/journals/2026-02-19.md":      "## Journal\n\nDiscussed architecture for the awareness memory system.",
+	"projects/nupi/conversations/2026-02-19.md": "## Nupi Conversation\n\nWorked on archival memory indexer implementation.",
+}
 
 func setupSearchIndex(t *testing.T) (*Indexer, context.Context) {
 	t.Helper()
 	dir := t.TempDir()
 
 	// Create directory structure with files.
-	for _, sub := range []string{"conversations", "topics", "projects/nupi/journals", "projects/nupi/conversations"} {
+	for _, sub := range searchTestDirs {
 		if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	files := map[string]string{
-		"conversations/2026-02-19.md":                   "## Morning\n\nReviewed database migration plan.\n\n## Afternoon\n\nImplemented FTS5 indexer for memory search.",
-		"conversations/2026-02-18.md":                   "## Work\n\nSet up awareness service scaffold.",
-		"topics/golang.md":                              "## Go Tips\n\nUse context for cancellation. Use t.TempDir for tests.",
-		"topics/databases.md":                           "## SQLite\n\nFTS5 provides full-text search. Use WAL mode for concurrency.\n\n## PostgreSQL\n\nGood for production workloads.",
-		"projects/nupi/journals/2026-02-19.md":          "## Journal\n\nDiscussed architecture for the awareness memory system.",
-		"projects/nupi/conversations/2026-02-19.md":     "## Nupi Conversation\n\nWorked on archival memory indexer implementation.",
-	}
-
-	for relPath, content := range files {
+	for relPath, content := range searchTestFiles {
 		absPath := filepath.Join(dir, relPath)
 		if err := os.WriteFile(absPath, []byte(content), 0o600); err != nil {
 			t.Fatal(err)
@@ -101,92 +108,129 @@ func TestSearchFTSBM25Ordering(t *testing.T) {
 	}
 }
 
-func TestSearchFTSScopeProject(t *testing.T) {
+func TestSearchFTSSourceConversations(t *testing.T) {
 	ix, ctx := setupSearchIndex(t)
 
 	results, err := ix.SearchFTS(ctx, SearchOptions{
-		Query:       "awareness",
-		Scope:       "project",
-		ProjectSlug: "nupi",
+		Query:  "awareness",
+		Source: "conversations",
 	})
 	if err != nil {
 		t.Fatalf("SearchFTS failed: %v", err)
 	}
 
 	if len(results) == 0 {
-		t.Fatal("expected at least 1 result for project scope 'nupi'")
+		t.Fatal("expected at least 1 result for source=conversations")
 	}
 
 	for _, r := range results {
-		if r.ProjectSlug != "nupi" {
-			t.Errorf("expected all results to have project_slug 'nupi', got %q in %s", r.ProjectSlug, r.Path)
+		if r.FileType != "conversations" {
+			t.Errorf("expected file_type 'conversations', got %q in %s", r.FileType, r.Path)
 		}
 	}
 }
 
-func TestSearchFTSScopeProjectEmptySlug(t *testing.T) {
+func TestSearchFTSSourceJournals(t *testing.T) {
 	ix, ctx := setupSearchIndex(t)
 
 	results, err := ix.SearchFTS(ctx, SearchOptions{
-		Query: "awareness",
-		Scope: "project",
-		// No ProjectSlug — should return empty results.
-	})
-	if err != nil {
-		t.Fatalf("SearchFTS failed: %v", err)
-	}
-
-	if len(results) != 0 {
-		t.Errorf("expected 0 results for project scope with empty slug, got %d", len(results))
-	}
-}
-
-func TestSearchFTSScopeGlobal(t *testing.T) {
-	ix, ctx := setupSearchIndex(t)
-
-	results, err := ix.SearchFTS(ctx, SearchOptions{
-		Query: "awareness",
-		Scope: "global",
+		Query:  "architecture",
+		Source: "journals",
 	})
 	if err != nil {
 		t.Fatalf("SearchFTS failed: %v", err)
 	}
 
 	if len(results) == 0 {
-		t.Fatal("expected at least 1 global result for 'awareness'")
+		t.Fatal("expected at least 1 result for source=journals")
 	}
 
 	for _, r := range results {
-		if r.ProjectSlug != "" {
-			t.Errorf("expected all global results to have empty project_slug, got %q in %s", r.ProjectSlug, r.Path)
+		if r.FileType != "journals" {
+			t.Errorf("expected file_type 'journals', got %q in %s", r.FileType, r.Path)
 		}
 	}
 }
 
-func TestSearchFTSScopeAll(t *testing.T) {
+func TestSearchFTSSourceTopics(t *testing.T) {
 	ix, ctx := setupSearchIndex(t)
 
 	results, err := ix.SearchFTS(ctx, SearchOptions{
-		Query: "awareness",
-		Scope: "all",
+		Query:  "Go Tips",
+		Source: "topics",
 	})
 	if err != nil {
 		t.Fatalf("SearchFTS failed: %v", err)
 	}
 
-	// Should include both global and project results.
-	hasGlobal := false
-	hasProject := false
-	for _, r := range results {
-		if r.ProjectSlug == "" {
-			hasGlobal = true
-		} else {
-			hasProject = true
-		}
+	if len(results) == 0 {
+		t.Fatal("expected at least 1 result for source=topics")
 	}
 
-	if !hasGlobal || !hasProject {
-		t.Errorf("scope=all should return both global and project results, global=%v project=%v", hasGlobal, hasProject)
+	for _, r := range results {
+		if r.FileType != "topic" {
+			t.Errorf("expected file_type 'topic' (singular in DB), got %q in %s", r.FileType, r.Path)
+		}
+	}
+}
+
+func TestSearchFTSSourceAll(t *testing.T) {
+	ix, ctx := setupSearchIndex(t)
+
+	// "memory" appears in conversations, topics (golang.md), and journals.
+	results, err := ix.SearchFTS(ctx, SearchOptions{
+		Query:  "memory",
+		Source: "all",
+	})
+	if err != nil {
+		t.Fatalf("SearchFTS failed: %v", err)
+	}
+
+	// Should include results from all three file types.
+	fileTypes := make(map[string]bool)
+	for _, r := range results {
+		fileTypes[r.FileType] = true
+	}
+
+	if len(fileTypes) < 3 {
+		t.Errorf("source=all should return results from all file types (conversations, journals, topic), got %v", fileTypes)
+	}
+}
+
+func TestSearchFTSSourceEmpty(t *testing.T) {
+	ix, ctx := setupSearchIndex(t)
+
+	// Empty source defaults to "all". Use same query as TestSearchFTSSourceAll.
+	results, err := ix.SearchFTS(ctx, SearchOptions{
+		Query: "memory",
+	})
+	if err != nil {
+		t.Fatalf("SearchFTS failed: %v", err)
+	}
+
+	// Should return results from all file types (same as source=all).
+	fileTypes := make(map[string]bool)
+	for _, r := range results {
+		fileTypes[r.FileType] = true
+	}
+
+	if len(fileTypes) < 3 {
+		t.Errorf("empty source should default to all, got file types %v", fileTypes)
+	}
+}
+
+func TestSearchFTSInvalidSource(t *testing.T) {
+	ix, ctx := setupSearchIndex(t)
+
+	_, err := ix.SearchFTS(ctx, SearchOptions{
+		Query:  "test",
+		Source: "invalid",
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid source")
+	}
+	if !strings.Contains(err.Error(), "invalid source") {
+		t.Fatalf("expected 'invalid source' error, got %q", err.Error())
 	}
 }
 
@@ -381,20 +425,13 @@ func setupSearchIndexWithEmbeddings(t *testing.T) (*Indexer, context.Context) {
 	t.Helper()
 	dir := t.TempDir()
 
-	for _, sub := range []string{"conversations", "topics", "projects/nupi/journals"} {
+	for _, sub := range searchTestDirs {
 		if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	files := map[string]string{
-		"conversations/2026-02-19.md":                  "## Morning\n\nReviewed database migration plan.\n\n## Afternoon\n\nImplemented FTS5 indexer for memory search.",
-		"topics/golang.md":                             "## Go Tips\n\nUse context for cancellation. Use t.TempDir for tests.",
-		"topics/databases.md":                          "## SQLite\n\nFTS5 provides full-text search. Use WAL mode for concurrency.",
-		"projects/nupi/journals/2026-02-19.md":         "## Journal\n\nDiscussed architecture for the awareness memory system.",
-	}
-
-	for relPath, content := range files {
+	for relPath, content := range searchTestFiles {
 		absPath := filepath.Join(dir, relPath)
 		if err := os.WriteFile(absPath, []byte(content), 0o600); err != nil {
 			t.Fatal(err)
@@ -475,37 +512,150 @@ func TestSearchVectorMaxResults(t *testing.T) {
 	}
 }
 
-func TestSearchVectorScopeProject(t *testing.T) {
+func TestSearchVectorSourceConversations(t *testing.T) {
 	ix, ctx := setupSearchIndexWithEmbeddings(t)
 
 	queryVec := []float32{0.2, 0.1, 0.5}
 	results, err := ix.SearchVector(ctx, queryVec, SearchOptions{
-		Scope:       "project",
-		ProjectSlug: "nupi",
+		Source: "conversations",
+	})
+	if err != nil {
+		t.Fatalf("SearchVector: %v", err)
+	}
+
+	if len(results) == 0 {
+		t.Fatal("expected at least 1 result for source=conversations")
+	}
+
+	for _, r := range results {
+		if r.FileType != "conversations" {
+			t.Errorf("expected file_type 'conversations', got %q in %s", r.FileType, r.Path)
+		}
+	}
+}
+
+func TestSearchVectorSourceTopics(t *testing.T) {
+	ix, ctx := setupSearchIndexWithEmbeddings(t)
+
+	queryVec := []float32{0.2, 0.1, 0.5}
+	results, err := ix.SearchVector(ctx, queryVec, SearchOptions{Source: "topics"})
+	if err != nil {
+		t.Fatalf("SearchVector: %v", err)
+	}
+
+	if len(results) == 0 {
+		t.Fatal("expected at least 1 result for source=topics")
+	}
+
+	for _, r := range results {
+		if r.FileType != "topic" {
+			t.Errorf("expected file_type 'topic' for source=topics, got %q in %s", r.FileType, r.Path)
+		}
+	}
+}
+
+func TestSearchVectorSourceJournals(t *testing.T) {
+	ix, ctx := setupSearchIndexWithEmbeddings(t)
+
+	queryVec := []float32{0.2, 0.1, 0.5}
+	results, err := ix.SearchVector(ctx, queryVec, SearchOptions{
+		Source: "journals",
+	})
+	if err != nil {
+		t.Fatalf("SearchVector: %v", err)
+	}
+
+	if len(results) == 0 {
+		t.Fatal("expected at least 1 result for source=journals")
+	}
+
+	for _, r := range results {
+		if r.FileType != "journals" {
+			t.Errorf("expected file_type 'journals', got %q in %s", r.FileType, r.Path)
+		}
+	}
+}
+
+func TestSearchVectorSourceAll(t *testing.T) {
+	ix, ctx := setupSearchIndexWithEmbeddings(t)
+
+	queryVec := []float32{0.2, 0.1, 0.5}
+	results, err := ix.SearchVector(ctx, queryVec, SearchOptions{
+		Source: "all",
+	})
+	if err != nil {
+		t.Fatalf("SearchVector: %v", err)
+	}
+
+	// Should include results from all three file types.
+	fileTypes := make(map[string]bool)
+	for _, r := range results {
+		fileTypes[r.FileType] = true
+	}
+
+	if len(fileTypes) < 3 {
+		t.Errorf("source=all should return results from all file types (conversations, journals, topic), got %v", fileTypes)
+	}
+}
+
+func TestSearchVectorSourceEmpty(t *testing.T) {
+	ix, ctx := setupSearchIndexWithEmbeddings(t)
+
+	// Empty source defaults to "all".
+	queryVec := []float32{0.2, 0.1, 0.5}
+	results, err := ix.SearchVector(ctx, queryVec, SearchOptions{})
+	if err != nil {
+		t.Fatalf("SearchVector: %v", err)
+	}
+
+	// Should return results from all file types (same as source=all).
+	fileTypes := make(map[string]bool)
+	for _, r := range results {
+		fileTypes[r.FileType] = true
+	}
+
+	if len(fileTypes) < 3 {
+		t.Errorf("empty source should default to all, got file types %v", fileTypes)
+	}
+}
+
+func TestSearchVectorInvalidSource(t *testing.T) {
+	ix, ctx := setupSearchIndexWithEmbeddings(t)
+
+	queryVec := []float32{0.2, 0.1, 0.5}
+	_, err := ix.SearchVector(ctx, queryVec, SearchOptions{
+		Source: "topic", // singular — common mistake, should be "topics"
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid source")
+	}
+	if !strings.Contains(err.Error(), "invalid source") {
+		t.Fatalf("expected 'invalid source' error, got %q", err.Error())
+	}
+}
+
+func TestSearchVectorDateAndSourceFilter(t *testing.T) {
+	ix, ctx := setupSearchIndexWithEmbeddings(t)
+
+	// Combine source + date filtering — exercise the multi-condition WHERE clause.
+	now := time.Now().UTC()
+	from := now.Add(-1 * time.Hour).Format(time.RFC3339)
+
+	queryVec := []float32{0.2, 0.1, 0.5}
+	results, err := ix.SearchVector(ctx, queryVec, SearchOptions{
+		Source:   "conversations",
+		DateFrom: from,
 	})
 	if err != nil {
 		t.Fatalf("SearchVector: %v", err)
 	}
 
 	for _, r := range results {
-		if r.ProjectSlug != "nupi" {
-			t.Errorf("expected project_slug 'nupi', got %q in %s", r.ProjectSlug, r.Path)
+		if r.FileType != "conversations" {
+			t.Errorf("expected file_type 'conversations', got %q in %s", r.FileType, r.Path)
 		}
-	}
-}
-
-func TestSearchVectorScopeGlobal(t *testing.T) {
-	ix, ctx := setupSearchIndexWithEmbeddings(t)
-
-	queryVec := []float32{0.2, 0.1, 0.5}
-	results, err := ix.SearchVector(ctx, queryVec, SearchOptions{Scope: "global"})
-	if err != nil {
-		t.Fatalf("SearchVector: %v", err)
-	}
-
-	for _, r := range results {
-		if r.ProjectSlug != "" {
-			t.Errorf("expected empty project_slug for global scope, got %q in %s", r.ProjectSlug, r.Path)
+		if r.Mtime < from {
+			t.Errorf("result mtime %s is before DateFrom %s", r.Mtime, from)
 		}
 	}
 }
@@ -640,39 +790,99 @@ func TestSearchHybridEmptyResults(t *testing.T) {
 	}
 }
 
-func TestSearchHybridScopeFiltering(t *testing.T) {
+func TestSearchHybridSourceFiltering(t *testing.T) {
 	ix, ctx := setupSearchIndexWithEmbeddings(t)
 	queryVec := []float32{0.2, 0.1, 0.5}
 
-	// Project scope.
-	results, err := ix.SearchHybrid(ctx, queryVec, SearchOptions{
-		Query:       "architecture memory",
-		Scope:       "project",
-		ProjectSlug: "nupi",
-		MaxResults:  10,
-	})
-	if err != nil {
-		t.Fatalf("SearchHybrid project scope: %v", err)
-	}
-	for _, r := range results {
-		if r.ProjectSlug != "nupi" {
-			t.Errorf("project scope: expected slug 'nupi', got %q in %s", r.ProjectSlug, r.Path)
+	t.Run("conversations", func(t *testing.T) {
+		results, err := ix.SearchHybrid(ctx, queryVec, SearchOptions{
+			Query:      "database migration",
+			Source:     "conversations",
+			MaxResults: 10,
+		})
+		if err != nil {
+			t.Fatalf("SearchHybrid: %v", err)
 		}
-	}
+		if len(results) == 0 {
+			t.Fatal("expected at least 1 result for source=conversations")
+		}
+		for _, r := range results {
+			if r.FileType != "conversations" {
+				t.Errorf("expected file_type 'conversations', got %q in %s", r.FileType, r.Path)
+			}
+		}
+	})
 
-	// Global scope.
-	results, err = ix.SearchHybrid(ctx, queryVec, SearchOptions{
-		Query:      "database",
-		Scope:      "global",
-		MaxResults: 10,
-	})
-	if err != nil {
-		t.Fatalf("SearchHybrid global scope: %v", err)
-	}
-	for _, r := range results {
-		if r.ProjectSlug != "" {
-			t.Errorf("global scope: expected empty slug, got %q in %s", r.ProjectSlug, r.Path)
+	t.Run("journals", func(t *testing.T) {
+		results, err := ix.SearchHybrid(ctx, queryVec, SearchOptions{
+			Query:      "architecture memory",
+			Source:     "journals",
+			MaxResults: 10,
+		})
+		if err != nil {
+			t.Fatalf("SearchHybrid: %v", err)
 		}
+		if len(results) == 0 {
+			t.Fatal("expected at least 1 result for source=journals")
+		}
+		for _, r := range results {
+			if r.FileType != "journals" {
+				t.Errorf("expected file_type 'journals', got %q in %s", r.FileType, r.Path)
+			}
+		}
+	})
+
+	t.Run("topics", func(t *testing.T) {
+		results, err := ix.SearchHybrid(ctx, queryVec, SearchOptions{
+			Query:      "Go Tips",
+			Source:     "topics",
+			MaxResults: 10,
+		})
+		if err != nil {
+			t.Fatalf("SearchHybrid: %v", err)
+		}
+		if len(results) == 0 {
+			t.Fatal("expected at least 1 result for source=topics")
+		}
+		for _, r := range results {
+			if r.FileType != "topic" {
+				t.Errorf("expected file_type 'topic', got %q in %s", r.FileType, r.Path)
+			}
+		}
+	})
+
+	t.Run("all", func(t *testing.T) {
+		results, err := ix.SearchHybrid(ctx, queryVec, SearchOptions{
+			Query:      "memory",
+			Source:     "all",
+			MaxResults: 20,
+		})
+		if err != nil {
+			t.Fatalf("SearchHybrid: %v", err)
+		}
+		fileTypes := make(map[string]bool)
+		for _, r := range results {
+			fileTypes[r.FileType] = true
+		}
+		if len(fileTypes) < 3 {
+			t.Errorf("should return results from all file types, got %v", fileTypes)
+		}
+	})
+}
+
+func TestSearchHybridInvalidSource(t *testing.T) {
+	ix, ctx := setupSearchIndexWithEmbeddings(t)
+
+	queryVec := []float32{0.2, 0.1, 0.5}
+	_, err := ix.SearchHybrid(ctx, queryVec, SearchOptions{
+		Query:  "test",
+		Source: "invalid",
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid source in SearchHybrid")
+	}
+	if !strings.Contains(err.Error(), "invalid source") {
+		t.Fatalf("expected 'invalid source' error, got %q", err.Error())
 	}
 }
 
