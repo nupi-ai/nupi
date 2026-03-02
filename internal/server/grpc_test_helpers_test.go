@@ -129,42 +129,21 @@ func enableVoiceAdapters(t *testing.T, store ConfigStore) {
 }
 
 type mockConversationStore struct {
-	turns       map[string][]eventbus.ConversationTurn
-	globalTurns []eventbus.ConversationTurn
+	turns []eventbus.ConversationTurn
+	err   error
 }
 
-func (m *mockConversationStore) Context(sessionID string) []eventbus.ConversationTurn {
-	if m.turns == nil {
-		return nil
+func (m *mockConversationStore) Slice(offset, limit int) (int, []eventbus.ConversationTurn, error) {
+	if m.err != nil {
+		return 0, nil, m.err
 	}
-	return m.turns[sessionID]
-}
-
-func (m *mockConversationStore) Slice(sessionID string, offset, limit int) (int, []eventbus.ConversationTurn) {
-	turns := m.Context(sessionID)
-	total := len(turns)
+	total := len(m.turns)
 	if offset >= total {
-		return total, nil
+		return total, nil, nil
 	}
 	end := offset + limit
 	if limit <= 0 || end > total {
 		end = total
 	}
-	return total, turns[offset:end]
-}
-
-func (m *mockConversationStore) GlobalContext() []eventbus.ConversationTurn {
-	return m.globalTurns
-}
-
-func (m *mockConversationStore) GlobalSlice(offset, limit int) (int, []eventbus.ConversationTurn) {
-	total := len(m.globalTurns)
-	if offset >= total {
-		return total, nil
-	}
-	end := offset + limit
-	if limit <= 0 || end > total {
-		end = total
-	}
-	return total, m.globalTurns[offset:end]
+	return total, m.turns[offset:end], nil
 }

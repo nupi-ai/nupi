@@ -95,40 +95,29 @@ func (s *stubSessionManager) AttachToSession(string, pty.OutputSink, bool) error
 func (s *stubSessionManager) DetachFromSession(string, pty.OutputSink) error     { return nil }
 
 func TestSessionsServiceGetConversation(t *testing.T) {
-	skipIfNoPTY(t)
-	apiServer, sessionManager := newTestAPIServer(t)
-
-	opts := pty.StartOptions{
-		Command: "/bin/sh",
-		Args:    []string{"-c", "sleep 1"},
-		Rows:    24,
-		Cols:    80,
-	}
-	sess := createSessionOrSkip(t, sessionManager, opts, false)
-	defer sessionManager.KillSession(sess.ID)
+	apiServer, _ := newTestAPIServer(t)
 
 	now := time.Now().UTC()
 	store := &mockConversationStore{
-		turns: map[string][]eventbus.ConversationTurn{
-			sess.ID: {
-				{Origin: eventbus.OriginUser, Text: "hello", At: now, Meta: map[string]string{"alpha": "1"}},
-				{Origin: eventbus.OriginAI, Text: "hi there", At: now.Add(10 * time.Millisecond), Meta: map[string]string{"beta": "2"}},
-			},
+		turns: []eventbus.ConversationTurn{
+			{Origin: eventbus.OriginUser, Text: "hello", At: now, Meta: map[string]string{"alpha": "1"}},
+			{Origin: eventbus.OriginAI, Text: "hi there", At: now.Add(10 * time.Millisecond), Meta: map[string]string{"beta": "2"}},
 		},
 	}
 	apiServer.SetConversationStore(store)
 
 	service := &sessionsService{api: apiServer}
 
-	resp, err := service.GetConversation(context.Background(), &apiv1.GetConversationRequest{SessionId: sess.ID})
+	resp, err := service.GetConversation(context.Background(), &apiv1.GetConversationRequest{SessionId: "any-session"})
 	if err != nil {
 		t.Fatalf("GetConversation returned error: %v", err)
 	}
 
-	if resp.GetSessionId() != sess.ID {
+	if resp.GetSessionId() != "any-session" {
 		t.Fatalf("unexpected session id %q", resp.GetSessionId())
 	}
-	if resp.GetOffset() != 0 || resp.GetLimit() != 2 || resp.GetTotal() != 2 {
+	// limit=0 in request is capped to conversationMaxPageLimit (500)
+	if resp.GetOffset() != 0 || resp.GetLimit() != 500 || resp.GetTotal() != 2 {
 		t.Fatalf("unexpected pagination metadata: offset=%d limit=%d total=%d", resp.GetOffset(), resp.GetLimit(), resp.GetTotal())
 	}
 	if resp.GetHasMore() {
@@ -152,27 +141,15 @@ func TestSessionsServiceGetConversation(t *testing.T) {
 }
 
 func TestSessionsServiceGetConversationPagination(t *testing.T) {
-	skipIfNoPTY(t)
-	apiServer, sessionManager := newTestAPIServer(t)
-
-	opts := pty.StartOptions{
-		Command: "/bin/sh",
-		Args:    []string{"-c", "sleep 1"},
-		Rows:    24,
-		Cols:    80,
-	}
-	sess := createSessionOrSkip(t, sessionManager, opts, false)
-	defer sessionManager.KillSession(sess.ID)
+	apiServer, _ := newTestAPIServer(t)
 
 	now := time.Now().UTC()
 	store := &mockConversationStore{
-		turns: map[string][]eventbus.ConversationTurn{
-			sess.ID: {
-				{Origin: eventbus.OriginUser, Text: "A", At: now},
-				{Origin: eventbus.OriginAI, Text: "B", At: now.Add(10 * time.Millisecond)},
-				{Origin: eventbus.OriginUser, Text: "C", At: now.Add(20 * time.Millisecond)},
-				{Origin: eventbus.OriginAI, Text: "D", At: now.Add(30 * time.Millisecond)},
-			},
+		turns: []eventbus.ConversationTurn{
+			{Origin: eventbus.OriginUser, Text: "A", At: now},
+			{Origin: eventbus.OriginAI, Text: "B", At: now.Add(10 * time.Millisecond)},
+			{Origin: eventbus.OriginUser, Text: "C", At: now.Add(20 * time.Millisecond)},
+			{Origin: eventbus.OriginAI, Text: "D", At: now.Add(30 * time.Millisecond)},
 		},
 	}
 	apiServer.SetConversationStore(store)
@@ -180,7 +157,7 @@ func TestSessionsServiceGetConversationPagination(t *testing.T) {
 	service := &sessionsService{api: apiServer}
 
 	resp, err := service.GetConversation(context.Background(), &apiv1.GetConversationRequest{
-		SessionId: sess.ID,
+		SessionId: "any-session",
 		Offset:    1,
 		Limit:     2,
 	})
@@ -210,7 +187,7 @@ func TestSessionsServiceGetGlobalConversation(t *testing.T) {
 
 	now := time.Now().UTC()
 	store := &mockConversationStore{
-		globalTurns: []eventbus.ConversationTurn{
+		turns: []eventbus.ConversationTurn{
 			{Origin: eventbus.OriginUser, Text: "global hello", At: now, Meta: map[string]string{"alpha": "1"}},
 			{Origin: eventbus.OriginAI, Text: "global reply", At: now.Add(10 * time.Millisecond), Meta: map[string]string{"beta": "2"}},
 		},
@@ -224,7 +201,8 @@ func TestSessionsServiceGetGlobalConversation(t *testing.T) {
 		t.Fatalf("GetGlobalConversation returned error: %v", err)
 	}
 
-	if resp.GetOffset() != 0 || resp.GetLimit() != 2 || resp.GetTotal() != 2 {
+	// limit=0 in request is capped to conversationMaxPageLimit (500)
+	if resp.GetOffset() != 0 || resp.GetLimit() != 500 || resp.GetTotal() != 2 {
 		t.Fatalf("unexpected pagination metadata: offset=%d limit=%d total=%d", resp.GetOffset(), resp.GetLimit(), resp.GetTotal())
 	}
 	if resp.GetHasMore() {
@@ -252,7 +230,7 @@ func TestSessionsServiceGetGlobalConversationPagination(t *testing.T) {
 
 	now := time.Now().UTC()
 	store := &mockConversationStore{
-		globalTurns: []eventbus.ConversationTurn{
+		turns: []eventbus.ConversationTurn{
 			{Origin: eventbus.OriginUser, Text: "A", At: now},
 			{Origin: eventbus.OriginAI, Text: "B", At: now.Add(10 * time.Millisecond)},
 			{Origin: eventbus.OriginUser, Text: "C", At: now.Add(20 * time.Millisecond)},
@@ -321,6 +299,84 @@ func TestSessionsServiceGetGlobalConversationNoService(t *testing.T) {
 	}
 	if status.Code(err) != codes.Unavailable {
 		t.Fatalf("expected codes.Unavailable, got %v", status.Code(err))
+	}
+}
+
+func TestSessionsServiceGetConversationNoService(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+	// conversation store is nil by default
+
+	service := &sessionsService{api: apiServer}
+
+	_, err := service.GetConversation(context.Background(), &apiv1.GetConversationRequest{SessionId: "any"})
+	if err == nil {
+		t.Fatalf("expected error when conversation service unavailable")
+	}
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("expected codes.Unavailable, got %v", status.Code(err))
+	}
+}
+
+func TestSessionsServiceGetConversationSliceError(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+
+	store := &mockConversationStore{err: fmt.Errorf("disk I/O error")}
+	apiServer.SetConversationStore(store)
+
+	service := &sessionsService{api: apiServer}
+
+	_, err := service.GetConversation(context.Background(), &apiv1.GetConversationRequest{SessionId: "any"})
+	if err == nil {
+		t.Fatalf("expected error when Slice returns error")
+	}
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("expected codes.Internal, got %v", status.Code(err))
+	}
+}
+
+func TestSessionsServiceGetGlobalConversationSliceError(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+
+	store := &mockConversationStore{err: fmt.Errorf("disk I/O error")}
+	apiServer.SetConversationStore(store)
+
+	service := &sessionsService{api: apiServer}
+
+	_, err := service.GetGlobalConversation(context.Background(), &apiv1.GetGlobalConversationRequest{})
+	if err == nil {
+		t.Fatalf("expected error when Slice returns error")
+	}
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("expected codes.Internal, got %v", status.Code(err))
+	}
+}
+
+// Note: Proto Offset/Limit fields are uint32 — negative values cannot reach
+// the handler. The limit<0 / offset<0 checks in sliceConversation are
+// defense-in-depth and untestable through the proto API.
+
+func TestSessionsServiceGetConversationLimitCappedAt500(t *testing.T) {
+	apiServer, _ := newTestAPIServer(t)
+
+	store := &mockConversationStore{
+		turns: []eventbus.ConversationTurn{
+			{Origin: eventbus.OriginUser, Text: "hello"},
+		},
+	}
+	apiServer.SetConversationStore(store)
+
+	service := &sessionsService{api: apiServer}
+
+	resp, err := service.GetConversation(context.Background(), &apiv1.GetConversationRequest{
+		SessionId: "any",
+		Limit:     0,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// limit=0 is capped to conversationMaxPageLimit (500)
+	if resp.GetLimit() != 500 {
+		t.Fatalf("expected limit=500 (capped), got %d", resp.GetLimit())
 	}
 }
 

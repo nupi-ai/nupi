@@ -38,10 +38,7 @@ type RuntimeInfoProvider interface {
 
 // ConversationStore exposes a readonly view of conversation history.
 type ConversationStore interface {
-	Context(sessionID string) []eventbus.ConversationTurn
-	Slice(sessionID string, offset, limit int) (int, []eventbus.ConversationTurn)
-	GlobalContext() []eventbus.ConversationTurn
-	GlobalSlice(offset, limit int) (int, []eventbus.ConversationTurn)
+	Slice(offset, limit int) (int, []eventbus.ConversationTurn, error)
 }
 
 type tokenRole string

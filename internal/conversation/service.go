@@ -27,19 +27,11 @@ func WithDetachTTL(ttl time.Duration) Option {
 	}
 }
 
-// WithGlobalStore enables global conversation history for sessionless messages.
-func WithGlobalStore(store *GlobalStore) Option {
-	return func(s *Service) {
-		s.globalStore = store
-	}
-}
-
 // Service maintains conversation context and emits prompts for AI adapters.
 type Service struct {
 	bus *eventbus.Bus
 
-	detachTTL   time.Duration
-	globalStore *GlobalStore
+	detachTTL time.Duration
 
 	mu        sync.RWMutex
 	detach    map[string]*time.Timer
@@ -221,15 +213,11 @@ func (s *Service) handlePipelineMessage(ctx context.Context, ts time.Time, msg e
 		Meta:   meta.Result(),
 	}
 
-	// Handle sessionless messages via GlobalStore
+	// Handle sessionless messages — publish turn and prompt directly.
 	if msg.SessionID == "" {
-		if s.globalStore != nil {
-			contextSnapshot := s.globalStore.GetContext()
-			s.globalStore.AddTurn(turn)
-			s.publishTurn(ctx, "", turn)
-			if msg.Origin == eventbus.OriginUser {
-				s.publishPrompt(ctx, "", contextSnapshot, turn)
-			}
+		s.publishTurn(ctx, "", turn)
+		if msg.Origin == eventbus.OriginUser {
+			s.publishPrompt(ctx, "", turn)
 		}
 		return
 	}
@@ -252,7 +240,7 @@ func (s *Service) handlePipelineMessage(ctx context.Context, ts time.Time, msg e
 	s.publishTurn(ctx, msg.SessionID, turn)
 
 	if shouldTriggerAI {
-		s.publishPrompt(ctx, msg.SessionID, nil, turn)
+		s.publishPrompt(ctx, msg.SessionID, turn)
 	}
 }
 
@@ -327,9 +315,7 @@ func (s *Service) publishTurn(ctx context.Context, sessionID string, turn eventb
 }
 
 // publishPrompt builds and publishes a ConversationPromptEvent.
-// ctxTurns is only populated for sessionless messages (GlobalStore context snapshot);
-// for session messages it is always nil (file-backed context deferred to Epic 21).
-func (s *Service) publishPrompt(ctx context.Context, sessionID string, ctxTurns []eventbus.ConversationTurn, newTurn eventbus.ConversationTurn) {
+func (s *Service) publishPrompt(ctx context.Context, sessionID string, newTurn eventbus.ConversationTurn) {
 	if s.bus == nil {
 		return
 	}
@@ -470,34 +456,6 @@ func (s *Service) cancelDetachCleanup(sessionID string) {
 	s.mu.Unlock()
 }
 
-// Context returns a stub — RAM history has been removed. Returns nil.
-// The file-backed implementation will be provided by Conversation Log Service (Epic 21).
-func (s *Service) Context(sessionID string) []eventbus.ConversationTurn {
-	return nil
-}
-
-// Slice returns a stub — RAM history has been removed. Returns (0, nil).
-// The file-backed implementation will be provided by Conversation Log Service (Epic 21).
-func (s *Service) Slice(sessionID string, offset, limit int) (int, []eventbus.ConversationTurn) {
-	return 0, nil
-}
-
-// GlobalContext returns a snapshot of the global (sessionless) conversation turns.
-func (s *Service) GlobalContext() []eventbus.ConversationTurn {
-	if s.globalStore == nil {
-		return nil
-	}
-	return s.globalStore.GetContext()
-}
-
-// GlobalSlice returns a paginated view over the global conversation turns.
-func (s *Service) GlobalSlice(offset, limit int) (int, []eventbus.ConversationTurn) {
-	if s.globalStore == nil {
-		return 0, nil
-	}
-	return s.globalStore.Slice(offset, limit)
-}
-
 func (s *Service) handleReplyMessage(ctx context.Context, ts time.Time, msg eventbus.ConversationReplyEvent) {
 	if ts.IsZero() {
 		ts = time.Now().UTC()
@@ -537,12 +495,9 @@ func (s *Service) handleReplyMessage(ctx context.Context, ts time.Time, msg even
 	}
 	turn.Meta = meta.Result()
 
-	// Handle sessionless replies via GlobalStore
+	// Handle sessionless replies — publish turn directly.
 	if msg.SessionID == "" {
-		if s.globalStore != nil {
-			s.globalStore.AddTurn(turn)
-			s.publishTurn(ctx, "", turn)
-		}
+		s.publishTurn(ctx, "", turn)
 		return
 	}
 

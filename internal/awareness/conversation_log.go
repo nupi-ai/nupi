@@ -193,6 +193,115 @@ func (s *ConversationLogService) Shutdown(ctx context.Context) error {
 	return waitErr
 }
 
+// Slice returns a paginated view of conversation turns parsed from the raw tail.
+// Implements server.ConversationStore. Safe for concurrent use.
+//
+// Uses SliceRawTail to atomically read total count and entries in a single lock,
+// preventing TOCTOU races during compaction. Because AppendRaw and parseFile
+// never store empty entries, total == number of parseable turns.
+//
+// Note: returned turns have nil Meta fields (raw tail stores plain text only)
+// and their At dates use today's date + stored HH:MM:SS (see parseOneTurn doc).
+func (s *ConversationLogService) Slice(offset, limit int) (int, []eventbus.ConversationTurn, error) {
+	rl := s.rl.Load()
+	if rl == nil {
+		return 0, nil, nil
+	}
+
+	total, entries := rl.SliceRawTail(offset, limit)
+
+	today := s.nowFunc().Format("2006-01-02")
+	turns := make([]eventbus.ConversationTurn, 0, len(entries))
+	for _, entry := range entries {
+		turn, ok := parseOneTurn(entry, today)
+		if ok {
+			turns = append(turns, turn)
+		}
+	}
+
+	return total, turns, nil
+}
+
+// parseOneTurn parses a single raw tail entry "HH:MM:SS [role] text" into a ConversationTurn.
+// The datePrefix (format "2006-01-02") is combined with the parsed HH:MM:SS to reconstruct
+// the full timestamp. Since raw entries only store time (no date), the caller provides the
+// date — typically today's date from nowFunc(). This means entries from previous days that
+// haven't been compacted will appear with the query date, not their original date.
+// The returned turn has a nil Meta field because raw tail entries store only plain text;
+// per-turn metadata annotations are not persisted through the rolling log format.
+func parseOneTurn(entry, datePrefix string) (eventbus.ConversationTurn, bool) {
+	entry = strings.TrimSpace(entry)
+	if entry == "" {
+		return eventbus.ConversationTurn{}, false
+	}
+
+	// Expected format: "HH:MM:SS [role] text"
+	// Minimum valid: "00:00:00 [ai] x" = 15 bytes (shortest real role is "ai")
+	if len(entry) < 15 {
+		return eventbus.ConversationTurn{
+			Origin: eventbus.OriginSystem,
+			Text:   entry,
+		}, true
+	}
+
+	// Parse time: first 8 chars must be HH:MM:SS
+	timePart := entry[:8]
+	ts, err := time.Parse("15:04:05", timePart)
+	if err != nil {
+		return eventbus.ConversationTurn{
+			Origin: eventbus.OriginSystem,
+			Text:   entry,
+		}, true
+	}
+
+	rest := entry[8:]
+	if len(rest) < 2 || rest[0] != ' ' || rest[1] != '[' {
+		return eventbus.ConversationTurn{
+			Origin: eventbus.OriginSystem,
+			Text:   entry,
+		}, true
+	}
+
+	closeBracket := strings.Index(rest, "] ")
+	if closeBracket < 0 {
+		return eventbus.ConversationTurn{
+			Origin: eventbus.OriginSystem,
+			Text:   entry,
+		}, true
+	}
+
+	role := rest[2:closeBracket]
+	text := rest[closeBracket+2:]
+
+	// Reconstruct timestamp: today's date + parsed time
+	fullTS, _ := time.Parse("2006-01-02 15:04:05", datePrefix+" "+timePart)
+	if fullTS.IsZero() {
+		fullTS = ts
+	}
+
+	return eventbus.ConversationTurn{
+		Origin: roleToOrigin(role),
+		Text:   text,
+		At:     fullTS,
+	}, true
+}
+
+// roleToOrigin maps a role string from conversation log entries back to ContentOrigin.
+func roleToOrigin(role string) eventbus.ContentOrigin {
+	switch role {
+	case "user":
+		return eventbus.OriginUser
+	case "ai":
+		return eventbus.OriginAI
+	case "tool":
+		return eventbus.OriginTool
+	case "system":
+		return eventbus.OriginSystem
+	default:
+		return eventbus.OriginSystem
+	}
+}
+
 // GetContext returns summaries and raw tail from the conversation rolling log.
 // Implements intentrouter.ConversationLogProvider. Safe for concurrent use —
 // rl is accessed via atomic.Pointer to avoid data races with Shutdown().

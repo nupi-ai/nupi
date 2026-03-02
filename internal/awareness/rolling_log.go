@@ -619,6 +619,34 @@ func (r *RollingLog) recalcRawSize() {
 	r.rawTailByteCount = total
 }
 
+// SliceRawTail returns the total raw tail count and a copy of entries in the
+// [offset, offset+limit) range in a single lock acquisition. This eliminates
+// the TOCTOU race that would occur if RawTailLen and RawTailRange were called
+// separately (compaction could modify rawTail between the two calls).
+// A limit <= 0 means no limit (return all from offset).
+func (r *RollingLog) SliceRawTail(offset, limit int) (total int, entries []string) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	total = len(r.rawTail)
+
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= total {
+		return total, nil
+	}
+
+	end := total
+	if limit > 0 && offset+limit < end {
+		end = offset + limit
+	}
+
+	result := make([]string, end-offset)
+	copy(result, r.rawTail[offset:end])
+	return total, result
+}
+
 // containsFormatDelimiters checks if text contains any of the XML tag delimiters
 // used in the file persistence format. Embedded delimiters would cause silent data
 // loss or truncation on reload.

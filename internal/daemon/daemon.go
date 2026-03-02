@@ -61,7 +61,6 @@ type Daemon struct {
 	lifecycle         *daemonruntime.Lifecycle
 	instancePaths     config.InstancePaths
 	eventBus          *eventbus.Bus
-	globalStore       *conversation.GlobalStore
 	ctx               context.Context
 	cancel            context.CancelFunc
 	errMu             sync.Mutex
@@ -177,10 +176,7 @@ func New(opts Options) (*Daemon, error) {
 	audioBargeService := barge.New(bus)
 	audioEgressService := egress.New(bus, egress.WithFactory(egress.NewAdapterFactory(opts.Store, adaptersService)))
 
-	// Global conversation store for sessionless ("bezpańskie") messages
-	globalConversationStore := conversation.NewGlobalStore()
-	conversationService := conversation.NewService(bus, conversation.WithGlobalStore(globalConversationStore))
-	apiServer.SetConversationStore(conversationService)
+	conversationService := conversation.NewService(bus)
 	apiServer.SetAdaptersController(adaptersService)
 	apiServer.SetAudioIngress(runtimebridge.AudioIngressProvider(audioIngressService))
 	apiServer.SetAudioEgress(runtimebridge.AudioEgressController(audioEgressService))
@@ -258,6 +254,8 @@ func New(opts Options) (*Daemon, error) {
 
 	// Conversation log service — global conversation rolling log with compaction and archival.
 	convLogService := awareness.NewConversationLogService(bus, filepath.Join(paths.Home, "awareness", "memory", "conversations"))
+
+	apiServer.SetConversationStore(convLogService)
 
 	if err := host.Register("conversation-log", func(ctx context.Context) (daemonruntime.Service, error) {
 		return convLogService, nil
@@ -358,7 +356,6 @@ func New(opts Options) (*Daemon, error) {
 		lifecycle:       daemonruntime.NewLifecycle(),
 		instancePaths:   paths,
 		eventBus:        bus,
-		globalStore:     globalConversationStore,
 		commandExecutor: commandExecutor,
 	}
 
@@ -398,10 +395,6 @@ func (d *Daemon) Start() error {
 
 	d.runtimeInfo.SetStartTime(time.Now())
 	d.ctx, d.cancel = context.WithCancel(context.Background())
-	// Start global conversation store periodic pruning
-	if d.globalStore != nil {
-		d.globalStore.Start()
-	}
 
 	if err := d.serviceHost.Start(d.ctx); err != nil {
 		if d.cancel != nil {
@@ -496,9 +489,6 @@ func (d *Daemon) Shutdown() error {
 	}
 	if d.commandExecutor != nil {
 		d.commandExecutor.Stop()
-	}
-	if d.globalStore != nil {
-		d.globalStore.Stop()
 	}
 	if d.eventBus != nil {
 		d.eventBus.Shutdown()

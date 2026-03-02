@@ -103,34 +103,6 @@ func TestConversationStoresReplies_PublishesTurnEvent(t *testing.T) {
 		}
 	}
 
-	// Context() now returns nil (RAM history removed)
-	if ctx := svc.Context("reply"); ctx != nil {
-		t.Fatalf("expected nil context, got %v", ctx)
-	}
-}
-
-func TestConversationContextReturnsNil(t *testing.T) {
-	t.Parallel()
-	bus := eventbus.New()
-	svc := NewService(bus)
-
-	if ctx := svc.Context("anything"); ctx != nil {
-		t.Fatalf("expected nil, got %v", ctx)
-	}
-}
-
-func TestConversationSliceReturnsEmpty(t *testing.T) {
-	t.Parallel()
-	bus := eventbus.New()
-	svc := NewService(bus)
-
-	total, slice := svc.Slice("anything", 0, 10)
-	if total != 0 {
-		t.Fatalf("expected total=0, got %d", total)
-	}
-	if slice != nil {
-		t.Fatalf("expected nil slice, got %v", slice)
-	}
 }
 
 func TestConversationMetadataLimits(t *testing.T) {
@@ -170,8 +142,7 @@ func TestConversationMetadataLimits(t *testing.T) {
 
 func TestConversationSessionlessMessage(t *testing.T) {
 	bus := eventbus.New()
-	globalStore := NewGlobalStore()
-	svc := NewService(bus, WithGlobalStore(globalStore))
+	svc := NewService(bus)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -199,22 +170,11 @@ func TestConversationSessionlessMessage(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timeout waiting for sessionless turn event")
 	}
-
-	// Should also be stored in GlobalStore
-	if globalStore.Len() != 1 {
-		t.Fatalf("expected 1 turn in GlobalStore, got %d", globalStore.Len())
-	}
-
-	ctx2 := globalStore.GetContext()
-	if ctx2[0].Text != "hello world" {
-		t.Fatalf("unexpected text in GlobalStore: %s", ctx2[0].Text)
-	}
 }
 
 func TestConversationSessionlessPrompt(t *testing.T) {
 	bus := eventbus.New()
-	globalStore := NewGlobalStore()
-	svc := NewService(bus, WithGlobalStore(globalStore))
+	svc := NewService(bus)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -233,7 +193,7 @@ func TestConversationSessionlessPrompt(t *testing.T) {
 	// Add context first
 	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{SessionID: "", Origin: eventbus.OriginTool, Text: "context message"})
 
-	// Wait for tool turn event — proves context message was processed and added to GlobalStore
+	// Wait for tool turn event
 	select {
 	case <-turnSub.C():
 	case <-time.After(time.Second):
@@ -259,8 +219,7 @@ func TestConversationSessionlessPrompt(t *testing.T) {
 
 func TestConversationSessionlessReply(t *testing.T) {
 	bus := eventbus.New()
-	globalStore := NewGlobalStore()
-	svc := NewService(bus, WithGlobalStore(globalStore))
+	svc := NewService(bus)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -276,7 +235,7 @@ func TestConversationSessionlessReply(t *testing.T) {
 	// Send user message
 	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{SessionID: "", Origin: eventbus.OriginUser, Text: "what sessions?"})
 
-	// Wait for user turn event — proves conversation service processed the message
+	// Wait for user turn event
 	select {
 	case env := <-turnSub.C():
 		if env.Payload.Turn.Origin != eventbus.OriginUser || env.Payload.Turn.Text != "what sessions?" {
@@ -286,7 +245,7 @@ func TestConversationSessionlessReply(t *testing.T) {
 		t.Fatal("timeout waiting for user turn event")
 	}
 
-	// Send AI reply (user message guaranteed in GlobalStore)
+	// Send AI reply
 	eventbus.Publish(context.Background(), bus, eventbus.Conversation.Reply, eventbus.SourceConversation, eventbus.ConversationReplyEvent{SessionID: "", Text: "You have no active sessions."})
 
 	// Wait for AI turn event
@@ -301,87 +260,10 @@ func TestConversationSessionlessReply(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timeout waiting for AI turn event")
 	}
-
-	// Verify GlobalStore also has both turns
-	ctx2 := globalStore.GetContext()
-	if len(ctx2) < 2 {
-		t.Fatalf("expected at least 2 turns in GlobalStore, got %d", len(ctx2))
-	}
-	if ctx2[1].Origin != eventbus.OriginAI {
-		t.Fatalf("expected AI origin, got %s", ctx2[1].Origin)
-	}
-	if ctx2[1].Text != "You have no active sessions." {
-		t.Fatalf("unexpected reply text: %s", ctx2[1].Text)
-	}
 }
 
-func TestConversationGlobalContext(t *testing.T) {
-	t.Parallel()
+func TestConversationSessionlessPublishesPrompt(t *testing.T) {
 	bus := eventbus.New()
-	globalStore := NewGlobalStore()
-	svc := NewService(bus, WithGlobalStore(globalStore))
-
-	// Add turns directly to globalStore
-	globalStore.AddTurn(eventbus.ConversationTurn{Origin: eventbus.OriginUser, Text: "one"})
-	globalStore.AddTurn(eventbus.ConversationTurn{Origin: eventbus.OriginAI, Text: "two"})
-
-	// GlobalContext should return the same
-	ctx := svc.GlobalContext()
-	if len(ctx) != 2 {
-		t.Fatalf("expected 2 turns, got %d", len(ctx))
-	}
-	if ctx[0].Text != "one" || ctx[1].Text != "two" {
-		t.Fatalf("unexpected context: %+v", ctx)
-	}
-}
-
-func TestConversationGlobalSlice(t *testing.T) {
-	t.Parallel()
-	bus := eventbus.New()
-	globalStore := NewGlobalStore()
-	svc := NewService(bus, WithGlobalStore(globalStore))
-
-	// Add turns
-	for i := 0; i < 5; i++ {
-		globalStore.AddTurn(eventbus.ConversationTurn{
-			Origin: eventbus.OriginUser,
-			Text:   string(rune('0' + i)),
-		})
-	}
-
-	// Test GlobalSlice
-	total, slice := svc.GlobalSlice(1, 2)
-	if total != 5 {
-		t.Fatalf("expected total=5, got %d", total)
-	}
-	if len(slice) != 2 {
-		t.Fatalf("expected 2 items, got %d", len(slice))
-	}
-	if slice[0].Text != "1" || slice[1].Text != "2" {
-		t.Fatalf("unexpected slice: %+v", slice)
-	}
-}
-
-func TestConversationGlobalContextNilStore(t *testing.T) {
-	t.Parallel()
-	bus := eventbus.New()
-	// No globalStore configured
-	svc := NewService(bus)
-
-	ctx := svc.GlobalContext()
-	if ctx != nil {
-		t.Fatalf("expected nil context when no globalStore, got %v", ctx)
-	}
-
-	total, slice := svc.GlobalSlice(0, 10)
-	if total != 0 || slice != nil {
-		t.Fatalf("expected 0/nil when no globalStore, got %d/%v", total, slice)
-	}
-}
-
-func TestConversationSessionlessIgnoredWithoutGlobalStore(t *testing.T) {
-	bus := eventbus.New()
-	// No globalStore configured
 	svc := NewService(bus)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -395,14 +277,16 @@ func TestConversationSessionlessIgnoredWithoutGlobalStore(t *testing.T) {
 	promptSub := eventbus.SubscribeTo(bus, eventbus.Conversation.Prompt)
 	defer promptSub.Close()
 
-	// Send sessionless message - should be ignored without globalStore
+	// Send sessionless message - should publish prompt directly
 	eventbus.Publish(context.Background(), bus, eventbus.Pipeline.Cleaned, eventbus.SourceContentPipeline, eventbus.PipelineMessageEvent{SessionID: "", Origin: eventbus.OriginUser, Text: "hello"})
 
 	select {
-	case <-promptSub.C():
-		t.Fatal("should not publish prompt when no globalStore configured")
-	case <-time.After(100 * time.Millisecond):
-		// Expected: no prompt published
+	case env := <-promptSub.C():
+		if env.Payload.NewMessage.Text != "hello" {
+			t.Fatalf("unexpected prompt text: %s", env.Payload.NewMessage.Text)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for sessionless prompt")
 	}
 }
 

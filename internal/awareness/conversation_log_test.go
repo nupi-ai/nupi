@@ -2003,3 +2003,401 @@ func TestHandleTurnWithNilRL(t *testing.T) {
 		t.Errorf("expected empty context with nil rl, got summaries=%q raw=%q", summaries, raw)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// parseTurns / parseOneTurn / roleToOrigin unit tests
+// ---------------------------------------------------------------------------
+
+func TestRoleToOrigin(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		role string
+		want eventbus.ContentOrigin
+	}{
+		{"user", eventbus.OriginUser},
+		{"ai", eventbus.OriginAI},
+		{"tool", eventbus.OriginTool},
+		{"system", eventbus.OriginSystem},
+		{"unknown", eventbus.OriginSystem},
+		{"bogus", eventbus.OriginSystem},
+		{"", eventbus.OriginSystem},
+	}
+	for _, tt := range tests {
+		if got := roleToOrigin(tt.role); got != tt.want {
+			t.Errorf("roleToOrigin(%q) = %q, want %q", tt.role, got, tt.want)
+		}
+	}
+}
+
+func TestParseOneTurn_ValidFormats(t *testing.T) {
+	t.Parallel()
+	datePrefix := "2026-03-02"
+
+	tests := []struct {
+		name       string
+		entry      string
+		wantOrigin eventbus.ContentOrigin
+		wantText   string
+		wantOK     bool
+		wantTime   string // "15:04:05" format
+	}{
+		{
+			name:       "user turn",
+			entry:      "14:30:00 [user] Hello world",
+			wantOrigin: eventbus.OriginUser,
+			wantText:   "Hello world",
+			wantOK:     true,
+			wantTime:   "14:30:00",
+		},
+		{
+			name:       "ai turn",
+			entry:      "14:30:01 [ai] I can help with that",
+			wantOrigin: eventbus.OriginAI,
+			wantText:   "I can help with that",
+			wantOK:     true,
+			wantTime:   "14:30:01",
+		},
+		{
+			name:       "tool turn",
+			entry:      "14:30:02 [tool] Running command...",
+			wantOrigin: eventbus.OriginTool,
+			wantText:   "Running command...",
+			wantOK:     true,
+			wantTime:   "14:30:02",
+		},
+		{
+			name:       "system turn",
+			entry:      "14:30:03 [system] Session started",
+			wantOrigin: eventbus.OriginSystem,
+			wantText:   "Session started",
+			wantOK:     true,
+			wantTime:   "14:30:03",
+		},
+		{
+			name:       "multi-line text",
+			entry:      "09:00:00 [ai] Line one\nLine two\nLine three",
+			wantOrigin: eventbus.OriginAI,
+			wantText:   "Line one\nLine two\nLine three",
+			wantOK:     true,
+			wantTime:   "09:00:00",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			turn, ok := parseOneTurn(tt.entry, datePrefix)
+			if ok != tt.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
+			}
+			if turn.Origin != tt.wantOrigin {
+				t.Errorf("Origin = %q, want %q", turn.Origin, tt.wantOrigin)
+			}
+			if turn.Text != tt.wantText {
+				t.Errorf("Text = %q, want %q", turn.Text, tt.wantText)
+			}
+			if tt.wantTime != "" {
+				gotTime := turn.At.Format("15:04:05")
+				if gotTime != tt.wantTime {
+					t.Errorf("At time = %q, want %q", gotTime, tt.wantTime)
+				}
+				gotDate := turn.At.Format("2006-01-02")
+				if gotDate != datePrefix {
+					t.Errorf("At date = %q, want %q", gotDate, datePrefix)
+				}
+			}
+		})
+	}
+}
+
+func TestParseOneTurn_MalformedEntries(t *testing.T) {
+	t.Parallel()
+	datePrefix := "2026-03-02"
+
+	tests := []struct {
+		name       string
+		entry      string
+		wantOK     bool
+		wantOrigin eventbus.ContentOrigin
+		wantText   string
+	}{
+		{
+			name:   "empty string",
+			entry:  "",
+			wantOK: false,
+		},
+		{
+			name:   "whitespace only",
+			entry:  "   \n\t  ",
+			wantOK: false,
+		},
+		{
+			name:       "too short",
+			entry:      "hello",
+			wantOrigin: eventbus.OriginSystem,
+			wantText:   "hello",
+			wantOK:     true,
+		},
+		{
+			name:       "no brackets",
+			entry:      "14:30:00 user Hello",
+			wantOrigin: eventbus.OriginSystem,
+			wantText:   "14:30:00 user Hello",
+			wantOK:     true,
+		},
+		{
+			name:       "invalid time format",
+			entry:      "XX:YY:ZZ [user] Hello",
+			wantOrigin: eventbus.OriginSystem,
+			wantText:   "XX:YY:ZZ [user] Hello",
+			wantOK:     true,
+		},
+		{
+			name:       "missing closing bracket space",
+			entry:      "14:30:00 [user]Hello",
+			wantOrigin: eventbus.OriginSystem,
+			wantText:   "14:30:00 [user]Hello",
+			wantOK:     true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			turn, ok := parseOneTurn(tt.entry, datePrefix)
+			if ok != tt.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
+			}
+			if !ok {
+				return
+			}
+			if turn.Origin != tt.wantOrigin {
+				t.Errorf("Origin = %q, want %q", turn.Origin, tt.wantOrigin)
+			}
+			if turn.Text != tt.wantText {
+				t.Errorf("Text = %q, want %q", turn.Text, tt.wantText)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ConversationLogService.Slice unit tests
+// ---------------------------------------------------------------------------
+
+func TestSlice_NilRollingLog(t *testing.T) {
+	t.Parallel()
+	bus := eventbus.New()
+	base := filepath.Join(t.TempDir(), "conversations")
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	svc := NewConversationLogService(bus, base)
+	// Don't call Start — rl remains nil.
+
+	total, turns, err := svc.Slice(0, 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if total != 0 || len(turns) != 0 {
+		t.Errorf("expected empty result, got total=%d turns=%d", total, len(turns))
+	}
+}
+
+func TestSlice_SingleTurn(t *testing.T) {
+	t.Parallel()
+	svc, bus, _ := newTestConvLog(t)
+	fixedTime := time.Date(2026, 3, 2, 14, 30, 0, 0, time.UTC)
+	svc.nowFunc = func() time.Time { return fixedTime }
+	startConvLog(t, svc)
+
+	publishTurn(context.Background(), bus, eventbus.OriginUser, "Hello", fixedTime)
+	waitForRawContent(t, svc, "14:30:00 [user] Hello", 2*time.Second)
+
+	total, turns, err := svc.Slice(0, 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if total != 1 {
+		t.Fatalf("total = %d, want 1", total)
+	}
+	if len(turns) != 1 {
+		t.Fatalf("len(turns) = %d, want 1", len(turns))
+	}
+	if turns[0].Origin != eventbus.OriginUser {
+		t.Errorf("Origin = %q, want %q", turns[0].Origin, eventbus.OriginUser)
+	}
+	if turns[0].Text != "Hello" {
+		t.Errorf("Text = %q, want %q", turns[0].Text, "Hello")
+	}
+}
+
+func TestSlice_MultipleTurns(t *testing.T) {
+	t.Parallel()
+	svc, bus, _ := newTestConvLog(t)
+	fixedTime := time.Date(2026, 3, 2, 14, 30, 0, 0, time.UTC)
+	svc.nowFunc = func() time.Time { return fixedTime }
+	startConvLog(t, svc)
+
+	publishTurn(context.Background(), bus, eventbus.OriginUser, "Question", fixedTime)
+	waitForRawContent(t, svc, "14:30:00 [user] Question", 2*time.Second)
+
+	publishTurn(context.Background(), bus, eventbus.OriginAI, "Answer", fixedTime.Add(time.Second))
+	waitForRawContent(t, svc, "14:30:01 [ai] Answer", 2*time.Second)
+
+	publishTurn(context.Background(), bus, eventbus.OriginTool, "Tool output", fixedTime.Add(2*time.Second))
+	waitForRawContent(t, svc, "14:30:02 [tool] Tool output", 2*time.Second)
+
+	total, turns, err := svc.Slice(0, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if total != 3 {
+		t.Fatalf("total = %d, want 3", total)
+	}
+	if len(turns) != 3 {
+		t.Fatalf("len(turns) = %d, want 3", len(turns))
+	}
+}
+
+func TestSlice_OffsetAndLimit(t *testing.T) {
+	t.Parallel()
+	svc, bus, _ := newTestConvLog(t)
+	fixedTime := time.Date(2026, 3, 2, 14, 30, 0, 0, time.UTC)
+	svc.nowFunc = func() time.Time { return fixedTime }
+	startConvLog(t, svc)
+
+	for i := 0; i < 5; i++ {
+		ts := fixedTime.Add(time.Duration(i) * time.Second)
+		text := fmt.Sprintf("Turn %d", i)
+		publishTurn(context.Background(), bus, eventbus.OriginUser, text, ts)
+		waitForRawContent(t, svc, text, 2*time.Second)
+	}
+
+	// offset=1, limit=2 → turns 1,2
+	total, turns, err := svc.Slice(1, 2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if total != 5 {
+		t.Fatalf("total = %d, want 5", total)
+	}
+	if len(turns) != 2 {
+		t.Fatalf("len(turns) = %d, want 2", len(turns))
+	}
+	if turns[0].Text != "Turn 1" {
+		t.Errorf("turns[0].Text = %q, want %q", turns[0].Text, "Turn 1")
+	}
+	if turns[1].Text != "Turn 2" {
+		t.Errorf("turns[1].Text = %q, want %q", turns[1].Text, "Turn 2")
+	}
+}
+
+func TestSlice_OffsetBeyondTotal(t *testing.T) {
+	t.Parallel()
+	svc, bus, _ := newTestConvLog(t)
+	fixedTime := time.Date(2026, 3, 2, 14, 30, 0, 0, time.UTC)
+	svc.nowFunc = func() time.Time { return fixedTime }
+	startConvLog(t, svc)
+
+	publishTurn(context.Background(), bus, eventbus.OriginUser, "Only turn", fixedTime)
+	waitForRawContent(t, svc, "14:30:00 [user] Only turn", 2*time.Second)
+
+	total, turns, err := svc.Slice(100, 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if total != 1 {
+		t.Fatalf("total = %d, want 1", total)
+	}
+	if len(turns) != 0 {
+		t.Fatalf("len(turns) = %d, want 0", len(turns))
+	}
+}
+
+func TestSlice_NegativeOffset(t *testing.T) {
+	t.Parallel()
+	svc, bus, _ := newTestConvLog(t)
+	fixedTime := time.Date(2026, 3, 2, 14, 30, 0, 0, time.UTC)
+	svc.nowFunc = func() time.Time { return fixedTime }
+	startConvLog(t, svc)
+
+	publishTurn(context.Background(), bus, eventbus.OriginUser, "Hello", fixedTime)
+	waitForRawContent(t, svc, "14:30:00 [user] Hello", 2*time.Second)
+
+	total, turns, err := svc.Slice(-5, 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if total != 1 {
+		t.Fatalf("total = %d, want 1", total)
+	}
+	if len(turns) != 1 {
+		t.Fatalf("len(turns) = %d, want 1 (negative offset clamped to 0)", len(turns))
+	}
+}
+
+func TestSlice_ZeroLimit(t *testing.T) {
+	t.Parallel()
+	svc, bus, _ := newTestConvLog(t)
+	fixedTime := time.Date(2026, 3, 2, 14, 30, 0, 0, time.UTC)
+	svc.nowFunc = func() time.Time { return fixedTime }
+	startConvLog(t, svc)
+
+	publishTurn(context.Background(), bus, eventbus.OriginUser, "Hello", fixedTime)
+	waitForRawContent(t, svc, "14:30:00 [user] Hello", 2*time.Second)
+
+	// limit=0 means no limit — return all from offset
+	total, turns, err := svc.Slice(0, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if total != 1 {
+		t.Fatalf("total = %d, want 1", total)
+	}
+	if len(turns) != 1 {
+		t.Fatalf("len(turns) = %d, want 1 (limit=0 means all)", len(turns))
+	}
+}
+
+// --- Additional parseOneTurn edge case tests (code review 2026-03-02 round 2) ---
+
+func TestParseOneTurn_TextWithBracketsInBody(t *testing.T) {
+	t.Parallel()
+	// Verify "] " inside text body doesn't break parsing — parser should find
+	// the first "] " (after the role), not a later one in the text.
+	turn, ok := parseOneTurn("14:30:00 [user] text with [brackets] inside", "2026-03-02")
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if turn.Origin != eventbus.OriginUser {
+		t.Errorf("Origin = %q, want %q", turn.Origin, eventbus.OriginUser)
+	}
+	if turn.Text != "text with [brackets] inside" {
+		t.Errorf("Text = %q, want %q", turn.Text, "text with [brackets] inside")
+	}
+}
+
+func TestParseOneTurn_TrailingWhitespaceAfterRole(t *testing.T) {
+	t.Parallel()
+	// Entry "14:30:00 [user]  " → TrimSpace → "14:30:00 [user]" → no "] " found
+	// → treated as malformed, returned as system-origin turn.
+	turn, ok := parseOneTurn("14:30:00 [user]  ", "2026-03-02")
+	if !ok {
+		t.Fatal("expected ok=true (malformed entries return system turn)")
+	}
+	if turn.Origin != eventbus.OriginSystem {
+		t.Errorf("Origin = %q, want %q", turn.Origin, eventbus.OriginSystem)
+	}
+	if turn.Text != "14:30:00 [user]" {
+		t.Errorf("Text = %q, want trimmed entry", turn.Text)
+	}
+}
+
+func TestParseOneTurn_CaseSensitiveRole(t *testing.T) {
+	t.Parallel()
+	// Roles are case-sensitive; uppercase "USER" is an unknown role → OriginSystem.
+	turn, ok := parseOneTurn("14:30:00 [USER] hello", "2026-03-02")
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if turn.Origin != eventbus.OriginSystem {
+		t.Errorf("Origin = %q, want %q (uppercase role is unknown)", turn.Origin, eventbus.OriginSystem)
+	}
+}

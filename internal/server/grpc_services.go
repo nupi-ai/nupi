@@ -506,35 +506,12 @@ func (s *sessionsService) GetConversation(ctx context.Context, req *apiv1.GetCon
 		return nil, status.Error(codes.InvalidArgument, "request is required")
 	}
 
+	// session_id is accepted but ignored — conversation is now global.
 	sessionID := strings.TrimSpace(req.GetSessionId())
-	if sessionID == "" {
-		return nil, status.Error(codes.InvalidArgument, "session_id is required")
-	}
 
-	if s.api.conversation == nil {
-		return nil, status.Error(codes.Unavailable, "conversation service unavailable")
-	}
-
-	if _, _, err := s.api.validateAndGetSession(sessionID); err != nil {
+	total, turns, offset, pageLimit, err := s.sliceConversation(int(req.GetOffset()), int(req.GetLimit()))
+	if err != nil {
 		return nil, err
-	}
-
-	offset := int(req.GetOffset())
-	limit := int(req.GetLimit())
-	if limit < 0 {
-		return nil, status.Error(codes.InvalidArgument, "limit must be non-negative")
-	}
-	if offset < 0 {
-		return nil, status.Error(codes.InvalidArgument, "offset must be non-negative")
-	}
-	if limit > conversationMaxPageLimit {
-		limit = conversationMaxPageLimit
-	}
-
-	total, turns := s.api.conversation.Slice(sessionID, offset, limit)
-	pageLimit := limit
-	if pageLimit <= 0 || pageLimit > len(turns) {
-		pageLimit = len(turns)
 	}
 
 	resp := &apiv1.GetConversationResponse{
@@ -546,13 +523,9 @@ func (s *sessionsService) GetConversation(ctx context.Context, req *apiv1.GetCon
 		HasMore:    offset+len(turns) < total,
 		NextOffset: 0,
 	}
-
-	if !resp.HasMore {
-		resp.NextOffset = 0
-	} else {
+	if resp.HasMore {
 		resp.NextOffset = uint32(offset + len(turns))
 	}
-
 	return resp, nil
 }
 
@@ -561,22 +534,9 @@ func (s *sessionsService) GetGlobalConversation(ctx context.Context, req *apiv1.
 		return nil, status.Error(codes.InvalidArgument, "request is required")
 	}
 
-	if s.api.conversation == nil {
-		return nil, status.Error(codes.Unavailable, "conversation service unavailable")
-	}
-
-	offset := int(req.GetOffset())
-	limit := int(req.GetLimit())
-	if limit > conversationMaxPageLimit {
-		limit = conversationMaxPageLimit
-	}
-
-	total, turns := s.api.conversation.GlobalSlice(offset, limit)
-	// Effective page limit: when no limit was requested (0) or limit exceeds
-	// the actual number of turns returned, clamp to the actual count.
-	pageLimit := limit
-	if pageLimit <= 0 || pageLimit > len(turns) {
-		pageLimit = len(turns)
+	total, turns, offset, pageLimit, err := s.sliceConversation(int(req.GetOffset()), int(req.GetLimit()))
+	if err != nil {
+		return nil, err
 	}
 
 	resp := &apiv1.GetGlobalConversationResponse{
@@ -587,14 +547,33 @@ func (s *sessionsService) GetGlobalConversation(ctx context.Context, req *apiv1.
 		HasMore:    offset+len(turns) < total,
 		NextOffset: 0,
 	}
-
-	if !resp.HasMore {
-		resp.NextOffset = 0
-	} else {
+	if resp.HasMore {
 		resp.NextOffset = uint32(offset + len(turns))
 	}
-
 	return resp, nil
+}
+
+// sliceConversation validates pagination parameters and fetches conversation turns.
+func (s *sessionsService) sliceConversation(offset, limit int) (total int, turns []eventbus.ConversationTurn, validOffset, pageLimit int, err error) {
+	if s.api.conversation == nil {
+		return 0, nil, 0, 0, status.Error(codes.Unavailable, "conversation service unavailable")
+	}
+	if limit < 0 {
+		return 0, nil, 0, 0, status.Error(codes.InvalidArgument, "limit must be non-negative")
+	}
+	if offset < 0 {
+		return 0, nil, 0, 0, status.Error(codes.InvalidArgument, "offset must be non-negative")
+	}
+	if limit <= 0 || limit > conversationMaxPageLimit {
+		limit = conversationMaxPageLimit
+	}
+
+	total, turns, sliceErr := s.api.conversation.Slice(offset, limit)
+	if sliceErr != nil {
+		return 0, nil, 0, 0, status.Errorf(codes.Internal, "conversation slice: %v", sliceErr)
+	}
+
+	return total, turns, offset, limit, nil
 }
 
 // maxVoiceCommandTextLen is the maximum allowed length for voice command text.

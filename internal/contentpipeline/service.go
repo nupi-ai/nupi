@@ -563,8 +563,7 @@ func (s *Service) handleTranscript(evt eventbus.SpeechTranscriptEvent) {
 		return
 	}
 
-	// Per architecture 4.4.2: sessionless transcripts (SessionID="") are valid
-	// and should be passed to conversation.Service for GlobalStore handling.
+	// Per architecture 4.4.2: sessionless transcripts (SessionID="") are valid.
 	// This enables "sessionless" voice commands like asking about available
 	// sessions, general questions, or system commands.
 
